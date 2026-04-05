@@ -283,14 +283,14 @@ operating without interruption or duplicate token requests.
 > **NOTE: Write these tests FIRST, ensure they FAIL before
 > implementation**
 
-- [ ] T025 [P] [US3] Write proactive refresh and concurrent access
+- [X] T025 [P] [US3] Write proactive refresh and concurrent access
   tests in `tests/api/test_auth.py`: `get_token()` refreshes when
   token is within buffer of expiry; `get_token()` with `asyncio.Lock`
   double-checked locking — only one HTTP POST when 5 concurrent
   callers hit expired token; `invalidate()` clears cached token
   forcing next `get_token()` to re-acquire; refreshed token is saved
   via `TokenStorage.save_token()`
-- [ ] T026 [P] [US3] Write reactive 401 refresh and request retry
+- [X] T026 [P] [US3] Write reactive 401 refresh and request retry
   tests in `tests/api/test_client.py`: `_request()` on HTTP 401
   calls `token_manager.invalidate()`, re-acquires token, retries
   original request once; second consecutive 401 raises
@@ -299,14 +299,14 @@ operating without interruption or duplicate token requests.
 
 ### Implementation for User Story 3
 
-- [ ] T027 [US3] Add proactive refresh buffer, `asyncio.Lock`
+- [X] T027 [US3] Add proactive refresh buffer, `asyncio.Lock`
   double-checked locking, and `invalidate()` to
   `GuestyTokenManager` in `custom_components/guesty/api/auth.py`:
   `_refresh_buffer` constructor param (default 300s); `is_expired`
   check uses buffer; `_lock = asyncio.Lock()` with check → lock →
   re-check pattern per R-004; `invalidate()` clears `_cached_token`;
   persist token via `storage.save_token()` after acquisition
-- [ ] T028 [US3] Add 401 detection, token invalidation, and request
+- [X] T028 [US3] Add 401 detection, token invalidation, and request
   retry to `GuestyApiClient._request()` in
   `custom_components/guesty/api/client.py`: on HTTP 401 response,
   call `token_manager.invalidate()`, call `token_manager.get_token()`
@@ -333,14 +333,14 @@ and verify the 24h limit is enforced.
 > **NOTE: Write these tests FIRST, ensure they FAIL before
 > implementation**
 
-- [ ] T029 [P] [US4] Write 5-per-24h token rate limit tests in
+- [X] T029 [P] [US4] Write 5-per-24h token rate limit tests in
   `tests/api/test_auth.py`: requests 1-3 succeed silently; request
   4 logs warning and succeeds; request 5 logs warning and succeeds
   (last permitted); request 6 raises `GuestyRateLimitError` with
   `reset_at`; window reset after 24h allows new requests; counter
   persisted via `TokenStorage.save_request_count()`; counter loaded
   from storage on construction
-- [ ] T030 [P] [US4] Write HTTP 429 backoff and Retry-After tests
+- [X] T030 [P] [US4] Write HTTP 429 backoff and Retry-After tests
   in `tests/api/test_client.py`: 429 response triggers retry with
   exponential backoff (1s → 2s → 4s); `Retry-After` header overrides
   calculated backoff; max 3 retries then `GuestyRateLimitError`;
@@ -348,7 +348,7 @@ and verify the 24h limit is enforced.
 
 ### Implementation for User Story 4
 
-- [ ] T031 [US4] Add token request counter tracking with 24h rolling
+- [X] T031 [US4] Add token request counter tracking with 24h rolling
   window to `GuestyTokenManager` in
   `custom_components/guesty/api/auth.py`: `_request_count` and
   `_window_start` fields; `_check_rate_limit()` called before token
@@ -356,7 +356,7 @@ and verify the 24h limit is enforced.
   count 6+; window resets when 24h elapses; counter persisted via
   `storage.save_request_count()` after each token request; counter
   loaded via `storage.load_request_count()` during initialization
-- [ ] T032 [US4] Add exponential backoff with jitter on HTTP 429 to
+- [X] T032 [US4] Add exponential backoff with jitter on HTTP 429 to
   `GuestyApiClient._request()` in
   `custom_components/guesty/api/client.py`: max 3 retries (4 total
   attempts); initial backoff 1.0s, multiplier 2x, capped at 30s;
