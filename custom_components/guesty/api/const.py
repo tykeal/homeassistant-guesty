@@ -37,3 +37,23 @@ GRANT_TYPE: str = "client_credentials"
 
 # OAuth 2.0 scope for Guesty Open API access.
 SCOPE: str = "open-api"
+
+# Messaging endpoint: list/filter conversations.
+CONVERSATIONS_PATH: str = "/communication/conversations"
+
+# Messaging endpoint: send a message to a conversation.
+SEND_MESSAGE_PATH: str = "/communication/conversations/{conversation_id}/send-message"
+
+# Maximum message body length in characters.
+MAX_MESSAGE_LENGTH: int = 10000
+
+# Known Guesty communication channel types.
+KNOWN_CHANNEL_TYPES: frozenset[str] = frozenset(
+    {
+        "email",
+        "sms",
+        "airbnb2",
+        "platform",
+        "whatsapp",
+    }
+)
