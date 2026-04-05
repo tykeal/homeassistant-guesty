@@ -154,3 +154,136 @@ class TestTokenAcquisition:
         token = await manager.get_token()
         assert token == "seeded-token"
         assert route.call_count == 0
+
+
+class TestProactiveRefresh:
+    """Tests for proactive token refresh with buffer."""
+
+    @respx.mock
+    async def test_refresh_within_buffer(self) -> None:
+        """get_token() refreshes when within buffer of expiry."""
+        from datetime import timedelta
+
+        from custom_components.guesty.api.models import CachedToken
+
+        route = respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(access_token="new-token"),
+            ),
+        )
+        manager, _ = _make_manager()
+        # Seed a token that is about to expire (within 300s buffer)
+        manager._refresh_buffer = 300
+        manager.seed_token(
+            CachedToken(
+                access_token="old-token",
+                token_type="Bearer",
+                expires_in=86400,
+                scope="open-api",
+                issued_at=datetime.now(UTC) - timedelta(seconds=86200),
+            ),
+        )
+        token = await manager.get_token()
+        assert token == "new-token"
+        assert route.call_count == 1
+
+    @respx.mock
+    async def test_invalidate_forces_reacquisition(self) -> None:
+        """invalidate() clears cache; next get_token() re-acquires."""
+        from custom_components.guesty.api.models import CachedToken
+
+        route = respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(access_token="fresh"),
+            ),
+        )
+        manager, _ = _make_manager()
+        manager.seed_token(
+            CachedToken(
+                access_token="cached",
+                token_type="Bearer",
+                expires_in=86400,
+                scope="open-api",
+                issued_at=datetime.now(UTC),
+            ),
+        )
+        manager.invalidate()
+        token = await manager.get_token()
+        assert token == "fresh"
+        assert route.call_count == 1
+
+
+class TestConcurrentAccess:
+    """Tests for concurrent token access with locking."""
+
+    @respx.mock
+    async def test_concurrent_callers_single_request(self) -> None:
+        """Multiple concurrent get_token() calls make one request."""
+        import asyncio
+
+        route = respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        manager, _ = _make_manager()
+        tokens = await asyncio.gather(
+            *[manager.get_token() for _ in range(5)],
+        )
+        assert all(t == FAKE_TOKEN for t in tokens)
+        # Double-checked locking means at most 1 request
+        assert route.call_count == 1
+
+
+class TestTokenRateLimit:
+    """Tests for 5-per-24h token request rate limit."""
+
+    @respx.mock
+    async def test_requests_1_through_5_succeed(self) -> None:
+        """First 5 token requests succeed."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        storage = FakeTokenStorage()
+        for _i in range(5):
+            manager, _ = _make_manager(storage=storage)
+            manager.invalidate()
+            token = await manager.get_token()
+            assert token == FAKE_TOKEN
+
+    @respx.mock
+    async def test_request_6_raises_rate_limit(self) -> None:
+        """6th token request raises GuestyRateLimitError."""
+        from custom_components.guesty.api.exceptions import (
+            GuestyRateLimitError,
+        )
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        storage = FakeTokenStorage()
+        # Make 5 requests
+        for _i in range(5):
+            manager, _ = _make_manager(storage=storage)
+            manager.invalidate()
+            await manager.get_token()
+
+        # 6th should fail
+        manager, _ = _make_manager(storage=storage)
+        manager.invalidate()
+        with pytest.raises(GuestyRateLimitError, match="rate limit"):
+            await manager.get_token()
+
+    @respx.mock
+    async def test_counter_persisted_via_storage(self) -> None:
+        """Request counter is saved via TokenStorage."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        storage = FakeTokenStorage()
+        manager, _ = _make_manager(storage=storage)
+        await manager.get_token()
+
+        count, window = await storage.load_request_count()
+        assert count == 1
+        assert window is not None

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -158,4 +159,76 @@ class TestReactiveRefresh:
 
         client, _, _ = _make_client()
         with pytest.raises(GuestyAuthError, match="after token refresh"):
+            await client.test_connection()
+
+
+class TestRateLimitBackoff:
+    """Tests for HTTP 429 exponential backoff."""
+
+    @respx.mock
+    async def test_429_triggers_retry(self) -> None:
+        """429 response triggers retry with backoff."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        listings_route = respx.get(f"{BASE_URL}/listings")
+        listings_route.side_effect = [
+            Response(429, headers={"Retry-After": "0"}),
+            Response(200, json={"results": []}),
+        ]
+
+        client, _, _ = _make_client()
+        with _patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await client.test_connection()
+        assert result is True
+
+    @respx.mock
+    async def test_429_retry_after_header_respected(self) -> None:
+        """Retry-After header is used for backoff delay."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        mock_sleep = AsyncMock()
+        listings_route = respx.get(f"{BASE_URL}/listings")
+        listings_route.side_effect = [
+            Response(429, headers={"Retry-After": "5"}),
+            Response(200, json={"results": []}),
+        ]
+
+        client, _, _ = _make_client()
+        with _patch("asyncio.sleep", mock_sleep):
+            await client.test_connection()
+
+        mock_sleep.assert_called_once()
+        delay = mock_sleep.call_args[0][0]
+        assert delay == 5.0
+
+    @respx.mock
+    async def test_429_max_retries_raises(self) -> None:
+        """Exhausted retries raise GuestyRateLimitError."""
+        from unittest.mock import patch as _patch
+
+        from custom_components.guesty.api.exceptions import (
+            GuestyRateLimitError,
+        )
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        respx.get(f"{BASE_URL}/listings").mock(
+            return_value=Response(
+                429,
+                headers={"Retry-After": "0"},
+            ),
+        )
+
+        client, _, _ = _make_client()
+        with (
+            _patch("asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(GuestyRateLimitError, match="max retries"),
+        ):
             await client.test_connection()
