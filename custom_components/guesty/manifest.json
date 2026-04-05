@@ -3,9 +3,11 @@
     "name": "Guesty",
     "codeowners": ["@tykeal"],
     "config_flow": true,
+    "dependencies": [],
     "documentation": "https://github.com/tykeal/guesty",
     "integration_type": "hub",
     "iot_class": "cloud_polling",
+    "issue_tracker": "https://github.com/tykeal/guesty/issues",
     "requirements": ["httpx>=0.28"],
     "version": "0.1.0",
     "homeassistant": "2026.2.0"
