@@ -384,14 +384,14 @@ tokens/secrets.
 > **NOTE: Write these tests FIRST, ensure they FAIL before
 > implementation**
 
-- [ ] T033 [P] [US5] Write reauth flow tests in
+- [X] T033 [P] [US5] Write reauth flow tests in
   `tests/test_config_flow.py`: `async_step_reauth` shows reauth
   form pre-filled with `client_id`; `async_step_reauth_confirm`
   validates new credentials, updates `config_entry.data`, clears
   token cache on success; reauth with invalid new credentials shows
   `invalid_auth` error; reauth with connection failure shows
   `cannot_connect` error
-- [ ] T034 [P] [US5] Write reauth trigger and log sanitization tests
+- [X] T034 [P] [US5] Write reauth trigger and log sanitization tests
   in `tests/test_init.py`: persistent `GuestyAuthError` during
   operation triggers `config_entry.async_start_reauth()`; verify
   log output at all levels (DEBUG through CRITICAL) never contains
@@ -399,7 +399,7 @@ tokens/secrets.
 
 ### Implementation for User Story 5
 
-- [ ] T035 [US5] Add `async_step_reauth` and
+- [X] T035 [US5] Add `async_step_reauth` and
   `async_step_reauth_confirm` to config flow in
   `custom_components/guesty/config_flow.py`: reauth entry point
   stores existing `client_id`; reauth confirm form pre-fills
@@ -407,10 +407,10 @@ tokens/secrets.
   credentials via temporary token manager; on success updates
   `config_entry.data` and triggers reload; error mapping matches
   `step_user` pattern
-- [ ] T036 [P] [US5] Add reauth step strings and abort reasons to
+- [X] T036 [P] [US5] Add reauth step strings and abort reasons to
   `custom_components/guesty/strings.json`: reauth step title and
   field descriptions, `reauth_successful` abort reason
-- [ ] T037 [US5] Add reauth trigger on persistent auth failure and
+- [X] T037 [US5] Add reauth trigger on persistent auth failure and
   log sanitization audit in
   `custom_components/guesty/__init__.py`: catch `GuestyAuthError`
   from operations and call
