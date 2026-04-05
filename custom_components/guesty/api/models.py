@@ -8,6 +8,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
+from custom_components.guesty.api.const import (
+    KNOWN_CHANNEL_TYPES,
+    MAX_MESSAGE_LENGTH,
+)
+
 
 @dataclass(frozen=True)
 class CachedToken:
@@ -147,3 +152,89 @@ class TokenStorage(Protocol):
             window_start: Start time of the current rate limit window.
         """
         ...
+
+
+@dataclass(frozen=True)
+class Conversation:
+    """Guesty conversation associated with a reservation.
+
+    Attributes:
+        id: Guesty conversation identifier.
+        reservation_id: Associated reservation identifier.
+        available_channels: Communication channels available.
+    """
+
+    id: str
+    reservation_id: str
+    available_channels: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        """Validate conversation fields after initialization.
+
+        Raises:
+            ValueError: If any required field is empty.
+        """
+        if not self.id:
+            msg = "id must be non-empty"
+            raise ValueError(msg)
+        if not self.reservation_id:
+            msg = "reservation_id must be non-empty"
+            raise ValueError(msg)
+        if not self.available_channels:
+            msg = "available_channels must be non-empty"
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True)
+class MessageRequest:
+    """Validated request to send a message via Guesty.
+
+    Attributes:
+        conversation_id: Target conversation identifier.
+        body: Rendered message text.
+        channel: Optional delivery channel override.
+    """
+
+    conversation_id: str
+    body: str
+    channel: str | None = None
+
+    def __post_init__(self) -> None:
+        """Validate message request fields after initialization.
+
+        Raises:
+            ValueError: If conversation_id or body is empty, body
+                exceeds MAX_MESSAGE_LENGTH, or channel unknown.
+        """
+        if not self.conversation_id:
+            msg = "conversation_id must be non-empty"
+            raise ValueError(msg)
+        if not self.body:
+            msg = "body must be non-empty"
+            raise ValueError(msg)
+        if len(self.body) > MAX_MESSAGE_LENGTH:
+            msg = f"body exceeds maximum length of {MAX_MESSAGE_LENGTH} characters"
+            raise ValueError(msg)
+        if self.channel is not None and self.channel not in KNOWN_CHANNEL_TYPES:
+            msg = (
+                f"unknown channel '{self.channel}'; "
+                f"known types: {sorted(KNOWN_CHANNEL_TYPES)}"
+            )
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True)
+class MessageDeliveryResult:
+    """Outcome of a Guesty message delivery attempt.
+
+    Attributes:
+        success: Whether delivery was accepted by Guesty.
+        message_id: Guesty message identifier if successful.
+        error_details: Error description if delivery failed.
+        reservation_id: The targeted reservation for context.
+    """
+
+    success: bool
+    message_id: str | None = None
+    error_details: str | None = None
+    reservation_id: str | None = None

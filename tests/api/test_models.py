@@ -10,7 +10,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from custom_components.guesty.api.models import CachedToken, TokenStorage
+from custom_components.guesty.api.const import MAX_MESSAGE_LENGTH
+from custom_components.guesty.api.models import (
+    CachedToken,
+    Conversation,
+    MessageDeliveryResult,
+    MessageRequest,
+    TokenStorage,
+)
 
 
 def _make_token(**overrides: Any) -> CachedToken:
@@ -209,3 +216,162 @@ class TestTokenStorageProtocol:
 
         assert await mock_storage.load_token() is None
         assert await mock_storage.load_request_count() == (0, None)
+
+
+class TestConversation:
+    """Tests for Conversation frozen dataclass."""
+
+    def test_create_with_valid_fields(self) -> None:
+        """Conversation can be created with valid parameters."""
+        conv = Conversation(
+            id="conv-123",
+            reservation_id="res-456",
+            available_channels=("email", "sms"),
+        )
+        assert conv.id == "conv-123"
+        assert conv.reservation_id == "res-456"
+        assert conv.available_channels == ("email", "sms")
+
+    def test_empty_id_raises(self) -> None:
+        """Conversation raises ValueError for empty id."""
+        with pytest.raises(ValueError, match="id must be non-empty"):
+            Conversation(
+                id="",
+                reservation_id="res-456",
+                available_channels=("email",),
+            )
+
+    def test_empty_reservation_id_raises(self) -> None:
+        """Conversation raises ValueError for empty reservation_id."""
+        with pytest.raises(ValueError, match="reservation_id"):
+            Conversation(
+                id="conv-123",
+                reservation_id="",
+                available_channels=("email",),
+            )
+
+    def test_empty_available_channels_raises(self) -> None:
+        """Conversation raises for empty available_channels."""
+        with pytest.raises(ValueError, match="available_channels"):
+            Conversation(
+                id="conv-123",
+                reservation_id="res-456",
+                available_channels=(),
+            )
+
+    def test_frozen_immutability(self) -> None:
+        """Conversation fields cannot be modified after creation."""
+        conv = Conversation(
+            id="conv-123",
+            reservation_id="res-456",
+            available_channels=("email",),
+        )
+        with pytest.raises(AttributeError):
+            conv.id = "new-id"  # type: ignore[misc]
+
+
+class TestMessageRequest:
+    """Tests for MessageRequest frozen dataclass."""
+
+    def test_create_with_valid_fields(self) -> None:
+        """MessageRequest can be created with valid parameters."""
+        req = MessageRequest(
+            conversation_id="conv-123",
+            body="Hello, guest!",
+        )
+        assert req.conversation_id == "conv-123"
+        assert req.body == "Hello, guest!"
+        assert req.channel is None
+
+    def test_create_with_channel(self) -> None:
+        """MessageRequest accepts a valid channel."""
+        req = MessageRequest(
+            conversation_id="conv-123",
+            body="Hello",
+            channel="email",
+        )
+        assert req.channel == "email"
+
+    def test_empty_conversation_id_raises(self) -> None:
+        """MessageRequest raises for empty conversation_id."""
+        with pytest.raises(ValueError, match="conversation_id"):
+            MessageRequest(conversation_id="", body="Hello")
+
+    def test_empty_body_raises(self) -> None:
+        """MessageRequest raises ValueError for empty body."""
+        with pytest.raises(
+            ValueError,
+            match="body must be non-empty",
+        ):
+            MessageRequest(
+                conversation_id="conv-123",
+                body="",
+            )
+
+    def test_body_exceeding_max_length_raises(self) -> None:
+        """MessageRequest raises ValueError for oversized body."""
+        long_body = "x" * (MAX_MESSAGE_LENGTH + 1)
+        with pytest.raises(ValueError, match="maximum length"):
+            MessageRequest(
+                conversation_id="conv-123",
+                body=long_body,
+            )
+
+    def test_unknown_channel_raises(self) -> None:
+        """MessageRequest raises ValueError for unknown channel."""
+        with pytest.raises(ValueError, match="unknown channel"):
+            MessageRequest(
+                conversation_id="conv-123",
+                body="Hello",
+                channel="carrier_pigeon",
+            )
+
+    def test_none_channel_accepted(self) -> None:
+        """MessageRequest accepts None as channel."""
+        req = MessageRequest(
+            conversation_id="conv-123",
+            body="Hello",
+            channel=None,
+        )
+        assert req.channel is None
+
+    def test_frozen_immutability(self) -> None:
+        """MessageRequest fields cannot be modified."""
+        req = MessageRequest(
+            conversation_id="conv-123",
+            body="Hello",
+        )
+        with pytest.raises(AttributeError):
+            req.body = "new body"  # type: ignore[misc]
+
+
+class TestMessageDeliveryResult:
+    """Tests for MessageDeliveryResult frozen dataclass."""
+
+    def test_success_result_with_message_id(self) -> None:
+        """Successful result contains message_id."""
+        result = MessageDeliveryResult(
+            success=True,
+            message_id="msg-789",
+        )
+        assert result.success is True
+        assert result.message_id == "msg-789"
+        assert result.error_details is None
+
+    def test_failure_result_with_error_details(self) -> None:
+        """Failed result has error_details and reservation_id."""
+        result = MessageDeliveryResult(
+            success=False,
+            error_details="delivery timeout",
+            reservation_id="res-456",
+        )
+        assert result.success is False
+        assert result.error_details == "delivery timeout"
+        assert result.reservation_id == "res-456"
+        assert result.message_id is None
+
+    def test_frozen_immutability(self) -> None:
+        """MessageDeliveryResult fields cannot be modified."""
+        result = MessageDeliveryResult(success=True)
+        with pytest.raises(AttributeError):
+            result.success = False  # type: ignore[misc]
