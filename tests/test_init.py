@@ -246,6 +246,66 @@ class TestHATokenStorage:
         assert result is None
 
 
+class TestHATokenStorageCorruptedCounters:
+    """Tests for HATokenStorage handling corrupted counter data."""
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_invalid_request_count_resets(
+        self,
+        mock_test: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Invalid token_request_count resets to zero."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        hass.config_entries.async_update_entry(
+            entry,
+            data={
+                **entry.data,
+                "token_request_count": "not-a-number",
+            },
+        )
+
+        storage = HATokenStorage(hass, entry)
+        count, _ = await storage.load_request_count()
+        assert count == 0
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_invalid_window_start_resets(
+        self,
+        mock_test: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Invalid token_window_start resets to None."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        hass.config_entries.async_update_entry(
+            entry,
+            data={
+                **entry.data,
+                "token_window_start": "not-a-date",
+            },
+        )
+
+        storage = HATokenStorage(hass, entry)
+        _, window = await storage.load_request_count()
+        assert window is None
+
+
 class TestLogSanitization:
     """Tests ensuring credentials never appear in logs."""
 

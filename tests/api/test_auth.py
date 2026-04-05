@@ -289,6 +289,87 @@ class TestTokenRateLimit:
         assert window is not None
 
 
+class TestDoubleCheckedLocking:
+    """Tests for double-checked locking inside the async lock."""
+
+    @respx.mock
+    async def test_second_caller_finds_cache_inside_lock(
+        self,
+    ) -> None:
+        """Second caller hits cache check inside the lock."""
+        import asyncio
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        manager, _ = _make_manager()
+
+        acquired = asyncio.Event()
+        release = asyncio.Event()
+        original_check = manager._check_rate_limit
+        call_count = 0
+
+        async def slow_check() -> None:
+            """Delay inside the lock on the first call."""
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                acquired.set()
+                await release.wait()
+            await original_check()
+
+        manager._check_rate_limit = slow_check  # type: ignore[assignment]
+
+        task_a = asyncio.create_task(manager.get_token())
+        await acquired.wait()
+
+        task_b = asyncio.create_task(manager.get_token())
+        await asyncio.sleep(0)
+
+        release.set()
+
+        token_a = await task_a
+        token_b = await task_b
+
+        assert token_a == FAKE_TOKEN
+        assert token_b == FAKE_TOKEN
+
+
+class TestStaleWindowReset:
+    """Tests for stale window reset in _request_token."""
+
+    @respx.mock
+    async def test_stale_window_resets_counter(self) -> None:
+        """Stale window in _request_token resets count."""
+        from datetime import timedelta
+
+        from custom_components.guesty.api.const import (
+            TOKEN_WINDOW_SECONDS,
+        )
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        manager, _storage = _make_manager()
+
+        old_window = datetime.now(UTC) - timedelta(
+            seconds=TOKEN_WINDOW_SECONDS + 1,
+        )
+        manager._window_start = old_window
+        manager._request_count = 2
+
+        token = await manager._request_token()
+        assert token.access_token == FAKE_TOKEN
+        assert manager._request_count == 1
+        assert manager._window_start != old_window
+
+
 class TestEdgeCases:
     """Edge case tests for token manager."""
 

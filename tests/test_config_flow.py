@@ -6,16 +6,21 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
+import respx
 from homeassistant.config_entries import SOURCE_REAUTH, SOURCE_USER
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from httpx import Response
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.guesty.api.const import BASE_URL, TOKEN_URL
 from custom_components.guesty.api.exceptions import (
     GuestyAuthError,
     GuestyConnectionError,
     GuestyRateLimitError,
 )
 from custom_components.guesty.const import DOMAIN
+from tests.conftest import make_token_response
 
 VALID_INPUT = {
     "client_id": "test-client-id",
@@ -150,6 +155,25 @@ class TestStepUser:
         assert "client_id" in keys
         assert "client_secret" in keys
 
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("unexpected"),
+    )
+    async def test_unknown_error(
+        self,
+        mock_validate: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Unexpected exception shows unknown error."""
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["errors"] == {"base": "unknown"}
+
 
 class TestStepReauth:
     """Tests for the reauth config flow step."""
@@ -219,3 +243,189 @@ class TestStepReauth:
         )
         assert result["type"] is FlowResultType.ABORT
         assert result["reason"] == "reauth_successful"
+
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+        side_effect=GuestyAuthError("bad creds"),
+    )
+    async def test_reauth_auth_error(
+        self,
+        mock_validate: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Reauth auth error shows invalid_auth."""
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data=VALID_INPUT,
+            unique_id="test-client-id",
+        )
+        entry.add_to_hass(hass)
+
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": SOURCE_REAUTH,
+                "entry_id": entry.entry_id,
+            },
+            data=entry.data,
+        )
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input={
+                "client_id": "test-client-id",
+                "client_secret": "bad",
+            },
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["errors"] == {"base": "invalid_auth"}
+
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+        side_effect=GuestyConnectionError("network"),
+    )
+    async def test_reauth_connection_error(
+        self,
+        mock_validate: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Reauth connection error shows cannot_connect."""
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data=VALID_INPUT,
+            unique_id="test-client-id",
+        )
+        entry.add_to_hass(hass)
+
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": SOURCE_REAUTH,
+                "entry_id": entry.entry_id,
+            },
+            data=entry.data,
+        )
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input={
+                "client_id": "test-client-id",
+                "client_secret": "bad",
+            },
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["errors"] == {"base": "cannot_connect"}
+
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+        side_effect=GuestyRateLimitError("rate limited"),
+    )
+    async def test_reauth_rate_limited_error(
+        self,
+        mock_validate: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Reauth rate limit shows rate_limited."""
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data=VALID_INPUT,
+            unique_id="test-client-id",
+        )
+        entry.add_to_hass(hass)
+
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": SOURCE_REAUTH,
+                "entry_id": entry.entry_id,
+            },
+            data=entry.data,
+        )
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input={
+                "client_id": "test-client-id",
+                "client_secret": "bad",
+            },
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["errors"] == {"base": "rate_limited"}
+
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("unexpected"),
+    )
+    async def test_reauth_unknown_error(
+        self,
+        mock_validate: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Reauth unexpected error shows unknown."""
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data=VALID_INPUT,
+            unique_id="test-client-id",
+        )
+        entry.add_to_hass(hass)
+
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": SOURCE_REAUTH,
+                "entry_id": entry.entry_id,
+            },
+            data=entry.data,
+        )
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input={
+                "client_id": "test-client-id",
+                "client_secret": "bad",
+            },
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["errors"] == {"base": "unknown"}
+
+
+class TestValidateCredentialsDirect:
+    """Tests for _validate_credentials without mocking it."""
+
+    @respx.mock
+    async def test_validate_credentials_success(self) -> None:
+        """_validate_credentials succeeds with valid responses."""
+        from custom_components.guesty.config_flow import (
+            _validate_credentials,
+        )
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}/listings").mock(
+            return_value=Response(
+                200,
+                json={"results": []},
+            ),
+        )
+
+        await _validate_credentials("test-id", "test-secret")
+
+
+class TestNullStorage:
+    """Tests for _NullStorage used during config flow validation."""
+
+    async def test_load_token_returns_none(self) -> None:
+        """_NullStorage.load_token returns None."""
+        from custom_components.guesty.config_flow import _NullStorage
+
+        storage = _NullStorage()
+        result = await storage.load_token()
+        assert result is None

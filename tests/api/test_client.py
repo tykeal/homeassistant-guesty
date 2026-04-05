@@ -232,3 +232,155 @@ class TestRateLimitBackoff:
             pytest.raises(GuestyRateLimitError, match="max retries"),
         ):
             await client.test_connection()
+
+    @respx.mock
+    async def test_429_without_retry_after_uses_jitter(self) -> None:
+        """429 without Retry-After header uses jitter backoff."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        mock_sleep = AsyncMock()
+        listings_route = respx.get(f"{BASE_URL}/listings")
+        listings_route.side_effect = [
+            Response(429),
+            Response(200, json={"results": []}),
+        ]
+
+        client, _, _ = _make_client()
+        with _patch("asyncio.sleep", mock_sleep):
+            result = await client.test_connection()
+
+        assert result is True
+        mock_sleep.assert_called_once()
+        delay = mock_sleep.call_args[0][0]
+        assert delay >= 0.1
+
+    @respx.mock
+    async def test_429_max_retries_no_retry_after(self) -> None:
+        """Max retries with no Retry-After returns None."""
+        from unittest.mock import patch as _patch
+
+        from custom_components.guesty.api.exceptions import (
+            GuestyRateLimitError,
+        )
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        respx.get(f"{BASE_URL}/listings").mock(
+            return_value=Response(429),
+        )
+
+        client, _, _ = _make_client()
+        with (
+            _patch("asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(GuestyRateLimitError) as exc_info,
+        ):
+            await client.test_connection()
+        assert exc_info.value.retry_after is None
+
+    @respx.mock
+    async def test_429_invalid_retry_after_header(self) -> None:
+        """Invalid Retry-After header falls back to jitter."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        mock_sleep = AsyncMock()
+        listings_route = respx.get(f"{BASE_URL}/listings")
+        listings_route.side_effect = [
+            Response(429, headers={"Retry-After": "not-a-number"}),
+            Response(200, json={"results": []}),
+        ]
+
+        client, _, _ = _make_client()
+        with _patch("asyncio.sleep", mock_sleep):
+            result = await client.test_connection()
+
+        assert result is True
+        mock_sleep.assert_called_once()
+
+
+class TestConnectionTestFailure:
+    """Tests for test_connection non-success responses."""
+
+    @respx.mock
+    async def test_non_success_raises_response_error(self) -> None:
+        """test_connection raises on non-success status."""
+        from custom_components.guesty.api.exceptions import (
+            GuestyResponseError,
+        )
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        respx.get(f"{BASE_URL}/listings").mock(
+            return_value=Response(500, text="Internal Server Error"),
+        )
+
+        client, _, _ = _make_client()
+        with pytest.raises(
+            GuestyResponseError,
+            match="Connection test failed",
+        ):
+            await client.test_connection()
+
+
+class TestRequestNetworkError:
+    """Tests for network errors during API requests."""
+
+    @respx.mock
+    async def test_connect_error_in_request(self) -> None:
+        """ConnectError during API call raises GuestyConnectionError."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        respx.get(f"{BASE_URL}/listings").mock(
+            side_effect=httpx.ConnectError("refused"),
+        )
+
+        client, _, _ = _make_client()
+        with pytest.raises(GuestyConnectionError):
+            await client.test_connection()
+
+    @respx.mock
+    async def test_timeout_in_request(self) -> None:
+        """TimeoutException during API call raises error."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        respx.get(f"{BASE_URL}/listings").mock(
+            side_effect=httpx.TimeoutException("timed out"),
+        )
+
+        client, _, _ = _make_client()
+        with pytest.raises(GuestyConnectionError):
+            await client.test_connection()
+
+
+class TestForbiddenResponse:
+    """Tests for HTTP 403 Forbidden responses."""
+
+    @respx.mock
+    async def test_403_raises_auth_error(self) -> None:
+        """403 response raises GuestyAuthError."""
+        from custom_components.guesty.api.exceptions import (
+            GuestyAuthError as AuthError,
+        )
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        respx.get(f"{BASE_URL}/listings").mock(
+            return_value=Response(
+                403,
+                json={"error": "Forbidden"},
+            ),
+        )
+
+        client, _, _ = _make_client()
+        with pytest.raises(AuthError, match="Insufficient permissions"):
+            await client.test_connection()
