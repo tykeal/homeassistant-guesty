@@ -206,14 +206,21 @@ the diagnostic entity category.
 
 **Decision**: When a listing that was previously tracked is no
 longer returned by the API, mark its entities as `unavailable`
-by keeping the listing ID in the coordinator data with a
-`disappeared` flag. Do not remove devices automatically. Log a
-warning. Users can manually remove stale devices.
+without changing the coordinator data shape. The coordinator
+data remains `dict[str, GuestyListing]` for currently returned
+listings, while disappeared listing IDs are tracked separately
+by the coordinator (e.g., a `set[str]` attribute) for
+availability decisions. Do not remove devices automatically.
+Log a warning. Users can manually remove stale devices.
 
-**Rationale**: Automatic device removal is disruptive — it breaks
-automations that reference the device. Marking as unavailable is
-the standard HA pattern for entities whose data source has gone
-away. The coordinator retains the last known data for reference.
+**Rationale**: Automatic device removal is disruptive — it
+breaks automations that reference the device. Marking as
+unavailable is the standard HA pattern for entities whose data
+source has gone away. Tracking disappeared IDs separately
+preserves the typed coordinator payload defined in R4 while
+still allowing entities for previously known listings to
+become unavailable and retain their last known device/entity
+context for reference.
 
 **Alternatives considered**:
 

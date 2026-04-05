@@ -11,8 +11,9 @@ Auto-generated from feature plans. Last updated: 2026-04-05
 - Python >=3.14.2 + Home Assistant >=2026.4.0, httpx >=0.28 (002-plan-listings)
 - HA config entry storage (via `hass.config_entries`) (002-plan-listings)
 
-- Python 3.13 + httpx (async HTTP), homeassistant (>=2026.2.0)
-  (001-auth-config-flow)
+- Python 3.13 + httpx (async HTTP),
+  homeassistant (>=2026.2.0)
+  (001-auth-config-flow, historical baseline)
 
 ## Project Structure
 
