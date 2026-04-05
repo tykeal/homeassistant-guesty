@@ -112,18 +112,22 @@ unrelated code, clear code review, and bisect-friendly debugging.
 
 ### IV. Licensing & Attribution Standards (NON-NEGOTIABLE)
 
-- Each new or modified source file MUST include correct SPDX license
-  and copyright headers.
-- Python files MUST use:
+- Each new or modified file MUST be REUSE-compliant, either by
+  including correct SPDX license and copyright headers in the file
+  itself or by ensuring the file is covered by an appropriate entry
+  in `REUSE.toml`.
+- Python files that use inline SPDX headers MUST use:
   ```
   # SPDX-FileCopyrightText: YYYY Andrew Grimberg <tykeal@bardicgrove.org>
   # SPDX-License-Identifier: Apache-2.0
   ```
-- Markup and XML files MUST use block comment equivalents.
+- Markup and XML files that use inline SPDX headers MUST use block
+  comment equivalents.
 - The project follows the REUSE specification. Every file MUST be
   covered by an SPDX header or an entry in `REUSE.toml`.
-- The reuse-tool pre-commit hook enforces compliance; files without
-  proper headers MUST NOT be committed.
+- The reuse-tool pre-commit hook enforces compliance; files that are
+  not properly covered by an SPDX header or `REUSE.toml` MUST NOT
+  be committed.
 
 **Rationale**: Proper attribution protects contributors and users,
 ensures clear licensing terms, and maintains compliance with open
@@ -268,9 +272,9 @@ security and privacy risk for property managers and their guests.
 
 - **Language & Runtime**: Python 3.x with full type annotation
   coverage enforced by mypy.
-- **Dependency Management**: Dependencies MUST be managed via `uv`
-  with a locked dependency file (`uv.lock`) committed to the
-  repository.
+- **Dependency Management**: Dependencies MUST be managed via `uv`.
+  Once the project has dependencies, a locked dependency file
+  (`uv.lock`) MUST be committed to the repository.
 - **Home Assistant Compatibility**: The integration MUST follow
   Home Assistant's custom component conventions and remain
   compatible with the targeted minimum HA version specified in
