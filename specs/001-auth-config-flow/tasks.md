@@ -42,7 +42,7 @@ codebase.
 
 **Purpose**: Create project directory structure and package scaffolding
 
-- [ ] T001 Create directory structure with `__init__.py` packages for
+- [X] T001 Create directory structure with `__init__.py` packages for
   `custom_components/guesty/`, `custom_components/guesty/api/`,
   `tests/`, and `tests/api/` per plan.md project structure
 
@@ -61,12 +61,12 @@ complete
 > **NOTE: Write these tests FIRST, ensure they FAIL before
 > implementation**
 
-- [ ] T002 [P] Write exception hierarchy tests in
+- [X] T002 [P] Write exception hierarchy tests in
   `tests/api/test_exceptions.py`: verify `GuestyApiError` base class,
   `GuestyAuthError`, `GuestyRateLimitError` (with `retry_after` and
   `reset_at` attrs), `GuestyConnectionError`, `GuestyResponseError`
   inheritance chain and string representation
-- [ ] T003 [P] Write `CachedToken` frozen dataclass and
+- [X] T003 [P] Write `CachedToken` frozen dataclass and
   `TokenStorage` protocol tests in `tests/api/test_models.py`: creation
   with valid data, frozen immutability, `expires_at` computation,
   `is_expired` with and without buffer, `to_dict`/`from_dict`
@@ -75,13 +75,13 @@ complete
 
 ### Implementation for Foundational
 
-- [ ] T004 [P] Implement exception hierarchy in
+- [X] T004 [P] Implement exception hierarchy in
   `custom_components/guesty/api/exceptions.py`: `GuestyApiError` base
   with `message` attr; `GuestyAuthError`; `GuestyRateLimitError` with
   `retry_after: float | None` and `reset_at: datetime | None`;
   `GuestyConnectionError`; `GuestyResponseError` — all with SPDX
   header, docstrings, type annotations
-- [ ] T005 [P] Implement API constants in
+- [X] T005 [P] Implement API constants in
   `custom_components/guesty/api/const.py`: `TOKEN_URL`
   (`https://open-api.guesty.com/oauth2/token`), `BASE_URL`
   (`https://open-api.guesty.com/v1`), `DEFAULT_TIMEOUT` (30s),
@@ -90,7 +90,7 @@ complete
   `INITIAL_BACKOFF` (1.0), `BACKOFF_MULTIPLIER` (2.0),
   `MAX_BACKOFF` (30.0), `GRANT_TYPE` (`client_credentials`),
   `SCOPE` (`open-api`)
-- [ ] T006 [P] Implement `CachedToken` frozen dataclass and
+- [X] T006 [P] Implement `CachedToken` frozen dataclass and
   `TokenStorage` protocol in
   `custom_components/guesty/api/models.py`: `CachedToken` with
   `access_token`, `token_type`, `expires_in`, `scope`, `issued_at`
@@ -98,11 +98,11 @@ complete
   properties; `to_dict()`/`from_dict()` serialization; `TokenStorage`
   protocol with `load_token`, `save_token`, `load_request_count`,
   `save_request_count` async methods per data-model.md
-- [ ] T007 Create public API surface exports in
+- [X] T007 Create public API surface exports in
   `custom_components/guesty/api/__init__.py`: export all exception
   classes, `CachedToken`, `TokenStorage`, and constants needed by
   consumers
-- [ ] T008 Create shared test fixtures in `tests/conftest.py`:
+- [X] T008 Create shared test fixtures in `tests/conftest.py`:
   `FakeTokenStorage` in-memory implementation of `TokenStorage`
   protocol, mock token response factory, common test constants
   (fake client ID/secret, token URL), `httpx.AsyncClient` fixture
