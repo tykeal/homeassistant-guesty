@@ -6,6 +6,8 @@ Public API surface for the Guesty API client package. All symbols
 exported here are part of the stable public interface.
 """
 
+from custom_components.guesty.api.auth import GuestyTokenManager
+from custom_components.guesty.api.client import GuestyApiClient
 from custom_components.guesty.api.const import (
     BASE_URL,
     TOKEN_URL,
@@ -26,10 +28,12 @@ __all__ = [
     "BASE_URL",
     "TOKEN_URL",
     "CachedToken",
+    "GuestyApiClient",
     "GuestyApiError",
     "GuestyAuthError",
     "GuestyConnectionError",
     "GuestyRateLimitError",
     "GuestyResponseError",
+    "GuestyTokenManager",
     "TokenStorage",
 ]
