@@ -19,10 +19,14 @@ phases (API Foundation → HA Shell → Config Flow → Testing) are mapped
 to user story phases where each story progressively enhances the
 codebase.
 
-## Format: `[ID] [P?] [Story] Description`
+## Format: `ID [P] [Story] Description`
 
-- **[P]**: Can run in parallel (different files, no dependencies)
-- **[Story]**: Which user story this task belongs to (e.g., US1, US2)
+- **ID**: Plain task identifier (e.g., `T001`, `T002`)
+- **[P]** *(optional)*: Can run in parallel (different files, no
+  dependencies on incomplete tasks)
+- **[Story]** *(optional)*: Which user story this task belongs to
+  (e.g., `[US1]`, `[US2]`). Present only in user story phases;
+  omitted for Setup, Foundational, and Polish phases.
 - Include exact file paths in descriptions
 
 ## Path Conventions
@@ -567,4 +571,5 @@ With multiple developers:
 - `api/` package has zero `homeassistant.*` imports (library-shim
   architecture)
 - All files require SPDX headers, docstrings, and type annotations
-- Use `prek` (not `pre-commit`) for pre-commit hook runs
+- Run pre-commit checks via `prek` (project-local alias) or
+  equivalently `uv run pre-commit run --all-files`
