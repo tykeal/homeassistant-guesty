@@ -428,19 +428,19 @@ error communication and secure logging
 **Purpose**: Integration tests spanning multiple stories, edge case
 coverage, success criteria verification, and documentation validation
 
-- [ ] T038 [P] Write end-to-end integration test (config flow → setup
+- [X] T038 [P] Write end-to-end integration test (config flow → setup
   entry → client operational → unload) in `tests/test_init.py`
-- [ ] T039 [P] Write edge case tests (clock drift token expiry,
+- [X] T039 [P] Write edge case tests (clock drift token expiry,
   malformed API responses, unexpected content types) in
   `tests/api/test_auth.py` and `tests/api/test_client.py`
-- [ ] T040 [P] Write 10-restart scenario test verifying SC-002 (token
+- [X] T040 [P] Write 10-restart scenario test verifying SC-002 (token
   reuse prevents exhausting 5-request limit) in
   `tests/test_token_persistence.py`
-- [ ] T041 Write SC-008 log sanitization audit across all test modules
+- [X] T041 Write SC-008 log sanitization audit across all test modules
   ensuring tokens and credentials never appear in any log level
-- [ ] T042 Validate `specs/001-auth-config-flow/quickstart.md`
+- [X] T042 Validate `specs/001-auth-config-flow/quickstart.md`
   development workflow steps against implemented code
-- [ ] T043 Final code review for docstring coverage, type annotation
+- [X] T043 Final code review for docstring coverage, type annotation
   completeness, and SPDX header compliance across all source and
   test files
 
