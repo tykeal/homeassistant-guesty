@@ -1,12 +1,20 @@
 # SPDX-FileCopyrightText: 2026 Andrew Grimberg <tykeal@bardicgrove.org>
 # SPDX-License-Identifier: Apache-2.0
 
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
 [project]
 name = "guesty"
-version = "0.0.0"
+dynamic = ["version"]
 description = "Guesty integration for Home Assistant"
 requires-python = ">=3.13.2"
 license = { text = "Apache-2.0" }
+
+dependencies = [
+    "httpx>=0.28",
+]
 
 [dependency-groups]
 dev = [
@@ -21,6 +29,13 @@ dev = [
     "respx>=0.22",
     "ruff>=0.15",
 ]
+
+[tool.hatch.version]
+source = "vcs"
+tag-pattern = "v(?P<version>.*)"
+
+[tool.hatch.build.targets.wheel]
+packages = ["custom_components"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

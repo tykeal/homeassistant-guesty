@@ -1079,8 +1079,10 @@ wheels = [
 
 [[package]]
 name = "guesty"
-version = "0.0.0"
-source = { virtual = "." }
+source = { editable = "." }
+dependencies = [
+    { name = "httpx" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -1097,6 +1099,7 @@ dev = [
 ]
 
 [package.metadata]
+requires-dist = [{ name = "httpx", specifier = ">=0.28" }]
 
 [package.metadata.requires-dev]
 dev = [
