@@ -41,12 +41,17 @@ class TestStepUser:
         assert result["step_id"] == "user"
 
     @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
         "custom_components.guesty.config_flow._validate_credentials",
         new_callable=AsyncMock,
     )
     async def test_successful_entry_creation(
         self,
         mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Valid credentials create a config entry."""
@@ -117,12 +122,17 @@ class TestStepUser:
         assert result["errors"] == {"base": "rate_limited"}
 
     @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
         "custom_components.guesty.config_flow._validate_credentials",
         new_callable=AsyncMock,
     )
     async def test_duplicate_detection(
         self,
         mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Duplicate client_id triggers already_configured abort."""
@@ -179,12 +189,17 @@ class TestStepReauth:
     """Tests for the reauth config flow step."""
 
     @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
         "custom_components.guesty.config_flow._validate_credentials",
         new_callable=AsyncMock,
     )
     async def test_reauth_form_displayed(
         self,
         mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Reauth step shows the confirmation form."""
@@ -208,12 +223,17 @@ class TestStepReauth:
         assert result["step_id"] == "reauth_confirm"
 
     @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
         "custom_components.guesty.config_flow._validate_credentials",
         new_callable=AsyncMock,
     )
     async def test_reauth_success(
         self,
         mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Successful reauth updates entry and aborts."""
