@@ -49,8 +49,8 @@ before coordinator, sensor, or entity work.
 
 ### Phase 1 Constants
 
-- [ ] T001 Add listing API constants (`LISTINGS_ENDPOINT`, `LISTINGS_PAGE_SIZE = 100`, `LISTINGS_FIELDS` tuple with all requested field names per contracts/guesty-listings-api.md) in custom_components/guesty/api/const.py
-- [ ] T002 [P] Add options flow constants (`DEFAULT_SCAN_INTERVAL = 15`, `MIN_SCAN_INTERVAL = 5`, `CONF_SCAN_INTERVAL = "scan_interval"`) in custom_components/guesty/const.py
+- [x] T001 Add listing API constants (`LISTINGS_ENDPOINT`, `LISTINGS_PAGE_SIZE = 100`, `LISTINGS_FIELDS` tuple with all requested field names per contracts/guesty-listings-api.md) in custom_components/guesty/api/const.py
+- [x] T002 [P] Add options flow constants (`DEFAULT_SCAN_INTERVAL = 15`, `MIN_SCAN_INTERVAL = 5`, `CONF_SCAN_INTERVAL = "scan_interval"`) in custom_components/guesty/const.py
 
 ### Phase 1 Tests (write first — must FAIL before implementation)
 
