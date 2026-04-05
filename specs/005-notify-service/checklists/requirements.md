@@ -8,7 +8,7 @@ SPDX-License-Identifier: Apache-2.0
 **Purpose**: Validate specification completeness and quality before
 proceeding to planning
 **Created**: 2025-07-24
-**Feature**: [specs/005-notify-service/spec.md](../spec.md)
+**Feature**: [spec.md](../spec.md)
 
 ## Content Quality
 
