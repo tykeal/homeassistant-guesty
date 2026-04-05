@@ -7,6 +7,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -243,3 +244,32 @@ class TestHATokenStorage:
         storage = HATokenStorage(hass, entry)
         result = await storage.load_token()
         assert result is None
+
+
+class TestLogSanitization:
+    """Tests ensuring credentials never appear in logs."""
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_no_secrets_in_logs(
+        self,
+        mock_test: AsyncMock,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Tokens and secrets never appear in log output."""
+        import logging
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        with caplog.at_level(logging.DEBUG):
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+
+        secret = entry.data[CONF_CLIENT_SECRET]
+        for record in caplog.records:
+            assert secret not in record.getMessage()
