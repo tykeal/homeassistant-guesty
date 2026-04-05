@@ -54,7 +54,7 @@ is complete. All messaging domain logic lives in `api/`.
 
 <!-- markdownlint-disable MD013 -->
 
-- [ ] T001 [P] Write unit tests for `Conversation` frozen
+- [X] T001 [P] Write unit tests for `Conversation` frozen
   dataclass (construction with valid fields, empty id raises
   `ValueError`, empty `reservation_id` raises `ValueError`, empty
   `available_channels` raises `ValueError`) and `MessageRequest`
@@ -66,20 +66,20 @@ is complete. All messaging domain logic lives in `api/`.
   (success result with `message_id`, failure result with
   `error_details` and `reservation_id`) in
   `tests/api/test_models.py`
-- [ ] T002 [P] Write unit tests for `GuestyMessageError`
+- [X] T002 [P] Write unit tests for `GuestyMessageError`
   (construction with message only, construction with
   `reservation_id` context, construction with
   `available_channels` context, inherits from `GuestyApiError`,
   attributes accessible after construction) in
   `tests/api/test_exceptions.py`
-- [ ] T003 Write unit tests for
+- [X] T003 Write unit tests for
   `GuestyMessagingClient.resolve_conversation` (successful
   resolution returns `Conversation` with correct fields parsed
   from API response, empty results raises `GuestyMessageError`
   with reservation context, API error propagation from
   `GuestyApiClient`) using respx-mocked HTTP in
   `tests/api/test_messaging.py`
-- [ ] T004 Write unit tests for
+- [X] T004 Write unit tests for
   `GuestyMessagingClient.send_message` (full success path:
   resolve conversation then send message returns
   `MessageDeliveryResult` with `success=True` and `message_id`,
@@ -88,7 +88,7 @@ is complete. All messaging domain logic lives in `api/`.
   `GuestyMessageError`, channel passed through to API request
   body module field) using respx-mocked HTTP in
   `tests/api/test_messaging.py`
-- [ ] T005 Write unit tests for
+- [X] T005 Write unit tests for
   `GuestyMessagingClient.render_template` (successful variable
   substitution with `str.format_map`, missing variable raises
   `KeyError` with variable name, template without placeholders
@@ -105,15 +105,15 @@ is complete. All messaging domain logic lives in `api/`.
 
 <!-- markdownlint-disable MD013 -->
 
-- [ ] T006 [P] Add messaging endpoint paths
+- [X] T006 [P] Add messaging endpoint paths
   (`CONVERSATIONS_PATH`, `SEND_MESSAGE_PATH`) and validation
   constants (`MAX_MESSAGE_LENGTH`, `KNOWN_CHANNEL_TYPES`
   frozenset) to `custom_components/guesty/api/const.py`
-- [ ] T007 [P] Implement `GuestyMessageError` subclassing
+- [X] T007 [P] Implement `GuestyMessageError` subclassing
   `GuestyApiError` with `reservation_id` (`str | None`) and
   `available_channels` (`tuple[str, ...] | None`) context
   attributes in `custom_components/guesty/api/exceptions.py`
-- [ ] T008 Implement `Conversation` (frozen dataclass: id,
+- [X] T008 Implement `Conversation` (frozen dataclass: id,
   `reservation_id`, `available_channels` with post-init
   non-empty validation), `MessageRequest` (frozen dataclass:
   `conversation_id`, body, channel with post-init validation
@@ -121,7 +121,7 @@ is complete. All messaging domain logic lives in `api/`.
   `MessageDeliveryResult` (frozen dataclass: success,
   `message_id`, `error_details`, `reservation_id`) in
   `custom_components/guesty/api/models.py`
-- [ ] T009 Implement `GuestyMessagingClient` class with
+- [X] T009 Implement `GuestyMessagingClient` class with
   constructor accepting `GuestyApiClient`, async
   `resolve_conversation(reservation_id)` that calls GET
   conversations endpoint with reservation filter and returns
@@ -131,7 +131,7 @@ is complete. All messaging domain logic lives in `api/`.
   `MessageDeliveryResult`), and `render_template(template,
   variables)` using `str.format_map` with strict missing-key
   detection in `custom_components/guesty/api/messaging.py`
-- [ ] T010 Update public API exports to include
+- [X] T010 Update public API exports to include
   `GuestyMessagingClient`, `GuestyMessageError`,
   `Conversation`, `MessageRequest`, and
   `MessageDeliveryResult` in
