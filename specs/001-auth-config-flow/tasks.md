@@ -42,7 +42,7 @@ codebase.
 
 **Purpose**: Create project directory structure and package scaffolding
 
-- [ ] T001 Create directory structure with `__init__.py` packages for
+- [X] T001 Create directory structure with `__init__.py` packages for
   `custom_components/guesty/`, `custom_components/guesty/api/`,
   `tests/`, and `tests/api/` per plan.md project structure
 
@@ -61,12 +61,12 @@ complete
 > **NOTE: Write these tests FIRST, ensure they FAIL before
 > implementation**
 
-- [ ] T002 [P] Write exception hierarchy tests in
+- [X] T002 [P] Write exception hierarchy tests in
   `tests/api/test_exceptions.py`: verify `GuestyApiError` base class,
   `GuestyAuthError`, `GuestyRateLimitError` (with `retry_after` and
   `reset_at` attrs), `GuestyConnectionError`, `GuestyResponseError`
   inheritance chain and string representation
-- [ ] T003 [P] Write `CachedToken` frozen dataclass and
+- [X] T003 [P] Write `CachedToken` frozen dataclass and
   `TokenStorage` protocol tests in `tests/api/test_models.py`: creation
   with valid data, frozen immutability, `expires_at` computation,
   `is_expired` with and without buffer, `to_dict`/`from_dict`
@@ -75,13 +75,13 @@ complete
 
 ### Implementation for Foundational
 
-- [ ] T004 [P] Implement exception hierarchy in
+- [X] T004 [P] Implement exception hierarchy in
   `custom_components/guesty/api/exceptions.py`: `GuestyApiError` base
   with `message` attr; `GuestyAuthError`; `GuestyRateLimitError` with
   `retry_after: float | None` and `reset_at: datetime | None`;
   `GuestyConnectionError`; `GuestyResponseError` — all with SPDX
   header, docstrings, type annotations
-- [ ] T005 [P] Implement API constants in
+- [X] T005 [P] Implement API constants in
   `custom_components/guesty/api/const.py`: `TOKEN_URL`
   (`https://open-api.guesty.com/oauth2/token`), `BASE_URL`
   (`https://open-api.guesty.com/v1`), `DEFAULT_TIMEOUT` (30s),
@@ -90,7 +90,7 @@ complete
   `INITIAL_BACKOFF` (1.0), `BACKOFF_MULTIPLIER` (2.0),
   `MAX_BACKOFF` (30.0), `GRANT_TYPE` (`client_credentials`),
   `SCOPE` (`open-api`)
-- [ ] T006 [P] Implement `CachedToken` frozen dataclass and
+- [X] T006 [P] Implement `CachedToken` frozen dataclass and
   `TokenStorage` protocol in
   `custom_components/guesty/api/models.py`: `CachedToken` with
   `access_token`, `token_type`, `expires_in`, `scope`, `issued_at`
@@ -98,11 +98,11 @@ complete
   properties; `to_dict()`/`from_dict()` serialization; `TokenStorage`
   protocol with `load_token`, `save_token`, `load_request_count`,
   `save_request_count` async methods per data-model.md
-- [ ] T007 Create public API surface exports in
+- [X] T007 Create public API surface exports in
   `custom_components/guesty/api/__init__.py`: export all exception
   classes, `CachedToken`, `TokenStorage`, and constants needed by
   consumers
-- [ ] T008 Create shared test fixtures in `tests/conftest.py`:
+- [X] T008 Create shared test fixtures in `tests/conftest.py`:
   `FakeTokenStorage` in-memory implementation of `TokenStorage`
   protocol, mock token response factory, common test constants
   (fake client ID/secret, token URL), `httpx.AsyncClient` fixture
@@ -129,27 +129,27 @@ entry and failure shows actionable error messages.
 > **NOTE: Write these tests FIRST, ensure they FAIL before
 > implementation**
 
-- [ ] T009 [P] [US1] Write token acquisition unit tests in
+- [X] T009 [P] [US1] Write token acquisition unit tests in
   `tests/api/test_auth.py`: successful token acquisition via
   `get_token()`, cached token reuse on second call, `GuestyAuthError`
   on 401 invalid credentials, `GuestyConnectionError` on network
   failure/timeout, `GuestyResponseError` on malformed token response
   (missing fields, invalid JSON) — all using `respx` to mock HTTP
   and `FakeTokenStorage`
-- [ ] T010 [P] [US1] Write API client `test_connection` unit tests in
+- [X] T010 [P] [US1] Write API client `test_connection` unit tests in
   `tests/api/test_client.py`: successful connection test (GET
   `/listings?limit=1&fields=_id`), `GuestyAuthError` propagation from
   token manager, `GuestyConnectionError` on network failure,
   authenticated request includes `Authorization: Bearer` header —
   using `respx` mocking
-- [ ] T011 [P] [US1] Write config flow `step_user` tests in
+- [X] T011 [P] [US1] Write config flow `step_user` tests in
   `tests/test_config_flow.py`: successful credential entry creates
   config entry, invalid credentials show `invalid_auth` error,
   connection failure shows `cannot_connect` error, duplicate
   `client_id` triggers `already_configured` abort, form fields
   include `client_id` and `client_secret` — using
   `pytest-homeassistant-custom-component` fixtures
-- [ ] T012 [P] [US1] Write `async_setup_entry` and
+- [X] T012 [P] [US1] Write `async_setup_entry` and
   `async_unload_entry` tests in `tests/test_init.py`: setup creates
   `httpx.AsyncClient`, `GuestyTokenManager`, and `GuestyApiClient`
   in `hass.data[DOMAIN]`; unload closes HTTP client and removes
@@ -158,7 +158,7 @@ entry and failure shows actionable error messages.
 
 ### Implementation for User Story 1
 
-- [ ] T013 [US1] Implement `GuestyTokenManager` basic token
+- [X] T013 [US1] Implement `GuestyTokenManager` basic token
   acquisition in `custom_components/guesty/api/auth.py`: constructor
   accepting `client_id`, `client_secret`, `http_client`
   (`httpx.AsyncClient`), and `storage` (`TokenStorage`);
@@ -167,30 +167,30 @@ entry and failure shows actionable error messages.
   `CachedToken` caching; maps HTTP 401 to `GuestyAuthError`, network
   errors to `GuestyConnectionError`, malformed responses to
   `GuestyResponseError`
-- [ ] T014 [US1] Implement `GuestyApiClient` with `test_connection`
+- [X] T014 [US1] Implement `GuestyApiClient` with `test_connection`
   in `custom_components/guesty/api/client.py`: constructor accepting
   `token_manager` (`GuestyTokenManager`), `http_client`
   (`httpx.AsyncClient`), and optional `base_url`; `test_connection()`
   that acquires token and GETs `/listings?limit=1&fields=_id`;
   `_request()` helper that adds `Authorization: Bearer` header;
   propagates all `GuestyApiError` subtypes
-- [ ] T015 [US1] Update public exports in
+- [X] T015 [US1] Update public exports in
   `custom_components/guesty/api/__init__.py` to include
   `GuestyTokenManager` and `GuestyApiClient`
-- [ ] T016 [P] [US1] Create integration manifest in
+- [X] T016 [P] [US1] Create integration manifest in
   `custom_components/guesty/manifest.json`: domain `guesty`,
   `config_flow: true`, `iot_class: cloud_polling`, HA version
   `2026.2.0`, requirements `httpx`, codeowners, documentation URL
-- [ ] T017 [P] [US1] Create HA-level constants in
+- [X] T017 [P] [US1] Create HA-level constants in
   `custom_components/guesty/const.py`: `DOMAIN = "guesty"`,
   `CONF_CLIENT_ID`, `CONF_CLIENT_SECRET`, `PLATFORMS: list[Platform]`
   (empty for MVP)
-- [ ] T018 [P] [US1] Create localized UI strings in
+- [X] T018 [P] [US1] Create localized UI strings in
   `custom_components/guesty/strings.json`: config flow step `user`
   title and field descriptions (`client_id`, `client_secret`), error
   messages (`invalid_auth`, `cannot_connect`, `unknown`,
   `rate_limited`), abort reasons (`already_configured`)
-- [ ] T019 [US1] Implement stub `HATokenStorage` and entry lifecycle
+- [X] T019 [US1] Implement stub `HATokenStorage` and entry lifecycle
   in `custom_components/guesty/__init__.py`: `HATokenStorage` class
   with stub `load_token`/`save_token`/`load_request_count`/
   `save_request_count` (return defaults); `async_setup_entry` creates
@@ -198,7 +198,7 @@ entry and failure shows actionable error messages.
   stores in `hass.data[DOMAIN][entry.entry_id]`, calls
   `test_connection()` (raises `ConfigEntryNotReady` on failure);
   `async_unload_entry` closes HTTP client, removes `hass.data` entry
-- [ ] T020 [US1] Implement config flow `step_user` in
+- [X] T020 [US1] Implement config flow `step_user` in
   `custom_components/guesty/config_flow.py`:
   `GuestyConfigFlow(ConfigFlow, domain=DOMAIN)` with
   `async_step_user` showing credential form, validating via temporary
@@ -230,14 +230,14 @@ making a new authentication request.
 > **NOTE: Write these tests FIRST, ensure they FAIL before
 > implementation**
 
-- [ ] T021 [P] [US2] Write `HATokenStorage` persistence tests in
+- [X] T021 [P] [US2] Write `HATokenStorage` persistence tests in
   `tests/test_init.py`: `save_token` persists `CachedToken` to
   `config_entry.data["cached_token"]` via
   `async_update_entry`; `load_token` deserializes stored token;
   `load_token` returns `None` for missing/corrupted data without
   raising; `save_request_count`/`load_request_count` round-trip
   correctly
-- [ ] T022 [US2] Write cross-restart token persistence tests in
+- [X] T022 [US2] Write cross-restart token persistence tests in
   `tests/test_token_persistence.py`: setup entry with persisted
   valid token reuses it (no HTTP POST to token endpoint); setup
   entry with expired persisted token acquires new one; setup entry
@@ -246,7 +246,7 @@ making a new authentication request.
 
 ### Implementation for User Story 2
 
-- [ ] T023 [US2] Implement full `HATokenStorage` load/save methods
+- [X] T023 [US2] Implement full `HATokenStorage` load/save methods
   in `custom_components/guesty/__init__.py`: `load_token` reads
   `config_entry.data["cached_token"]`, deserializes via
   `CachedToken.from_dict()`, returns `None` on missing/corrupted
@@ -255,7 +255,7 @@ making a new authentication request.
   `hass.config_entries.async_update_entry()`; `load_request_count`
   reads `token_request_count` and `token_window_start`;
   `save_request_count` persists count and window start
-- [ ] T024 [US2] Integrate startup token loading in
+- [X] T024 [US2] Integrate startup token loading in
   `async_setup_entry` in `custom_components/guesty/__init__.py`:
   after creating `GuestyTokenManager`, call storage `load_token()`
   and seed the token manager's in-memory cache if token is valid;
@@ -283,14 +283,14 @@ operating without interruption or duplicate token requests.
 > **NOTE: Write these tests FIRST, ensure they FAIL before
 > implementation**
 
-- [ ] T025 [P] [US3] Write proactive refresh and concurrent access
+- [X] T025 [P] [US3] Write proactive refresh and concurrent access
   tests in `tests/api/test_auth.py`: `get_token()` refreshes when
   token is within buffer of expiry; `get_token()` with `asyncio.Lock`
   double-checked locking — only one HTTP POST when 5 concurrent
   callers hit expired token; `invalidate()` clears cached token
   forcing next `get_token()` to re-acquire; refreshed token is saved
   via `TokenStorage.save_token()`
-- [ ] T026 [P] [US3] Write reactive 401 refresh and request retry
+- [X] T026 [P] [US3] Write reactive 401 refresh and request retry
   tests in `tests/api/test_client.py`: `_request()` on HTTP 401
   calls `token_manager.invalidate()`, re-acquires token, retries
   original request once; second consecutive 401 raises
@@ -299,14 +299,14 @@ operating without interruption or duplicate token requests.
 
 ### Implementation for User Story 3
 
-- [ ] T027 [US3] Add proactive refresh buffer, `asyncio.Lock`
+- [X] T027 [US3] Add proactive refresh buffer, `asyncio.Lock`
   double-checked locking, and `invalidate()` to
   `GuestyTokenManager` in `custom_components/guesty/api/auth.py`:
   `_refresh_buffer` constructor param (default 300s); `is_expired`
   check uses buffer; `_lock = asyncio.Lock()` with check → lock →
   re-check pattern per R-004; `invalidate()` clears `_cached_token`;
   persist token via `storage.save_token()` after acquisition
-- [ ] T028 [US3] Add 401 detection, token invalidation, and request
+- [X] T028 [US3] Add 401 detection, token invalidation, and request
   retry to `GuestyApiClient._request()` in
   `custom_components/guesty/api/client.py`: on HTTP 401 response,
   call `token_manager.invalidate()`, call `token_manager.get_token()`
@@ -333,14 +333,14 @@ and verify the 24h limit is enforced.
 > **NOTE: Write these tests FIRST, ensure they FAIL before
 > implementation**
 
-- [ ] T029 [P] [US4] Write 5-per-24h token rate limit tests in
+- [X] T029 [P] [US4] Write 5-per-24h token rate limit tests in
   `tests/api/test_auth.py`: requests 1-3 succeed silently; request
   4 logs warning and succeeds; request 5 logs warning and succeeds
   (last permitted); request 6 raises `GuestyRateLimitError` with
   `reset_at`; window reset after 24h allows new requests; counter
   persisted via `TokenStorage.save_request_count()`; counter loaded
   from storage on construction
-- [ ] T030 [P] [US4] Write HTTP 429 backoff and Retry-After tests
+- [X] T030 [P] [US4] Write HTTP 429 backoff and Retry-After tests
   in `tests/api/test_client.py`: 429 response triggers retry with
   exponential backoff (1s → 2s → 4s); `Retry-After` header overrides
   calculated backoff; max 3 retries then `GuestyRateLimitError`;
@@ -348,7 +348,7 @@ and verify the 24h limit is enforced.
 
 ### Implementation for User Story 4
 
-- [ ] T031 [US4] Add token request counter tracking with 24h rolling
+- [X] T031 [US4] Add token request counter tracking with 24h rolling
   window to `GuestyTokenManager` in
   `custom_components/guesty/api/auth.py`: `_request_count` and
   `_window_start` fields; `_check_rate_limit()` called before token
@@ -356,7 +356,7 @@ and verify the 24h limit is enforced.
   count 6+; window resets when 24h elapses; counter persisted via
   `storage.save_request_count()` after each token request; counter
   loaded via `storage.load_request_count()` during initialization
-- [ ] T032 [US4] Add exponential backoff with jitter on HTTP 429 to
+- [X] T032 [US4] Add exponential backoff with jitter on HTTP 429 to
   `GuestyApiClient._request()` in
   `custom_components/guesty/api/client.py`: max 3 retries (4 total
   attempts); initial backoff 1.0s, multiplier 2x, capped at 30s;
@@ -384,14 +384,14 @@ tokens/secrets.
 > **NOTE: Write these tests FIRST, ensure they FAIL before
 > implementation**
 
-- [ ] T033 [P] [US5] Write reauth flow tests in
+- [X] T033 [P] [US5] Write reauth flow tests in
   `tests/test_config_flow.py`: `async_step_reauth` shows reauth
   form pre-filled with `client_id`; `async_step_reauth_confirm`
   validates new credentials, updates `config_entry.data`, clears
   token cache on success; reauth with invalid new credentials shows
   `invalid_auth` error; reauth with connection failure shows
   `cannot_connect` error
-- [ ] T034 [P] [US5] Write reauth trigger and log sanitization tests
+- [X] T034 [P] [US5] Write reauth trigger and log sanitization tests
   in `tests/test_init.py`: persistent `GuestyAuthError` during
   operation triggers `config_entry.async_start_reauth()`; verify
   log output at all levels (DEBUG through CRITICAL) never contains
@@ -399,7 +399,7 @@ tokens/secrets.
 
 ### Implementation for User Story 5
 
-- [ ] T035 [US5] Add `async_step_reauth` and
+- [X] T035 [US5] Add `async_step_reauth` and
   `async_step_reauth_confirm` to config flow in
   `custom_components/guesty/config_flow.py`: reauth entry point
   stores existing `client_id`; reauth confirm form pre-fills
@@ -407,10 +407,10 @@ tokens/secrets.
   credentials via temporary token manager; on success updates
   `config_entry.data` and triggers reload; error mapping matches
   `step_user` pattern
-- [ ] T036 [P] [US5] Add reauth step strings and abort reasons to
+- [X] T036 [P] [US5] Add reauth step strings and abort reasons to
   `custom_components/guesty/strings.json`: reauth step title and
   field descriptions, `reauth_successful` abort reason
-- [ ] T037 [US5] Add reauth trigger on persistent auth failure and
+- [X] T037 [US5] Add reauth trigger on persistent auth failure and
   log sanitization audit in
   `custom_components/guesty/__init__.py`: catch `GuestyAuthError`
   from operations and call
@@ -428,19 +428,19 @@ error communication and secure logging
 **Purpose**: Integration tests spanning multiple stories, edge case
 coverage, success criteria verification, and documentation validation
 
-- [ ] T038 [P] Write end-to-end integration test (config flow → setup
+- [X] T038 [P] Write end-to-end integration test (config flow → setup
   entry → client operational → unload) in `tests/test_init.py`
-- [ ] T039 [P] Write edge case tests (clock drift token expiry,
+- [X] T039 [P] Write edge case tests (clock drift token expiry,
   malformed API responses, unexpected content types) in
   `tests/api/test_auth.py` and `tests/api/test_client.py`
-- [ ] T040 [P] Write 10-restart scenario test verifying SC-002 (token
+- [X] T040 [P] Write 10-restart scenario test verifying SC-002 (token
   reuse prevents exhausting 5-request limit) in
   `tests/test_token_persistence.py`
-- [ ] T041 Write SC-008 log sanitization audit across all test modules
+- [X] T041 Write SC-008 log sanitization audit across all test modules
   ensuring tokens and credentials never appear in any log level
-- [ ] T042 Validate `specs/001-auth-config-flow/quickstart.md`
+- [X] T042 Validate `specs/001-auth-config-flow/quickstart.md`
   development workflow steps against implemented code
-- [ ] T043 Final code review for docstring coverage, type annotation
+- [X] T043 Final code review for docstring coverage, type annotation
   completeness, and SPDX header compliance across all source and
   test files
 

@@ -1,0 +1,32 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "Connect to Guesty",
+                "description": "Enter your Guesty API credentials. You can find these in the Guesty Developer Dashboard.",
+                "data": {
+                    "client_id": "Client ID",
+                    "client_secret": "Client Secret"
+                }
+            },
+            "reauth_confirm": {
+                "title": "Re-authenticate Guesty",
+                "description": "Your Guesty credentials need to be updated. Please enter your new client secret.",
+                "data": {
+                    "client_id": "Client ID",
+                    "client_secret": "Client Secret"
+                }
+            }
+        },
+        "error": {
+            "invalid_auth": "Invalid credentials. Please check your client ID and secret.",
+            "cannot_connect": "Unable to connect to the Guesty API. Please check your network connection.",
+            "rate_limited": "Too many authentication attempts. Please try again later.",
+            "unknown": "An unexpected error occurred. Please try again."
+        },
+        "abort": {
+            "already_configured": "This Guesty account is already configured.",
+            "reauth_successful": "Re-authentication was successful."
+        }
+    }
+}
