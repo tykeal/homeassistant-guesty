@@ -55,14 +55,14 @@ before coordinator, sensor, or entity work.
 ### Phase 1 Tests (write first — must FAIL before implementation)
 
 - [ ] T003 Write unit tests for GuestyAddress model: test `from_api_dict` with full address dict, partial address (some fields None), None input returns None, empty dict returns None; test `formatted()` returns full when present, joins non-empty components with comma when full is absent, returns None when all components are empty in tests/api/test_models.py
-- [ ] T004 Write unit tests for GuestyListing model: test `from_api_dict` with complete API data dict, test status derivation (`listed=true` + `active=true` → `"active"`, `listed=false` → `"inactive"`, `active=false` → `"inactive"`), test title fallback chain (title → nickname → `"Unknown"`), test missing `_id` returns None, test timezone defaults to `"UTC"`, test tags coerced to tuple, test `custom_fields` values coerced to strings, test bedrooms/bathrooms None when absent in tests/api/test_models.py
+- [ ] T004 Write unit tests for GuestyListing model: test `from_api_dict` with complete API data dict, test status derivation (explicit archive indicator → `"archived"`, `listed=true` + `active=true` → `"active"`, `listed=false` → `"inactive"`, `active=false` → `"inactive"`), test title fallback chain (title → nickname → `"Unknown"`), test missing `_id` returns None, test timezone defaults to `"UTC"`, test tags coerced to tuple, test `custom_fields` values coerced to strings, test bedrooms/bathrooms None when absent in tests/api/test_models.py
 - [ ] T005 Write unit tests for GuestyListingsResponse model: test `from_api_dict` parses valid listings array, test filtering of None entries (listings with missing `_id`), test count/limit/skip fields preserved from API response in tests/api/test_models.py
 - [ ] T006 [P] Write unit tests for `GuestyApiClient.get_listings()`: test single-page fetch (results count < limit stops pagination), test multi-page pagination (two full pages + partial third page), test empty account returns empty list, test `GuestyAuthError` propagation, test `GuestyConnectionError` propagation, test `GuestyResponseError` on malformed JSON in tests/api/test_client.py
 
 ### Phase 1 Implementation
 
 - [ ] T007 Implement GuestyAddress frozen dataclass with fields (full, street, city, state, zipcode, country — all `str | None`), `from_api_dict(data: dict | None) → GuestyAddress | None` class method, and `formatted() → str | None` method per data-model.md in custom_components/guesty/api/models.py
-- [ ] T008 Implement GuestyListing frozen dataclass with all fields per data-model.md (id, title, nickname, status, address, property\_type, room\_type, bedrooms, bathrooms, timezone, check\_in\_time, check\_out\_time, tags, custom\_fields), `from_api_dict(data: dict) → GuestyListing | None` class method with status derivation from listed/active booleans and all default fallbacks in custom_components/guesty/api/models.py
+- [ ] T008 Implement GuestyListing frozen dataclass with all fields per data-model.md (id, title, nickname, status, address, property\_type, room\_type, bedrooms, bathrooms, timezone, check\_in\_time, check\_out\_time, tags, custom\_fields), `from_api_dict(data: dict) → GuestyListing | None` class method with status mapping that first checks for Guesty's explicit archive indicator field (`"archived"` status), then derives remaining statuses from listed/active booleans, with all default fallbacks in custom_components/guesty/api/models.py
 - [ ] T009 Implement GuestyListingsResponse frozen dataclass with fields (results, count, limit, skip), `from_api_dict(data: dict) → GuestyListingsResponse` class method that parses results via `GuestyListing.from_api_dict` and filters None entries in custom_components/guesty/api/models.py
 - [ ] T010 [P] Implement `async get_listings(self) → list[GuestyListing]` on GuestyApiClient with paginated fetch loop (`limit=LISTINGS_PAGE_SIZE`, skip-based offset, explicit `fields=` query parameter per API contract, stop condition: `len(results) < limit`) using existing `_request()` method in custom_components/guesty/api/client.py
 - [ ] T011 [P] Export GuestyAddress, GuestyListing, and GuestyListingsResponse from custom_components/guesty/api/\_\_init\_\_.py
@@ -186,18 +186,18 @@ each Guesty custom field as a dynamic diagnostic sensor per
 listing device.
 
 **Independent Test**: Add tags and custom fields to test listing
-data; verify tags sensor shows comma-separated list; verify each
+data; verify tags sensor exposes tags as a list; verify each
 custom field creates a separate diagnostic sensor with slugified
 key. Verify empty tags and no custom fields are handled
-gracefully (empty string and no extra sensors respectively).
+gracefully (empty list and no extra sensors respectively).
 
 ### Phase 5 Tests (write first — must FAIL before implementation)
 
-- [ ] T032 [US4] Write tests for tags sensor (`native_value` is comma-joined `listing.tags`, empty tags tuple returns empty string) and dynamic custom field sensors (one sensor per custom field per listing, `unique_id` includes `custom_{slugified_name}`, value is the custom field string value, `entity_category` is `EntityCategory.DIAGNOSTIC`, no custom field sensors created when `listing.custom_fields` is empty dict) in tests/test_sensor.py
+- [ ] T032 [US4] Write tests for tags sensor (`native_value` exposes `listing.tags` as a list per FR-006, empty tags tuple returns empty list) and dynamic custom field sensors (one sensor per custom field per listing, `unique_id` includes `custom_{slugified_name}`, value is the custom field string value, `entity_category` is `EntityCategory.DIAGNOSTIC`, no custom field sensors created when `listing.custom_fields` is empty dict) in tests/test_sensor.py
 
 ### Phase 5 Implementation
 
-- [ ] T033 [US4] Add tags `GuestyListingSensorEntityDescription` to `LISTING_SENSOR_DESCRIPTIONS` (`key="tags"`, `translation_key="listing_tags"`, `entity_category=EntityCategory.DIAGNOSTIC`, `value_fn=lambda l: ", ".join(l.tags)`) in custom_components/guesty/sensor.py
+- [ ] T033 [US4] Add tags `GuestyListingSensorEntityDescription` to `LISTING_SENSOR_DESCRIPTIONS` (`key="tags"`, `translation_key="listing_tags"`, `entity_category=EntityCategory.DIAGNOSTIC`, `value_fn` returning `listing.tags` as a list per FR-006 and spec US4) in custom_components/guesty/sensor.py
 - [ ] T034 [US4] Implement dynamic custom field sensor creation in `async_setup_entry`: after creating static description sensors, iterate each listing's `custom_fields` dict entries, create a `GuestyListingSensorEntityDescription` per field with `key=f"custom_{slugify(field_name)}"`, `translation_key="listing_custom_field"`, `entity_category=EntityCategory.DIAGNOSTIC`, and `value_fn` extracting that specific field value; add resulting entities via `async_add_entities` in custom_components/guesty/sensor.py
 - [ ] T035 [P] [US4] Add translations for `listing_tags` ("Tags") and `listing_custom_field` ("Custom field") sensors in custom_components/guesty/strings.json and custom_components/guesty/translations/en.json using the nested JSON structure under `entity` → `sensor`
 
@@ -213,7 +213,7 @@ handled gracefully.
 **Purpose**: Final validation, REUSE compliance, and quality
 gates across all phases
 
-- [ ] T036 Verify SPDX license headers on all new and modified files (custom_components/guesty/coordinator.py, custom_components/guesty/entity.py, custom_components/guesty/sensor.py, custom_components/guesty/translations/en.json, tests/test_coordinator.py, tests/test_sensor.py) per REUSE.toml and constitution
+- [ ] T036 Verify REUSE compliance on all new and modified files (SPDX headers where applicable, otherwise REUSE.toml annotations) for custom_components/guesty/coordinator.py, custom_components/guesty/entity.py, custom_components/guesty/sensor.py, custom_components/guesty/translations/en.json, tests/test_coordinator.py, and tests/test_sensor.py per REUSE.toml and constitution
 - [ ] T037 [P] Run full linting (`uv run ruff check custom_components/ tests/`), formatting (`uv run ruff format --check custom_components/ tests/`), type checking (`uv run mypy custom_components/`), and docstring coverage (`uv run interrogate custom_components/ -v`) with zero errors
 - [ ] T038 [P] Run complete test suite (`uv run pytest tests/ -x -q --cov=custom_components/guesty --cov-report=term-missing`) and verify no regressions from Feature 001 tests
 - [ ] T039 Execute quickstart.md developer workflow validation from specs/002-listings-properties/quickstart.md: verify test commands, linting commands, and architecture diagram accuracy against implemented code
