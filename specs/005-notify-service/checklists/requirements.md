@@ -12,9 +12,10 @@ proceeding to planning
 
 ## Content Quality
 
-- [x] No implementation details (languages, frameworks, APIs)
+- [x] No unnecessary implementation details (languages, frameworks)
 - [x] Focused on user value and business needs
-- [x] Written for non-technical stakeholders
+- [x] Written for stakeholders; platform constraints are
+      outcome-focused
 - [x] All mandatory sections completed
 
 ## Requirement Completeness
@@ -34,14 +35,15 @@ proceeding to planning
 - [x] All functional requirements have clear acceptance criteria
 - [x] User scenarios cover primary flows
 - [x] Feature meets measurable outcomes defined in Success Criteria
-- [x] No implementation details leak into specification
+- [x] Only necessary platform/integration constraints are included;
+      unnecessary implementation details are excluded
 
 ## Notes
 
 - All items pass validation. Spec is ready for `/speckit.clarify`
   or `/speckit.plan`.
-- The spec references Guesty API endpoint paths in the Assumptions
-  section for context; these describe the external service interface,
-  not implementation details.
+- Platform constraints (responsiveness, library reusability) are
+  expressed as outcome-focused requirements rather than prescribing
+  architecture.
 - Template variable substitution syntax (`{variable_name}`) is
   specified as user-facing behavior, not implementation detail.

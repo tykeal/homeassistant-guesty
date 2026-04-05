@@ -275,12 +275,12 @@ messages. Delivers production-grade reliability.
 - **FR-015**: The notify service MUST log message delivery attempts and
   outcomes at appropriate severity levels without including message
   content or guest personal information in log entries.
-- **FR-016**: All network operations in the notify service MUST be
-  asynchronous and MUST NOT block the Home Assistant event loop.
-- **FR-017**: The notify service API client layer (communication
-  endpoint wrappers) MUST remain independent of Home Assistant imports,
-  consistent with the library-extractable architecture of the
-  `api/` sub-package.
+- **FR-016**: The notify service MUST perform Guesty network
+  communication without degrading Home Assistant responsiveness during
+  service calls, automations, or scripts.
+- **FR-017**: The Guesty messaging client functionality used by the
+  notify service MUST be reusable outside Home Assistant without
+  changing its externally observable behavior.
 - **FR-018**: The notify service MUST validate message parameters
   (reservation ID format, message body length, channel name) before
   making API requests to Guesty.
@@ -360,9 +360,9 @@ messages. Delivers production-grade reliability.
 - Rate limit handling leverages the existing rate limit infrastructure
   from Feature 001's API client rather than implementing separate rate
   limit logic.
-- The `api/` sub-package remains library-extractable with zero Home
-  Assistant imports; Guesty communication endpoint wrappers live in
-  this package while HA-specific notify platform code lives outside it.
+- The Guesty messaging client functionality used by the notify service
+  is designed to be reusable outside Home Assistant, consistent with
+  the project's library-extractable client architecture.
 - Only outbound messaging (host to guest) is in scope. Inbound message
   handling (receiving guest replies) is out of scope for this feature.
 - This feature does not depend on Feature 002 (listings) or Feature
