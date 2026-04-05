@@ -17,7 +17,7 @@ SPDX-License-Identifier: Apache-2.0
 ## Project Setup
 
 ```bash
-# Clone and enter the repository
+# Enter the repository
 cd /path/to/guesty
 
 # Install dependencies (once pyproject.toml exists)
@@ -58,7 +58,10 @@ uv run mypy custom_components/ tests/
 uv run interrogate -v custom_components/
 
 # Run all pre-commit hooks
+# Run all pre-commit hooks (prek is a project-local alias)
 prek
+# Or equivalently:
+# uv run pre-commit run --all-files
 ```
 
 ## Architecture Overview

@@ -20,7 +20,7 @@ grant type.
 **Rationale**: This is the documented Guesty Open API authentication
 mechanism. The rentalsync-bridge project successfully uses this same
 endpoint and grant type in production. The token endpoint returns an
-`access_token` with a 24-hour lifetime and `openapi` scope.
+`access_token` with a 24-hour lifetime and `open-api` scope.
 
 **Alternatives considered**:
 
@@ -37,8 +37,10 @@ endpoint and grant type in production. The token endpoint returns an
 POST https://open-api.guesty.com/oauth2/token
 Content-Type: application/x-www-form-urlencoded
 
-grant_type=client_credentials&scope=open-api\
-&client_id=<ID>&client_secret=<SECRET>
+grant_type=client_credentials
+&scope=open-api
+&client_id=<ID>
+&client_secret=<SECRET>
 ```
 
 **Token endpoint response**:
@@ -98,8 +100,13 @@ approach avoids external files or databases.
 {
     "client_id": "...",
     "client_secret": "...",
-    "access_token": "...",
-    "token_expires_at": "2025-07-19T12:00:00+00:00",
+    "cached_token": {
+        "access_token": "...",
+        "token_type": "Bearer",
+        "expires_in": 86400,
+        "scope": "open-api",
+        "issued_at": "2025-07-18T12:00:00+00:00",
+    },
     "token_request_count": 1,
     "token_window_start": "2025-07-18T12:00:00+00:00"
 }

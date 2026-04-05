@@ -33,8 +33,8 @@ backed by HA config entry storage.
 
 **Language/Version**: Python 3.13
 **Primary Dependencies**: httpx (async HTTP), homeassistant (>=2026.2.0)
-**Storage**: HA config entry storage (`hass.data`, `config_entry.data`)
-for token persistence
+**Storage**: `config_entry.data` for persisted token state; `hass.data`
+for runtime in-memory objects (client instances)
 **Testing**: pytest with pytest-homeassistant-custom-component, respx
 (httpx mocking)
 **Target Platform**: Home Assistant custom component (HACS-installable)
