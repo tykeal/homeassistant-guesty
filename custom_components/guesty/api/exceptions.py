@@ -61,3 +61,29 @@ class GuestyConnectionError(GuestyApiError):
 
 class GuestyResponseError(GuestyApiError):
     """Unexpected response format: missing fields, invalid JSON."""
+
+
+class GuestyMessageError(GuestyApiError):
+    """Messaging delivery failure with reservation context.
+
+    Attributes:
+        reservation_id: The targeted reservation for context.
+        available_channels: Available channels for channel errors.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        reservation_id: str | None = None,
+        available_channels: tuple[str, ...] | None = None,
+    ) -> None:
+        """Initialize GuestyMessageError.
+
+        Args:
+            message: Human-readable error description.
+            reservation_id: The targeted reservation for context.
+            available_channels: Available channels for errors.
+        """
+        super().__init__(message)
+        self.reservation_id = reservation_id
+        self.available_channels = available_channels
