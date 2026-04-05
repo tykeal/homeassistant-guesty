@@ -200,7 +200,7 @@ messages without blocking.
   `async_send_message(message, title)` that extracts
   `reservation_id`/channel/`template_variables` from service
   call data and delegates to `GuestyMessagingClient`, entity
-  attributes (has entity name, name, `unique_id`,
+  attributes (`has_entity_name`, `name`, `unique_id`,
   `device_info`), and `async_setup_entry` platform function in
   `custom_components/guesty/notify.py`
 - [ ] T016 [US1] Add messaging client mock fixture and notify
@@ -395,13 +395,14 @@ success criteria validated. Feature complete.
   (api/exceptions.py) — different files
 - T008 (api/models.py) after T006 (references constants)
 - T009 (api/messaging.py) after T006, T007, T008
-- T010 (api/init) after T007, T008, T009
+- T010 (`api/__init__.py`) after T007, T008, T009
 
 **Phase 2**:
 
 - T011, T012 — sequential in `test_notify.py`
 - T013 (const.py) parallel with other Phase 2 tasks
-- T014 (init) then T015 (notify.py) then T016 (conftest.py)
+- T014 (`custom_components/guesty/__init__.py`) then T015
+  (notify.py) then T016 (conftest.py)
 
 ---
 
