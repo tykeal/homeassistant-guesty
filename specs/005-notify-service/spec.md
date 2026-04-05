@@ -308,9 +308,10 @@ messages. Delivers production-grade reliability.
 ### Measurable Outcomes
 
 - **SC-001**: Users can send a message to a guest by reservation ID
-  in under 10 seconds from service call to delivery confirmation.
+  in under 10 seconds from service call to Guesty acceptance
+  confirmation.
 - **SC-002**: 100% of notify service calls with valid parameters
-  result in the message being submitted to Guesty for delivery.
+  result in the message being accepted by Guesty for processing.
 - **SC-003**: The notify service integrates with HA automations with
   zero additional configuration beyond the standard service call
   syntax.
@@ -343,10 +344,10 @@ messages. Delivers production-grade reliability.
 - Guesty's communication API uses a conversation-based model where
   each reservation has an associated conversation with one or more
   available messaging channels.
-- The Guesty Open API communication endpoints
-  (`/v1/communication`, `/v1/guests-communication/conversations/`)
-  accept messages targeted by conversation ID, which can be resolved
-  from a reservation ID.
+- Guesty provides communication capabilities that allow the
+  integration to resolve the appropriate conversation or messaging
+  context from a reservation ID and send outbound messages through
+  that resolved context.
 - Available messaging channels (email, SMS, Airbnb, Booking.com,
   VRBO, etc.) are determined by the booking source and guest contact
   information in Guesty; the integration does not control which
