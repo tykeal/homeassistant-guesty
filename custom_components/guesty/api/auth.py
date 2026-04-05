@@ -275,6 +275,7 @@ class GuestyTokenManager:
                 self._window_start = now
 
         self._request_count += 1
+        assert self._window_start is not None
         await self._storage.save_request_count(
             self._request_count,
             self._window_start,

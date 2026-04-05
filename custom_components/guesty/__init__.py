@@ -109,6 +109,7 @@ class HATokenStorage:
                 window = datetime.fromisoformat(window_str)
             except (ValueError, TypeError):
                 _LOGGER.warning("Invalid token_window_start, resetting")
+                count = 0
         return (count, window)
 
     async def save_request_count(
@@ -221,8 +222,9 @@ async def async_unload_entry(
     )
 
     if unload_ok:
-        data = hass.data[DOMAIN].pop(entry.entry_id)
-        http_client: httpx.AsyncClient = data["http_client"]
-        await http_client.aclose()
+        data = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+        if data is not None:
+            http_client: httpx.AsyncClient = data["http_client"]
+            await http_client.aclose()
 
     return unload_ok

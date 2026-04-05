@@ -259,7 +259,7 @@ class TestRateLimitBackoff:
 
     @respx.mock
     async def test_429_max_retries_no_retry_after(self) -> None:
-        """Max retries with no Retry-After returns None."""
+        """Max retries with no Retry-After raises with None."""
         from unittest.mock import patch as _patch
 
         from custom_components.guesty.api.exceptions import (

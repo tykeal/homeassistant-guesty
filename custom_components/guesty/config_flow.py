@@ -11,28 +11,25 @@ from typing import Any
 import httpx
 import voluptuous as vol
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
-from homeassistant.const import CONF_CLIENT_ID, CONF_CLIENT_SECRET
 
 from custom_components.guesty.api.auth import GuestyTokenManager
 from custom_components.guesty.api.client import GuestyApiClient
+from custom_components.guesty.api.const import DEFAULT_TIMEOUT
 from custom_components.guesty.api.exceptions import (
     GuestyAuthError,
     GuestyConnectionError,
     GuestyRateLimitError,
 )
 from custom_components.guesty.api.models import CachedToken
-from custom_components.guesty.const import DOMAIN
+from custom_components.guesty.const import (
+    CONF_CLIENT_ID,
+    CONF_CLIENT_SECRET,
+    DOMAIN,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 STEP_USER_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_CLIENT_ID): str,
-        vol.Required(CONF_CLIENT_SECRET): str,
-    }
-)
-
-STEP_REAUTH_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_CLIENT_ID): str,
         vol.Required(CONF_CLIENT_SECRET): str,
@@ -98,7 +95,7 @@ async def _validate_credentials(
         GuestyConnectionError: If the API is unreachable.
         GuestyRateLimitError: If rate limited.
     """
-    async with httpx.AsyncClient() as http_client:
+    async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as http_client:
         storage = _NullStorage()
         token_manager = GuestyTokenManager(
             client_id=client_id,
@@ -237,8 +234,12 @@ class GuestyConfigFlow(ConfigFlow, domain=DOMAIN):
                     self.hass.config_entries.async_update_entry(
                         entry,
                         data={
+                            **entry.data,
                             CONF_CLIENT_ID: client_id,
                             CONF_CLIENT_SECRET: client_secret,
+                            "cached_token": None,
+                            "token_request_count": 0,
+                            "token_window_start": None,
                         },
                     )
                     await self.hass.config_entries.async_reload(

@@ -297,13 +297,15 @@ class TestHATokenStorageCorruptedCounters:
             entry,
             data={
                 **entry.data,
+                "token_request_count": 3,
                 "token_window_start": "not-a-date",
             },
         )
 
         storage = HATokenStorage(hass, entry)
-        _, window = await storage.load_request_count()
+        count, window = await storage.load_request_count()
         assert window is None
+        assert count == 0
 
 
 class TestLogSanitization:
