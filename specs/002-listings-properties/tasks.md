@@ -19,10 +19,13 @@ Red-Green-Refactor cycle is strictly enforced.
 US2 combined (both P1, deeply coupled via the coordinator). Each
 phase becomes its own PR during implementation.
 
-## Format: `[ID] [P?] [Story] Description`
+## Format: `T### [P] [US#] Description`
 
-- **`[P]`**: Can run in parallel (different files, no deps)
-- **`[Story]`**: Which user story (US1–US5) from spec.md
+- **`T###`**: Sequential task ID (e.g., `T001`)
+- **`[P]`**: Optional — task can run in parallel (different
+  files, no deps)
+- **`[US#]`**: User story tag from spec.md (`[US1]`–`[US5]`);
+  omitted for setup/foundational/polish phases
 - Exact file paths included in all descriptions
 
 ## Path Conventions
@@ -105,8 +108,8 @@ devices cannot exist without it fetching data.
 - [ ] T020 [US2] Add `GuestyOptionsFlowHandler(OptionsFlow)` with `async_step_init` presenting `vol.Schema({vol.Required(CONF_SCAN_INTERVAL, default=...): vol.All(vol.Coerce(int), vol.Range(min=MIN_SCAN_INTERVAL))})` and saving to `entry.options`; set `OPTIONS_FLOW = GuestyOptionsFlowHandler` on GuestyConfigFlow in custom_components/guesty/config_flow.py
 - [ ] T021 [US1] Update PLATFORMS list to `[Platform.SENSOR]` in custom_components/guesty/const.py
 - [ ] T022 [US1] Update `async_setup_entry` to create ListingsCoordinator with api\_client from entry data, call `await coordinator.async_config_entry_first_refresh()`, store coordinator in `hass.data` under the entry, forward PLATFORMS; update `async_unload_entry` to unload platforms then clean up; add `entry.async_on_unload(entry.add_update_listener(...))` with listener that updates `coordinator.update_interval` on options change in custom_components/guesty/\_\_init\_\_.py
-- [ ] T023 [US1] Add translation keys for `listing_status` sensor entity (`entity.sensor.listing_status.name = "Listing status"`) and options flow (`options.step.init.data.scan_interval` label, `options.step.init.data_description.scan_interval` description) in custom_components/guesty/strings.json
-- [ ] T024 [P] [US1] Create custom_components/guesty/translations/en.json mirroring entity and options sections from strings.json for English locale
+- [ ] T023 [US1] Add translations in custom_components/guesty/strings.json using the nested JSON object structure: under `entity` → `sensor` → `listing_status` → `name` set `"Listing status"`, and under `options` → `step` → `init` → `data` → `scan_interval` and `options` → `step` → `init` → `data_description` → `scan_interval` add the options flow label and description
+- [ ] T024 [P] [US1] Create custom_components/guesty/translations/en.json for the English locale, mirroring the same nested `entity` and `options` object structure from strings.json
 
 **Checkpoint**: Integration creates one device per Guesty listing
 with a status sensor. Data refreshes automatically at configurable
@@ -135,7 +138,7 @@ fields show `None` state rather than causing errors.
 ### Phase 3 Implementation
 
 - [ ] T026 [US3] Add 11 `GuestyListingSensorEntityDescription` entries to `LISTING_SENSOR_DESCRIPTIONS` tuple: name (`key="name"`, `translation_key="listing_name"`), nickname, address (`value_fn` calls `listing.address.formatted()` with None guard), property\_type, room\_type, bedrooms, bathrooms, timezone, check\_in\_time, check\_out\_time — all with `entity_category=EntityCategory.DIAGNOSTIC` and appropriate `value_fn` callables per data-model.md sensor mapping in custom_components/guesty/sensor.py
-- [ ] T027 [P] [US3] Add translation keys for all 11 detail sensors (`listing_name`, `listing_nickname`, `listing_address`, `listing_property_type`, `listing_room_type`, `listing_bedrooms`, `listing_bathrooms`, `listing_timezone`, `listing_check_in_time`, `listing_check_out_time`) under `entity.sensor` in custom_components/guesty/strings.json and custom_components/guesty/translations/en.json
+- [ ] T027 [P] [US3] Add translations for all 11 detail sensors in custom_components/guesty/strings.json and custom_components/guesty/translations/en.json using the nested JSON structure: under `entity` → `sensor`, add `listing_name`, `listing_nickname`, `listing_address`, `listing_property_type`, `listing_room_type`, `listing_bedrooms`, `listing_bathrooms`, `listing_timezone`, `listing_check_in_time`, `listing_check_out_time` each with a `name` key
 
 **Checkpoint**: Each listing device now exposes 12 sensors (1
 status + 11 detail). Detail sensors use diagnostic entity
@@ -193,7 +196,7 @@ gracefully (empty string and no extra sensors respectively).
 
 - [ ] T033 [US4] Add tags `GuestyListingSensorEntityDescription` to `LISTING_SENSOR_DESCRIPTIONS` (`key="tags"`, `translation_key="listing_tags"`, `entity_category=EntityCategory.DIAGNOSTIC`, `value_fn=lambda l: ", ".join(l.tags)`) in custom_components/guesty/sensor.py
 - [ ] T034 [US4] Implement dynamic custom field sensor creation in `async_setup_entry`: after creating static description sensors, iterate each listing's `custom_fields` dict entries, create a `GuestyListingSensorEntityDescription` per field with `key=f"custom_{slugify(field_name)}"`, `translation_key="listing_custom_field"`, `entity_category=EntityCategory.DIAGNOSTIC`, and `value_fn` extracting that specific field value; add resulting entities via `async_add_entities` in custom_components/guesty/sensor.py
-- [ ] T035 [P] [US4] Add translation keys for `listing_tags` ("Tags") and `listing_custom_field` ("Custom field") sensors under `entity.sensor` in custom_components/guesty/strings.json and custom_components/guesty/translations/en.json
+- [ ] T035 [P] [US4] Add translations for `listing_tags` ("Tags") and `listing_custom_field` ("Custom field") sensors in custom_components/guesty/strings.json and custom_components/guesty/translations/en.json using the nested JSON structure under `entity` → `sensor`
 
 **Checkpoint**: Listing devices now expose tags sensor and
 per-field custom field sensors. All dynamic sensors use
@@ -338,7 +341,7 @@ Complete Phase 1 + Phase 2 for minimum viable feature:
 ## Notes
 
 - `[P]` tasks can run in parallel (different files, no deps)
-- `[Story]` label maps tasks to user stories for traceability
+- `[US#]` label maps tasks to user stories for traceability
 - US1 and US2 are combined in Phase 2 (both P1, deeply coupled)
 - Each phase is independently deployable as a separate PR
 - TDD is mandatory — write failing tests before implementation
