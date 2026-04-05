@@ -19,10 +19,11 @@ with plan.md. User stories are mapped to the phase where their
 functionality is delivered. Phase boundaries align with
 independently deployable increments.
 
-## Format: `[ID] [P?] [Story] Description`
+## Format: `[ID] [P?] [Story?] Description`
 
 - **\[P]**: Can run in parallel (different files, no deps)
-- **\[Story]**: Which user story this task belongs to (US1–US5)
+- **\[Story?]**: Optional; used only for tasks in user-story
+  phases to indicate which user story (US1–US5)
 - Include exact file paths in descriptions
 
 ## Path Conventions
@@ -154,9 +155,12 @@ scripts.
 
 **Independent Test**: Call `notify.send_message` targeting the
 Guesty notify entity with a reservation ID and message body.
-Verify the messaging client receives the correct parameters and
-returns success. Verify HA automation service calls dispatch
-messages without blocking.
+Per research.md R-005, the modern `NotifyEntity` pattern uses
+`notify.send_message` with entity\_id targeting (not the legacy
+`notify.guesty` service name from FR-001). Verify the messaging
+client receives the correct parameters and returns success.
+Verify HA automation service calls dispatch messages without
+blocking.
 
 ### Phase 2 Tests (Red) — Write First, Verify They FAIL
 
@@ -306,18 +310,26 @@ verification.
   call followed by 200 success on retry; verify message
   eventually delivered; verify retry used exponential backoff
   via `GuestyApiClient` in `tests/test_notify.py`
-- [ ] T023 [US5] Write transient network failure tests: mock
-  network error (connection refused) and verify
-  `GuestyConnectionError` is raised; mock persistent network
-  failure and verify `GuestyConnectionError` is raised; verify
-  error includes reservation context in
-  `tests/test_notify.py`
+- [ ] T023 [US5] Write transient failure retry integration
+  tests: mock transient network error (connection refused or
+  timeout) on initial send-message call followed by 200 success
+  on retry; verify message eventually delivered and retry used
+  exponential backoff via `GuestyApiClient`; mock persistent
+  network failure and verify `GuestyConnectionError` is raised
+  only after retries are exhausted; verify error includes
+  reservation context in `tests/test_notify.py`
 - [ ] T024 [US5] Write error detail quality tests: invalid
   reservation ID (not found in Guesty) returns error with
   reservation ID in message; delivery failure after retries
   includes failure reason and targeted `reservation_id`; errors
   logged at appropriate severity (warning for retries, error
   for final failure) in `tests/test_notify.py`
+- [ ] T025 [US5] Implement transient failure retry with backoff
+  in `GuestyApiClient`: retry connect/timeout errors and
+  transient 5xx responses with bounded exponential backoff,
+  preserve existing `Retry-After` handling for 429 responses,
+  raise `GuestyConnectionError` only after retry exhaustion in
+  `custom_components/guesty/api/client.py`
 
 <!-- markdownlint-enable MD013 -->
 
@@ -325,18 +337,18 @@ verification.
 
 <!-- markdownlint-disable MD013 -->
 
-- [ ] T025 Write security tests verifying no message body
+- [ ] T026 Write security tests verifying no message body
   content, guest PII, or OAuth tokens appear in log output at
   any log level (DEBUG through CRITICAL) during successful
   send, failed send, and retry scenarios using caplog fixture
   in `tests/test_notify.py`
-- [ ] T026 Write success criteria validation tests: SC-005
+- [ ] T027 Write success criteria validation tests: SC-005
   invalid service calls (missing `reservation_id`, empty body)
   produce errors synchronously; SC-009 all test scenarios run
   without live Guesty connection (verify respx mock coverage);
   SC-010 template substitution resolves all provided variables
   and rejects missing variables in `tests/test_notify.py`
-- [ ] T027 Run quickstart.md validation: verify all code
+- [ ] T028 Run quickstart.md validation: verify all code
   examples in specs/005-notify-service/quickstart.md compile
   and execute correctly against mocked API fixtures; verify
   documented error handling patterns work as described
@@ -455,7 +467,7 @@ Task: "Updated exports in api/__init__.py"                   T010
 1. Phase 1 tests (T001–T005) then impl (T006–T010) — PR 1
 2. Phase 2 tests (T011–T012) then impl (T013–T016) — PR 2
 3. Phase 3 tests (T017–T021) — PR 3
-4. Phase 4 tests + validation (T022–T027) — PR 4
+4. Phase 4 tests + validation (T022–T028) — PR 4
 
 ---
 
