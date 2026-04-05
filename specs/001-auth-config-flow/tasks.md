@@ -230,14 +230,14 @@ making a new authentication request.
 > **NOTE: Write these tests FIRST, ensure they FAIL before
 > implementation**
 
-- [ ] T021 [P] [US2] Write `HATokenStorage` persistence tests in
+- [X] T021 [P] [US2] Write `HATokenStorage` persistence tests in
   `tests/test_init.py`: `save_token` persists `CachedToken` to
   `config_entry.data["cached_token"]` via
   `async_update_entry`; `load_token` deserializes stored token;
   `load_token` returns `None` for missing/corrupted data without
   raising; `save_request_count`/`load_request_count` round-trip
   correctly
-- [ ] T022 [US2] Write cross-restart token persistence tests in
+- [X] T022 [US2] Write cross-restart token persistence tests in
   `tests/test_token_persistence.py`: setup entry with persisted
   valid token reuses it (no HTTP POST to token endpoint); setup
   entry with expired persisted token acquires new one; setup entry
@@ -246,7 +246,7 @@ making a new authentication request.
 
 ### Implementation for User Story 2
 
-- [ ] T023 [US2] Implement full `HATokenStorage` load/save methods
+- [X] T023 [US2] Implement full `HATokenStorage` load/save methods
   in `custom_components/guesty/__init__.py`: `load_token` reads
   `config_entry.data["cached_token"]`, deserializes via
   `CachedToken.from_dict()`, returns `None` on missing/corrupted
@@ -255,7 +255,7 @@ making a new authentication request.
   `hass.config_entries.async_update_entry()`; `load_request_count`
   reads `token_request_count` and `token_window_start`;
   `save_request_count` persists count and window start
-- [ ] T024 [US2] Integrate startup token loading in
+- [X] T024 [US2] Integrate startup token loading in
   `async_setup_entry` in `custom_components/guesty/__init__.py`:
   after creating `GuestyTokenManager`, call storage `load_token()`
   and seed the token manager's in-memory cache if token is valid;
