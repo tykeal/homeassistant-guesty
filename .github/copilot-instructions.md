@@ -5,9 +5,11 @@ SPDX-License-Identifier: Apache-2.0
 
 # Guesty Integration Development Guidelines
 
-Auto-generated from feature plans. Last updated: 2025-07-18
+Auto-generated from feature plans. Last updated: 2026-04-05
 
 ## Active Technologies
+- Python >=3.14.2 + Home Assistant >=2026.4.0, httpx >=0.28 (002-plan-listings)
+- HA config entry storage (via `hass.config_entries`) (002-plan-listings)
 
 - Python 3.13 + httpx (async HTTP), homeassistant (>=2026.2.0)
   (001-auth-config-flow)
@@ -41,6 +43,7 @@ Python 3.13: Full type annotations, 100% docstring coverage,
 async/await patterns, frozen dataclasses for DTOs
 
 ## Recent Changes
+- 002-plan-listings: Added Python >=3.14.2 + Home Assistant >=2026.4.0, httpx >=0.28
 
 - 001-auth-config-flow: Added Python 3.13 + httpx, homeassistant
 
