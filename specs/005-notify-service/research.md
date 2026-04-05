@@ -117,8 +117,8 @@ phased out.
 **Decision**: Use the `notify.send_message` service call with
 `message` as the primary payload. Pass `reservation_id`, `channel`,
 and `template_variables` via the service call data. The `title`
-parameter is accepted but not used by Guesty's messaging API (logged
-and discarded).
+parameter is accepted for Home Assistant compatibility but ignored,
+since Guesty's messaging API does not use it.
 
 **Rationale**: The `NotifyEntity.async_send_message()` method
 receives `message` and `title` as parameters. Additional data

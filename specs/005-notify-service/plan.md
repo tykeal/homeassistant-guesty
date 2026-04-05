@@ -48,8 +48,8 @@ new test modules; extends existing api/ package with messaging client
 
 ## Constitution Check
 
-*GATE: Must pass before Phase 0 research. Re-check after Phase 1
-design.*
+*GATE: Must pass before research. Re-check after Phase 1
+design. Phase 0 (research) is captured in research.md.*
 
 - **I. Code Quality & Testing**: ✅ PASS — TDD enforced
   within each phase; 100% docstring coverage; full type

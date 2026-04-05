@@ -89,10 +89,10 @@ uv run mypy custom_components/
 # Run docstring coverage check
 uv run interrogate custom_components/ -v
 
-# Run all pre-commit hooks (prek is a project-local alias)
+# Run all pre-commit hooks
+# prek is a developer-local alias (not in repo);
+# canonical: uv run pre-commit run --all-files
 prek
-
-# Alternative: uv run pre-commit run --all-files
 ```
 
 ## Key Patterns
