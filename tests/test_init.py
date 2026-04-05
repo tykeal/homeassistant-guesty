@@ -4,16 +4,19 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.guesty import HATokenStorage
 from custom_components.guesty.api.exceptions import (
     GuestyAuthError,
     GuestyConnectionError,
 )
+from custom_components.guesty.api.models import CachedToken
 from custom_components.guesty.const import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
@@ -135,3 +138,108 @@ class TestAsyncUnloadEntry:
 
         assert entry.state is ConfigEntryState.NOT_LOADED
         assert entry.entry_id not in hass.data.get(DOMAIN, {})
+
+
+class TestHATokenStorage:
+    """Tests for HATokenStorage persistence."""
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_save_and_load_token(
+        self,
+        mock_test: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """save_token persists to config_entry.data."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        storage = HATokenStorage(hass, entry)
+        token = CachedToken(
+            access_token="saved-token",
+            token_type="Bearer",
+            expires_in=86400,
+            scope="open-api",
+            issued_at=datetime(2025, 7, 18, 12, 0, 0, tzinfo=UTC),
+        )
+        await storage.save_token(token)
+        assert entry.data.get("cached_token") is not None
+
+        loaded = await storage.load_token()
+        assert loaded is not None
+        assert loaded.access_token == "saved-token"
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_load_token_returns_none_for_missing(
+        self,
+        mock_test: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """load_token returns None when no token stored."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        storage = HATokenStorage(hass, entry)
+        result = await storage.load_token()
+        assert result is None
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_save_and_load_request_count(
+        self,
+        mock_test: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """save/load_request_count round-trips correctly."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        storage = HATokenStorage(hass, entry)
+        now = datetime(2025, 7, 18, 12, 0, 0, tzinfo=UTC)
+        await storage.save_request_count(3, now)
+
+        count, window = await storage.load_request_count()
+        assert count == 3
+        assert window == now
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_load_token_handles_corrupted_data(
+        self,
+        mock_test: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """load_token returns None for corrupted data."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        # Manually corrupt token data
+        hass.config_entries.async_update_entry(
+            entry,
+            data={**entry.data, "cached_token": {"bad": "data"}},
+        )
+
+        storage = HATokenStorage(hass, entry)
+        result = await storage.load_token()
+        assert result is None
