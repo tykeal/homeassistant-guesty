@@ -211,7 +211,7 @@ property operations.
 - All I/O operations MUST use Home Assistant async patterns;
   blocking the HA event loop is PROHIBITED.
 - Blocking calls MUST be offloaded to executor threads via
-  `HomeAssistant.async_add_executor_job`.
+  `hass.async_add_executor_job(...)`.
 - API polling intervals MUST be configurable with sensible defaults
   and enforced minimums to avoid exceeding Guesty rate limits.
 - API responses MUST be cached where appropriate to reduce redundant
