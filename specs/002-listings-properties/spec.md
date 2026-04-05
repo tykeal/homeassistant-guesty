@@ -85,13 +85,18 @@ Home Assistant without user intervention.
 2. **Given** a new listing is created in Guesty, **When** the next
    data refresh occurs, **Then** a new device and its sensors appear
    in Home Assistant.
-3. **Given** a listing is deleted or archived in Guesty, **When** the
-   next data refresh occurs, **Then** the corresponding sensors
-   update to reflect the new state.
-4. **Given** the user navigates to the integration options, **When**
+3. **Given** a listing is archived in Guesty, **When** the next data
+   refresh occurs, **Then** the corresponding device and sensors
+   remain in Home Assistant and update to reflect the archived
+   status.
+4. **Given** a listing is no longer returned by the Guesty API,
+   **When** the next data refresh occurs, **Then** the corresponding
+   entities are marked unavailable or removed according to the
+   integration's defined entity-retention policy.
+5. **Given** the user navigates to the integration options, **When**
    the user changes the refresh interval, **Then** subsequent refresh
    cycles use the new interval.
-5. **Given** the refresh interval is set below an enforced minimum,
+6. **Given** the refresh interval is set below an enforced minimum,
    **When** the user saves the options, **Then** the system enforces
    the minimum interval and informs the user.
 
@@ -308,6 +313,31 @@ available.
 - **FR-020**: All data fetching and entity update operations MUST
   use asynchronous patterns and MUST NOT block the Home Assistant
   event loop.
+
+### Validation Scenarios
+
+The following scenarios verify functional requirements that are not
+directly covered by user story acceptance scenarios.
+
+1. **Given** a listing device is created (FR-012), **When** the user
+   views the device in the device registry, **Then** the device
+   displays a manufacturer name, a model description, and the
+   listing name.
+2. **Given** listing sensors are created (FR-013), **When** the user
+   views a sensor entity, **Then** the entity name is derived from
+   its parent device name (not hardcoded) and the sensor name is
+   translatable via the integration's translation keys.
+3. **Given** the API client listing retrieval methods are implemented
+   (FR-015), **When** the API client module is imported in isolation,
+   **Then** it has zero dependencies on Home Assistant packages.
+4. **Given** a data refresh is currently in progress (FR-019),
+   **When** the next scheduled refresh cycle triggers, **Then** the
+   new refresh is skipped or queued rather than running concurrently
+   with the in-progress refresh.
+5. **Given** data fetching or entity updates are in progress
+   (FR-020), **When** the operations execute, **Then** the Home
+   Assistant event loop remains responsive and no blocking calls
+   are made on the main thread.
 
 ### Key Entities
 

@@ -31,7 +31,7 @@ proceeding to planning
 
 ## Feature Readiness
 
-- [x] All functional requirements have clear acceptance criteria
+- [x] Functional requirements are testable and unambiguous
 - [x] User scenarios cover primary flows
 - [x] Feature meets measurable outcomes defined in Success Criteria
 - [x] No implementation details leak into specification
