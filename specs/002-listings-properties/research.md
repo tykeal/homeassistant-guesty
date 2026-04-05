@@ -174,15 +174,23 @@ the `async_set_update_interval()` method or by updating the
 ## R7: Custom Fields Handling
 
 **Decision**: Expose custom fields as additional diagnostic
-sensors. Custom field names become sensor translation keys
-(slugified). Custom field values become sensor states. Create
-sensors dynamically based on the custom fields present in each
-listing's data.
+sensors with dynamic `key` and `unique_id` values derived from
+the custom field name (slugified). Use a fixed
+`translation_key` of `listing_custom_field` for all custom
+field sensors since HA translation keys must be predefined for
+localization. Surface the original custom field name in the
+entity name and/or attributes, and use the custom field value
+as the sensor state.
 
 **Rationale**: Guesty custom fields vary per account and per
-listing. Dynamic sensor creation based on actual data is the
-only practical approach. Using diagnostic entity category keeps
-them separate from primary listing sensors.
+listing, so dynamic sensor creation based on actual data is the
+only practical approach. However, Home Assistant translation
+keys must be predefined for localization, so they cannot be
+generated from arbitrary runtime custom field names. Using a
+fixed `translation_key` while keeping the field name in the
+entity metadata preserves per-field automation capability and
+keeps these entities separate from primary listing sensors via
+the diagnostic entity category.
 
 **Alternatives considered**:
 
@@ -190,6 +198,9 @@ them separate from primary listing sensors.
   capability. Users cannot trigger on individual field changes.
 - *Ignore custom fields*: Reduces feature value for power users
   who rely on Guesty customization.
+- *Dynamic translation keys*: Not feasible since HA translation
+  keys must be known at localization time, not generated from
+  arbitrary runtime field names.
 
 ## R8: Disappeared Listing Handling
 

@@ -39,13 +39,16 @@ uv run pre-commit run --all-files
 
 ## Code Style
 
-Python 3.13: Full type annotations, 100% docstring coverage,
+Python >=3.14.2: Full type annotations, 100% docstring coverage,
 async/await patterns, frozen dataclasses for DTOs
 
 ## Recent Changes
-- 002-plan-listings: Added Python >=3.14.2 + Home Assistant >=2026.4.0, httpx >=0.28
 
-- 001-auth-config-flow: Added Python 3.13 + httpx, homeassistant
+- 002-plan-listings: Added Python >=3.14.2 +
+  Home Assistant >=2026.4.0, httpx >=0.28
+
+- 001-auth-config-flow: Added Python 3.13 +
+  httpx, homeassistant
 
 <!-- MANUAL ADDITIONS START -->
 <!-- MANUAL ADDITIONS END -->

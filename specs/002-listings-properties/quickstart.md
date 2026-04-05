@@ -17,7 +17,7 @@ SPDX-License-Identifier: Apache-2.0
 
 ```bash
 cd /path/to/guesty
-uv sync --all-extras
+uv sync --all-extras --group dev
 ```
 
 ## Running Tests
@@ -53,6 +53,8 @@ uv run interrogate custom_components/ -v
 
 ```bash
 # Run all hooks manually (recommended before committing)
+# prek is a local alias at ~/.local/bin/prek
+# Equivalent: uv run pre-commit run --all-files
 prek
 
 # Hooks run automatically on git commit

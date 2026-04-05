@@ -81,11 +81,11 @@ Phase 1 design.*
 specs/002-listings-properties/
 ├── plan.md              # This file
 ├── research.md          # Phase 0: research findings
-├── data-model.md        # Phase 1: entity/field definitions
+├── data-model.md        # Phase 1: entity/field defs
 ├── quickstart.md        # Phase 1: developer onboarding
 ├── contracts/           # Phase 1: API contracts
 │   └── guesty-listings-api.md
-└── tasks.md             # Phase 2: task breakdown
+└── tasks.md             # Generated later by /tasks
 ```
 
 ### Source Code (repository root)
