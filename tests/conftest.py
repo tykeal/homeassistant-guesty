@@ -94,6 +94,17 @@ class FakeTokenStorage:
 _storage_check: TokenStorage = FakeTokenStorage()
 
 
+@pytest.fixture(autouse=True)
+def auto_enable_custom_integrations(
+    enable_custom_integrations: None,
+) -> None:
+    """Automatically enable custom integrations for all tests.
+
+    This fixture ensures HA's loader discovers the custom_components/
+    directory for integration tests.
+    """
+
+
 @pytest.fixture
 def fake_storage() -> FakeTokenStorage:
     """Provide a clean FakeTokenStorage instance.
