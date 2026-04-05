@@ -77,7 +77,7 @@ uv run pytest tests/ -x -q
 uv run pytest tests/test_notify.py tests/api/test_messaging.py -x -q
 
 # Run with coverage reporting
-uv run pytest tests/ --cov=custom_components.guesty --cov-report=term
+uv run pytest tests/ --cov=custom_components/guesty --cov-report=term
 
 # Run linting
 uv run ruff check custom_components/ tests/
