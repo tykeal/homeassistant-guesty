@@ -64,20 +64,20 @@ is complete. All messaging domain logic lives in `api/`.
   channel accepted) and `MessageDeliveryResult` frozen dataclass
   (success result with `message_id`, failure result with
   `error_details` and `reservation_id`) in
-  tests/api/test\_models.py
+  `tests/api/test_models.py`
 - [ ] T002 [P] Write unit tests for `GuestyMessageError`
   (construction with message only, construction with
   `reservation_id` context, construction with
   `available_channels` context, inherits from `GuestyApiError`,
   attributes accessible after construction) in
-  tests/api/test\_exceptions.py
+  `tests/api/test_exceptions.py`
 - [ ] T003 Write unit tests for
   `GuestyMessagingClient.resolve_conversation` (successful
   resolution returns `Conversation` with correct fields parsed
   from API response, empty results raises `GuestyMessageError`
   with reservation context, API error propagation from
   `GuestyApiClient`) using respx-mocked HTTP in
-  tests/api/test\_messaging.py
+  `tests/api/test_messaging.py`
 - [ ] T004 Write unit tests for
   `GuestyMessagingClient.send_message` (full success path:
   resolve conversation then send message returns
@@ -86,7 +86,7 @@ is complete. All messaging domain logic lives in `api/`.
   `GuestyMessageError`, message send API failure raises
   `GuestyMessageError`, channel passed through to API request
   body module field) using respx-mocked HTTP in
-  tests/api/test\_messaging.py
+  `tests/api/test_messaging.py`
 - [ ] T005 Write unit tests for
   `GuestyMessagingClient.render_template` (successful variable
   substitution with `str.format_map`, missing variable raises
@@ -96,7 +96,7 @@ is complete. All messaging domain logic lives in `api/`.
   `ValueError`, empty body raises `ValueError`, body exceeding
   `MAX_MESSAGE_LENGTH` raises `ValueError`, unknown channel
   string raises `ValueError`, valid known channels accepted) in
-  tests/api/test\_messaging.py
+  `tests/api/test_messaging.py`
 
 <!-- markdownlint-enable MD013 -->
 
@@ -107,11 +107,11 @@ is complete. All messaging domain logic lives in `api/`.
 - [ ] T006 [P] Add messaging endpoint paths
   (`CONVERSATIONS_PATH`, `SEND_MESSAGE_PATH`) and validation
   constants (`MAX_MESSAGE_LENGTH`, `KNOWN_CHANNEL_TYPES`
-  frozenset) to custom\_components/guesty/api/const.py
+  frozenset) to `custom_components/guesty/api/const.py`
 - [ ] T007 [P] Implement `GuestyMessageError` subclassing
   `GuestyApiError` with `reservation_id` (`str | None`) and
   `available_channels` (`tuple[str, ...] | None`) context
-  attributes in custom\_components/guesty/api/exceptions.py
+  attributes in `custom_components/guesty/api/exceptions.py`
 - [ ] T008 Implement `Conversation` (frozen dataclass: id,
   `reservation_id`, `available_channels` with post-init
   non-empty validation), `MessageRequest` (frozen dataclass:
@@ -119,7 +119,7 @@ is complete. All messaging domain logic lives in `api/`.
   against `MAX_MESSAGE_LENGTH` and `KNOWN_CHANNEL_TYPES`), and
   `MessageDeliveryResult` (frozen dataclass: success,
   `message_id`, `error_details`, `reservation_id`) in
-  custom\_components/guesty/api/models.py
+  `custom_components/guesty/api/models.py`
 - [ ] T009 Implement `GuestyMessagingClient` class with
   constructor accepting `GuestyApiClient`, async
   `resolve_conversation(reservation_id)` that calls GET
@@ -129,12 +129,12 @@ is complete. All messaging domain logic lives in `api/`.
   resolve, build `MessageRequest`, POST send-message, return
   `MessageDeliveryResult`), and `render_template(template,
   variables)` using `str.format_map` with strict missing-key
-  detection in custom\_components/guesty/api/messaging.py
+  detection in `custom_components/guesty/api/messaging.py`
 - [ ] T010 Update public API exports to include
   `GuestyMessagingClient`, `GuestyMessageError`,
   `Conversation`, `MessageRequest`, and
   `MessageDeliveryResult` in
-  custom\_components/guesty/api/\_\_init\_\_.py
+  `custom_components/guesty/api/__init__.py`
 
 <!-- markdownlint-enable MD013 -->
 
@@ -174,14 +174,14 @@ messages without blocking.
   messaging client maps to `HomeAssistantError`; entity
   attributes (`unique_id`, name, `device_info`) are set
   correctly; `async_setup_entry` creates entity via
-  `async_add_entities` in tests/test\_notify.py
+  `async_add_entities` in `tests/test_notify.py`
 - [ ] T012 [US2] Write automation compatibility tests: HA
   service call to `notify.send_message` dispatches message
   through messaging client; service call with template-rendered
   message body sends resolved text; `async_send_message` does
   not block the HA event loop; messaging client failure is
   logged and does not crash the automation in
-  tests/test\_notify.py
+  `tests/test_notify.py`
 
 <!-- markdownlint-enable MD013 -->
 
@@ -190,11 +190,11 @@ messages without blocking.
 <!-- markdownlint-disable MD013 -->
 
 - [ ] T013 [P] [US1] Add `Platform.NOTIFY` to `PLATFORMS` list
-  in custom\_components/guesty/const.py
+  in `custom_components/guesty/const.py`
 - [ ] T014 [US1] Update `async_setup_entry` to create
   `GuestyMessagingClient(api_client)` and store in runtime
   data; verify `async_unload_entry` cleans up correctly in
-  custom\_components/guesty/\_\_init\_\_.py
+  `custom_components/guesty/__init__.py`
 - [ ] T015 [US1] Implement `GuestyNotifyEntity(NotifyEntity)`
   with constructor accepting `messaging_client` and entry,
   `async_send_message(message, title)` that extracts
@@ -202,10 +202,10 @@ messages without blocking.
   call data and delegates to `GuestyMessagingClient`, entity
   attributes (has entity name, name, `unique_id`,
   `device_info`), and `async_setup_entry` platform function in
-  custom\_components/guesty/notify.py
+  `custom_components/guesty/notify.py`
 - [ ] T016 [US1] Add messaging client mock fixture and notify
   entity test fixtures (mock `GuestyMessagingClient`, config
-  entry setup with notify platform) to tests/conftest.py
+  entry setup with notify platform) to `tests/conftest.py`
 
 <!-- markdownlint-enable MD013 -->
 
@@ -239,12 +239,12 @@ errors for unavailable channels and missing template variables.
   routing; omit channel and verify default channel used from
   conversation; verify channel parameter flows from service
   call data through notify entity to messaging client to API
-  request in tests/test\_notify.py
+  request in `tests/test_notify.py`
 - [ ] T018 [US3] Write unavailable channel error tests: request
   channel not present in conversation `availableModules` and
   verify `GuestyMessageError` lists available channels; verify
   error message is actionable (includes requested channel and
-  available alternatives) in tests/test\_notify.py
+  available alternatives) in `tests/test_notify.py`
 
 <!-- markdownlint-enable MD013 -->
 
@@ -258,13 +258,13 @@ errors for unavailable channels and missing template variables.
   `{access_code}` placeholders; verify rendered message sent
   to Guesty API has substituted values; verify
   `template_variables` flows from service call data through
-  notify entity to messaging client in tests/test\_notify.py
+  notify entity to messaging client in `tests/test_notify.py`
 - [ ] T020 [US4] Write missing template variable error tests:
   message body contains `{guest_name}` placeholder but
   `template_variables` omits `guest_name`; verify error
   identifies the missing variable name; verify no partially
   rendered message is sent to the API in
-  tests/test\_notify.py
+  `tests/test_notify.py`
 
 <!-- markdownlint-enable MD013 -->
 
@@ -279,7 +279,7 @@ errors for unavailable channels and missing template variables.
   validation error; concurrent `send_message` calls to the
   same reservation execute independently without interference;
   unexpected API response format (missing ID field) raises
-  `GuestyResponseError` in tests/test\_notify.py
+  `GuestyResponseError` in `tests/test_notify.py`
 
 <!-- markdownlint-enable MD013 -->
 
@@ -305,19 +305,19 @@ verification.
   429 response with `Retry-After` header on first send-message
   call followed by 200 success on retry; verify message
   eventually delivered; verify retry used exponential backoff
-  via `GuestyApiClient` in tests/test\_notify.py
+  via `GuestyApiClient` in `tests/test_notify.py`
 - [ ] T023 [US5] Write transient failure retry tests: mock
   network error (connection refused) on first attempt followed
   by success on retry; mock persistent network failure and
   verify `GuestyConnectionError` raised after max retries;
   verify error includes reservation context in
-  tests/test\_notify.py
+  `tests/test_notify.py`
 - [ ] T024 [US5] Write error detail quality tests: invalid
   reservation ID (not found in Guesty) returns error with
   reservation ID in message; delivery failure after retries
   includes failure reason and targeted `reservation_id`; errors
   logged at appropriate severity (warning for retries, error
-  for final failure) in tests/test\_notify.py
+  for final failure) in `tests/test_notify.py`
 
 <!-- markdownlint-enable MD013 -->
 
@@ -329,13 +329,13 @@ verification.
   content, guest PII, or OAuth tokens appear in log output at
   any log level (DEBUG through CRITICAL) during successful
   send, failed send, and retry scenarios using caplog fixture
-  in tests/test\_notify.py
+  in `tests/test_notify.py`
 - [ ] T026 Write success criteria validation tests: SC-005
   invalid service calls (missing `reservation_id`, empty body)
   produce errors synchronously; SC-009 all test scenarios run
   without live Guesty connection (verify respx mock coverage);
   SC-010 template substitution resolves all provided variables
-  and rejects missing variables in tests/test\_notify.py
+  and rejects missing variables in `tests/test_notify.py`
 - [ ] T027 Run quickstart.md validation: verify all code
   examples in specs/005-notify-service/quickstart.md compile
   and execute correctly against mocked API fixtures; verify
@@ -385,9 +385,9 @@ success criteria validated. Feature complete.
 
 **Phase 1 — Tests (Red)**:
 
-- T001 (test\_models.py) parallel with T002
-  (test\_exceptions.py) — different files
-- T003, T004, T005 — sequential in test\_messaging.py
+- T001 (`test_models.py`) parallel with T002
+  (`test_exceptions.py`) — different files
+- T003, T004, T005 — sequential in `test_messaging.py`
 
 **Phase 1 — Implementation (Green)**:
 
@@ -399,7 +399,7 @@ success criteria validated. Feature complete.
 
 **Phase 2**:
 
-- T011, T012 — sequential in test\_notify.py
+- T011, T012 — sequential in `test_notify.py`
 - T013 (const.py) parallel with other Phase 2 tasks
 - T014 (init) then T015 (notify.py) then T016 (conftest.py)
 
@@ -410,10 +410,10 @@ success criteria validated. Feature complete.
 ```text
 # Launch test writing for Phase 1 (Red):
 # Parallel pair:
-Task: "DTO validation tests in tests/api/test_models.py"   T001
-Task: "Exception tests in tests/api/test_exceptions.py"     T002
+Task: "DTO validation tests in tests/api/`test_models.py`"   T001
+Task: "Exception tests in tests/api/`test_exceptions.py`"     T002
 
-# Sequential in test_messaging.py:
+# Sequential in `test_messaging.py`:
 Task: "resolve_conversation tests"                           T003
 Task: "send_message tests"                                   T004
 Task: "render_template + validation tests"                   T005
