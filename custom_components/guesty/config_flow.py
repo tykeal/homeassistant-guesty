@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -19,6 +20,7 @@ from custom_components.guesty.api.exceptions import (
     GuestyConnectionError,
     GuestyRateLimitError,
 )
+from custom_components.guesty.api.models import CachedToken
 from custom_components.guesty.const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -45,7 +47,7 @@ class _NullStorage:
     acquiring a token. No persistence is needed.
     """
 
-    async def load_token(self) -> None:
+    async def load_token(self) -> CachedToken | None:
         """Return no stored token.
 
         Returns:
@@ -53,14 +55,14 @@ class _NullStorage:
         """
         return None
 
-    async def save_token(self, token: object) -> None:
+    async def save_token(self, token: CachedToken) -> None:
         """Discard the token.
 
         Args:
             token: The token to discard.
         """
 
-    async def load_request_count(self) -> tuple[int, None]:
+    async def load_request_count(self) -> tuple[int, datetime | None]:
         """Return zero request count.
 
         Returns:
@@ -71,7 +73,7 @@ class _NullStorage:
     async def save_request_count(
         self,
         count: int,
-        window_start: object,
+        window_start: datetime,
     ) -> None:
         """Discard the request count.
 
@@ -213,7 +215,7 @@ class GuestyConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            client_id = user_input[CONF_CLIENT_ID]
+            client_id = self._reauth_client_id or user_input[CONF_CLIENT_ID]
             client_secret = user_input[CONF_CLIENT_SECRET]
 
             try:

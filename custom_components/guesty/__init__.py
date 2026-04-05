@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from homeassistant.config_entries import ConfigEntry
@@ -21,6 +21,7 @@ from homeassistant.exceptions import ConfigEntryNotReady
 
 from custom_components.guesty.api.auth import GuestyTokenManager
 from custom_components.guesty.api.client import GuestyApiClient
+from custom_components.guesty.api.const import DEFAULT_TIMEOUT
 from custom_components.guesty.api.exceptions import GuestyApiError
 from custom_components.guesty.api.models import CachedToken, TokenStorage
 from custom_components.guesty.const import (
@@ -95,7 +96,12 @@ class HATokenStorage:
         Returns:
             Tuple of (count, window_start).
         """
-        count = self._entry.data.get("token_request_count", 0)
+        raw_count = self._entry.data.get("token_request_count", 0)
+        try:
+            count = int(raw_count)
+        except (ValueError, TypeError):
+            _LOGGER.warning("Invalid token_request_count, resetting")
+            count = 0
         window_str = self._entry.data.get("token_window_start")
         window = None
         if window_str is not None:
@@ -125,8 +131,9 @@ class HATokenStorage:
         )
 
 
-# Verify protocol compliance at module level
-_check: TokenStorage = HATokenStorage.__new__(HATokenStorage)
+# Verify protocol compliance at type-check time only
+if TYPE_CHECKING:
+    _check: TokenStorage = HATokenStorage.__new__(HATokenStorage)
 
 
 async def async_setup_entry(
@@ -151,7 +158,7 @@ async def async_setup_entry(
             established.
     """
     storage = HATokenStorage(hass, entry)
-    http_client = httpx.AsyncClient()
+    http_client = httpx.AsyncClient(timeout=DEFAULT_TIMEOUT)
 
     token_manager = GuestyTokenManager(
         client_id=entry.data[CONF_CLIENT_ID],

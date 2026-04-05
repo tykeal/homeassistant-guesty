@@ -73,7 +73,15 @@ class GuestyApiClient:
             GuestyRateLimitError: If rate limited.
             GuestyResponseError: If the API returns unexpected data.
         """
-        await self._request("GET", "/listings", params={"limit": 1, "fields": "_id"})
+        response = await self._request(
+            "GET",
+            "/listings",
+            params={"limit": 1, "fields": "_id"},
+        )
+        if not response.is_success:
+            raise GuestyResponseError(
+                f"Connection test failed: status {response.status_code}",
+            )
         return True
 
     async def _request(
@@ -153,7 +161,6 @@ class GuestyApiClient:
                     )
 
                 delay = _calculate_backoff(
-                    attempt,
                     backoff,
                     response,
                 )
@@ -199,15 +206,17 @@ def _parse_retry_after(response: httpx.Response) -> float | None:
 
 
 def _calculate_backoff(
-    attempt: int,
     base_backoff: float,
     response: httpx.Response,
 ) -> float:
     """Calculate backoff delay with jitter and Retry-After support.
 
+    The base_backoff is already the desired delay for this attempt
+    (the caller handles exponential growth). We just apply jitter
+    and Retry-After override.
+
     Args:
-        attempt: Current retry attempt number (0-indexed).
-        base_backoff: Base backoff delay in seconds.
+        base_backoff: Current backoff delay in seconds.
         response: The HTTP response (may contain Retry-After).
 
     Returns:
@@ -217,8 +226,7 @@ def _calculate_backoff(
     if retry_after is not None:
         return min(retry_after, MAX_BACKOFF)
 
-    # Exponential backoff with ±25% jitter
-    delay = base_backoff * (BACKOFF_MULTIPLIER**attempt)
-    delay = min(delay, MAX_BACKOFF)
+    # Apply ±25% jitter
+    delay = min(base_backoff, MAX_BACKOFF)
     jitter = delay * 0.25 * (2 * random.random() - 1)
     return max(0.1, delay + jitter)
