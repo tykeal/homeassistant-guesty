@@ -99,7 +99,7 @@ class HATokenStorage:
         raw_count = self._entry.data.get("token_request_count", 0)
         try:
             count = int(raw_count)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError):  # fmt: skip
             _LOGGER.warning("Invalid token_request_count, resetting")
             count = 0
         window_str = self._entry.data.get("token_window_start")
@@ -107,7 +107,7 @@ class HATokenStorage:
         if window_str is not None:
             try:
                 window = datetime.fromisoformat(window_str)
-            except (ValueError, TypeError):
+            except (ValueError, TypeError):  # fmt: skip
                 _LOGGER.warning("Invalid token_window_start, resetting")
                 count = 0
         return (count, window)

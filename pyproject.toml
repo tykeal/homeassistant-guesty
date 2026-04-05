@@ -9,7 +9,7 @@ build-backend = "hatchling.build"
 name = "guesty"
 dynamic = ["version"]
 description = "Guesty integration for Home Assistant"
-requires-python = ">=3.13.2"
+requires-python = ">=3.14.2"
 license = { text = "Apache-2.0" }
 
 dependencies = [
@@ -18,7 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = [
-    "homeassistant>=2026.2.0,<2026.3.0",
+    "homeassistant>=2026.4.0",
     "httpx>=0.28",
     "pytest>=8.0",
     "pytest-asyncio>=0.25",
@@ -29,7 +29,7 @@ test = [
 
 [dependency-groups]
 dev = [
-    "homeassistant>=2026.2.0,<2026.3.0",
+    "homeassistant>=2026.4.0",
     "httpx>=0.28",
     "interrogate>=1.7",
     "mypy>=1.20",
@@ -53,7 +53,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.14"
 check_untyped_defs = true
 disallow_untyped_defs = true
 warn_return_any = true
@@ -66,7 +66,7 @@ module = "pytest_homeassistant_custom_component.*"
 ignore_missing_imports = true
 
 [tool.ruff]
-target-version = "py313"
+target-version = "py314"
 line-length = 88
 
 [tool.ruff.lint]
