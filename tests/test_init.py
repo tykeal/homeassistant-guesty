@@ -307,6 +307,66 @@ class TestHATokenStorageCorruptedCounters:
         assert window is None
         assert count == 0
 
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_naive_datetime_treated_as_utc(
+        self,
+        mock_test: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Naive datetime from config entry is treated as UTC."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        hass.config_entries.async_update_entry(
+            entry,
+            data={
+                **entry.data,
+                "token_request_count": 2,
+                "token_window_start": "2025-07-18T12:00:00",
+            },
+        )
+
+        storage = HATokenStorage(hass, entry)
+        count, window = await storage.load_request_count()
+        assert window is not None
+        assert window.tzinfo is UTC
+        assert count == 2
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_count_resets_when_window_none(
+        self,
+        mock_test: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Non-zero count with None window_start resets to 0."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        hass.config_entries.async_update_entry(
+            entry,
+            data={
+                **entry.data,
+                "token_request_count": 3,
+            },
+        )
+
+        storage = HATokenStorage(hass, entry)
+        count, window = await storage.load_request_count()
+        assert window is None
+        assert count == 0
+
 
 class TestLogSanitization:
     """Tests ensuring credentials never appear in logs."""

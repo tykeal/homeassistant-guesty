@@ -11,7 +11,7 @@ client lifecycle.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -107,9 +107,17 @@ class HATokenStorage:
         if window_str is not None:
             try:
                 window = datetime.fromisoformat(window_str)
+                if window.tzinfo is None:
+                    window = window.replace(tzinfo=UTC)
             except (ValueError, TypeError):  # fmt: skip
                 _LOGGER.warning("Invalid token_window_start, resetting")
                 count = 0
+
+        # Ensure count is consistent with window_start
+        if window is None and count > 0:
+            _LOGGER.warning("Non-zero count without window_start, resetting")
+            count = 0
+
         return (count, window)
 
     async def save_request_count(
