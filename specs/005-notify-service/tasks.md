@@ -291,7 +291,7 @@ messages.
 
 ---
 
-## Phase 4: US5 + Polish — Error Handling (P3)
+## Phase 4: US5 + Polish — Integration Testing (P3)
 
 **Purpose**: Comprehensive error scenario coverage through the
 full stack, security validation, and success criteria
@@ -306,11 +306,11 @@ verification.
   call followed by 200 success on retry; verify message
   eventually delivered; verify retry used exponential backoff
   via `GuestyApiClient` in `tests/test_notify.py`
-- [ ] T023 [US5] Write transient failure retry tests: mock
-  network error (connection refused) on first attempt followed
-  by success on retry; mock persistent network failure and
-  verify `GuestyConnectionError` raised after max retries;
-  verify error includes reservation context in
+- [ ] T023 [US5] Write transient network failure tests: mock
+  network error (connection refused) and verify
+  `GuestyConnectionError` is raised; mock persistent network
+  failure and verify `GuestyConnectionError` is raised; verify
+  error includes reservation context in
   `tests/test_notify.py`
 - [ ] T024 [US5] Write error detail quality tests: invalid
   reservation ID (not found in Guesty) returns error with
