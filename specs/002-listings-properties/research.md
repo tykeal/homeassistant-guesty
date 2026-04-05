@@ -35,30 +35,38 @@ rentalsync-bridge reference implementation.
 
 ## R2: Guesty Listing Status Field
 
-**Decision**: Map the Guesty `listed` boolean to a three-value
-status enum: `active` (listed=true, no archive indicator),
-`inactive` (listed=false), `archived` (listing not returned by
-API or explicitly marked). Use the `active` boolean field in
-combination with the `listed` field for status derivation.
+**Decision**: Derive `active` and `inactive` from the Guesty
+`listed` and `active` booleans. Reserve `archived` for a
+listing state explicitly indicated by Guesty in the listing
+payload. A listing no longer returned by `GET /v1/listings`
+is **not** mapped to `archived`; it is treated as
+`unavailable` per R8 while the retained device remains in
+Home Assistant.
 
 **Rationale**: The Guesty API exposes `listed` (boolean) and
-`active` (boolean) fields on listing objects. The spec requires
-three status values: active, inactive, archived. We derive:
+`active` (boolean) fields on listing objects. Those fields
+derive the non-archived states:
 
-- `active`: Both `listed=true` and `active=true`
-- `inactive`: `listed=false` or `active=false` (still returned
-  by API)
-- `archived`: Listed as archived in Guesty or no longer returned
+- `active`: `listed=true` and `active=true`
+- `inactive`: `listed=false` or `active=false` (still
+  returned by API)
+- `archived`: Only when Guesty returns an explicit archive
+  indicator in the API response
 
-The exact field semantics should be validated during implementation
-against live API responses. The spec's three-value model provides
-clearer UX than raw boolean pairs.
+This keeps entity availability separate from listing status.
+A missing listing can reflect filtering, permissions, sync
+delay, or deletion — not necessarily an archive. The exact
+archive field/value mapping should be validated during
+implementation against live API responses.
 
 **Alternatives considered**:
 
 - *Expose raw booleans*: Two sensors instead of one; less
   user-friendly for automations.
 - *Only use `listed`*: Misses the `active` dimension.
+- *Treat "not returned" as `archived`*: Rejected because
+  it conflicts with the retained-device/unavailable behavior
+  in R8 and makes `archived` ambiguous.
 
 ## R3: Listing Detail Field Mapping
 
@@ -106,7 +114,9 @@ Coordinator data is a dict keyed by listing ID for O(1) lookup.
 - Concurrent refresh prevention (built-in lock)
 - Last-known-good data retention on failure
 - Standard `UpdateFailed` exception for error reporting
-- Entity update notification via `async_write_ha_state()`
+- Coordinator listener notifications so
+  `CoordinatorEntity`-based entities are scheduled for state
+  updates when coordinator data changes
 
 The rental-control reference implementation validates this pattern.
 Using `dict[str, GuestyListing]` instead of `list[GuestyListing]`

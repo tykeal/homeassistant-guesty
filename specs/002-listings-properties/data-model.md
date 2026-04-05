@@ -50,7 +50,7 @@ in the API layer.
 | `id` | `str` | Yes | Guesty listing `_id` (MongoDB ObjectID) |
 | `title` | `str` | Yes | Primary listing name |
 | `nickname` | `str \| None` | No | Alternative display name |
-| `status` | `str` | Yes | Derived: `active`, `inactive`, or `archived` |
+| `status` | `str` | Yes | `active`, `inactive`, or `archived` |
 | `address` | `GuestyAddress \| None` | No | Structured address |
 | `property_type` | `str \| None` | No | E.g., apartment, house, villa |
 | `room_type` | `str \| None` | No | E.g., entire home, private room |
@@ -85,8 +85,13 @@ in the API layer.
 ```text
 if listed == true AND active == true → "active"
 if listed == false OR active == false → "inactive"
-if not returned by API (tracked separately) → "archived"
+if Guesty returns explicit archive indicator → "archived"
 ```
+
+**Note**: A listing no longer returned by the API is NOT
+mapped to `archived`. Instead, its entities are marked as
+`unavailable` by the coordinator (see R8 in research.md).
+The `archived` status requires an explicit API-side indicator.
 
 ### GuestyListingsResponse (api/models.py)
 
@@ -125,17 +130,31 @@ ConfigEntry (HA)
 ### Listing Status
 
 ```text
-┌──────────┐    listed=true     ┌──────────┐
-│ inactive  │ ───────────────── │  active   │
-│           │ ←──────────────── │           │
-└──────────┘    listed=false    └──────────┘
-      │                                │
-      │   not returned by API          │
-      ▼                                ▼
-┌──────────────────────────────────────────┐
-│              unavailable                  │
-│  (entities marked unavailable in HA)      │
-└──────────────────────────────────────────┘
+┌──────────┐  listed=true  ┌──────────┐
+│ inactive  │ ──────────── │  active   │
+│           │ ←─────────── │           │
+└──────────┘  listed=false └──────────┘
+      │                          │
+      │  explicit archive        │
+      ▼                          ▼
+┌──────────────────────────────────┐
+│           archived                │
+│  (API returns archive indicator)  │
+└──────────────────────────────────┘
+```
+
+### Entity Availability (Disappeared Listings)
+
+```text
+Any status (active/inactive/archived)
+      │
+      │  listing not returned by API
+      ▼
+┌──────────────────────────────────┐
+│         unavailable               │
+│  (entities marked unavailable;    │
+│   device retained in HA)          │
+└──────────────────────────────────┘
 ```
 
 ### Coordinator Refresh Cycle
