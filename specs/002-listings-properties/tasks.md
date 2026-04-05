@@ -186,18 +186,19 @@ each Guesty custom field as a dynamic diagnostic sensor per
 listing device.
 
 **Independent Test**: Add tags and custom fields to test listing
-data; verify tags sensor exposes tags as a list; verify each
-custom field creates a separate diagnostic sensor with slugified
-key. Verify empty tags and no custom fields are handled
-gracefully (empty list and no extra sensors respectively).
+data; verify tags sensor shows comma-separated string of tags;
+verify each custom field creates a separate diagnostic sensor
+with slugified key. Verify empty tags and no custom fields are
+handled gracefully (empty string and no extra sensors
+respectively).
 
 ### Phase 5 Tests (write first — must FAIL before implementation)
 
-- [ ] T032 [US4] Write tests for tags sensor (`native_value` exposes `listing.tags` as a list per FR-006, empty tags tuple returns empty list) and dynamic custom field sensors (one sensor per custom field per listing, `unique_id` includes `custom_{slugified_name}`, value is the custom field string value, `entity_category` is `EntityCategory.DIAGNOSTIC`, no custom field sensors created when `listing.custom_fields` is empty dict) in tests/test_sensor.py
+- [ ] T032 [US4] Write tests for tags sensor (`native_value` returns `", ".join(listing.tags)` as a comma-separated string per data-model.md, empty tags tuple returns empty string) and dynamic custom field sensors (one sensor per custom field per listing, `unique_id` includes `custom_{slugified_name}`, value is the custom field string value, `entity_category` is `EntityCategory.DIAGNOSTIC`, no custom field sensors created when `listing.custom_fields` is empty dict) in tests/test_sensor.py
 
 ### Phase 5 Implementation
 
-- [ ] T033 [US4] Add tags `GuestyListingSensorEntityDescription` to `LISTING_SENSOR_DESCRIPTIONS` (`key="tags"`, `translation_key="listing_tags"`, `entity_category=EntityCategory.DIAGNOSTIC`, `value_fn` returning `listing.tags` as a list per FR-006 and spec US4) in custom_components/guesty/sensor.py
+- [ ] T033 [US4] Add tags `GuestyListingSensorEntityDescription` to `LISTING_SENSOR_DESCRIPTIONS` (`key="tags"`, `translation_key="listing_tags"`, `entity_category=EntityCategory.DIAGNOSTIC`, `value_fn` returning `", ".join(listing.tags)` per data-model.md sensor mapping) in custom_components/guesty/sensor.py
 - [ ] T034 [US4] Implement dynamic custom field sensor creation in `async_setup_entry`: after creating static description sensors, iterate each listing's `custom_fields` dict entries, create a `GuestyListingSensorEntityDescription` per field with `key=f"custom_{slugify(field_name)}"`, `translation_key="listing_custom_field"`, `entity_category=EntityCategory.DIAGNOSTIC`, and `value_fn` extracting that specific field value; add resulting entities via `async_add_entities` in custom_components/guesty/sensor.py
 - [ ] T035 [P] [US4] Add translations for `listing_tags` ("Tags") and `listing_custom_field` ("Custom field") sensors in custom_components/guesty/strings.json and custom_components/guesty/translations/en.json using the nested JSON structure under `entity` → `sensor`
 
