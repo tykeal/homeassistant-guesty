@@ -51,7 +51,8 @@ established library-shim architecture:
 │  │  │ models.py        │  │ exceptions.py      │  │  │
 │  │  │ Conversation     │  │ GuestyMessageError │  │  │
 │  │  │ MessageRequest   │  │ (new)              │  │  │
-│  │  │ MessageResult    │  │                    │  │  │
+│  │  │ MessageDelivery  │  │                    │  │  │
+│  │  │ Result           │  │                    │  │  │
 │  │  └──────────────────┘  └────────────────────┘  │  │
 │  └────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────┘
@@ -88,8 +89,10 @@ uv run mypy custom_components/
 # Run docstring coverage check
 uv run interrogate custom_components/ -v
 
-# Run all pre-commit hooks
+# Run all pre-commit hooks (prek is a project-local alias)
 prek
+
+# Alternative: uv run pre-commit run --all-files
 ```
 
 ## Key Patterns

@@ -103,7 +103,7 @@ class MessageDeliveryResult:
 | `success` | `bool` | Required | True if Guesty accepted |
 | `message_id` | `str \| None` | Present on success | Guesty message ID |
 | `error_details` | `str \| None` | Present on failure | Error description |
-| `reservation_id` | `str \| None` | Always present | Reservation targeted |
+| `reservation_id` | `str \| None` | Optional | Reservation targeted |
 
 **State transitions**: N/A — this is an immutable result object.
 
