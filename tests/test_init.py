@@ -273,3 +273,48 @@ class TestLogSanitization:
         secret = entry.data[CONF_CLIENT_SECRET]
         for record in caplog.records:
             assert secret not in record.getMessage()
+
+
+class TestEndToEnd:
+    """End-to-end integration tests spanning full lifecycle."""
+
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_flow_to_setup_to_unload(
+        self,
+        mock_test: AsyncMock,
+        mock_validate: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Config flow → setup entry → client operational → unload."""
+        from homeassistant.config_entries import SOURCE_USER
+        from homeassistant.data_entry_flow import FlowResultType
+
+        # Step 1: Config flow creates entry
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data={
+                CONF_CLIENT_ID: "e2e-client",
+                CONF_CLIENT_SECRET: "e2e-secret",
+            },
+        )
+        assert result["type"] is FlowResultType.CREATE_ENTRY
+
+        # Step 2: Entry is loaded
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        assert entry.state is ConfigEntryState.LOADED
+        assert DOMAIN in hass.data
+        assert entry.entry_id in hass.data[DOMAIN]
+
+        # Step 3: Unload
+        await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+        assert entry.state is ConfigEntryState.NOT_LOADED

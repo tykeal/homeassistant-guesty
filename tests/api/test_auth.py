@@ -287,3 +287,27 @@ class TestTokenRateLimit:
         count, window = await storage.load_request_count()
         assert count == 1
         assert window is not None
+
+
+class TestEdgeCases:
+    """Edge case tests for token manager."""
+
+    @respx.mock
+    async def test_unexpected_status_code(self) -> None:
+        """Unexpected status code raises GuestyResponseError."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(500, text="Internal Server Error"),
+        )
+        manager, _ = _make_manager()
+        with pytest.raises(GuestyResponseError, match="Unexpected"):
+            await manager.get_token()
+
+    @respx.mock
+    async def test_timeout_raises_connection_error(self) -> None:
+        """Timeout raises GuestyConnectionError."""
+        respx.post(TOKEN_URL).mock(
+            side_effect=httpx.TimeoutException("timed out"),
+        )
+        manager, _ = _make_manager()
+        with pytest.raises(GuestyConnectionError, match="connect"):
+            await manager.get_token()

@@ -123,3 +123,35 @@ class TestTokenPersistenceAcrossRestart:
         await hass.async_block_till_done()
 
         assert entry.state is ConfigEntryState.LOADED
+
+
+class TestTenRestartScenario:
+    """SC-002: Token reuse prevents exhausting 5-request limit."""
+
+    @respx.mock
+    async def test_10_restarts_reuse_token(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """10 restarts with valid token make zero token requests."""
+        token_route = respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        respx.get(f"{BASE_URL}/listings").mock(
+            return_value=Response(200, json={"results": []}),
+        )
+
+        for _i in range(10):
+            entry = _entry_with_token()
+            entry.add_to_hass(hass)
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+            assert entry.state is ConfigEntryState.LOADED
+
+            await hass.config_entries.async_unload(entry.entry_id)
+            await hass.async_block_till_done()
+            await hass.config_entries.async_remove(entry.entry_id)
+            await hass.async_block_till_done()
+
+        # With valid persisted tokens, zero token requests needed
+        assert token_route.call_count == 0
