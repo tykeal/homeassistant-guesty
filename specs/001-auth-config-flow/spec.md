@@ -269,11 +269,11 @@ verifying appropriate error messages appear in the HA UI.
   errors, connection errors, and unexpected errors.
 - **FR-017**: The integration MUST never include sensitive data (tokens,
   client secrets) in log messages or error reports.
-- **FR-018**: All network operations MUST be asynchronous and MUST NOT
-  block the Home Assistant event loop.
-- **FR-019**: The integration MUST include a properly configured
-  manifest declaring the integration domain, config flow support, and
-  minimum Home Assistant version compatibility.
+- **FR-018**: All network operations MUST complete without degrading
+  Home Assistant responsiveness or blocking user interactions.
+- **FR-019**: The integration MUST declare its identity, supported
+  configuration method, and minimum Home Assistant version compatibility
+  through the standard integration metadata mechanism.
 - **FR-020**: The integration MUST provide localized user-facing strings
   for the configuration flow (step titles, field labels, error
   messages).
@@ -318,15 +318,17 @@ verifying appropriate error messages appear in the HA UI.
   actionable error message within 5 seconds.
 - **SC-006**: The integration never exceeds 5 authentication requests
   per 24-hour period per Guesty account under any operating condition.
-- **SC-007**: All network operations complete without blocking the Home
-  Assistant event loop (zero synchronous I/O calls).
+- **SC-007**: All network operations complete without degrading Home
+  Assistant responsiveness during normal operation.
 - **SC-008**: Sensitive credentials and tokens never appear in any log
   output at any log level.
-- **SC-009**: All source code achieves 100% docstring coverage and
-  complete type annotation coverage with zero linting errors.
-- **SC-010**: All external service interactions are fully testable
-  without live API calls; test suite achieves 100% branch coverage of
-  authentication and retry logic.
+- **SC-009**: Authentication, token refresh, and retry failures produce
+  consistent, actionable diagnostics that allow a user or maintainer to
+  identify the failure cause and recover without inspecting source code.
+- **SC-010**: Authentication and retry behavior can be validated in
+  repeatable non-production test scenarios and demonstrates correct
+  recovery from expired tokens, rate limits, and transient API errors
+  without requiring live Guesty service availability.
 
 ## Assumptions
 

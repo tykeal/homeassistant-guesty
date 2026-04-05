@@ -42,7 +42,12 @@ proceeding to planning
   or `/speckit.plan`.
 - 21 functional requirements cover authentication, token lifecycle,
   rate limiting, error handling, and configuration flow.
-- 5 user stories span all priority levels (P1-P3) with 16 total
+- 5 user stories span all priority levels (P1-P3) with 17 total
   acceptance scenarios.
 - 6 edge cases identified covering boundary conditions and failure
   modes.
+- Platform-specific terminology (config flow, OAuth 2.0 Client
+  Credentials) is retained where it describes the user experience
+  or specification-level protocol, not implementation details.
+  Implementation-specific concerns (async patterns, event loop,
+  manifest format) have been reframed as behavioral outcomes.
