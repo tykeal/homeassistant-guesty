@@ -129,27 +129,27 @@ entry and failure shows actionable error messages.
 > **NOTE: Write these tests FIRST, ensure they FAIL before
 > implementation**
 
-- [ ] T009 [P] [US1] Write token acquisition unit tests in
+- [X] T009 [P] [US1] Write token acquisition unit tests in
   `tests/api/test_auth.py`: successful token acquisition via
   `get_token()`, cached token reuse on second call, `GuestyAuthError`
   on 401 invalid credentials, `GuestyConnectionError` on network
   failure/timeout, `GuestyResponseError` on malformed token response
   (missing fields, invalid JSON) — all using `respx` to mock HTTP
   and `FakeTokenStorage`
-- [ ] T010 [P] [US1] Write API client `test_connection` unit tests in
+- [X] T010 [P] [US1] Write API client `test_connection` unit tests in
   `tests/api/test_client.py`: successful connection test (GET
   `/listings?limit=1&fields=_id`), `GuestyAuthError` propagation from
   token manager, `GuestyConnectionError` on network failure,
   authenticated request includes `Authorization: Bearer` header —
   using `respx` mocking
-- [ ] T011 [P] [US1] Write config flow `step_user` tests in
+- [X] T011 [P] [US1] Write config flow `step_user` tests in
   `tests/test_config_flow.py`: successful credential entry creates
   config entry, invalid credentials show `invalid_auth` error,
   connection failure shows `cannot_connect` error, duplicate
   `client_id` triggers `already_configured` abort, form fields
   include `client_id` and `client_secret` — using
   `pytest-homeassistant-custom-component` fixtures
-- [ ] T012 [P] [US1] Write `async_setup_entry` and
+- [X] T012 [P] [US1] Write `async_setup_entry` and
   `async_unload_entry` tests in `tests/test_init.py`: setup creates
   `httpx.AsyncClient`, `GuestyTokenManager`, and `GuestyApiClient`
   in `hass.data[DOMAIN]`; unload closes HTTP client and removes
@@ -158,7 +158,7 @@ entry and failure shows actionable error messages.
 
 ### Implementation for User Story 1
 
-- [ ] T013 [US1] Implement `GuestyTokenManager` basic token
+- [X] T013 [US1] Implement `GuestyTokenManager` basic token
   acquisition in `custom_components/guesty/api/auth.py`: constructor
   accepting `client_id`, `client_secret`, `http_client`
   (`httpx.AsyncClient`), and `storage` (`TokenStorage`);
@@ -167,30 +167,30 @@ entry and failure shows actionable error messages.
   `CachedToken` caching; maps HTTP 401 to `GuestyAuthError`, network
   errors to `GuestyConnectionError`, malformed responses to
   `GuestyResponseError`
-- [ ] T014 [US1] Implement `GuestyApiClient` with `test_connection`
+- [X] T014 [US1] Implement `GuestyApiClient` with `test_connection`
   in `custom_components/guesty/api/client.py`: constructor accepting
   `token_manager` (`GuestyTokenManager`), `http_client`
   (`httpx.AsyncClient`), and optional `base_url`; `test_connection()`
   that acquires token and GETs `/listings?limit=1&fields=_id`;
   `_request()` helper that adds `Authorization: Bearer` header;
   propagates all `GuestyApiError` subtypes
-- [ ] T015 [US1] Update public exports in
+- [X] T015 [US1] Update public exports in
   `custom_components/guesty/api/__init__.py` to include
   `GuestyTokenManager` and `GuestyApiClient`
-- [ ] T016 [P] [US1] Create integration manifest in
+- [X] T016 [P] [US1] Create integration manifest in
   `custom_components/guesty/manifest.json`: domain `guesty`,
   `config_flow: true`, `iot_class: cloud_polling`, HA version
   `2026.2.0`, requirements `httpx`, codeowners, documentation URL
-- [ ] T017 [P] [US1] Create HA-level constants in
+- [X] T017 [P] [US1] Create HA-level constants in
   `custom_components/guesty/const.py`: `DOMAIN = "guesty"`,
   `CONF_CLIENT_ID`, `CONF_CLIENT_SECRET`, `PLATFORMS: list[Platform]`
   (empty for MVP)
-- [ ] T018 [P] [US1] Create localized UI strings in
+- [X] T018 [P] [US1] Create localized UI strings in
   `custom_components/guesty/strings.json`: config flow step `user`
   title and field descriptions (`client_id`, `client_secret`), error
   messages (`invalid_auth`, `cannot_connect`, `unknown`,
   `rate_limited`), abort reasons (`already_configured`)
-- [ ] T019 [US1] Implement stub `HATokenStorage` and entry lifecycle
+- [X] T019 [US1] Implement stub `HATokenStorage` and entry lifecycle
   in `custom_components/guesty/__init__.py`: `HATokenStorage` class
   with stub `load_token`/`save_token`/`load_request_count`/
   `save_request_count` (return defaults); `async_setup_entry` creates
@@ -198,7 +198,7 @@ entry and failure shows actionable error messages.
   stores in `hass.data[DOMAIN][entry.entry_id]`, calls
   `test_connection()` (raises `ConfigEntryNotReady` on failure);
   `async_unload_entry` closes HTTP client, removes `hass.data` entry
-- [ ] T020 [US1] Implement config flow `step_user` in
+- [X] T020 [US1] Implement config flow `step_user` in
   `custom_components/guesty/config_flow.py`:
   `GuestyConfigFlow(ConfigFlow, domain=DOMAIN)` with
   `async_step_user` showing credential form, validating via temporary
