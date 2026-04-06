@@ -131,12 +131,12 @@ monitoring and visibility purpose. Marking it as diagnostic keeps the primary
 entity list clean while making the data accessible to power users.
 
 **Independent Test**: Can be fully tested by verifying that diagnostic-category
-sensors on the listing device display the total price, currency, and payment
-collection status for the current or upcoming reservation.
+sensors on the listing device display the total price, balance due, and
+currency for the current or upcoming reservation.
 
 **Acceptance Scenarios**:
 
-1. **Given** a reservation has financial data in Guesty (total paid, balance
+1. **Given** a reservation has financial data in Guesty (total price, balance
    due, currency), **When** the reservation data loads, **Then** diagnostic
    sensors on the listing device show the total price, balance due, and
    currency.
