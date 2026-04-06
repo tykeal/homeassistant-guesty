@@ -446,6 +446,14 @@ async def async_unload_entry(
     if unload_ok:
         data = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
         if data is not None:
+            for key in (
+                "coordinator",
+                "reservations_coordinator",
+                "cf_coordinator",
+            ):
+                coord = data.get(key)
+                if coord is not None:
+                    await coord.async_shutdown()
             http_client: httpx.AsyncClient = data["http_client"]
             await http_client.aclose()
 
