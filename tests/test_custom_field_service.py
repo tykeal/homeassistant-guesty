@@ -1355,6 +1355,12 @@ class TestEdgeCases:
         ends = [e for e in call_order if e.startswith("end-")]
         assert len(starts) == 2
         assert len(ends) == 2
+        # No end event appears before both start events
+        first_end_idx = next(
+            i for i, event in enumerate(call_order) if event.startswith("end-")
+        )
+        assert all(event.startswith("start-") for event in call_order[:first_end_idx])
+        assert first_end_idx == 2
 
     @patch(
         "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
