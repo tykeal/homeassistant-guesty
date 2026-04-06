@@ -37,7 +37,7 @@ messages, reports, and operational workflows.
 
 **Why this priority**: Writing a custom field value to a listing
 is the core capability of this feature. Without this fundamental
-write operation, no other custom variable functionality (automation
+write operation, no other custom field functionality (automation
 integration, reservation fields) can deliver value. Listing-level
 custom fields are the most commonly used type in Guesty property
 management workflows.
