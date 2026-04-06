@@ -264,7 +264,10 @@ async def async_setup_entry(
             listing = coordinator.data.get(listing_id) if coordinator.data else None
             if listing:
                 seen_slugs: dict[str, int] = {}
-                for field_name in listing.custom_fields:
+                for field_name in sorted(
+                    listing.custom_fields,
+                    key=lambda n: (slugify(n), n),
+                ):
                     cf_desc = create_custom_field_description(field_name, seen_slugs)
                     entities.append(
                         GuestyListingSensor(
