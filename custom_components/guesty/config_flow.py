@@ -8,7 +8,6 @@ import logging
 from datetime import datetime
 from typing import Any
 
-import httpx
 import voluptuous as vol
 from homeassistant.config_entries import (
     ConfigEntry,
@@ -16,10 +15,11 @@ from homeassistant.config_entries import (
     ConfigFlowResult,
     OptionsFlow,
 )
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.httpx_client import get_async_client
 
 from custom_components.guesty.api.auth import GuestyTokenManager
 from custom_components.guesty.api.client import GuestyApiClient
-from custom_components.guesty.api.const import DEFAULT_TIMEOUT
 from custom_components.guesty.api.exceptions import (
     GuestyAuthError,
     GuestyConnectionError,
@@ -94,12 +94,14 @@ class _NullStorage:
 
 
 async def _validate_credentials(
+    hass: HomeAssistant,
     client_id: str,
     client_secret: str,
 ) -> None:
     """Validate Guesty credentials by acquiring a token and testing.
 
     Args:
+        hass: Home Assistant instance.
         client_id: Guesty API client ID.
         client_secret: Guesty API client secret.
 
@@ -108,20 +110,20 @@ async def _validate_credentials(
         GuestyConnectionError: If the API is unreachable.
         GuestyRateLimitError: If rate limited.
     """
-    async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as http_client:
-        storage = _NullStorage()
-        token_manager = GuestyTokenManager(
-            client_id=client_id,
-            client_secret=client_secret,
-            http_client=http_client,
-            storage=storage,
-            refresh_buffer=0,
-        )
-        api_client = GuestyApiClient(
-            token_manager=token_manager,
-            http_client=http_client,
-        )
-        await api_client.test_connection()
+    http_client = get_async_client(hass)
+    storage = _NullStorage()
+    token_manager = GuestyTokenManager(
+        client_id=client_id,
+        client_secret=client_secret,
+        http_client=http_client,
+        storage=storage,
+        refresh_buffer=0,
+    )
+    api_client = GuestyApiClient(
+        token_manager=token_manager,
+        http_client=http_client,
+    )
+    await api_client.test_connection()
 
 
 class GuestyConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -178,7 +180,7 @@ class GuestyConfigFlow(ConfigFlow, domain=DOMAIN):
             self._abort_if_unique_id_configured()
 
             try:
-                await _validate_credentials(client_id, client_secret)
+                await _validate_credentials(self.hass, client_id, client_secret)
             except GuestyAuthError:
                 errors["base"] = "invalid_auth"
             except GuestyConnectionError:
@@ -243,7 +245,7 @@ class GuestyConfigFlow(ConfigFlow, domain=DOMAIN):
             client_secret = user_input[CONF_CLIENT_SECRET]
 
             try:
-                await _validate_credentials(client_id, client_secret)
+                await _validate_credentials(self.hass, client_id, client_secret)
             except GuestyAuthError:
                 errors["base"] = "invalid_auth"
             except GuestyConnectionError:
