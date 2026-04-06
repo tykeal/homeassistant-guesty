@@ -1461,7 +1461,11 @@ class TestSetupEntryNoFilterOptions:
 
 
 class TestDeselectedDeviceRemoval:
-    """Tests for listing filter changes triggering reload (T030-T033)."""
+    """Tests for listing filter changes triggering reload (T030-T033).
+
+    Also verifies that deselected listing devices are removed from
+    the device registry before the config entry is reloaded.
+    """
 
     @pytest.fixture(autouse=True)
     def _mock_cf_defs(self) -> Generator[None]:
@@ -1700,6 +1704,404 @@ class TestDeselectedDeviceRemoval:
             await hass.async_block_till_done()
 
             mock_reload.assert_awaited_once_with(entry.entry_id)
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_deselected_devices_removed_on_filter_change(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Deselected listing devices removed from registry."""
+        from homeassistant.helpers import device_registry as dr
+
+        from custom_components.guesty.api.models import (
+            GuestyListing,
+        )
+
+        listing_a = sample_listing
+        assert isinstance(listing_a, GuestyListing)
+
+        mock_listings.return_value = [listing_a]
+
+        entry = _make_entry(
+            options={
+                CONF_SELECTED_LISTINGS: [
+                    listing_a.id,
+                    "listing-002",
+                ],
+            },
+        )
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        dev_reg = dr.async_get(hass)
+        dev_reg.async_get_or_create(
+            config_entry_id=entry.entry_id,
+            identifiers={(DOMAIN, "listing-002")},
+            name="Second Listing",
+        )
+
+        devices_before = dr.async_entries_for_config_entry(
+            dev_reg,
+            entry.entry_id,
+        )
+        listing_ids_before = {
+            ident[1]
+            for d in devices_before
+            for ident in d.identifiers
+            if ident[0] == DOMAIN
+        }
+        assert "listing-002" in listing_ids_before
+
+        with patch.object(
+            hass.config_entries,
+            "async_reload",
+            new_callable=AsyncMock,
+        ) as mock_reload:
+            hass.config_entries.async_update_entry(
+                entry,
+                options={
+                    CONF_SELECTED_LISTINGS: [listing_a.id],
+                },
+            )
+            await hass.async_block_till_done()
+            mock_reload.assert_awaited_once_with(entry.entry_id)
+
+        devices_after = dr.async_entries_for_config_entry(
+            dev_reg,
+            entry.entry_id,
+        )
+        listing_ids_after = {
+            ident[1]
+            for d in devices_after
+            for ident in d.identifiers
+            if ident[0] == DOMAIN
+        }
+        assert "listing-002" not in listing_ids_after
+        assert listing_a.id in listing_ids_after
+        # Verify device fully removed from registry
+        assert (
+            dev_reg.async_get_device(
+                identifiers={(DOMAIN, "listing-002")},
+            )
+            is None
+        )
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_none_to_explicit_removes_deselected_devices(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """None→explicit selection removes deselected devices."""
+        from homeassistant.helpers import device_registry as dr
+
+        from custom_components.guesty.api.models import (
+            GuestyListing,
+        )
+
+        listing_a = sample_listing
+        assert isinstance(listing_a, GuestyListing)
+
+        mock_listings.return_value = [listing_a]
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        dev_reg = dr.async_get(hass)
+        dev_reg.async_get_or_create(
+            config_entry_id=entry.entry_id,
+            identifiers={(DOMAIN, "listing-002")},
+            name="Second Listing",
+        )
+        dev_reg.async_get_or_create(
+            config_entry_id=entry.entry_id,
+            identifiers={(DOMAIN, "listing-003")},
+            name="Third Listing",
+        )
+
+        with patch.object(
+            hass.config_entries,
+            "async_reload",
+            new_callable=AsyncMock,
+        ) as mock_reload:
+            hass.config_entries.async_update_entry(
+                entry,
+                options={
+                    CONF_SELECTED_LISTINGS: [listing_a.id],
+                },
+            )
+            await hass.async_block_till_done()
+            mock_reload.assert_awaited_once_with(entry.entry_id)
+
+        devices_after = dr.async_entries_for_config_entry(
+            dev_reg,
+            entry.entry_id,
+        )
+        listing_ids_after = {
+            ident[1]
+            for d in devices_after
+            for ident in d.identifiers
+            if ident[0] == DOMAIN
+        }
+        assert "listing-002" not in listing_ids_after
+        assert "listing-003" not in listing_ids_after
+        assert listing_a.id in listing_ids_after
+        # Verify devices fully removed from registry
+        assert (
+            dev_reg.async_get_device(
+                identifiers={(DOMAIN, "listing-002")},
+            )
+            is None
+        )
+        assert (
+            dev_reg.async_get_device(
+                identifiers={(DOMAIN, "listing-003")},
+            )
+            is None
+        )
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_notify_device_not_removed_on_filter(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Notify device (entry_id identifier) not removed."""
+        from homeassistant.helpers import device_registry as dr
+
+        from custom_components.guesty.api.models import (
+            GuestyListing,
+        )
+
+        listing_a = sample_listing
+        assert isinstance(listing_a, GuestyListing)
+
+        mock_listings.return_value = [listing_a]
+
+        entry = _make_entry(
+            options={
+                CONF_SELECTED_LISTINGS: [
+                    listing_a.id,
+                    "listing-002",
+                ],
+            },
+        )
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        dev_reg = dr.async_get(hass)
+        dev_reg.async_get_or_create(
+            config_entry_id=entry.entry_id,
+            identifiers={(DOMAIN, entry.entry_id)},
+            name="Guesty Notify",
+        )
+        dev_reg.async_get_or_create(
+            config_entry_id=entry.entry_id,
+            identifiers={(DOMAIN, "listing-002")},
+            name="Second Listing",
+        )
+
+        with patch.object(
+            hass.config_entries,
+            "async_reload",
+            new_callable=AsyncMock,
+        ):
+            hass.config_entries.async_update_entry(
+                entry,
+                options={
+                    CONF_SELECTED_LISTINGS: [listing_a.id],
+                },
+            )
+            await hass.async_block_till_done()
+
+        devices_after = dr.async_entries_for_config_entry(
+            dev_reg,
+            entry.entry_id,
+        )
+        ids_after = {
+            ident[1]
+            for d in devices_after
+            for ident in d.identifiers
+            if ident[0] == DOMAIN
+        }
+        assert entry.entry_id in ids_after
+        assert "listing-002" not in ids_after
+        # Verify listing-002 fully removed from registry
+        assert (
+            dev_reg.async_get_device(
+                identifiers={(DOMAIN, "listing-002")},
+            )
+            is None
+        )
+        # Verify notify device still exists in registry
+        assert (
+            dev_reg.async_get_device(
+                identifiers={(DOMAIN, entry.entry_id)},
+            )
+            is not None
+        )
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_selected_devices_not_removed(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Devices for selected listings are preserved."""
+        from homeassistant.helpers import device_registry as dr
+
+        from custom_components.guesty.api.models import (
+            GuestyListing,
+        )
+
+        listing_a = sample_listing
+        assert isinstance(listing_a, GuestyListing)
+
+        mock_listings.return_value = [listing_a]
+
+        entry = _make_entry(
+            options={
+                CONF_SELECTED_LISTINGS: [
+                    listing_a.id,
+                    "listing-002",
+                    "listing-003",
+                ],
+            },
+        )
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        dev_reg = dr.async_get(hass)
+        dev_reg.async_get_or_create(
+            config_entry_id=entry.entry_id,
+            identifiers={(DOMAIN, "listing-002")},
+            name="Second Listing",
+        )
+        dev_reg.async_get_or_create(
+            config_entry_id=entry.entry_id,
+            identifiers={(DOMAIN, "listing-003")},
+            name="Third Listing",
+        )
+
+        with patch.object(
+            hass.config_entries,
+            "async_reload",
+            new_callable=AsyncMock,
+        ):
+            hass.config_entries.async_update_entry(
+                entry,
+                options={
+                    CONF_SELECTED_LISTINGS: [
+                        listing_a.id,
+                        "listing-002",
+                    ],
+                },
+            )
+            await hass.async_block_till_done()
+
+        devices_after = dr.async_entries_for_config_entry(
+            dev_reg,
+            entry.entry_id,
+        )
+        ids_after = {
+            ident[1]
+            for d in devices_after
+            for ident in d.identifiers
+            if ident[0] == DOMAIN
+        }
+        assert listing_a.id in ids_after
+        assert "listing-002" in ids_after
+        assert "listing-003" not in ids_after
+        # Verify listing-003 fully removed from registry
+        assert (
+            dev_reg.async_get_device(
+                identifiers={(DOMAIN, "listing-003")},
+            )
+            is None
+        )
+        # Verify selected devices still exist in registry
+        assert (
+            dev_reg.async_get_device(
+                identifiers={(DOMAIN, listing_a.id)},
+            )
+            is not None
+        )
+        assert (
+            dev_reg.async_get_device(
+                identifiers={(DOMAIN, "listing-002")},
+            )
+            is not None
+        )
 
 
 class TestIntervalRefreshOnOptionsUpdate:
