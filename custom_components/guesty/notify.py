@@ -10,10 +10,12 @@ service calls, automations, and scripts.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+import voluptuous as vol
 from homeassistant.components.notify import NotifyEntity
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_platform
 from homeassistant.helpers.device_registry import DeviceInfo
 
 from custom_components.guesty.api.exceptions import GuestyApiError, GuestyMessageError
@@ -47,6 +49,20 @@ async def async_setup_entry(
     messaging_client: GuestyMessagingClient = data["messaging_client"]
     async_add_entities(
         [GuestyNotifyEntity(messaging_client, entry)],
+    )
+
+    platform = entity_platform.async_get_current_platform()
+    platform.async_register_entity_service(
+        "send_guest_message",
+        {
+            vol.Required("message"): str,
+            vol.Required("reservation_id"): str,
+            vol.Optional("channel"): str,
+            vol.Optional("template_variables"): vol.Schema(
+                {str: str},
+            ),
+        },
+        "async_send_guest_message",
     )
 
 
@@ -133,5 +149,64 @@ class GuestyNotifyEntity(NotifyEntity):
                 exc_info=True,
             )
             raise HomeAssistantError(str(exc)) from exc
+        except ValueError as exc:
+            raise HomeAssistantError(str(exc)) from exc
+
+    async def async_send_guest_message(
+        self,
+        message: str,
+        reservation_id: str,
+        channel: str | None = None,
+        template_variables: dict[str, str] | None = None,
+        **_kwargs: Any,
+    ) -> None:
+        """Send a message with channel and template support.
+
+        Entity service method accepting ``reservation_id``,
+        ``channel``, and ``template_variables`` directly instead
+        of encoding them in the ``title`` parameter.
+
+        Args:
+            message: The message body (may contain placeholders).
+            reservation_id: Guesty reservation identifier.
+            channel: Optional delivery channel override.
+            template_variables: Optional placeholder substitutions.
+            **_kwargs: Ignored additional service call data.
+
+        Raises:
+            HomeAssistantError: If inputs are invalid or delivery
+                fails.
+        """
+        if not reservation_id:
+            raise HomeAssistantError("reservation_id is required and must not be empty")
+
+        if not message:
+            raise HomeAssistantError("message body is required and must not be empty")
+
+        try:
+            await self._messaging_client.send_message(
+                reservation_id=reservation_id,
+                body=message,
+                channel=channel,
+                template_variables=template_variables,
+            )
+        except GuestyMessageError as exc:
+            _LOGGER.error(
+                "Message delivery failed for reservation '%s': %s",
+                reservation_id,
+                exc,
+                exc_info=True,
+            )
+            raise HomeAssistantError(str(exc)) from exc
+        except GuestyApiError as exc:
+            _LOGGER.error(
+                "API error for reservation '%s': %s",
+                reservation_id,
+                exc,
+                exc_info=True,
+            )
+            raise HomeAssistantError(str(exc)) from exc
+        except KeyError as exc:
+            raise HomeAssistantError(f"Missing template variable: {exc}") from exc
         except ValueError as exc:
             raise HomeAssistantError(str(exc)) from exc
