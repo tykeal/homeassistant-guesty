@@ -754,6 +754,8 @@ async def async_setup_entry(
     ]
 
     known_ids: set[str] = set()
+    known_cf_keys: dict[str, set[str]] = {}
+    seen_slugs_per_listing: dict[str, dict[str, int]] = {}
 
     def _create_sensors(
         listing_ids: set[str],
@@ -786,12 +788,20 @@ async def async_setup_entry(
             # Dynamic custom field sensors
             listing = coordinator.data.get(listing_id) if coordinator.data else None
             if listing:
-                seen_slugs: dict[str, int] = {}
+                seen_slugs = seen_slugs_per_listing.setdefault(
+                    listing_id,
+                    {},
+                )
+                cf_keys = known_cf_keys.setdefault(listing_id, set())
                 for field_name in sorted(
                     listing.custom_fields,
                     key=lambda n: (slugify(n), n),
                 ):
-                    cf_desc = create_custom_field_description(field_name, seen_slugs)
+                    cf_keys.add(field_name)
+                    cf_desc = create_custom_field_description(
+                        field_name,
+                        seen_slugs,
+                    )
                     entities.append(
                         GuestyListingSensor(
                             coordinator=coordinator,
@@ -822,10 +832,49 @@ async def async_setup_entry(
                 )
         return entities
 
+    def _create_cf_sensors_for_listing(
+        listing_id: str,
+        new_field_names: set[str],
+    ) -> list[GuestyListingSensor]:
+        """Create custom field sensors for newly discovered fields.
+
+        Args:
+            listing_id: The listing gaining new custom fields.
+            new_field_names: Field names not yet tracked.
+
+        Returns:
+            List of new custom field sensor entities.
+        """
+        entities: list[GuestyListingSensor] = []
+        seen_slugs = seen_slugs_per_listing.setdefault(
+            listing_id,
+            {},
+        )
+        cf_keys = known_cf_keys.setdefault(listing_id, set())
+        for field_name in sorted(
+            new_field_names,
+            key=lambda n: (slugify(n), n),
+        ):
+            cf_keys.add(field_name)
+            cf_desc = create_custom_field_description(
+                field_name,
+                seen_slugs,
+            )
+            entities.append(
+                GuestyListingSensor(
+                    coordinator=coordinator,
+                    listing_id=listing_id,
+                    entry=entry,
+                    description=cf_desc,
+                )
+            )
+        return entities
+
     def _on_coordinator_update() -> None:
-        """Handle coordinator data updates for new listings."""
+        """Handle coordinator data updates for new listings/fields."""
         if coordinator.data is None:
             return
+
         current_ids = set(coordinator.data.keys())
         new_ids = current_ids - known_ids
         if new_ids:
@@ -836,6 +885,31 @@ async def async_setup_entry(
             )
             known_ids.update(new_ids)
             async_add_entities(_create_sensors(new_ids))
+
+        # Check existing listings for new custom field keys
+        new_cf_entities: list[GuestyListingSensor] = []
+        for listing_id in current_ids - new_ids:
+            listing = coordinator.data.get(listing_id)
+            if listing is None:
+                continue
+            current_cf = set(listing.custom_fields.keys())
+            prev_cf = known_cf_keys.get(listing_id, set())
+            new_fields = current_cf - prev_cf
+            if new_fields:
+                _LOGGER.debug(
+                    "Discovered %d new custom field(s) on %s: %s",
+                    len(new_fields),
+                    listing_id,
+                    new_fields,
+                )
+                new_cf_entities.extend(
+                    _create_cf_sensors_for_listing(
+                        listing_id,
+                        new_fields,
+                    )
+                )
+        if new_cf_entities:
+            async_add_entities(new_cf_entities)
 
     # Initial entity creation
     if coordinator.data:

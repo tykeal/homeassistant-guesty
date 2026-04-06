@@ -88,6 +88,22 @@ set_custom_field:
       selector:
         object:
 
+get_custom_fields:
+  name: Get custom fields
+  description: >-
+    Return all custom field definitions from the cached
+    Guesty custom fields coordinator.
+  fields:
+    config_entry_id:
+      name: Config entry ID
+      description: >-
+        Target a specific Guesty config entry. Required only
+        when multiple Guesty accounts are configured.
+      required: false
+      selector:
+        config_entry:
+          integration: guesty
+
 add_reservation_note:
   name: Add reservation note
   description: >-
