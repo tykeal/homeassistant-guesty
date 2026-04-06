@@ -1954,8 +1954,6 @@ class TestFinancialDiagnosticSensors:
         assert sensor._money is None
 
 
-
-
 class TestEdgeCaseSameDayTurnover:
     """Tests for same-day turnover edge cases (FR-018)."""
 
