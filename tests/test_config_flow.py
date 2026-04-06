@@ -1449,7 +1449,7 @@ class TestListingOptionsFlow:
         result = await hass.config_entries.options.async_configure(
             result["flow_id"],
             user_input={
-                CONF_SELECTED_LISTINGS: ["lst_001", "lst_002"],
+                CONF_SELECTED_LISTINGS: ["lst_001"],
             },
         )
         assert result["step_id"] == "intervals"
@@ -1467,11 +1467,249 @@ class TestListingOptionsFlow:
 
         opts = entry.options
         assert opts[CONF_TAG_FILTER] == ["premium"]
-        assert opts[CONF_SELECTED_LISTINGS] == [
-            "lst_001",
-            "lst_002",
-        ]
+        assert opts[CONF_SELECTED_LISTINGS] == ["lst_001"]
         assert opts[CONF_SCAN_INTERVAL] == 10
         assert opts[CONF_RESERVATION_SCAN_INTERVAL] == 20
         assert opts[CONF_PAST_DAYS] == 7
         assert opts[CONF_FUTURE_DAYS] == 90
+
+
+class TestTagFilterOptionsFlow:
+    """Tests for tag-based pre-filtering in the options flow.
+
+    Covers T023-T027: single tag, empty tags, OR logic, no-match
+    error, and default-selection intersection.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
+    # helper to extract option IDs from the select_listings schema
+    @staticmethod
+    def _option_ids(result: ConfigFlowResult) -> list[str]:
+        """Extract listing IDs from select_listings schema.
+
+        Args:
+            result: Flow result at the select_listings step.
+
+        Returns:
+            List of listing ID values in the selector.
+        """
+        schema = result["data_schema"]
+        assert schema is not None
+        schema_dict = schema.schema
+        selector_key = next(iter(schema_dict))
+        selector = schema_dict[selector_key]
+        return [opt["value"] for opt in selector.config["options"]]
+
+    @staticmethod
+    def _default_ids(result: ConfigFlowResult) -> list[str]:
+        """Extract default listing IDs from schema.
+
+        Args:
+            result: Flow result at the select_listings step.
+
+        Returns:
+            Default listing ID values.
+        """
+        schema = result["data_schema"]
+        assert schema is not None
+        schema_dict = schema.schema
+        selector_key = next(iter(schema_dict))
+        return list(selector_key.default())
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_single_tag_shows_matching_listings(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """T023: select_listings shows only tag-matched listings."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        _setup_api_client(hass, entry.entry_id)
+
+        result = await hass.config_entries.options.async_init(
+            entry.entry_id,
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={CONF_TAG_FILTER: ["mountain"]},
+        )
+        assert result["step_id"] == "select_listings"
+        assert self._option_ids(result) == ["lst_002"]
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_empty_tags_show_all_listings(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """T024: select_listings shows all when tag_filter empty."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        _setup_api_client(hass, entry.entry_id)
+
+        result = await hass.config_entries.options.async_init(
+            entry.entry_id,
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={CONF_TAG_FILTER: []},
+        )
+        assert result["step_id"] == "select_listings"
+        assert set(self._option_ids(result)) == {
+            "lst_001",
+            "lst_002",
+            "lst_003",
+        }
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_multiple_tags_use_or_logic(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """T025: Multiple tags use OR — any match shown."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        _setup_api_client(hass, entry.entry_id)
+
+        result = await hass.config_entries.options.async_init(
+            entry.entry_id,
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={
+                CONF_TAG_FILTER: ["premium", "mountain"],
+            },
+        )
+        assert result["step_id"] == "select_listings"
+        assert set(self._option_ids(result)) == {
+            "lst_001",
+            "lst_002",
+        }
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_no_matching_tags_shows_error(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """T026: no_listings_match_tags error on zero matches."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        _setup_api_client(hass, entry.entry_id)
+
+        result = await hass.config_entries.options.async_init(
+            entry.entry_id,
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={CONF_TAG_FILTER: ["nonexistent"]},
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "init"
+        assert result["errors"] == {
+            "base": "no_listings_match_tags",
+        }
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_default_intersects_previous_with_filtered(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """T027: Default = prior selection ∩ tag-filtered IDs."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        hass.config_entries.async_update_entry(
+            entry,
+            options={
+                CONF_SELECTED_LISTINGS: [
+                    "lst_001",
+                    "lst_002",
+                ],
+            },
+        )
+        _setup_api_client(hass, entry.entry_id)
+
+        result = await hass.config_entries.options.async_init(
+            entry.entry_id,
+        )
+        # "beachfront" matches lst_001 only
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={CONF_TAG_FILTER: ["beachfront"]},
+        )
+        assert result["step_id"] == "select_listings"
+        # lst_002 was previously selected but is not in
+        # tag-filtered set, so only lst_001 remains
+        assert self._default_ids(result) == ["lst_001"]
