@@ -359,7 +359,12 @@ async def async_setup_entry(
                     ),
                     vol.Required("target_id"): str,
                     vol.Required("field_id"): str,
-                    vol.Required("value"): object,
+                    vol.Required("value"): vol.Any(
+                        str,
+                        int,
+                        float,
+                        bool,
+                    ),
                 },
             ),
             supports_response=SupportsResponse.OPTIONAL,
