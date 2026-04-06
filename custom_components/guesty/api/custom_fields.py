@@ -58,7 +58,8 @@ class GuestyCustomFieldsClient:
             with missing required fields are silently filtered.
 
         Raises:
-            GuestyCustomFieldError: On unexpected response format.
+            GuestyCustomFieldError: On non-2xx HTTP status or
+                unexpected response format.
             GuestyAuthError: On authentication failure.
             GuestyConnectionError: On network failure.
             GuestyRateLimitError: On rate limit exhaustion.
@@ -117,7 +118,8 @@ class GuestyCustomFieldsClient:
             GuestyCustomFieldResult indicating success or failure.
 
         Raises:
-            GuestyCustomFieldError: On invalid target, 400, or 404.
+            GuestyCustomFieldError: On invalid target type or any
+                non-2xx HTTP response.
             GuestyAuthError: On authentication failure.
             GuestyConnectionError: On network failure.
             GuestyRateLimitError: On rate limit exhaustion.

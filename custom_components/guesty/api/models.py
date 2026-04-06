@@ -775,7 +775,9 @@ class GuestyCustomFieldDefinition:
     Attributes:
         field_id: Unique identifier for the custom field.
         name: Human-readable display name.
-        field_type: Normalised value type (text, number, boolean).
+        field_type: Normalised value type for known Guesty types
+            (e.g. "string" becomes "text"), or the raw API type
+            string preserved as-is for unrecognised types.
         applicable_to: Set of entity types this field applies to.
     """
 
