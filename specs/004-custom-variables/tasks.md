@@ -165,8 +165,8 @@ by target type and verify definitions match Guesty account.
 
 <!-- markdownlint-disable MD013 -->
 
-- [ ] T026 [US3] Write automation compatibility tests: HA service call to `guesty.set_custom_field` dispatches update through custom fields client; service call with template-rendered value sends resolved value; service does not block HA event loop; service failure in automation context is logged and does not crash the automation in `tests/test_custom_field_service.py`
-- [ ] T027 [US3] Write response data tests: automation calls service with `return_response=True` and receives structured success response for subsequent action consumption; fire-and-forget call (no `return_response`) succeeds without response data in `tests/test_custom_field_service.py`
+- [x] T026 [US3] Write automation compatibility tests: HA service call to `guesty.set_custom_field` dispatches update through custom fields client; service call with template-rendered value sends resolved value; service does not block HA event loop; service failure in automation context is logged and does not crash the automation in `tests/test_custom_field_service.py`
+- [x] T027 [US3] Write response data tests: automation calls service with `return_response=True` and receives structured success response for subsequent action consumption; fire-and-forget call (no `return_response`) succeeds without response data in `tests/test_custom_field_service.py`
 
 <!-- markdownlint-enable MD013 -->
 
@@ -174,8 +174,8 @@ by target type and verify definitions match Guesty account.
 
 <!-- markdownlint-disable MD013 -->
 
-- [ ] T028 [US4] Write field discovery tests: coordinator exposes definitions with name, identifier, type, and applicability; `get_fields_for_target("listing")` returns only listing-applicable fields; `get_fields_for_target("reservation")` returns only reservation-applicable fields; fields applicable to "both" appear in both target queries; empty definitions returns empty list without error in `tests/test_coordinator.py`
-- [ ] T029 [US4] Write definition refresh tests: new field added in Guesty appears after coordinator refresh; deleted field removed after refresh; `update_interval` respects configured `CONF_CF_SCAN_INTERVAL` in `tests/test_coordinator.py`
+- [x] T028 [US4] Write field discovery tests: coordinator exposes definitions with name, identifier, type, and applicability; `get_fields_for_target("listing")` returns only listing-applicable fields; `get_fields_for_target("reservation")` returns only reservation-applicable fields; fields applicable to "both" appear in both target queries; empty definitions returns empty list without error in `tests/test_coordinator.py`
+- [x] T029 [US4] Write definition refresh tests: new field added in Guesty appears after coordinator refresh; deleted field removed after refresh; `update_interval` respects configured `CONF_CF_SCAN_INTERVAL` in `tests/test_coordinator.py`
 
 <!-- markdownlint-enable MD013 -->
 
@@ -183,7 +183,7 @@ by target type and verify definitions match Guesty account.
 
 <!-- markdownlint-disable MD013 -->
 
-- [ ] T030 Write edge case tests: field ID not in definitions for target type produces error listing available fields; multi-type field value passed through to Guesty for server-side validation; Unicode and special characters in values passed through without modification; very long string values passed through; concurrent service calls execute independently; definitions change during update — stale field reference surfaced from Guesty rejection; no custom fields defined for target type produces clear error in `tests/test_custom_field_service.py`
+- [x] T030 Write edge case tests: field ID not in definitions for target type produces error listing available fields; multi-type field value passed through to Guesty for server-side validation; Unicode and special characters in values passed through without modification; very long string values passed through; concurrent service calls execute independently; definitions change during update — stale field reference surfaced from Guesty rejection; no custom fields defined for target type produces clear error in `tests/test_custom_field_service.py`
 
 <!-- markdownlint-enable MD013 -->
 
