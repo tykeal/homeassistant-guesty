@@ -15,6 +15,7 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import EntityCategory
 from homeassistant.helpers.typing import StateType
+from homeassistant.util import slugify
 
 from custom_components.guesty.api.models import GuestyListing
 from custom_components.guesty.const import DOMAIN
@@ -110,7 +111,39 @@ LISTING_SENSOR_DESCRIPTIONS: tuple[GuestyListingSensorEntityDescription, ...] = 
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda listing: listing.check_out_time,
     ),
+    GuestyListingSensorEntityDescription(
+        key="tags",
+        translation_key="listing_tags",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda listing: ", ".join(listing.tags),
+    ),
 )
+
+
+def create_custom_field_description(
+    field_name: str,
+) -> GuestyListingSensorEntityDescription:
+    """Create a sensor description for a Guesty custom field.
+
+    Args:
+        field_name: The custom field name from the listing.
+
+    Returns:
+        A description whose key is ``custom_{slugified_name}``
+        and whose ``value_fn`` extracts the specific field.
+    """
+    slug = slugify(field_name)
+
+    def _value_fn(listing: GuestyListing) -> StateType:
+        """Extract the custom field value from the listing."""
+        return listing.custom_fields.get(field_name)
+
+    return GuestyListingSensorEntityDescription(
+        key=f"custom_{slug}",
+        translation_key="listing_custom_field",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=_value_fn,
+    )
 
 
 class GuestyListingSensor(GuestyEntity, SensorEntity):
@@ -199,6 +232,9 @@ async def async_setup_entry(
     def _create_sensors(listing_ids: set[str]) -> list[GuestyListingSensor]:
         """Create sensor entities for the given listing IDs.
 
+        Creates static description sensors plus dynamic custom field
+        sensors for each listing.
+
         Args:
             listing_ids: Set of listing IDs to create sensors for.
 
@@ -216,6 +252,19 @@ async def async_setup_entry(
                         description=desc,
                     )
                 )
+            # Dynamic custom field sensors
+            listing = coordinator.data.get(listing_id) if coordinator.data else None
+            if listing:
+                for field_name in listing.custom_fields:
+                    cf_desc = create_custom_field_description(field_name)
+                    entities.append(
+                        GuestyListingSensor(
+                            coordinator=coordinator,
+                            listing_id=listing_id,
+                            entry=entry,
+                            description=cf_desc,
+                        )
+                    )
         return entities
 
     def _on_coordinator_update() -> None:
