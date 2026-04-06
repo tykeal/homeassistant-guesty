@@ -133,6 +133,22 @@ class GuestyCustomFieldsClient:
                 field_id=field_id,
             )
 
+        if not target_id or not isinstance(target_id, str):
+            raise GuestyCustomFieldError(
+                "target_id must be a non-empty string",
+                target_type=target_type,
+                target_id=target_id,
+                field_id=field_id,
+            )
+
+        if not field_id or not isinstance(field_id, str):
+            raise GuestyCustomFieldError(
+                "field_id must be a non-empty string",
+                target_type=target_type,
+                target_id=target_id,
+                field_id=field_id,
+            )
+
         if target_type == "listing":
             path = LISTING_CUSTOM_FIELDS_PATH.format(
                 listing_id=target_id,

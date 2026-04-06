@@ -815,7 +815,7 @@ class GuestyCustomFieldDefinition:
         object_type = data.get("objectType")
         if object_type == "both":
             applicable_to = frozenset({"listing", "reservation"})
-        elif object_type is not None:
+        elif isinstance(object_type, str):
             applicable_to = frozenset({object_type})
         else:
             applicable_to = frozenset()

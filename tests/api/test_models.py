@@ -1500,6 +1500,15 @@ class TestGuestyCustomFieldDefinitionFromApiDict:
         assert result is not None
         assert result.applicable_to == frozenset({"listing"})
 
+    def test_non_string_object_type_defaults_empty(self) -> None:
+        """Non-string objectType defaults to frozenset()."""
+        data = _make_custom_field_definition_dict(
+            objectType=["listing", "reservation"],
+        )
+        result = GuestyCustomFieldDefinition.from_api_dict(data)
+        assert result is not None
+        assert result.applicable_to == frozenset()
+
 
 class TestGuestyCustomFieldDefinitionFrozen:
     """Tests for GuestyCustomFieldDefinition immutability."""

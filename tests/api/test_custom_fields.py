@@ -450,6 +450,34 @@ class TestSetField:
                 value="z",
             )
 
+    async def test_empty_target_id_raises_error(self) -> None:
+        """Empty target_id raises GuestyCustomFieldError."""
+        client = _make_custom_fields_client()
+        with pytest.raises(
+            GuestyCustomFieldError,
+            match="target_id",
+        ):
+            await client.set_field(
+                target_type="listing",
+                target_id="",
+                field_id="cf-1",
+                value="v",
+            )
+
+    async def test_empty_field_id_raises_error(self) -> None:
+        """Empty field_id raises GuestyCustomFieldError."""
+        client = _make_custom_fields_client()
+        with pytest.raises(
+            GuestyCustomFieldError,
+            match="field_id",
+        ):
+            await client.set_field(
+                target_type="listing",
+                target_id="lst-1",
+                field_id="",
+                value="v",
+            )
+
     @respx.mock
     async def test_unexpected_non_2xx_raises_error(self) -> None:
         """Unexpected non-2xx status raises GuestyCustomFieldError."""
