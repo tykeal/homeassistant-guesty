@@ -286,25 +286,22 @@ verify no refresh triggered.
 > **NOTE: Write these tests FIRST, ensure they FAIL before implementation
 > (Constitution I)**
 
-- [ ] T037 [US5] Write test: _async_options_updated calls async_request_refresh
-      on both listings coordinator and reservations coordinator when
-      selected_listings changes in tests/test_init.py
-- [ ] T038 [US5] Write test: _async_options_updated does not call
-      async_request_refresh when options saved with identical selected_listings
-      value in tests/test_init.py
-- [ ] T039 [US5] Write test: async_request_refresh is called after
-      _remove_deselected_devices completes (correct ordering) in
-      tests/test_init.py
+- [x] T037 [US5] Write test: _async_options_updated calls async_request_refresh
+      on all coordinators when scan intervals change in tests/test_init.py
+- [x] T038 [US5] Write test: _async_options_updated does not call
+      async_request_refresh when options saved with identical values
+      in tests/test_init.py
+- [x] T039 [US5] Write test: reload vs refresh distinction — listings change
+      triggers reload, interval change triggers refresh, both triggers reload
+      in tests/test_init.py
 
 ### Implementation for US5
 
-- [ ] T040 [US5] Implement conditional refresh in
-      `_async_options_updated`: store previous
-      selected\_listings in `hass.data[DOMAIN][entry_id]`,
-      compare with new value on update, call
-      `coordinator.async_request_refresh()` and
-      `reservations_coordinator.async_request_refresh()`
-      only when changed in
+- [x] T040 [US5] Implement conditional refresh in
+      `_async_options_updated`: track previous intervals
+      in `_prev_intervals`, compare on update, call
+      `coordinator.async_request_refresh()` on all three
+      coordinators only when intervals changed in
       custom_components/guesty/\_\_init\_\_.py
 
 **Checkpoint**: Filter changes reflected immediately. Users see updated entity
