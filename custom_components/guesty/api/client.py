@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import random
 from datetime import UTC, datetime, timedelta
@@ -214,34 +213,38 @@ class GuestyApiClient:
             statuses = ACTIONABLE_STATUSES
 
         now = datetime.now(UTC)
-        past_boundary = (now - timedelta(days=past_days)).isoformat()
-        future_boundary = (now + timedelta(days=future_days)).isoformat()
+        past_boundary = (now - timedelta(days=past_days)).strftime(
+            "%Y-%m-%d",
+        )
+        future_boundary = (now + timedelta(days=future_days)).strftime(
+            "%Y-%m-%d",
+        )
 
-        primary_filters = _build_reservation_filters(
+        primary_params = _build_reservation_params(
             past_boundary=past_boundary,
             future_boundary=future_boundary,
             statuses=statuses,
         )
         primary = await self._fetch_all_reservations(
-            primary_filters,
+            primary_params,
         )
 
-        secondary_filters = _build_checked_in_filters()
+        secondary_params = _build_checked_in_params()
         secondary = await self._fetch_all_reservations(
-            secondary_filters,
+            secondary_params,
         )
 
         return _merge_reservations(primary, secondary)
 
     async def _fetch_all_reservations(
         self,
-        filters: list[dict[str, object]],
+        params: dict[str, str | int],
     ) -> list[GuestyReservation]:
         """Paginate through all reservation pages.
 
         Args:
-            filters: JSON-serializable filter list for the
-                Guesty API filters parameter.
+            params: Query parameters for the Guesty API
+                reservations endpoint.
 
         Returns:
             List of parsed GuestyReservation objects.
@@ -255,19 +258,19 @@ class GuestyApiClient:
         all_reservations: list[GuestyReservation] = []
         skip = 0
         fields = " ".join(RESERVATIONS_FIELDS)
-        filters_json = json.dumps(filters)
 
         while True:
+            page_params: dict[str, str | int] = {
+                **params,
+                "limit": RESERVATIONS_PAGE_SIZE,
+                "skip": skip,
+                "fields": fields,
+                "sort": "_id",
+            }
             response = await self._request(
                 "GET",
                 RESERVATIONS_ENDPOINT,
-                params={
-                    "limit": RESERVATIONS_PAGE_SIZE,
-                    "skip": skip,
-                    "fields": fields,
-                    "sort": "_id",
-                    "filters": filters_json,
-                },
+                params=page_params,
             )
 
             if not response.is_success:
@@ -539,50 +542,38 @@ def _is_transient_5xx(status_code: int) -> bool:
     return status_code in _TRANSIENT_STATUS_CODES
 
 
-def _build_reservation_filters(
+def _build_reservation_params(
     *,
     past_boundary: str,
     future_boundary: str,
     statuses: frozenset[str],
-) -> list[dict[str, object]]:
-    """Build filter list for the primary reservation request.
+) -> dict[str, str | int]:
+    """Build query parameters for the primary reservation request.
 
     Args:
-        past_boundary: ISO 8601 start of the date window.
-        future_boundary: ISO 8601 end of the date window.
+        past_boundary: YYYY-MM-DD start of the date window.
+        future_boundary: YYYY-MM-DD end of the date window.
         statuses: Set of statuses to include.
 
     Returns:
-        List of filter dicts for the Guesty filters parameter.
+        Dict of query parameters for the Guesty API.
     """
-    return [
-        {
-            "field": "checkIn",
-            "operator": "$between",
-            "from": past_boundary,
-            "to": future_boundary,
-        },
-        {
-            "field": "status",
-            "operator": "$contains",
-            "value": sorted(statuses),
-        },
-    ]
+    return {
+        "checkIn": past_boundary,
+        "checkOut": future_boundary,
+        "status": ",".join(sorted(statuses)),
+    }
 
 
-def _build_checked_in_filters() -> list[dict[str, object]]:
-    """Build filter list for the secondary checked_in request.
+def _build_checked_in_params() -> dict[str, str | int]:
+    """Build query parameters for the secondary checked_in request.
 
     Returns:
-        List of filter dicts selecting only checked_in status.
+        Dict of query parameters selecting only checked_in status.
     """
-    return [
-        {
-            "field": "status",
-            "operator": "$eq",
-            "value": "checked_in",
-        },
-    ]
+    return {
+        "status": "checked_in",
+    }
 
 
 def _merge_reservations(
