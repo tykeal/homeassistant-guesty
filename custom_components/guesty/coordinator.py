@@ -1,10 +1,11 @@
 # SPDX-FileCopyrightText: 2026 Andrew Grimberg <tykeal@bardicgrove.org>
 # SPDX-License-Identifier: Apache-2.0
-"""DataUpdateCoordinator for Guesty listings."""
+"""DataUpdateCoordinators for Guesty listings and reservations."""
 
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
@@ -13,10 +14,21 @@ from homeassistant.helpers.update_coordinator import (
     UpdateFailed,
 )
 
+from custom_components.guesty.api.const import (
+    DEFAULT_FUTURE_DAYS,
+    DEFAULT_PAST_DAYS,
+)
 from custom_components.guesty.api.exceptions import GuestyApiError
-from custom_components.guesty.api.models import GuestyListing
+from custom_components.guesty.api.models import (
+    GuestyListing,
+    GuestyReservation,
+)
 from custom_components.guesty.const import (
+    CONF_FUTURE_DAYS,
+    CONF_PAST_DAYS,
+    CONF_RESERVATION_SCAN_INTERVAL,
     CONF_SCAN_INTERVAL,
+    DEFAULT_RESERVATION_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
 )
@@ -115,3 +127,113 @@ class ListingsCoordinator(
 
         self._previous_listing_ids = current_ids
         return new_data
+
+
+class ReservationsCoordinator(
+    DataUpdateCoordinator[dict[str, list[GuestyReservation]]],
+):
+    """Coordinator that fetches Guesty reservations periodically.
+
+    Groups reservations by listing ID and filters out reservations
+    for listings not tracked by the ``ListingsCoordinator``. Each
+    listing's reservations are sorted by check-in date.
+
+    Attributes:
+        api_client: The Guesty API client instance.
+        config_entry: The integration config entry.
+        listings_coordinator: Reference to the listings coordinator
+            for known listing ID validation.
+    """
+
+    config_entry: ConfigEntry
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        api_client: GuestyApiClient,
+        listings_coordinator: ListingsCoordinator,
+    ) -> None:
+        """Initialize the reservations coordinator.
+
+        Args:
+            hass: Home Assistant instance.
+            entry: The config entry for this integration.
+            api_client: Guesty API client for fetching reservations.
+            listings_coordinator: The listings coordinator for
+                known listing ID validation.
+        """
+        self.api_client = api_client
+        self.listings_coordinator = listings_coordinator
+        interval_minutes = entry.options.get(
+            CONF_RESERVATION_SCAN_INTERVAL,
+            DEFAULT_RESERVATION_SCAN_INTERVAL,
+        )
+        super().__init__(
+            hass,
+            _LOGGER,
+            config_entry=entry,
+            name=f"{DOMAIN}_reservations",
+            update_interval=timedelta(minutes=interval_minutes),
+        )
+
+    async def _async_update_data(
+        self,
+    ) -> dict[str, list[GuestyReservation]]:
+        """Fetch reservations and group by listing ID.
+
+        Calls the API client with configured date range parameters,
+        groups results by listing ID, filters out reservations for
+        unknown listings, and sorts each listing's reservations by
+        check-in date.
+
+        Returns:
+            Dictionary mapping listing ID to sorted reservation list.
+
+        Raises:
+            UpdateFailed: On any Guesty API error.
+        """
+        past_days = self.config_entry.options.get(
+            CONF_PAST_DAYS,
+            DEFAULT_PAST_DAYS,
+        )
+        future_days = self.config_entry.options.get(
+            CONF_FUTURE_DAYS,
+            DEFAULT_FUTURE_DAYS,
+        )
+
+        try:
+            reservations = await self.api_client.get_reservations(
+                past_days=past_days,
+                future_days=future_days,
+            )
+        except GuestyApiError as exc:
+            raise UpdateFailed(
+                f"Error fetching reservations: {exc.message}",
+            ) from exc
+
+        # Group by listing ID
+        grouped: dict[str, list[GuestyReservation]] = defaultdict(list)
+        for reservation in reservations:
+            grouped[reservation.listing_id].append(reservation)
+
+        # Filter unknown listing IDs (FR-017)
+        known_ids = set()
+        if self.listings_coordinator.data:
+            known_ids = set(self.listings_coordinator.data.keys())
+
+        result: dict[str, list[GuestyReservation]] = {}
+        for listing_id, listing_reservations in grouped.items():
+            if listing_id not in known_ids:
+                _LOGGER.warning(
+                    "Skipping reservations for unknown listing %s",
+                    listing_id,
+                )
+                continue
+            # Sort by check-in date
+            result[listing_id] = sorted(
+                listing_reservations,
+                key=lambda r: r.check_in,
+            )
+
+        return result
