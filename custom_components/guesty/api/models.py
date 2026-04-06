@@ -415,7 +415,7 @@ class GuestyListing:
             ),
             property_type=data.get("propertyType"),
             room_type=data.get("roomType"),
-            listing_type=data.get("listingType"),
+            listing_type=data.get("type"),
             bedrooms=data.get("bedrooms"),
             bathrooms=data.get("bathrooms"),
             accommodates=data.get("accommodates"),

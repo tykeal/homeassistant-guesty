@@ -210,7 +210,7 @@ def make_listing_dict(**overrides: Any) -> dict[str, Any]:
         },
         "propertyType": "apartment",
         "roomType": "entire_home",
-        "listingType": "SINGLE",
+        "type": "SINGLE",
         "bedrooms": 2,
         "bathrooms": 1.5,
         "accommodates": 5,

@@ -508,7 +508,7 @@ def _make_listing_dict(**overrides: Any) -> dict[str, Any]:
         "address": _make_full_address_dict(),
         "propertyType": "apartment",
         "roomType": "Entire home/apartment",
-        "listingType": "SINGLE",
+        "type": "SINGLE",
         "bedrooms": 2,
         "bathrooms": 1.5,
         "accommodates": 5,
