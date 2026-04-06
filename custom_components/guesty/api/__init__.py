@@ -12,10 +12,14 @@ from custom_components.guesty.api.const import (
     BASE_URL,
     TOKEN_URL,
 )
+from custom_components.guesty.api.custom_fields import (
+    GuestyCustomFieldsClient,
+)
 from custom_components.guesty.api.exceptions import (
     GuestyApiError,
     GuestyAuthError,
     GuestyConnectionError,
+    GuestyCustomFieldError,
     GuestyMessageError,
     GuestyRateLimitError,
     GuestyResponseError,
@@ -27,6 +31,9 @@ from custom_components.guesty.api.models import (
     CachedToken,
     Conversation,
     GuestyAddress,
+    GuestyCustomFieldDefinition,
+    GuestyCustomFieldResult,
+    GuestyCustomFieldUpdate,
     GuestyGuest,
     GuestyListing,
     GuestyListingsResponse,
@@ -48,6 +55,11 @@ __all__ = [
     "GuestyApiError",
     "GuestyAuthError",
     "GuestyConnectionError",
+    "GuestyCustomFieldDefinition",
+    "GuestyCustomFieldError",
+    "GuestyCustomFieldResult",
+    "GuestyCustomFieldUpdate",
+    "GuestyCustomFieldsClient",
     "GuestyGuest",
     "GuestyListing",
     "GuestyListingsResponse",

@@ -87,3 +87,33 @@ class GuestyMessageError(GuestyApiError):
         super().__init__(message)
         self.reservation_id = reservation_id
         self.available_channels = available_channels
+
+
+class GuestyCustomFieldError(GuestyApiError):
+    """Custom field operation failure with entity context.
+
+    Attributes:
+        target_type: Entity type ('listing' or 'reservation').
+        target_id: The targeted entity identifier.
+        field_id: The custom field identifier.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        target_type: str | None = None,
+        target_id: str | None = None,
+        field_id: str | None = None,
+    ) -> None:
+        """Initialize GuestyCustomFieldError.
+
+        Args:
+            message: Human-readable error description.
+            target_type: Entity type for context.
+            target_id: The targeted entity identifier.
+            field_id: The custom field identifier.
+        """
+        super().__init__(message)
+        self.target_type = target_type
+        self.target_id = target_id
+        self.field_id = field_id

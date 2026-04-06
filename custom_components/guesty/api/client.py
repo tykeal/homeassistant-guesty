@@ -314,7 +314,7 @@ class GuestyApiClient:
         path: str,
         *,
         params: dict[str, str | int] | None = None,
-        json_data: dict[str, object] | None = None,
+        json_data: dict[str, object] | list[object] | None = None,
         _retried_auth: bool = False,
     ) -> httpx.Response:
         """Make an authenticated API request with retry logic.
@@ -327,7 +327,7 @@ class GuestyApiClient:
             method: HTTP method (GET, POST, etc.).
             path: API path relative to base URL.
             params: Optional query parameters.
-            json_data: Optional JSON body.
+            json_data: Optional JSON body (dict or list).
             _retried_auth: Internal flag to prevent infinite 401 retry.
 
         Returns:
