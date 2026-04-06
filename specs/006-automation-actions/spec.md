@@ -271,46 +271,101 @@ records.
 
 ## Requirements *(mandatory)*
 
+### Service Definitions
+
+Each action service is registered with Home Assistant under the
+`guesty` domain. The following definitions enumerate the service
+name, required and optional parameters, and validation rules for
+each action.
+
+- **SD-001 — Add Reservation Note**
+  (`guesty.add_reservation_note`):
+  - Required: `reservation_id` (string — Guesty reservation
+    identifier), `note_text` (string — note content to append).
+  - Validation: `note_text` MUST be 1 to 5 000 characters.
+  - Behavior: appends the note without overwriting existing
+    notes or unrelated reservation data.
+
+- **SD-002 — Set Listing Status**
+  (`guesty.set_listing_status`):
+  - Required: `listing_id` (string — Guesty listing
+    identifier), `status` (string — target operational status).
+  - Validation: `status` MUST be one of `active` or `inactive`
+    (at minimum).
+
+- **SD-003 — Create Task** (`guesty.create_task`):
+  - Required: `listing_id` (string — Guesty listing
+    identifier), `task_title` (string — title of the task).
+  - Optional: `description` (string — detailed task
+    description), `assignee` (string — Guesty user identifier
+    or assignee reference).
+  - Validation: `task_title` MUST be 1 to 255 characters;
+    `description`, when provided, MUST be 1 to 5 000
+    characters.
+  - Behavior: associates the created task with the specified
+    listing.
+
+- **SD-004 — Set Calendar Availability**
+  (`guesty.set_calendar_availability`):
+  - Required: `listing_id` (string — Guesty listing
+    identifier), `start_date` (string — `YYYY-MM-DD` format),
+    `end_date` (string — `YYYY-MM-DD` format), `operation`
+    (string — `block` or `unblock`).
+  - Validation: `end_date` MUST be the same as or later than
+    `start_date`; `operation` MUST be `block` or `unblock`.
+  - Behavior: rejects date ranges that conflict with existing
+    confirmed reservations and returns a clear conflict error.
+
+- **SD-005 — Update Reservation Custom Field**
+  (`guesty.update_reservation_custom_field`):
+  - Required: `reservation_id` (string — Guesty reservation
+    identifier), `custom_field_id` (string — Guesty custom
+    field identifier), `value` (string — new field value).
+  - Validation: `value` MUST be 1 to 5 000 characters unless
+    Guesty enforces a stricter field-specific limit.
+
 ### Functional Requirements
 
-- **FR-001**: The integration MUST register action services with
-  Home Assistant that enable write operations to Guesty from
+- **FR-001**: The integration MUST register each action defined
+  in the Service Definitions (SD-001 through SD-005) under the
+  `guesty` domain in Home Assistant, enabling invocation from
   automations, scripts, and the developer tools interface.
-- **FR-002**: The integration MUST provide an action to add
-  notes to a Guesty reservation, accepting a reservation
-  identifier and note text as required parameters.
-- **FR-003**: The update reservation notes action MUST append
-  notes to the reservation without overwriting existing notes or
-  other reservation data.
-- **FR-004**: The integration MUST provide an action to set a
-  Guesty listing's operational status, accepting a listing
-  identifier and target status as required parameters.
-- **FR-005**: The supported listing status values MUST include
-  at minimum "active" and "inactive", matching Guesty's
-  supported operational statuses.
-- **FR-006**: The integration MUST provide an action to create
-  operational tasks in Guesty, accepting a listing identifier
-  and task title as required parameters, with optional
-  parameters for description and assignee.
-- **FR-007**: The create task action MUST associate created
-  tasks with the specified listing in Guesty.
-- **FR-008**: The integration MUST provide an action to block
-  or unblock date ranges on a listing's calendar, accepting a
-  listing identifier, start date, end date, and block/unblock
-  operation as required parameters.
-- **FR-009**: The calendar availability action MUST reject date
-  ranges that conflict with existing confirmed reservations and
-  return a clear error explaining the conflict.
-- **FR-010**: The integration MUST provide an action to update
-  reservation custom fields, accepting a reservation identifier,
-  custom field identifier, and new value as required parameters.
+- **FR-002**: The `guesty.add_reservation_note` action (SD-001)
+  MUST accept `reservation_id` and `note_text` as required
+  parameters and add the note to the reservation in Guesty.
+- **FR-003**: The `guesty.add_reservation_note` action MUST
+  append notes to the reservation without overwriting existing
+  notes or other reservation data.
+- **FR-004**: The `guesty.set_listing_status` action (SD-002)
+  MUST accept `listing_id` and `status` as required parameters
+  and update the listing's operational status in Guesty.
+- **FR-005**: The supported `status` values for
+  `guesty.set_listing_status` MUST include at minimum `active`
+  and `inactive`, matching Guesty's supported operational
+  statuses.
+- **FR-006**: The `guesty.create_task` action (SD-003) MUST
+  accept `listing_id` and `task_title` as required parameters,
+  with optional `description` and `assignee` parameters.
+- **FR-007**: The `guesty.create_task` action MUST associate
+  created tasks with the specified listing in Guesty.
+- **FR-008**: The `guesty.set_calendar_availability` action
+  (SD-004) MUST accept `listing_id`, `start_date`, `end_date`,
+  and `operation` as required parameters to block or unblock
+  date ranges on a listing's calendar.
+- **FR-009**: The `guesty.set_calendar_availability` action
+  MUST reject date ranges that conflict with existing confirmed
+  reservations and return a clear error explaining the
+  conflict.
+- **FR-010**: The `guesty.update_reservation_custom_field`
+  action (SD-005) MUST accept `reservation_id`,
+  `custom_field_id`, and `value` as required parameters.
 - **FR-011**: All action services MUST validate required
   parameters before making API requests and return clear,
   actionable error messages when parameters are missing or
   invalid.
 - **FR-012**: All action services MUST validate parameter values
-  against expected formats (date formats, status values, text
-  length limits) before making API requests.
+  against the rules in each Service Definition (date formats,
+  status values, text length limits) before making API requests.
 - **FR-013**: All action services MUST handle Guesty API error
   responses (not found, validation errors, permission errors)
   and translate them into clear, actionable error messages for
@@ -342,9 +397,13 @@ records.
 - **FR-021**: All action services MUST use the existing
   authenticated API client from Feature 001 for all Guesty API
   communication.
-- **FR-022**: Each action MUST return a result indicating
-  success or failure that automations can use for conditional
-  logic (e.g., continuing only if the action succeeded).
+- **FR-022**: Each action MUST return a structured response
+  containing at minimum a `success` indicator (boolean) and
+  the `entity_id` of the targeted resource (reservation or
+  listing identifier). On failure the response MUST include
+  an `error` field with a human-readable reason. This response
+  structure enables automations to branch on success or failure
+  using standard conditional logic.
 
 ### Key Entities
 
