@@ -111,6 +111,7 @@ RESERVATIONS_FIELDS: tuple[str, ...] = (
     "money.currency",
     "source",
     "note",
+    "customFields",
 )
 
 # Actionable reservation statuses for filtering.

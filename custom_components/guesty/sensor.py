@@ -386,6 +386,7 @@ def _build_attributes(
             "source": None,
             "listing_id": listing_id,
             "upcoming_reservations": [],
+            "custom_fields": {},
         }
 
     guest = reservation.guest
@@ -408,6 +409,7 @@ def _build_attributes(
         "source": reservation.source,
         "listing_id": listing_id,
         "upcoming_reservations": upcoming,
+        "custom_fields": dict(reservation.custom_fields),
     }
 
 
