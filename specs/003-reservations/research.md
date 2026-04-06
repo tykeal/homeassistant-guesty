@@ -42,28 +42,29 @@ sorting by a unique field).
 
 **Decision**: Filter reservations using the `$between` operator
 on the `checkIn` field, with a configurable window defaulting
-to 30 days past through 365 days future. Additionally filter
-`checkOut` to include reservations whose checkout is within the
-past window (captures guests currently checked in whose
-check-in was before the past window).
+to 30 days past through 365 days future. Use a single request
+with that `checkIn` date-range filter plus status filtering,
+including `checked_in`, so currently active reservations remain
+in scope even when their check-in predates the past window.
 
 **Rationale**: The spec requires FR-002 configurable date range
 defaulting to 30 past / 365 future days. Using `$between` on
-`checkIn` captures upcoming and recent reservations. A
-supplementary `$between` on `checkOut` with the past window
-boundary ensures we do not miss currently active reservations
-whose check-in date predates the window. Combining both filters
-with the Guesty API is achieved via a single request with
-a date-range filter on `checkIn` (the primary query), since
-checked-in guests whose check-in is within 30 days past are
-captured. For edge cases where a guest checked in more than 30
-days ago and is still staying, the `checked_in` status filter
-ensures inclusion regardless of check-in date.
+`checkIn` captures upcoming and recent reservations. The
+implementation uses a single request with a date-range filter
+on `checkIn` as the primary query shape, which matches the API
+contract for this feature. Reservations already in progress are
+still included by status filtering: guests whose check-in is
+within 30 days past are naturally captured by the `checkIn`
+window, and edge cases where a guest checked in more than 30
+days ago and is still staying are retained via the
+`checked_in` status filter.
 
 **Alternatives considered**:
 
-- *Filter only on checkIn*: Would miss long-stay guests whose
-  check-in was before the past window boundary.
+- *Dual filter on checkIn and checkOut*: More complex API
+  query. The `checked_in` status filter already covers
+  long-stay guests, making a separate checkOut filter
+  redundant.
 - *Separate API calls for active vs upcoming*: More complex
   and doubles API usage. A single broad filter with
   client-side grouping is simpler.

@@ -45,7 +45,7 @@ coordinator patterns:
 │  ┌──────────▼───────────────────────────┐    │
 │  │  ReservationsCoordinator              │    │
 │  │  (DataUpdateCoordinator)              │    │
-│  │  Data: dict[str, list[Reservation]]   │    │
+│  │  Data: dict[str, list[GuestyReservation]] │    │
 │  └──────────┬───────────────────────────┘    │
 │             │                                 │
 │  ┌──────────▼───────────────────────────┐    │
@@ -84,7 +84,7 @@ uv run pytest tests/ -x -q
 
 # Run only reservation-related tests (after implementation)
 uv run pytest tests/api/test_models.py \
-  tests/test_reservations_coordinator.py \
+  tests/test_coordinator.py \
   tests/test_reservation_sensor.py -x -q -v
 
 # Run with coverage reporting
@@ -173,7 +173,7 @@ except (
     GuestyRateLimitError,
     GuestyResponseError,
 ) as err:
-    raise UpdateFailed(f"Reservation fetch failed: {err}")
+    raise UpdateFailed(f"Reservation fetch failed: {err}") from err
 ```
 
 ## Development Workflow
