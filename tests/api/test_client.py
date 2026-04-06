@@ -7,7 +7,6 @@ Also includes Phase 4 (T025) transient failure retry tests.
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock
@@ -907,13 +906,11 @@ class TestGetReservations:
         assert params["skip"] == "0"
         assert params["sort"] == "_id"
         assert params["fields"] == " ".join(RESERVATIONS_FIELDS)
-        # Verify filters contain checkIn and status
-        filters = json.loads(params["filters"])
-        assert len(filters) == 2
-        assert filters[0]["field"] == "checkIn"
-        assert filters[0]["operator"] == "$between"
-        assert filters[1]["field"] == "status"
-        assert filters[1]["operator"] == "$contains"
+        # Verify primary request has query params
+        assert "checkIn" in params
+        assert "checkOut" in params
+        assert "status" in params
+        assert "filters" not in params
 
     @respx.mock
     async def test_multi_page_pagination(self) -> None:
@@ -1058,13 +1055,10 @@ class TestGetReservations:
         await client.get_reservations()
         # Second call is the secondary request
         secondary_req = route.calls[1].request
-        filters = json.loads(
-            secondary_req.url.params["filters"],
-        )
-        assert len(filters) == 1
-        assert filters[0]["field"] == "status"
-        assert filters[0]["operator"] == "$eq"
-        assert filters[0]["value"] == "checked_in"
+        assert secondary_req.url.params["status"] == "checked_in"
+        assert "checkIn" not in secondary_req.url.params
+        assert "checkOut" not in secondary_req.url.params
+        assert "filters" not in secondary_req.url.params
 
     @respx.mock
     async def test_date_range_boundaries(self) -> None:
@@ -1100,12 +1094,9 @@ class TestGetReservations:
             )
 
         primary_req = route.calls[0].request
-        filters = json.loads(
-            primary_req.url.params["filters"],
-        )
-        checkin_filter = filters[0]
-        assert "2025-07-25" in checkin_filter["from"]
-        assert "2025-08-15" in checkin_filter["to"]
+        params = primary_req.url.params
+        assert params["checkIn"] == "2025-07-25"
+        assert params["checkOut"] == "2025-08-15"
 
     @respx.mock
     async def test_custom_statuses(self) -> None:
@@ -1126,11 +1117,8 @@ class TestGetReservations:
         custom = frozenset({"confirmed", "checked_in"})
         await client.get_reservations(statuses=custom)
         primary_req = route.calls[0].request
-        filters = json.loads(
-            primary_req.url.params["filters"],
-        )
-        status_filter = filters[1]
-        assert sorted(status_filter["value"]) == [
+        status_param = primary_req.url.params["status"]
+        assert sorted(status_param.split(",")) == [
             "checked_in",
             "confirmed",
         ]
@@ -1283,11 +1271,8 @@ class TestGetReservations:
         client, _, _ = _make_client()
         await client.get_reservations()
         primary_req = route.calls[0].request
-        filters = json.loads(
-            primary_req.url.params["filters"],
-        )
-        status_filter = filters[1]
-        assert set(status_filter["value"]) == ACTIONABLE_STATUSES
+        status_param = primary_req.url.params["status"]
+        assert set(status_param.split(",")) == ACTIONABLE_STATUSES
 
 
 # ── Phase 4: Transient Failure Retry Tests (T025) ───────────────────
