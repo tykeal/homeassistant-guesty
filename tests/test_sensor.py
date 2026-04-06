@@ -815,3 +815,24 @@ class TestSensorAvailability:
         # Listing reappears: remove from disappeared
         mock_coordinator.disappeared_listing_ids = set()
         assert sensor.available is True
+
+    def test_available_false_when_coordinator_unhealthy(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        mock_coordinator: AsyncMock,
+    ) -> None:
+        """available returns False when coordinator update failed."""
+        mock_coordinator.disappeared_listing_ids = set()
+        mock_coordinator.last_update_success = False
+        entry = mock_coordinator.config_entry
+        desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "status")
+
+        sensor = GuestyListingSensor(
+            coordinator=mock_coordinator,
+            listing_id=sample_listing.id,
+            entry=entry,
+            description=desc,
+        )
+
+        assert sensor.available is False

@@ -168,6 +168,8 @@ class GuestyListingSensor(GuestyEntity, SensorEntity):
         Returns:
             True when the listing is available, False otherwise.
         """
+        if not super().available:
+            return False
         if self.coordinator.data is None:
             return False
         if self._listing_id in self.coordinator.disappeared_listing_ids:
