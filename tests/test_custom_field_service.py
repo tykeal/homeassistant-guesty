@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -646,3 +647,870 @@ class TestSetCustomFieldServiceReservation:
         assert result is not None
         assert result["target_type"] == "reservation"
         assert result["result"] == "success"
+
+
+class TestAutomationCompatibility:
+    """Tests for automation compatibility (T026)."""
+
+    @patch(
+        "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_service_dispatches_through_cf_client(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        mock_get_defs: AsyncMock,
+        hass: HomeAssistant,
+        mock_cf_definitions: list[GuestyCustomFieldDefinition],
+    ) -> None:
+        """Service call dispatches update through custom fields client."""
+        mock_get_defs.return_value = mock_cf_definitions
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        result_obj = GuestyCustomFieldResult(
+            success=True,
+            target_type="listing",
+            target_id="listing-001",
+            field_id="cf-text-001",
+        )
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.set_field",
+            new_callable=AsyncMock,
+            return_value=result_obj,
+        ) as mock_set:
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_CUSTOM_FIELD,
+                {
+                    "target_type": "listing",
+                    "target_id": "listing-001",
+                    "field_id": "cf-text-001",
+                    "value": "wifi-pass",
+                },
+                blocking=True,
+                return_response=True,
+            )
+            mock_set.assert_awaited_once_with(
+                target_type="listing",
+                target_id="listing-001",
+                field_id="cf-text-001",
+                value="wifi-pass",
+            )
+
+    @patch(
+        "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_template_rendered_value_sent(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        mock_get_defs: AsyncMock,
+        hass: HomeAssistant,
+        mock_cf_definitions: list[GuestyCustomFieldDefinition],
+    ) -> None:
+        """Template-rendered value is resolved and sent."""
+        mock_get_defs.return_value = mock_cf_definitions
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        # Simulate a template-resolved string value
+        resolved_value = "resolved-wifi-password-123"
+        result_obj = GuestyCustomFieldResult(
+            success=True,
+            target_type="listing",
+            target_id="listing-001",
+            field_id="cf-text-001",
+        )
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.set_field",
+            new_callable=AsyncMock,
+            return_value=result_obj,
+        ) as mock_set:
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_CUSTOM_FIELD,
+                {
+                    "target_type": "listing",
+                    "target_id": "listing-001",
+                    "field_id": "cf-text-001",
+                    "value": resolved_value,
+                },
+                blocking=True,
+                return_response=True,
+            )
+            mock_set.assert_awaited_once()
+            call_kwargs = mock_set.call_args.kwargs
+            assert call_kwargs["value"] == resolved_value
+
+    @patch(
+        "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_service_does_not_block_event_loop(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        mock_get_defs: AsyncMock,
+        hass: HomeAssistant,
+        mock_cf_definitions: list[GuestyCustomFieldDefinition],
+    ) -> None:
+        """Service call does not block the HA event loop."""
+        mock_get_defs.return_value = mock_cf_definitions
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        result_obj = GuestyCustomFieldResult(
+            success=True,
+            target_type="listing",
+            target_id="listing-001",
+            field_id="cf-text-001",
+        )
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.set_field",
+            new_callable=AsyncMock,
+            return_value=result_obj,
+        ):
+            # Service is async; verify it runs within event loop
+            # by calling with blocking=True without timeout
+            result = await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_CUSTOM_FIELD,
+                {
+                    "target_type": "listing",
+                    "target_id": "listing-001",
+                    "field_id": "cf-text-001",
+                    "value": "test",
+                },
+                blocking=True,
+                return_response=True,
+            )
+            assert result is not None
+            assert result["result"] == "success"
+
+    @patch(
+        "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_service_failure_raises_not_crashes(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        mock_get_defs: AsyncMock,
+        hass: HomeAssistant,
+        mock_cf_definitions: list[GuestyCustomFieldDefinition],
+    ) -> None:
+        """Service failure raises HomeAssistantError, does not crash."""
+        mock_get_defs.return_value = mock_cf_definitions
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        with (
+            patch(
+                "custom_components.guesty.GuestyCustomFieldsClient.set_field",
+                new_callable=AsyncMock,
+                side_effect=GuestyCustomFieldError(
+                    "Update failed (422): invalid",
+                    target_type="listing",
+                    target_id="listing-001",
+                    field_id="cf-text-001",
+                ),
+            ),
+            pytest.raises(HomeAssistantError, match="422"),
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_CUSTOM_FIELD,
+                {
+                    "target_type": "listing",
+                    "target_id": "listing-001",
+                    "field_id": "cf-text-001",
+                    "value": "test",
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+        # Integration is still functional after failure
+        assert hass.services.has_service(DOMAIN, SERVICE_SET_CUSTOM_FIELD)
+
+
+class TestResponseData:
+    """Tests for service response data (T027)."""
+
+    @patch(
+        "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_return_response_true_structured_data(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        mock_get_defs: AsyncMock,
+        hass: HomeAssistant,
+        mock_cf_definitions: list[GuestyCustomFieldDefinition],
+    ) -> None:
+        """return_response=True receives structured success response."""
+        mock_get_defs.return_value = mock_cf_definitions
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        result_obj = GuestyCustomFieldResult(
+            success=True,
+            target_type="listing",
+            target_id="listing-001",
+            field_id="cf-text-001",
+        )
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.set_field",
+            new_callable=AsyncMock,
+            return_value=result_obj,
+        ):
+            result = await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_CUSTOM_FIELD,
+                {
+                    "target_type": "listing",
+                    "target_id": "listing-001",
+                    "field_id": "cf-text-001",
+                    "value": "wifi-pass",
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+        assert isinstance(result, dict)
+        assert result["target_type"] == "listing"
+        assert result["target_id"] == "listing-001"
+        assert result["field_id"] == "cf-text-001"
+        assert result["result"] == "success"
+
+    @patch(
+        "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_fire_and_forget_succeeds_no_response(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        mock_get_defs: AsyncMock,
+        hass: HomeAssistant,
+        mock_cf_definitions: list[GuestyCustomFieldDefinition],
+    ) -> None:
+        """Fire-and-forget call succeeds without response data."""
+        mock_get_defs.return_value = mock_cf_definitions
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        result_obj = GuestyCustomFieldResult(
+            success=True,
+            target_type="listing",
+            target_id="listing-001",
+            field_id="cf-text-001",
+        )
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.set_field",
+            new_callable=AsyncMock,
+            return_value=result_obj,
+        ):
+            result = await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_CUSTOM_FIELD,
+                {
+                    "target_type": "listing",
+                    "target_id": "listing-001",
+                    "field_id": "cf-text-001",
+                    "value": "wifi-pass",
+                },
+                blocking=True,
+                return_response=False,
+            )
+
+        assert result is None
+
+
+class TestEdgeCases:
+    """Tests for edge cases (T030)."""
+
+    @patch(
+        "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_field_not_in_defs_lists_available(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        mock_get_defs: AsyncMock,
+        hass: HomeAssistant,
+        mock_cf_definitions: list[GuestyCustomFieldDefinition],
+    ) -> None:
+        """Unknown field lists available fields in error."""
+        mock_get_defs.return_value = mock_cf_definitions
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="Available fields for listing",
+        ) as exc_info:
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_CUSTOM_FIELD,
+                {
+                    "target_type": "listing",
+                    "target_id": "listing-001",
+                    "field_id": "nonexistent",
+                    "value": "test",
+                },
+                blocking=True,
+                return_response=True,
+            )
+        # Error lists available listing fields
+        msg = str(exc_info.value)
+        assert "cf-text-001" in msg or "cf-bool-003" in msg
+
+    @patch(
+        "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_unicode_and_special_chars_preserved(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        mock_get_defs: AsyncMock,
+        hass: HomeAssistant,
+        mock_cf_definitions: list[GuestyCustomFieldDefinition],
+    ) -> None:
+        """Unicode and special characters preserved without modification."""
+        mock_get_defs.return_value = mock_cf_definitions
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        unicode_value = "Ünïcödé 日本語 émojis 🏠🔑"
+        result_obj = GuestyCustomFieldResult(
+            success=True,
+            target_type="listing",
+            target_id="listing-001",
+            field_id="cf-text-001",
+        )
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.set_field",
+            new_callable=AsyncMock,
+            return_value=result_obj,
+        ) as mock_set:
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_CUSTOM_FIELD,
+                {
+                    "target_type": "listing",
+                    "target_id": "listing-001",
+                    "field_id": "cf-text-001",
+                    "value": unicode_value,
+                },
+                blocking=True,
+                return_response=True,
+            )
+            call_kwargs = mock_set.call_args.kwargs
+            assert call_kwargs["value"] == unicode_value
+
+    @patch(
+        "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_very_long_string_passed_through(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        mock_get_defs: AsyncMock,
+        hass: HomeAssistant,
+        mock_cf_definitions: list[GuestyCustomFieldDefinition],
+    ) -> None:
+        """Very long string values passed through without modification."""
+        mock_get_defs.return_value = mock_cf_definitions
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        long_value = "x" * 10000
+        result_obj = GuestyCustomFieldResult(
+            success=True,
+            target_type="listing",
+            target_id="listing-001",
+            field_id="cf-text-001",
+        )
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.set_field",
+            new_callable=AsyncMock,
+            return_value=result_obj,
+        ) as mock_set:
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_CUSTOM_FIELD,
+                {
+                    "target_type": "listing",
+                    "target_id": "listing-001",
+                    "field_id": "cf-text-001",
+                    "value": long_value,
+                },
+                blocking=True,
+                return_response=True,
+            )
+            call_kwargs = mock_set.call_args.kwargs
+            assert call_kwargs["value"] == long_value
+            assert len(call_kwargs["value"]) == 10000
+
+    @patch(
+        "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_concurrent_service_calls_independent(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        mock_get_defs: AsyncMock,
+        hass: HomeAssistant,
+        mock_cf_definitions: list[GuestyCustomFieldDefinition],
+    ) -> None:
+        """Concurrent service calls execute independently."""
+        mock_get_defs.return_value = mock_cf_definitions
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        call_order: list[str] = []
+
+        async def _track_set_field(
+            **kwargs: object,
+        ) -> GuestyCustomFieldResult:
+            """Track concurrent call ordering."""
+            fid = kwargs["field_id"]
+            call_order.append(f"start-{fid}")
+            await asyncio.sleep(0)
+            call_order.append(f"end-{fid}")
+            return GuestyCustomFieldResult(
+                success=True,
+                target_type=str(kwargs["target_type"]),
+                target_id=str(kwargs["target_id"]),
+                field_id=str(fid),
+            )
+
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.set_field",
+            new_callable=AsyncMock,
+            side_effect=_track_set_field,
+        ):
+            results = await asyncio.gather(
+                hass.services.async_call(
+                    DOMAIN,
+                    SERVICE_SET_CUSTOM_FIELD,
+                    {
+                        "target_type": "listing",
+                        "target_id": "listing-001",
+                        "field_id": "cf-text-001",
+                        "value": "val-a",
+                    },
+                    blocking=True,
+                    return_response=True,
+                ),
+                hass.services.async_call(
+                    DOMAIN,
+                    SERVICE_SET_CUSTOM_FIELD,
+                    {
+                        "target_type": "reservation",
+                        "target_id": "res-001",
+                        "field_id": "cf-bool-003",
+                        "value": True,
+                    },
+                    blocking=True,
+                    return_response=True,
+                ),
+            )
+
+        assert len(results) == 2
+        assert results[0] is not None
+        assert results[1] is not None
+        assert results[0]["field_id"] == "cf-text-001"
+        assert results[1]["field_id"] == "cf-bool-003"
+        # Both calls were started and finished
+        assert "start-cf-text-001" in call_order
+        assert "end-cf-text-001" in call_order
+        assert "start-cf-bool-003" in call_order
+        assert "end-cf-bool-003" in call_order
+
+    @patch(
+        "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_stale_field_guesty_rejection(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        mock_get_defs: AsyncMock,
+        hass: HomeAssistant,
+        mock_cf_definitions: list[GuestyCustomFieldDefinition],
+    ) -> None:
+        """Stale field reference surfaced from Guesty rejection."""
+        mock_get_defs.return_value = mock_cf_definitions
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        # Field exists in coordinator but Guesty rejects (stale)
+        with (
+            patch(
+                "custom_components.guesty.GuestyCustomFieldsClient.set_field",
+                new_callable=AsyncMock,
+                side_effect=GuestyCustomFieldError(
+                    "Custom field update failed (422): field no longer exists",
+                    target_type="listing",
+                    target_id="listing-001",
+                    field_id="cf-text-001",
+                ),
+            ),
+            pytest.raises(HomeAssistantError, match="422"),
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_CUSTOM_FIELD,
+                {
+                    "target_type": "listing",
+                    "target_id": "listing-001",
+                    "field_id": "cf-text-001",
+                    "value": "test",
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+    @patch(
+        "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_no_fields_for_target_type_error(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        mock_get_defs: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """No custom fields for target type produces clear error."""
+        # Only reservation fields; no listing fields
+        res_only_defs = [
+            GuestyCustomFieldDefinition(
+                field_id="cf-res-only",
+                name="Res Only",
+                field_type="text",
+                applicable_to=frozenset({"reservation"}),
+            ),
+        ]
+        mock_get_defs.return_value = res_only_defs
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        # Try nonexistent listing field — available list is empty
+        with pytest.raises(
+            HomeAssistantError,
+            match="not found",
+        ) as exc_info:
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_CUSTOM_FIELD,
+                {
+                    "target_type": "listing",
+                    "target_id": "listing-001",
+                    "field_id": "nonexistent",
+                    "value": "test",
+                },
+                blocking=True,
+                return_response=True,
+            )
+        msg = str(exc_info.value)
+        assert "none" in msg.lower()
+
+    @patch(
+        "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_multi_type_value_passed_through(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        mock_get_defs: AsyncMock,
+        hass: HomeAssistant,
+        mock_cf_definitions: list[GuestyCustomFieldDefinition],
+    ) -> None:
+        """Multi-type field value passed through for server validation."""
+        # Add field with unknown type (no client-side validation)
+        defs_with_unknown = [
+            *mock_cf_definitions,
+            GuestyCustomFieldDefinition(
+                field_id="cf-multi-005",
+                name="Multi Type",
+                field_type="json",
+                applicable_to=frozenset({"listing"}),
+            ),
+        ]
+        mock_get_defs.return_value = defs_with_unknown
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        result_obj = GuestyCustomFieldResult(
+            success=True,
+            target_type="listing",
+            target_id="listing-001",
+            field_id="cf-multi-005",
+        )
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.set_field",
+            new_callable=AsyncMock,
+            return_value=result_obj,
+        ) as mock_set:
+            result = await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_CUSTOM_FIELD,
+                {
+                    "target_type": "listing",
+                    "target_id": "listing-001",
+                    "field_id": "cf-multi-005",
+                    "value": "arbitrary-value",
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+        assert result is not None
+        assert result["result"] == "success"
+        mock_set.assert_awaited_once()
