@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
+import pytest
 import respx
 from homeassistant.config_entries import SOURCE_REAUTH, SOURCE_USER
 from homeassistant.core import HomeAssistant
@@ -19,7 +20,11 @@ from custom_components.guesty.api.exceptions import (
     GuestyConnectionError,
     GuestyRateLimitError,
 )
-from custom_components.guesty.const import DOMAIN
+from custom_components.guesty.const import (
+    CONF_SCAN_INTERVAL,
+    DOMAIN,
+    MIN_SCAN_INTERVAL,
+)
 from tests.conftest import make_token_response
 
 VALID_INPUT = {
@@ -449,3 +454,127 @@ class TestNullStorage:
         storage = _NullStorage()
         result = await storage.load_token()
         assert result is None
+
+
+class TestOptionsFlow:
+    """Tests for GuestyOptionsFlowHandler."""
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_options_flow_presents_scan_interval(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Options flow shows scan_interval with default."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        result = await hass.config_entries.options.async_init(
+            entry.entry_id,
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "init"
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_options_flow_valid_interval_saves(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Valid scan_interval saves to entry.options."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+
+        result = await hass.config_entries.options.async_init(
+            entry.entry_id,
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={CONF_SCAN_INTERVAL: 10},
+        )
+        assert result["type"] is FlowResultType.CREATE_ENTRY
+        assert entry.options[CONF_SCAN_INTERVAL] == 10
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_options_flow_below_minimum_rejects(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Interval below MIN_SCAN_INTERVAL raises error."""
+        from homeassistant.data_entry_flow import InvalidData
+
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+
+        result = await hass.config_entries.options.async_init(
+            entry.entry_id,
+        )
+        with pytest.raises(InvalidData):
+            await hass.config_entries.options.async_configure(
+                result["flow_id"],
+                user_input={CONF_SCAN_INTERVAL: MIN_SCAN_INTERVAL - 1},
+            )
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_config_flow_has_options_flow(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """GuestyConfigFlow has async_get_options_flow."""
+        from custom_components.guesty.config_flow import GuestyConfigFlow
+
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+
+        handler = GuestyConfigFlow.async_get_options_flow(entry)
+        assert handler is not None
