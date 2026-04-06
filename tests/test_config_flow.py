@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -39,6 +40,16 @@ VALID_INPUT = {
 
 class TestStepUser:
     """Tests for the user config flow step."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
 
     async def test_form_displayed(self, hass: HomeAssistant) -> None:
         """User step shows the credential form."""
@@ -196,6 +207,16 @@ class TestStepUser:
 
 class TestStepReauth:
     """Tests for the reauth config flow step."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
 
     @patch(
         "custom_components.guesty.async_setup_entry",
@@ -463,6 +484,16 @@ class TestNullStorage:
 class TestOptionsFlow:
     """Tests for GuestyOptionsFlowHandler."""
 
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
     @patch(
         "custom_components.guesty.async_setup_entry",
         return_value=True,
@@ -586,6 +617,16 @@ class TestOptionsFlow:
 
 class TestReservationOptionsFlow:
     """Tests for reservation-specific options flow fields."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
 
     @patch(
         "custom_components.guesty.async_setup_entry",

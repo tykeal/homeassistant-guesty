@@ -255,14 +255,15 @@ class ReservationsCoordinator(
 class CustomFieldsDefinitionCoordinator(
     DataUpdateCoordinator[list[GuestyCustomFieldDefinition]],
 ):
-    """Coordinator that fetches Guesty custom field definitions.
+    """Coordinator that fetches custom field definitions periodically.
 
-    Wraps ``GuestyCustomFieldsClient.get_definitions()`` inside a
-    ``DataUpdateCoordinator`` so field definitions are refreshed
-    periodically for validation and discovery.
+    Wraps the custom fields client's ``get_definitions()`` call inside
+    a ``DataUpdateCoordinator`` so the service handler can validate
+    field IDs and types against cached definitions. The poll interval
+    is configurable via options flow.
 
     Attributes:
-        cf_client: The Guesty custom fields client instance.
+        cf_client: The custom fields client instance.
         config_entry: The integration config entry.
     """
 
@@ -300,7 +301,7 @@ class CustomFieldsDefinitionCoordinator(
         """Fetch all custom field definitions.
 
         Returns:
-            List of custom field definitions.
+            List of custom field definitions from the API.
 
         Raises:
             UpdateFailed: On any Guesty API error.
@@ -319,30 +320,31 @@ class CustomFieldsDefinitionCoordinator(
         """Look up a custom field definition by ID.
 
         Args:
-            field_id: The custom field identifier.
+            field_id: The custom field identifier to look up.
 
         Returns:
             The matching definition, or None if not found.
         """
         if self.data is None:
             return None
-        for defn in self.data:
-            if defn.field_id == field_id:
-                return defn
+        for field in self.data:
+            if field.field_id == field_id:
+                return field
         return None
 
     def get_fields_for_target(
         self,
         target_type: str,
     ) -> list[GuestyCustomFieldDefinition]:
-        """Filter definitions by target type applicability.
+        """Filter definitions applicable to a target type.
 
         Args:
-            target_type: Entity type ('listing' or 'reservation').
+            target_type: Entity type to filter by
+                ('listing' or 'reservation').
 
         Returns:
             List of definitions applicable to the target type.
         """
         if self.data is None:
             return []
-        return [d for d in self.data if target_type in d.applicable_to]
+        return [f for f in self.data if target_type in f.applicable_to]
