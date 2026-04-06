@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+from copy import deepcopy
 from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Any
@@ -247,6 +248,158 @@ def make_listings_page_response(
         "limit": limit,
         "skip": skip,
     }
+
+
+def make_listing_dict_with(
+    listing_id: str = "listing-001",
+    title: str = "Beach House",
+    nickname: str | None = "beach",
+    tags: list[str] | None = None,
+    **overrides: Any,
+) -> dict[str, Any]:
+    """Create a Guesty listing API response dict for testing.
+
+    Convenience wrapper around :func:`make_listing_dict` that exposes
+    commonly varied fields as keyword arguments for readability in
+    multi-listing test setups.
+
+    Args:
+        listing_id: The Guesty listing ID (``_id`` field).
+        title: Human-readable listing title.
+        nickname: Optional listing nickname.
+        tags: Listing tags; defaults to ``["premium", "beachfront"]``.
+        **overrides: Additional API-level fields to override.
+
+    Returns:
+        Dictionary matching the Guesty API listing response format.
+    """
+    if tags is None:
+        tags = ["premium", "beachfront"]
+    return make_listing_dict(
+        _id=listing_id,
+        title=title,
+        nickname=nickname,
+        tags=tags,
+        **overrides,
+    )
+
+
+# Pre-built multi-listing data for filtering tests.
+MULTI_LISTING_DICTS: list[dict[str, Any]] = [
+    make_listing_dict_with(
+        listing_id="lst_miami_beach",
+        title="Miami Beach Villa",
+        nickname="miami-villa",
+        tags=["miami-beach", "premium"],
+        address={
+            "full": "100 Collins Ave, Miami Beach, FL 33139, US",
+            "street": "100 Collins Ave",
+            "city": "Miami Beach",
+            "state": "FL",
+            "zipcode": "33139",
+            "country": "US",
+        },
+        bedrooms=3,
+        bathrooms=2.0,
+        accommodates=6,
+    ),
+    make_listing_dict_with(
+        listing_id="lst_downtown_orlando",
+        title="Downtown Orlando Loft",
+        nickname="orlando-loft",
+        tags=["downtown-orlando"],
+        address={
+            "full": "200 Orange Ave, Orlando, FL 32801, US",
+            "street": "200 Orange Ave",
+            "city": "Orlando",
+            "state": "FL",
+            "zipcode": "32801",
+            "country": "US",
+        },
+        propertyType="house",
+        bedrooms=1,
+        bathrooms=1.0,
+        accommodates=2,
+        listingType="SINGLE",
+        defaultCheckInTime="16:00",
+        defaultCheckOutTime="10:00",
+        timezone="America/New_York",
+    ),
+    make_listing_dict_with(
+        listing_id="lst_tampa_bay",
+        title="Tampa Bay Cottage",
+        nickname="tampa-cottage",
+        tags=["tampa-bay", "premium"],
+        address={
+            "full": "300 Bayshore Blvd, Tampa, FL 33606, US",
+            "street": "300 Bayshore Blvd",
+            "city": "Tampa",
+            "state": "FL",
+            "zipcode": "33606",
+            "country": "US",
+        },
+        bedrooms=2,
+        bathrooms=1.5,
+        accommodates=4,
+    ),
+    make_listing_dict_with(
+        listing_id="lst_miami_downtown",
+        title="Miami Downtown Studio",
+        nickname="miami-studio",
+        tags=["miami-beach", "downtown-orlando"],
+        address={
+            "full": "400 Brickell Ave, Miami, FL 33131, US",
+            "street": "400 Brickell Ave",
+            "city": "Miami",
+            "state": "FL",
+            "zipcode": "33131",
+            "country": "US",
+        },
+        propertyType="apartment",
+        bedrooms=0,
+        bathrooms=1.0,
+        accommodates=2,
+        listingType="SINGLE",
+        defaultCheckInTime="14:00",
+        defaultCheckOutTime="11:00",
+        timezone="America/New_York",
+    ),
+    make_listing_dict_with(
+        listing_id="lst_no_tags",
+        title="Untagged Retreat",
+        nickname="untagged",
+        tags=[],
+        address={
+            "full": "500 Palm St, Key West, FL 33040, US",
+            "street": "500 Palm St",
+            "city": "Key West",
+            "state": "FL",
+            "zipcode": "33040",
+            "country": "US",
+        },
+        bedrooms=1,
+        bathrooms=1.0,
+        accommodates=3,
+    ),
+]
+
+
+@pytest.fixture
+def multi_listing_dicts() -> list[dict[str, Any]]:
+    """Provide 5 distinct Guesty API listing dicts for filtering tests.
+
+    The listings cover:
+      - ``lst_miami_beach``: tags ``miami-beach``, ``premium``
+      - ``lst_downtown_orlando``: tag ``downtown-orlando``
+      - ``lst_tampa_bay``: tags ``tampa-bay``, ``premium``
+      - ``lst_miami_downtown``: tags ``miami-beach``,
+        ``downtown-orlando``
+      - ``lst_no_tags``: no tags
+
+    Returns:
+        A list of five listing API response dicts.
+    """
+    return [deepcopy(d) for d in MULTI_LISTING_DICTS]
 
 
 @pytest.fixture
