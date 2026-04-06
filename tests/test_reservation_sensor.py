@@ -506,6 +506,7 @@ class TestSensorAttributes:
         assert attrs["guests_count"] == 2
         assert attrs["nights_count"] == 4
         assert attrs["source"] == "airbnb"
+        assert attrs["listing_id"] == "listing-001"
         assert "upcoming_reservations" in attrs
 
     @patch(
@@ -547,6 +548,7 @@ class TestSensorAttributes:
         attrs = state.attributes
         assert attrs["reservation_id"] is None
         assert attrs["guest_name"] is None
+        assert attrs["listing_id"] == "listing-001"
         assert attrs["upcoming_reservations"] == []
 
     @patch(
@@ -1376,6 +1378,7 @@ class TestFinancialDiagnosticSensors:
         )
         assert state is not None
         assert float(state.state) == 1500.50
+        assert state.attributes["listing_id"] == "listing-001"
 
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",

@@ -220,6 +220,26 @@ class TestGuestyListingSensor:
         desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "status")
         assert desc.entity_category is None
 
+    def test_extra_state_attributes_listing_id(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        mock_coordinator: AsyncMock,
+    ) -> None:
+        """extra_state_attributes exposes listing_id."""
+        entry = mock_coordinator.config_entry
+        desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "status")
+
+        sensor = GuestyListingSensor(
+            coordinator=mock_coordinator,
+            listing_id=sample_listing.id,
+            entry=entry,
+            description=desc,
+        )
+
+        attrs = sensor.extra_state_attributes
+        assert attrs["listing_id"] == sample_listing.id
+
 
 # ── Detail sensor keys for parameterised tests ──────────────────────
 
@@ -1015,6 +1035,23 @@ class TestCustomFieldSensors:
             description=desc,
         )
         assert sensor.native_value == "southeast"
+
+    def test_custom_field_extra_state_attributes_listing_id(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        mock_coordinator: AsyncMock,
+    ) -> None:
+        """Custom field sensor exposes listing_id attribute."""
+        desc = create_custom_field_description("region")
+        sensor = GuestyListingSensor(
+            coordinator=mock_coordinator,
+            listing_id=sample_listing.id,
+            entry=mock_coordinator.config_entry,
+            description=desc,
+        )
+        attrs = sensor.extra_state_attributes
+        assert attrs["listing_id"] == sample_listing.id
 
     def test_custom_field_translation_key(self) -> None:
         """Custom field sensor has listing_custom_field key."""

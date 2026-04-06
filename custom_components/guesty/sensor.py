@@ -250,6 +250,15 @@ class GuestyListingSensor(GuestyEntity, SensorEntity):
         return self.entity_description.value_fn(listing)
 
     @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return extra state attributes including the listing ID.
+
+        Returns:
+            Dictionary with listing_id attribute.
+        """
+        return {"listing_id": self._listing_id}
+
+    @property
     def available(self) -> bool:
         """Return True only when the listing is present and not disappeared.
 
@@ -332,12 +341,14 @@ def _derive_state(reservation: GuestyReservation | None) -> str:
 def _build_attributes(
     reservation: GuestyReservation | None,
     all_reservations: list[GuestyReservation],
+    listing_id: str,
 ) -> dict[str, Any]:
     """Build extra_state_attributes for the reservation sensor.
 
     Args:
         reservation: The selected reservation, or None.
         all_reservations: All reservations for upcoming list.
+        listing_id: The Guesty listing ID.
 
     Returns:
         Dictionary of extra state attributes.
@@ -358,6 +369,7 @@ def _build_attributes(
             "guests_count": None,
             "nights_count": None,
             "source": None,
+            "listing_id": listing_id,
             "upcoming_reservations": [],
         }
 
@@ -379,6 +391,7 @@ def _build_attributes(
         "guests_count": reservation.guests_count,
         "nights_count": reservation.nights_count,
         "source": reservation.source,
+        "listing_id": listing_id,
         "upcoming_reservations": upcoming,
     }
 
@@ -507,7 +520,7 @@ class GuestyReservationSensor(
         """
         reservations = self._reservations
         selected = _select_reservation(reservations)
-        return _build_attributes(selected, reservations)
+        return _build_attributes(selected, reservations, self._listing_id)
 
     @property
     def device_info(self) -> DeviceInfo | None:
@@ -610,6 +623,15 @@ class GuestyFinancialSensor(
         if money is None:
             return None
         return self.entity_description.value_fn(money)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return extra state attributes including the listing ID.
+
+        Returns:
+            Dictionary with listing_id attribute.
+        """
+        return {"listing_id": self._listing_id}
 
     @property
     def available(self) -> bool:
