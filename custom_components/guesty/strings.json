@@ -238,5 +238,29 @@
                 "name": "Reservation currency"
             }
         }
+    },
+    "services": {
+        "set_custom_field": {
+            "name": "Set custom field",
+            "description": "Set a custom field value on a Guesty listing or reservation.",
+            "fields": {
+                "target_type": {
+                    "name": "Target type",
+                    "description": "Entity type to update (listing or reservation)."
+                },
+                "target_id": {
+                    "name": "Target ID",
+                    "description": "The Guesty listing or reservation ID to update."
+                },
+                "field_id": {
+                    "name": "Field ID",
+                    "description": "The custom field definition ID."
+                },
+                "value": {
+                    "name": "Value",
+                    "description": "The value to set. Type must match the field definition."
+                }
+            }
+        }
     }
 }

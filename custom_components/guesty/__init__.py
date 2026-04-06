@@ -17,7 +17,12 @@ from typing import TYPE_CHECKING, Any
 import httpx
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
+from homeassistant.core import (
+    HomeAssistant,
+    ServiceCall,
+    ServiceResponse,
+    SupportsResponse,
+)
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 
 from custom_components.guesty.api.actions import GuestyActionsClient
@@ -49,6 +54,17 @@ from custom_components.guesty.coordinator import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+SET_CUSTOM_FIELD_SCHEMA = vol.Schema(
+    {
+        vol.Required("target_type"): vol.In(
+            ["listing", "reservation"],
+        ),
+        vol.Required("target_id"): str,
+        vol.Required("field_id"): str,
+        vol.Required("value"): vol.Any(str, int, float, bool),
+    }
+)
 
 
 class HATokenStorage:
@@ -237,8 +253,8 @@ async def async_setup_entry(
 
     messaging_client = GuestyMessagingClient(api_client)
     actions_client = GuestyActionsClient(api_client)
-
     cf_client = GuestyCustomFieldsClient(api_client)
+
     cf_coordinator = CustomFieldsDefinitionCoordinator(
         hass=hass,
         entry=entry,
@@ -260,41 +276,34 @@ async def async_setup_entry(
         "coordinator": coordinator,
         "reservations_coordinator": reservations_coordinator,
         "messaging_client": messaging_client,
+        "actions_client": actions_client,
         "cf_client": cf_client,
         "cf_coordinator": cf_coordinator,
-        "actions_client": actions_client,
     }
 
     async def _async_handle_set_custom_field(
         call: ServiceCall,
-    ) -> dict[str, Any]:
-        """Handle the set_custom_field service call.
+    ) -> ServiceResponse:
+        """Handle the guesty.set_custom_field service call.
 
         Args:
-            call: The service call with target_type, target_id,
-                field_id, and value parameters.
+            call: The service call containing target and field data.
 
         Returns:
-            Structured response dict with result status.
+            Structured response dict when return_response is True.
 
         Raises:
-            HomeAssistantError: On validation or API errors.
+            HomeAssistantError: On validation or API failure.
         """
         target_type: str = call.data["target_type"]
         target_id: str = call.data["target_id"]
         field_id: str = call.data["field_id"]
         value: str | int | float | bool = call.data["value"]
 
-        # Find a loaded entry for this service
-        entry_data = None
-        for _eid, edata in hass.data.get(DOMAIN, {}).items():
-            if isinstance(edata, dict) and "cf_coordinator" in edata:
-                entry_data = edata
-                break
-
+        entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id)
         if entry_data is None:
             raise HomeAssistantError(
-                "Guesty integration is not configured or loaded",
+                "Guesty integration not loaded",
             )
 
         local_cf_coordinator: CustomFieldsDefinitionCoordinator = entry_data[
@@ -302,29 +311,36 @@ async def async_setup_entry(
         ]
         local_cf_client: GuestyCustomFieldsClient = entry_data["cf_client"]
 
-        defn = local_cf_coordinator.get_field(field_id)
-        if defn is None:
+        field_def = local_cf_coordinator.get_field(field_id)
+        if field_def is None:
             available = local_cf_coordinator.get_fields_for_target(
                 target_type,
             )
-            field_list = ", ".join(f.field_id for f in available)
+            field_names = [f"{f.field_id} ({f.name})" for f in available]
             raise HomeAssistantError(
-                f"Custom field '{field_id}' not found. "
-                f"Available fields for {target_type}: "
-                f"{field_list or 'none'}",
+                f"Field '{field_id}' not found in definitions "
+                f"for {target_type}. Available fields: "
+                f"{', '.join(field_names) if field_names else 'none'}",
             )
 
-        if target_type not in defn.applicable_to:
+        if target_type not in field_def.applicable_to:
+            available = local_cf_coordinator.get_fields_for_target(
+                target_type,
+            )
+            field_names = [f"{f.field_id} ({f.name})" for f in available]
             raise HomeAssistantError(
-                f"Custom field '{field_id}' is not applicable "
-                f"to target type '{target_type}'. Applicable "
-                f"types: {', '.join(sorted(defn.applicable_to))}",
+                f"Field '{field_id}' is not applicable to "
+                f"{target_type}. Available fields: "
+                f"{', '.join(field_names) if field_names else 'none'}",
             )
 
         try:
-            local_cf_client.validate_value(value, defn.field_type)
-        except GuestyCustomFieldError as exc:
-            raise HomeAssistantError(str(exc)) from exc
+            local_cf_client.validate_value(
+                value,
+                field_def.field_type,
+            )
+        except GuestyCustomFieldError as err:
+            raise HomeAssistantError(str(err)) from err
 
         try:
             result = await local_cf_client.set_field(
@@ -333,45 +349,34 @@ async def async_setup_entry(
                 field_id=field_id,
                 value=value,
             )
-        except GuestyCustomFieldError as exc:
-            ctx = (
-                f" (target_type={target_type},"
-                f" target_id={target_id},"
-                f" field_id={field_id})"
+        except GuestyCustomFieldError as err:
+            _LOGGER.error(
+                "Custom field update failed for %s",
+                target_type,
             )
-            raise HomeAssistantError(str(exc) + ctx) from exc
-        except GuestyApiError as exc:
-            raise HomeAssistantError(
-                f"Guesty API error: {exc.message}",
-            ) from exc
+            raise HomeAssistantError(str(err)) from err
+        except GuestyApiError as err:
+            _LOGGER.error(
+                "API error during custom field update for %s",
+                target_type,
+            )
+            raise HomeAssistantError(str(err)) from err
 
-        return {
-            "target_type": result.target_type,
-            "target_id": result.target_id,
-            "field_id": result.field_id,
-            "result": "success" if result.success else "failure",
-        }
+        if call.return_response:
+            return {
+                "target_type": result.target_type,
+                "target_id": result.target_id,
+                "field_id": result.field_id,
+                "result": "success",
+            }
+        return None
 
     if not hass.services.has_service(DOMAIN, SERVICE_SET_CUSTOM_FIELD):
         hass.services.async_register(
             DOMAIN,
             SERVICE_SET_CUSTOM_FIELD,
             _async_handle_set_custom_field,
-            schema=vol.Schema(
-                {
-                    vol.Required("target_type"): vol.In(
-                        ["listing", "reservation"],
-                    ),
-                    vol.Required("target_id"): str,
-                    vol.Required("field_id"): str,
-                    vol.Required("value"): vol.Any(
-                        str,
-                        int,
-                        float,
-                        bool,
-                    ),
-                },
-            ),
+            schema=SET_CUSTOM_FIELD_SCHEMA,
             supports_response=SupportsResponse.OPTIONAL,
         )
 

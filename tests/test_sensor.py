@@ -4,9 +4,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Generator, Iterable
 from types import MappingProxyType
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.const import EntityCategory
@@ -488,6 +488,16 @@ class TestPropertyDetailSensors:
 class TestSensorPlatformSetup:
     """Tests for sensor platform async_setup_entry."""
 
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
     async def test_setup_creates_sensors_for_listings(
         self,
         hass: HomeAssistant,
@@ -541,6 +551,16 @@ class TestSensorPlatformSetup:
 
 class TestNewListingDiscovery:
     """Tests for new-listing discovery on coordinator update (T016a)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
 
     async def test_new_listing_discovered_on_update(
         self,
@@ -625,6 +645,16 @@ class TestNewListingDiscovery:
 
 class TestEdgeCases:
     """Tests for edge cases: None data, missing listings."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
 
     def test_entity_device_info_none_when_data_missing(
         self,
@@ -935,6 +965,16 @@ class TestTagsSensor:
 
 class TestCustomFieldSensors:
     """Tests for dynamic custom field sensors (T032)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
 
     def test_custom_field_description_unique_id_slug(
         self,

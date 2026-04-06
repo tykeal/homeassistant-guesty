@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -336,6 +337,16 @@ class TestGuestyNotifyEntitySendMessage:
 class TestNotifyPlatformSetup:
     """Tests for async_setup_entry creating the entity (T011)."""
 
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
@@ -442,6 +453,16 @@ class TestNotifyPlatformSetup:
 
 class TestAutomationCompatibility:
     """Automation dispatch and non-blocking tests (T012)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for auto tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
 
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
@@ -662,6 +683,16 @@ class TestAutomationCompatibility:
 
 class TestChannelSelection:
     """Integration tests for channel selection (T017)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for channel tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
 
     async def test_email_channel_passed_to_client(
         self,
@@ -903,6 +934,16 @@ class TestUnavailableChannel:
 
 class TestTemplateVariableSubstitution:
     """Integration tests for template variable substitution (T019)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for template tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
 
     async def test_template_variables_passed_to_client(
         self,
@@ -1344,6 +1385,16 @@ class TestEdgeCases:
 
 class TestRateLimitRetryIntegration:
     """Rate limit retry integration tests through full stack (T022)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for retry tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
 
     async def test_retry_transparent_to_ha_layer(
         self,

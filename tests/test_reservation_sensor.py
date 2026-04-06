@@ -4,9 +4,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from homeassistant.const import EntityCategory
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
@@ -79,6 +81,16 @@ def _make_reservation(
 
 class TestPrioritySelection:
     """Tests for reservation status priority selection logic."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
 
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
@@ -415,6 +427,16 @@ class TestPrioritySelection:
 class TestSensorAttributes:
     """Tests for reservation sensor extra_state_attributes."""
 
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
@@ -644,6 +666,16 @@ class TestSensorAttributes:
 class TestSensorEntitySetup:
     """Tests for reservation sensor entity registration."""
 
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
@@ -766,6 +798,16 @@ class TestSensorEntitySetup:
 
 class TestGuestInformation:
     """Tests for US3 — guest information edge cases (T023)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
 
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
@@ -1277,6 +1319,16 @@ class TestReservationSensorEdgeCases:
 
 class TestFinancialDiagnosticSensors:
     """Tests for financial diagnostic sensors (US4)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
 
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
@@ -1957,6 +2009,16 @@ class TestFinancialDiagnosticSensors:
 class TestEdgeCaseSameDayTurnover:
     """Tests for same-day turnover edge cases (FR-018)."""
 
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
@@ -2069,6 +2131,16 @@ class TestEdgeCaseSameDayTurnover:
 
 class TestEdgeCaseMissingOptionalFields:
     """Tests for missing optional fields handled gracefully (FR-019)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
 
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
@@ -2227,6 +2299,16 @@ class TestEdgeCaseMissingOptionalFields:
 class TestEdgeCaseSingleListingReservations:
     """Tests for reservation edge cases within a single listing."""
 
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
@@ -2332,6 +2414,16 @@ class TestEdgeCaseSingleListingReservations:
 
 class TestStateTransitionEvents:
     """Integration tests for state change events (FR-015, T030)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
 
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",

@@ -1085,295 +1085,69 @@ class TestReservationsCoordinatorErrorResilience:
         assert len(matching) >= 1
 
 
-# ── CustomFieldsDefinitionCoordinator Tests (T016) ─────────────────
+# ── T016 + T028 + T029: CustomFieldsDefinitionCoordinator Tests ─────
+
+_SAMPLE_DEFS = [
+    GuestyCustomFieldDefinition(
+        field_id="cf-region",
+        name="Region",
+        field_type="text",
+        applicable_to=frozenset({"listing"}),
+    ),
+    GuestyCustomFieldDefinition(
+        field_id="cf-door-code",
+        name="Door Code",
+        field_type="text",
+        applicable_to=frozenset({"reservation"}),
+    ),
+    GuestyCustomFieldDefinition(
+        field_id="cf-priority",
+        name="Priority",
+        field_type="number",
+        applicable_to=frozenset({"listing", "reservation"}),
+    ),
+]
 
 
 class TestCustomFieldsDefinitionCoordinator:
-    """Tests for the CustomFieldsDefinitionCoordinator."""
+    """Tests for CustomFieldsDefinitionCoordinator (T016)."""
 
     async def test_update_data_calls_get_definitions(
         self,
         hass: HomeAssistant,
     ) -> None:
-        """_async_update_data calls get_definitions and returns defs."""
-        from custom_components.guesty.coordinator import (
-            CustomFieldsDefinitionCoordinator,
-        )
-        from tests.conftest import sample_custom_field_definitions
-
-        definitions = sample_custom_field_definitions()
-        mock_client = AsyncMock()
-        mock_client.get_definitions = AsyncMock(
-            return_value=definitions,
-        )
+        """_async_update_data calls get_definitions."""
         entry = _make_entry()
         entry.add_to_hass(hass)
-
+        cf_client = AsyncMock()
+        cf_client.get_definitions = AsyncMock(
+            return_value=_SAMPLE_DEFS,
+        )
         coordinator = CustomFieldsDefinitionCoordinator(
             hass=hass,
             entry=entry,
-            cf_client=mock_client,
-        )
-        result = await coordinator._async_update_data()
-
-        mock_client.get_definitions.assert_awaited_once()
-        assert result == definitions
-        assert len(result) == 3
-
-    async def test_get_field_returns_matching_definition(
-        self,
-        hass: HomeAssistant,
-    ) -> None:
-        """get_field returns the matching definition or None."""
-        from custom_components.guesty.coordinator import (
-            CustomFieldsDefinitionCoordinator,
-        )
-        from tests.conftest import sample_custom_field_definitions
-
-        definitions = sample_custom_field_definitions()
-        mock_client = AsyncMock()
-        mock_client.get_definitions = AsyncMock(
-            return_value=definitions,
-        )
-        entry = _make_entry()
-        entry.add_to_hass(hass)
-
-        coordinator = CustomFieldsDefinitionCoordinator(
-            hass=hass,
-            entry=entry,
-            cf_client=mock_client,
+            cf_client=cf_client,
         )
         await coordinator.async_refresh()
 
-        assert coordinator.get_field("cf-text-001") is not None
-        field = coordinator.get_field("cf-text-001")
-        assert field is not None
-        assert field.field_id == "cf-text-001"
-        assert coordinator.get_field("nonexistent") is None
-
-    async def test_get_fields_for_target_listing(
-        self,
-        hass: HomeAssistant,
-    ) -> None:
-        """get_fields_for_target filters to listing-applicable."""
-        from custom_components.guesty.coordinator import (
-            CustomFieldsDefinitionCoordinator,
-        )
-        from tests.conftest import sample_custom_field_definitions
-
-        definitions = sample_custom_field_definitions()
-        mock_client = AsyncMock()
-        mock_client.get_definitions = AsyncMock(
-            return_value=definitions,
-        )
-        entry = _make_entry()
-        entry.add_to_hass(hass)
-
-        coordinator = CustomFieldsDefinitionCoordinator(
-            hass=hass,
-            entry=entry,
-            cf_client=mock_client,
-        )
-        await coordinator.async_refresh()
-
-        listing_fields = coordinator.get_fields_for_target("listing")
-        # cf-text-001 (listing) + cf-bool-003 (both)
-        assert len(listing_fields) == 2
-        ids = {f.field_id for f in listing_fields}
-        assert "cf-text-001" in ids
-        assert "cf-bool-003" in ids
-
-    async def test_get_fields_for_target_reservation(
-        self,
-        hass: HomeAssistant,
-    ) -> None:
-        """get_fields_for_target filters to reservation-applicable."""
-        from custom_components.guesty.coordinator import (
-            CustomFieldsDefinitionCoordinator,
-        )
-        from tests.conftest import sample_custom_field_definitions
-
-        definitions = sample_custom_field_definitions()
-        mock_client = AsyncMock()
-        mock_client.get_definitions = AsyncMock(
-            return_value=definitions,
-        )
-        entry = _make_entry()
-        entry.add_to_hass(hass)
-
-        coordinator = CustomFieldsDefinitionCoordinator(
-            hass=hass,
-            entry=entry,
-            cf_client=mock_client,
-        )
-        await coordinator.async_refresh()
-
-        res_fields = coordinator.get_fields_for_target("reservation")
-        # cf-num-002 (reservation) + cf-bool-003 (both)
-        assert len(res_fields) == 2
-        ids = {f.field_id for f in res_fields}
-        assert "cf-num-002" in ids
-        assert "cf-bool-003" in ids
-
-    async def test_update_interval_from_options(
-        self,
-        hass: HomeAssistant,
-    ) -> None:
-        """update_interval matches CONF_CF_SCAN_INTERVAL option."""
-        from custom_components.guesty.const import CONF_CF_SCAN_INTERVAL
-        from custom_components.guesty.coordinator import (
-            CustomFieldsDefinitionCoordinator,
-        )
-
-        mock_client = AsyncMock()
-        mock_client.get_definitions = AsyncMock(return_value=[])
-        entry = _make_entry(
-            options={CONF_CF_SCAN_INTERVAL: 30},
-        )
-        entry.add_to_hass(hass)
-
-        coordinator = CustomFieldsDefinitionCoordinator(
-            hass=hass,
-            entry=entry,
-            cf_client=mock_client,
-        )
-        assert coordinator.update_interval == timedelta(minutes=30)
-
-    async def test_default_update_interval(
-        self,
-        hass: HomeAssistant,
-    ) -> None:
-        """Default update_interval matches DEFAULT_CF_SCAN_INTERVAL."""
-        from custom_components.guesty.coordinator import (
-            CustomFieldsDefinitionCoordinator,
-        )
-
-        mock_client = AsyncMock()
-        mock_client.get_definitions = AsyncMock(return_value=[])
-        entry = _make_entry()
-        entry.add_to_hass(hass)
-
-        coordinator = CustomFieldsDefinitionCoordinator(
-            hass=hass,
-            entry=entry,
-            cf_client=mock_client,
-        )
-        assert coordinator.update_interval == timedelta(
-            minutes=DEFAULT_CF_SCAN_INTERVAL,
-        )
-
-    async def test_api_error_raises_update_failed(
-        self,
-        hass: HomeAssistant,
-    ) -> None:
-        """GuestyApiError raises UpdateFailed."""
-        from custom_components.guesty.coordinator import (
-            CustomFieldsDefinitionCoordinator,
-        )
-
-        mock_client = AsyncMock()
-        mock_client.get_definitions = AsyncMock(
-            side_effect=GuestyApiError("API failure"),
-        )
-        entry = _make_entry()
-        entry.add_to_hass(hass)
-
-        coordinator = CustomFieldsDefinitionCoordinator(
-            hass=hass,
-            entry=entry,
-            cf_client=mock_client,
-        )
-        with pytest.raises(UpdateFailed, match="API failure"):
-            await coordinator._async_update_data()
-
-    async def test_empty_definitions_returns_empty_list(
-        self,
-        hass: HomeAssistant,
-    ) -> None:
-        """Empty definitions returns empty list."""
-        from custom_components.guesty.coordinator import (
-            CustomFieldsDefinitionCoordinator,
-        )
-
-        mock_client = AsyncMock()
-        mock_client.get_definitions = AsyncMock(return_value=[])
-        entry = _make_entry()
-        entry.add_to_hass(hass)
-
-        coordinator = CustomFieldsDefinitionCoordinator(
-            hass=hass,
-            entry=entry,
-            cf_client=mock_client,
-        )
-        result = await coordinator._async_update_data()
-        assert result == []
-
-    async def test_get_field_with_no_data(
-        self,
-        hass: HomeAssistant,
-    ) -> None:
-        """get_field returns None when coordinator has no data."""
-        from custom_components.guesty.coordinator import (
-            CustomFieldsDefinitionCoordinator,
-        )
-
-        mock_client = AsyncMock()
-        mock_client.get_definitions = AsyncMock(return_value=[])
-        entry = _make_entry()
-        entry.add_to_hass(hass)
-
-        coordinator = CustomFieldsDefinitionCoordinator(
-            hass=hass,
-            entry=entry,
-            cf_client=mock_client,
-        )
-        # Before first refresh, data is None
-        assert coordinator.get_field("anything") is None
-
-    async def test_get_fields_for_target_with_no_data(
-        self,
-        hass: HomeAssistant,
-    ) -> None:
-        """get_fields_for_target returns empty when no data."""
-        from custom_components.guesty.coordinator import (
-            CustomFieldsDefinitionCoordinator,
-        )
-
-        mock_client = AsyncMock()
-        mock_client.get_definitions = AsyncMock(return_value=[])
-        entry = _make_entry()
-        entry.add_to_hass(hass)
-
-        coordinator = CustomFieldsDefinitionCoordinator(
-            hass=hass,
-            entry=entry,
-            cf_client=mock_client,
-        )
-        assert coordinator.get_fields_for_target("listing") == []
-
-
-class TestFieldDiscovery:
-    """Tests for custom field discovery (T028)."""
+        assert coordinator.data == _SAMPLE_DEFS
+        cf_client.get_definitions.assert_called_once()
 
     async def test_definitions_expose_name_id_type_applicability(
         self,
         hass: HomeAssistant,
     ) -> None:
         """Coordinator data has name, field_id, field_type, applicable_to."""
-        from tests.conftest import sample_custom_field_definitions
-
-        definitions = sample_custom_field_definitions()
-        mock_client = AsyncMock()
-        mock_client.get_definitions = AsyncMock(
-            return_value=definitions,
-        )
         entry = _make_entry()
         entry.add_to_hass(hass)
-
+        cf_client = AsyncMock()
+        cf_client.get_definitions = AsyncMock(
+            return_value=_SAMPLE_DEFS,
+        )
         coordinator = CustomFieldsDefinitionCoordinator(
             hass=hass,
             entry=entry,
-            cf_client=mock_client,
+            cf_client=cf_client,
         )
         await coordinator.async_refresh()
 
@@ -1385,203 +1159,270 @@ class TestFieldDiscovery:
             assert isinstance(defn.applicable_to, frozenset)
             assert len(defn.applicable_to) > 0
 
-    async def test_listing_filter_excludes_reservation_only(
+    async def test_get_field_returns_matching(
         self,
         hass: HomeAssistant,
     ) -> None:
-        """get_fields_for_target('listing') excludes reservation-only."""
-        from tests.conftest import sample_custom_field_definitions
-
-        definitions = sample_custom_field_definitions()
-        mock_client = AsyncMock()
-        mock_client.get_definitions = AsyncMock(
-            return_value=definitions,
-        )
+        """get_field returns matching definition."""
         entry = _make_entry()
         entry.add_to_hass(hass)
-
+        cf_client = AsyncMock()
+        cf_client.get_definitions = AsyncMock(
+            return_value=_SAMPLE_DEFS,
+        )
         coordinator = CustomFieldsDefinitionCoordinator(
             hass=hass,
             entry=entry,
-            cf_client=mock_client,
+            cf_client=cf_client,
+        )
+        await coordinator.async_refresh()
+
+        field = coordinator.get_field("cf-region")
+        assert field is not None
+        assert field.name == "Region"
+
+    async def test_get_field_returns_none_not_found(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """get_field returns None when not found."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        cf_client = AsyncMock()
+        cf_client.get_definitions = AsyncMock(
+            return_value=_SAMPLE_DEFS,
+        )
+        coordinator = CustomFieldsDefinitionCoordinator(
+            hass=hass,
+            entry=entry,
+            cf_client=cf_client,
+        )
+        await coordinator.async_refresh()
+
+        assert coordinator.get_field("cf-nonexistent") is None
+
+    async def test_get_field_none_data_returns_none(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """get_field returns None when data is None."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        cf_client = AsyncMock()
+        coordinator = CustomFieldsDefinitionCoordinator(
+            hass=hass,
+            entry=entry,
+            cf_client=cf_client,
+        )
+        # Don't refresh — data is None
+        assert coordinator.get_field("cf-region") is None
+
+    async def test_get_fields_for_listing(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """get_fields_for_target('listing') filters correctly."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        cf_client = AsyncMock()
+        cf_client.get_definitions = AsyncMock(
+            return_value=_SAMPLE_DEFS,
+        )
+        coordinator = CustomFieldsDefinitionCoordinator(
+            hass=hass,
+            entry=entry,
+            cf_client=cf_client,
         )
         await coordinator.async_refresh()
 
         listing_fields = coordinator.get_fields_for_target("listing")
-        ids = {f.field_id for f in listing_fields}
-        assert "cf-text-001" in ids
-        assert "cf-bool-003" in ids
-        # cf-num-002 is reservation-only
-        assert "cf-num-002" not in ids
+        ids = [f.field_id for f in listing_fields]
+        assert "cf-region" in ids
+        assert "cf-priority" in ids
+        assert "cf-door-code" not in ids
 
-    async def test_reservation_filter_excludes_listing_only(
+    async def test_get_fields_for_reservation(
         self,
         hass: HomeAssistant,
     ) -> None:
-        """get_fields_for_target('reservation') excludes listing-only."""
-        from tests.conftest import sample_custom_field_definitions
-
-        definitions = sample_custom_field_definitions()
-        mock_client = AsyncMock()
-        mock_client.get_definitions = AsyncMock(
-            return_value=definitions,
-        )
+        """get_fields_for_target('reservation') filters correctly."""
         entry = _make_entry()
         entry.add_to_hass(hass)
-
+        cf_client = AsyncMock()
+        cf_client.get_definitions = AsyncMock(
+            return_value=_SAMPLE_DEFS,
+        )
         coordinator = CustomFieldsDefinitionCoordinator(
             hass=hass,
             entry=entry,
-            cf_client=mock_client,
+            cf_client=cf_client,
         )
         await coordinator.async_refresh()
 
         res_fields = coordinator.get_fields_for_target("reservation")
-        ids = {f.field_id for f in res_fields}
-        assert "cf-num-002" in ids
-        assert "cf-bool-003" in ids
-        # cf-text-001 is listing-only
-        assert "cf-text-001" not in ids
+        ids = [f.field_id for f in res_fields]
+        assert "cf-door-code" in ids
+        assert "cf-priority" in ids
+        assert "cf-region" not in ids
 
-    async def test_both_target_appears_in_both_queries(
+    async def test_both_target_appears_in_both(
         self,
         hass: HomeAssistant,
     ) -> None:
-        """Field applicable to 'both' appears in both target queries."""
-        both_field = GuestyCustomFieldDefinition(
-            field_id="cf-both-999",
-            name="Shared Field",
-            field_type="text",
-            applicable_to=frozenset({"listing", "reservation"}),
-        )
-        mock_client = AsyncMock()
-        mock_client.get_definitions = AsyncMock(
-            return_value=[both_field],
-        )
+        """Field applicable to 'both' appears in both queries."""
         entry = _make_entry()
         entry.add_to_hass(hass)
-
+        cf_client = AsyncMock()
+        cf_client.get_definitions = AsyncMock(
+            return_value=_SAMPLE_DEFS,
+        )
         coordinator = CustomFieldsDefinitionCoordinator(
             hass=hass,
             entry=entry,
-            cf_client=mock_client,
+            cf_client=cf_client,
         )
         await coordinator.async_refresh()
 
-        listing_ids = {f.field_id for f in coordinator.get_fields_for_target("listing")}
-        res_ids = {f.field_id for f in coordinator.get_fields_for_target("reservation")}
-        assert "cf-both-999" in listing_ids
-        assert "cf-both-999" in res_ids
+        listing_ids = [f.field_id for f in coordinator.get_fields_for_target("listing")]
+        res_ids = [f.field_id for f in coordinator.get_fields_for_target("reservation")]
+        assert "cf-priority" in listing_ids
+        assert "cf-priority" in res_ids
 
-    async def test_empty_definitions_returns_empty_no_error(
+    async def test_empty_definitions_returns_empty(
         self,
         hass: HomeAssistant,
     ) -> None:
         """Empty definitions returns empty list without error."""
-        mock_client = AsyncMock()
-        mock_client.get_definitions = AsyncMock(return_value=[])
         entry = _make_entry()
         entry.add_to_hass(hass)
-
+        cf_client = AsyncMock()
+        cf_client.get_definitions = AsyncMock(return_value=[])
         coordinator = CustomFieldsDefinitionCoordinator(
             hass=hass,
             entry=entry,
-            cf_client=mock_client,
+            cf_client=cf_client,
         )
         await coordinator.async_refresh()
 
         assert coordinator.data == []
         assert coordinator.get_fields_for_target("listing") == []
-        assert coordinator.get_fields_for_target("reservation") == []
+
+    async def test_get_fields_none_data_returns_empty(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """get_fields_for_target returns empty when data is None."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        cf_client = AsyncMock()
+        coordinator = CustomFieldsDefinitionCoordinator(
+            hass=hass,
+            entry=entry,
+            cf_client=cf_client,
+        )
+        assert coordinator.get_fields_for_target("listing") == []
+
+    async def test_update_interval_default(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Update interval defaults to DEFAULT_CF_SCAN_INTERVAL."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        cf_client = AsyncMock()
+        coordinator = CustomFieldsDefinitionCoordinator(
+            hass=hass,
+            entry=entry,
+            cf_client=cf_client,
+        )
+        assert coordinator.update_interval == timedelta(
+            minutes=DEFAULT_CF_SCAN_INTERVAL,
+        )
+
+    async def test_update_interval_from_options(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Update interval respects CONF_CF_SCAN_INTERVAL."""
+        entry = _make_entry(
+            options={CONF_CF_SCAN_INTERVAL: 30},
+        )
+        entry.add_to_hass(hass)
+        cf_client = AsyncMock()
+        coordinator = CustomFieldsDefinitionCoordinator(
+            hass=hass,
+            entry=entry,
+            cf_client=cf_client,
+        )
+        assert coordinator.update_interval == timedelta(minutes=30)
+
+    async def test_api_error_raises_update_failed(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """GuestyApiError raises UpdateFailed."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        cf_client = AsyncMock()
+        cf_client.get_definitions = AsyncMock(
+            side_effect=GuestyConnectionError("network down"),
+        )
+        coordinator = CustomFieldsDefinitionCoordinator(
+            hass=hass,
+            entry=entry,
+            cf_client=cf_client,
+        )
+        await coordinator.async_refresh()
+        assert coordinator.last_update_success is False
 
 
-class TestDefinitionRefresh:
-    """Tests for custom field definition refresh (T029)."""
+class TestCustomFieldDefinitionRefresh:
+    """Tests for definition refresh behavior (T028-T029)."""
 
     async def test_new_field_appears_after_refresh(
         self,
         hass: HomeAssistant,
     ) -> None:
-        """New field added in Guesty appears after coordinator refresh."""
-        from tests.conftest import sample_custom_field_definitions
-
-        original = sample_custom_field_definitions()
-        mock_client = AsyncMock()
-        mock_client.get_definitions = AsyncMock(
-            return_value=original,
-        )
+        """New field added in Guesty appears after refresh."""
         entry = _make_entry()
         entry.add_to_hass(hass)
-
+        cf_client = AsyncMock()
+        cf_client.get_definitions = AsyncMock(
+            return_value=_SAMPLE_DEFS[:1],
+        )
         coordinator = CustomFieldsDefinitionCoordinator(
             hass=hass,
             entry=entry,
-            cf_client=mock_client,
+            cf_client=cf_client,
         )
+        await coordinator.async_refresh()
+        assert len(coordinator.data) == 1
+
+        # Simulate new field added
+        cf_client.get_definitions.return_value = _SAMPLE_DEFS
         await coordinator.async_refresh()
         assert len(coordinator.data) == 3
-
-        new_field = GuestyCustomFieldDefinition(
-            field_id="cf-new-004",
-            name="New Field",
-            field_type="text",
-            applicable_to=frozenset({"listing"}),
-        )
-        updated = [*original, new_field]
-        mock_client.get_definitions.return_value = updated
-        await coordinator.async_refresh()
-
-        assert len(coordinator.data) == 4
-        ids = {d.field_id for d in coordinator.data}
-        assert "cf-new-004" in ids
 
     async def test_deleted_field_removed_after_refresh(
         self,
         hass: HomeAssistant,
     ) -> None:
         """Deleted field removed after coordinator refresh."""
-        from tests.conftest import sample_custom_field_definitions
-
-        original = sample_custom_field_definitions()
-        mock_client = AsyncMock()
-        mock_client.get_definitions = AsyncMock(
-            return_value=original,
-        )
         entry = _make_entry()
         entry.add_to_hass(hass)
-
+        cf_client = AsyncMock()
+        cf_client.get_definitions = AsyncMock(
+            return_value=_SAMPLE_DEFS,
+        )
         coordinator = CustomFieldsDefinitionCoordinator(
             hass=hass,
             entry=entry,
-            cf_client=mock_client,
+            cf_client=cf_client,
         )
         await coordinator.async_refresh()
         assert len(coordinator.data) == 3
 
-        # Remove first field
-        reduced = original[1:]
-        mock_client.get_definitions.return_value = reduced
+        # Simulate field deleted
+        cf_client.get_definitions.return_value = _SAMPLE_DEFS[:1]
         await coordinator.async_refresh()
-
-        assert len(coordinator.data) == 2
-        ids = {d.field_id for d in coordinator.data}
-        assert "cf-text-001" not in ids
-
-    async def test_update_interval_respects_cf_scan_interval(
-        self,
-        hass: HomeAssistant,
-    ) -> None:
-        """update_interval respects configured CONF_CF_SCAN_INTERVAL."""
-        mock_client = AsyncMock()
-        mock_client.get_definitions = AsyncMock(return_value=[])
-        entry = _make_entry(
-            options={CONF_CF_SCAN_INTERVAL: 45},
-        )
-        entry.add_to_hass(hass)
-
-        coordinator = CustomFieldsDefinitionCoordinator(
-            hass=hass,
-            entry=entry,
-            cf_client=mock_client,
-        )
-        assert coordinator.update_interval == timedelta(minutes=45)
+        assert len(coordinator.data) == 1

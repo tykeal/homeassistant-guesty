@@ -4,8 +4,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, patch
 
+import pytest
 import respx
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
@@ -62,6 +65,16 @@ def _entry_with_token(
 
 class TestTokenPersistenceAcrossRestart:
     """Tests verifying token reuse across simulated restarts."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
 
     @respx.mock
     async def test_valid_persisted_token_reused(
@@ -136,6 +149,16 @@ class TestTokenPersistenceAcrossRestart:
 
 class TestTenRestartScenario:
     """SC-002: Token reuse prevents exhausting 5-request limit."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
 
     @respx.mock
     async def test_10_restarts_reuse_token(
