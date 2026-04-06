@@ -28,12 +28,17 @@ from custom_components.guesty.api.models import CachedToken, TokenStorage
 from custom_components.guesty.const import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
+    CONF_RESERVATION_SCAN_INTERVAL,
     CONF_SCAN_INTERVAL,
+    DEFAULT_RESERVATION_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     PLATFORMS,
 )
-from custom_components.guesty.coordinator import ListingsCoordinator
+from custom_components.guesty.coordinator import (
+    ListingsCoordinator,
+    ReservationsCoordinator,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -210,6 +215,18 @@ async def async_setup_entry(
         await http_client.aclose()
         raise
 
+    reservations_coordinator = ReservationsCoordinator(
+        hass=hass,
+        entry=entry,
+        api_client=api_client,
+        listings_coordinator=coordinator,
+    )
+    try:
+        await reservations_coordinator.async_config_entry_first_refresh()
+    except ConfigEntryNotReady:
+        await http_client.aclose()
+        raise
+
     messaging_client = GuestyMessagingClient(api_client)
 
     hass.data.setdefault(DOMAIN, {})
@@ -218,6 +235,7 @@ async def async_setup_entry(
         "token_manager": token_manager,
         "api_client": api_client,
         "coordinator": coordinator,
+        "reservations_coordinator": reservations_coordinator,
         "messaging_client": messaging_client,
     }
 
@@ -225,7 +243,7 @@ async def async_setup_entry(
         hass: HomeAssistant,
         entry: ConfigEntry,
     ) -> None:
-        """Handle options update by reconfiguring coordinator.
+        """Handle options update by reconfiguring coordinators.
 
         Args:
             hass: Home Assistant instance.
@@ -238,6 +256,14 @@ async def async_setup_entry(
             DEFAULT_SCAN_INTERVAL,
         )
         coordinator.update_interval = timedelta(minutes=interval)
+
+        res_interval = entry.options.get(
+            CONF_RESERVATION_SCAN_INTERVAL,
+            DEFAULT_RESERVATION_SCAN_INTERVAL,
+        )
+        reservations_coordinator.update_interval = timedelta(
+            minutes=res_interval,
+        )
 
     entry.async_on_unload(
         entry.add_update_listener(_async_options_updated),

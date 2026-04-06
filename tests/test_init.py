@@ -21,7 +21,9 @@ from custom_components.guesty.api.models import CachedToken
 from custom_components.guesty.const import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
+    CONF_RESERVATION_SCAN_INTERVAL,
     CONF_SCAN_INTERVAL,
+    DEFAULT_RESERVATION_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
 )
@@ -52,6 +54,11 @@ class TestAsyncSetupEntry:
     """Tests for async_setup_entry."""
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
         return_value=[],
@@ -65,6 +72,7 @@ class TestAsyncSetupEntry:
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Setup creates http_client, token_manager, api_client."""
@@ -150,6 +158,11 @@ class TestAsyncUnloadEntry:
     """Tests for async_unload_entry."""
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
         return_value=[],
@@ -163,6 +176,7 @@ class TestAsyncUnloadEntry:
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Unload closes HTTP client and removes hass.data."""
@@ -184,6 +198,11 @@ class TestHATokenStorage:
     """Tests for HATokenStorage persistence."""
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
         return_value=[],
@@ -197,6 +216,7 @@ class TestHATokenStorage:
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """save_token persists to config_entry.data."""
@@ -221,6 +241,11 @@ class TestHATokenStorage:
         assert loaded.access_token == "saved-token"
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
         return_value=[],
@@ -234,6 +259,7 @@ class TestHATokenStorage:
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """load_token returns None when no token stored."""
@@ -246,6 +272,11 @@ class TestHATokenStorage:
         result = await storage.load_token()
         assert result is None
 
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
@@ -260,6 +291,7 @@ class TestHATokenStorage:
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """save/load_request_count round-trips correctly."""
@@ -277,6 +309,11 @@ class TestHATokenStorage:
         assert window == now
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
         return_value=[],
@@ -290,6 +327,7 @@ class TestHATokenStorage:
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """load_token returns None for corrupted data."""
@@ -313,6 +351,11 @@ class TestHATokenStorageCorruptedCounters:
     """Tests for HATokenStorage handling corrupted counter data."""
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
         return_value=[],
@@ -326,6 +369,7 @@ class TestHATokenStorageCorruptedCounters:
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Invalid token_request_count resets to zero."""
@@ -347,6 +391,11 @@ class TestHATokenStorageCorruptedCounters:
         assert count == 0
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
         return_value=[],
@@ -360,6 +409,7 @@ class TestHATokenStorageCorruptedCounters:
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Invalid token_window_start resets to None."""
@@ -383,6 +433,11 @@ class TestHATokenStorageCorruptedCounters:
         assert count == 0
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
         return_value=[],
@@ -396,6 +451,7 @@ class TestHATokenStorageCorruptedCounters:
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Naive datetime from config entry is treated as UTC."""
@@ -420,6 +476,11 @@ class TestHATokenStorageCorruptedCounters:
         assert count == 2
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
         return_value=[],
@@ -433,6 +494,7 @@ class TestHATokenStorageCorruptedCounters:
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Non-zero count with None window_start resets to 0."""
@@ -459,6 +521,11 @@ class TestLogSanitization:
     """Tests ensuring credentials never appear in logs."""
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
         return_value=[],
@@ -472,6 +539,7 @@ class TestLogSanitization:
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
         hass: HomeAssistant,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
@@ -494,6 +562,11 @@ class TestEndToEnd:
     """End-to-end integration tests spanning full lifecycle."""
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
         return_value=[],
@@ -512,6 +585,7 @@ class TestEndToEnd:
         mock_test: AsyncMock,
         mock_validate: AsyncMock,
         mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Config flow → setup entry → client operational → unload."""
@@ -545,6 +619,11 @@ class TestCoordinatorSetup:
     """Tests for coordinator integration in async_setup_entry."""
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
         return_value=[],
@@ -558,6 +637,7 @@ class TestCoordinatorSetup:
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Setup creates coordinator and stores it in hass.data."""
@@ -572,6 +652,11 @@ class TestCoordinatorSetup:
         assert "coordinator" in data
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
         return_value=[],
@@ -585,6 +670,7 @@ class TestCoordinatorSetup:
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Setup calls async_config_entry_first_refresh."""
@@ -597,6 +683,11 @@ class TestCoordinatorSetup:
         # If first refresh was called, get_listings was called
         mock_listings.assert_awaited_once()
 
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
@@ -611,6 +702,7 @@ class TestCoordinatorSetup:
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Unload removes coordinator from hass.data."""
@@ -627,6 +719,11 @@ class TestCoordinatorSetup:
         assert entry.entry_id not in hass.data.get(DOMAIN, {})
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
         return_value=[],
@@ -640,6 +737,7 @@ class TestCoordinatorSetup:
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Options update listener reconfigures coordinator interval."""
@@ -664,3 +762,186 @@ class TestCoordinatorSetup:
         await hass.async_block_till_done()
 
         assert coordinator.update_interval == timedelta(minutes=10)
+
+
+class TestReservationsCoordinatorSetup:
+    """Tests for ReservationsCoordinator in async_setup_entry."""
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_setup_creates_reservations_coordinator(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Setup creates reservations coordinator in hass.data."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        assert entry.state is ConfigEntryState.LOADED
+        data = hass.data[DOMAIN][entry.entry_id]
+        assert "reservations_coordinator" in data
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_reservations_first_refresh_called(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Setup calls first refresh on reservations coordinator."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        mock_reservations.assert_awaited_once()
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_unload_removes_reservations_coordinator(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Unload removes reservations coordinator from hass.data."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        assert entry.state is ConfigEntryState.LOADED
+
+        await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+
+        assert entry.entry_id not in hass.data.get(DOMAIN, {})
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_options_update_reconfigures_reservation_interval(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Options update reconfigures reservation coordinator."""
+        from datetime import timedelta
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        res_coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        assert res_coordinator.update_interval == timedelta(
+            minutes=DEFAULT_RESERVATION_SCAN_INTERVAL,
+        )
+
+        hass.config_entries.async_update_entry(
+            entry,
+            options={
+                CONF_SCAN_INTERVAL: 15,
+                CONF_RESERVATION_SCAN_INTERVAL: 10,
+            },
+        )
+        await hass.async_block_till_done()
+
+        assert res_coordinator.update_interval == timedelta(
+            minutes=10,
+        )
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        side_effect=GuestyConnectionError("network down"),
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_reservation_refresh_failure_retries(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Reservation first refresh failure retries setup."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        assert entry.state is ConfigEntryState.SETUP_RETRY
