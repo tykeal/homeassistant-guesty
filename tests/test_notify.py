@@ -333,6 +333,11 @@ class TestNotifyPlatformSetup:
     """Tests for async_setup_entry creating the entity (T011)."""
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.test_connection",
         new_callable=AsyncMock,
         return_value=True,
@@ -340,6 +345,7 @@ class TestNotifyPlatformSetup:
     async def test_setup_creates_notify_entity(
         self,
         mock_test: AsyncMock,
+        mock_listings: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """async_setup_entry registers a notify entity."""
@@ -356,6 +362,11 @@ class TestNotifyPlatformSetup:
         assert entity_ids[0].startswith("notify.")
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.test_connection",
         new_callable=AsyncMock,
         return_value=True,
@@ -363,6 +374,7 @@ class TestNotifyPlatformSetup:
     async def test_setup_stores_messaging_client(
         self,
         mock_test: AsyncMock,
+        mock_listings: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """async_setup_entry stores messaging_client in runtime data."""
@@ -376,6 +388,11 @@ class TestNotifyPlatformSetup:
         assert "messaging_client" in data
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.test_connection",
         new_callable=AsyncMock,
         return_value=True,
@@ -383,6 +400,7 @@ class TestNotifyPlatformSetup:
     async def test_unload_cleans_up(
         self,
         mock_test: AsyncMock,
+        mock_listings: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Unloading entry removes runtime data."""
@@ -404,6 +422,11 @@ class TestAutomationCompatibility:
     """Automation dispatch and non-blocking tests (T012)."""
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.test_connection",
         new_callable=AsyncMock,
         return_value=True,
@@ -411,6 +434,7 @@ class TestAutomationCompatibility:
     async def test_service_call_dispatches_message(
         self,
         mock_test: AsyncMock,
+        mock_listings: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """HA service call dispatches message through client."""
@@ -449,6 +473,11 @@ class TestAutomationCompatibility:
         )
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.test_connection",
         new_callable=AsyncMock,
         return_value=True,
@@ -456,6 +485,7 @@ class TestAutomationCompatibility:
     async def test_service_call_passes_resolved_message(
         self,
         mock_test: AsyncMock,
+        mock_listings: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Pre-resolved HA template message is passed through."""
@@ -496,6 +526,11 @@ class TestAutomationCompatibility:
         )
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.test_connection",
         new_callable=AsyncMock,
         return_value=True,
@@ -503,6 +538,7 @@ class TestAutomationCompatibility:
     async def test_async_send_does_not_block_event_loop(
         self,
         mock_test: AsyncMock,
+        mock_listings: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """async_send_message is non-blocking (coroutine)."""
@@ -524,6 +560,11 @@ class TestAutomationCompatibility:
         await coro
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.test_connection",
         new_callable=AsyncMock,
         return_value=True,
@@ -531,6 +572,7 @@ class TestAutomationCompatibility:
     async def test_client_failure_does_not_crash_automation(
         self,
         mock_test: AsyncMock,
+        mock_listings: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Messaging failure raises error without crashing HA."""
