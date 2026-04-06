@@ -25,11 +25,8 @@ uv sync --group dev --all-extras
 # Run all tests
 uv run pytest tests/ -x -q
 
-# Run only action client tests
-uv run pytest tests/api/test_actions.py -x -q
-
-# Run only HA service handler tests
-uv run pytest tests/test_actions.py -x -q
+# Run action-related tests (created during implementation)
+uv run pytest tests/ -k "action" -x -q
 ```
 
 ## Running Linters

@@ -61,8 +61,8 @@ note, concatenating the new text, and writing back.
 single string, not a list of note entries. To append without
 overwriting, the implementation must:
 
-1. Fetch the current reservation note via the existing
-   `get_reservations()` method or a targeted GET
+1. Fetch the current reservation note via
+   `GET /reservations/{reservation_id}`
 2. Concatenate the new note text with a separator
 3. PUT the combined text back
 

@@ -201,7 +201,10 @@ zero HA dependencies, extending the existing `api/` package.
 - `api/actions.py` — `GuestyActionsClient` class:
   - Receives `GuestyApiClient` via dependency injection
   - `async add_reservation_note(reservation_id, note_text)`
-    → `ActionResult`
+    → `ActionResult` — performs read-modify-write: fetches
+    current note via
+    `GET /reservations/{reservation_id}`, appends new
+    text with separator, PUTs combined note back
   - `async set_listing_status(listing_id, status)`
     → `ActionResult`
   - `async create_task(listing_id, task_title, *,
@@ -230,10 +233,13 @@ zero HA dependencies, extending the existing `api/` package.
   with a range payload containing `dateFrom` and `dateTo`;
   the client sends the requested range directly and does
   not expand it into per-day entries
-- Reservation notes use
-  `PUT /reservations/{reservation_id}`;
-  listing status uses `PUT /listings/{listing_id}`;
-  tasks use `POST /tasks-open-api/tasks`
+- Reservation notes use a read-modify-write flow:
+  `GET /reservations/{reservation_id}` to fetch the
+  current note, append the new text with a separator,
+  then `PUT /reservations/{reservation_id}` to write
+  the combined note back; listing status uses
+  `PUT /listings/{listing_id}`; tasks use
+  `POST /tasks-open-api/tasks`
 - Custom field updates use
   `PUT /reservations/{reservation_id}` with custom fields
   payload

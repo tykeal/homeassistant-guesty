@@ -201,7 +201,7 @@ handling for responses the base client returns to callers:
 | 403 | Base client | Raise `GuestyAuthError` |
 | 404 | Actions client | Raise `GuestyActionError` (not found) |
 | 429 | Base client | Exponential backoff with jitter (3 retries) |
-| 5xx | Actions client | Raise `GuestyConnectionError` |
+| 5xx | Actions client | Raise `GuestyResponseError` |
 | Network err | Base client | Raise `GuestyConnectionError` |
 
 ## Rate Limits
