@@ -200,6 +200,8 @@ class TestResolveConversation:
     @respx.mock
     async def test_non_success_status_raises(self) -> None:
         """Non-2xx response raises GuestyMessageError."""
+        from unittest.mock import patch as _patch
+
         respx.post(TOKEN_URL).mock(
             return_value=Response(
                 200,
@@ -214,9 +216,12 @@ class TestResolveConversation:
         )
 
         client = _make_messaging_client()
-        with pytest.raises(
-            GuestyMessageError,
-            match="HTTP 500",
+        with (
+            _patch("asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(
+                GuestyMessageError,
+                match="HTTP 500",
+            ),
         ):
             await client.resolve_conversation("res-xyz789")
 
