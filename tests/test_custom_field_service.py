@@ -48,20 +48,6 @@ def _make_entry(**overrides: object) -> MockConfigEntry:
     )
 
 
-def _setup_patches() -> tuple[str, ...]:
-    """Return the common patch targets for setup.
-
-    Returns:
-        Tuple of patch target strings.
-    """
-    return (
-        "custom_components.guesty.GuestyApiClient.test_connection",
-        "custom_components.guesty.GuestyApiClient.get_listings",
-        "custom_components.guesty.GuestyApiClient.get_reservations",
-        "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
-    )
-
-
 class TestSetCustomFieldServiceListing:
     """Tests for set_custom_field service with listing targets (T017)."""
 
