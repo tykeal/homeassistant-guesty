@@ -872,3 +872,38 @@ class TestReservationsCoordinator:
             past_days=DEFAULT_PAST_DAYS,
             future_days=DEFAULT_FUTURE_DAYS,
         )
+
+    async def test_empty_listings_skips_all_reservations(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Empty listings data skips all reservations gracefully."""
+        from datetime import UTC, datetime
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        reservation = GuestyReservation(
+            id="res-orphan",
+            listing_id="listing-orphan",
+            status="confirmed",
+            check_in=datetime(2025, 8, 1, 15, 0, 0, tzinfo=UTC),
+            check_out=datetime(2025, 8, 5, 11, 0, 0, tzinfo=UTC),
+        )
+
+        api_client = AsyncMock()
+        api_client.get_reservations = AsyncMock(
+            return_value=[reservation],
+        )
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = None
+
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+
+        data = await coordinator._async_update_data()
+        assert data == {}

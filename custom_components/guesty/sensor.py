@@ -271,7 +271,8 @@ def _derive_state(reservation: GuestyReservation | None) -> str:
     """Derive sensor state string from the selected reservation.
 
     Maps ``confirmed`` status to ``awaiting_checkin`` per FR-006.
-    Unknown statuses are passed through as-is per FR-025.
+    Unknown statuses are passed through as-is per FR-025, with
+    an informational log for observability.
 
     Args:
         reservation: The selected reservation, or None.
@@ -283,6 +284,12 @@ def _derive_state(reservation: GuestyReservation | None) -> str:
         return "no_reservation"
     if reservation.status == "confirmed":
         return "awaiting_checkin"
+    if reservation.status not in _STATUS_PRIORITY:
+        _LOGGER.info(
+            "Unrecognized reservation status '%s' for %s",
+            reservation.status,
+            reservation.id,
+        )
     return reservation.status
 
 
@@ -346,7 +353,9 @@ def _build_upcoming(
 ) -> list[dict[str, Any]]:
     """Build upcoming reservations list, limited to 10 (FR-009).
 
-    Excludes the currently selected reservation.
+    Excludes the currently selected reservation and only includes
+    reservations with ``confirmed`` or ``checked_in`` status
+    (i.e., actually upcoming or active, not past).
 
     Args:
         reservations: All reservations for this listing.
@@ -355,9 +364,12 @@ def _build_upcoming(
     Returns:
         List of upcoming reservation summary dicts.
     """
+    _UPCOMING_STATUSES = {"confirmed", "checked_in"}
     upcoming: list[dict[str, Any]] = []
     for res in reservations:
         if res.id == selected.id:
+            continue
+        if res.status not in _UPCOMING_STATUSES:
             continue
         upcoming.append(
             {
