@@ -326,12 +326,12 @@ actions suite operational.
 **Purpose**: Integration tests, edge case coverage, and cross-phase
 validation.
 
-- [ ] T035 [P] Integration tests for all actions end-to-end in
+- [x] T035 [P] Integration tests for all actions end-to-end in
   tests/test_actions.py — test full path from HA service call through
   actions client to mocked Guesty API and back to ActionResult
   response for each of the five services; verify automation
   compatibility (FR-017) and response structure (FR-022)
-- [ ] T036 [P] Edge case and error handling tests in
+- [x] T036 [P] Edge case and error handling tests in
   tests/api/test_actions.py — test rate limit retry path (429 →
   backoff → success), max retries exhausted path, concurrent action
   calls, special characters and unicode in note/description, maximum

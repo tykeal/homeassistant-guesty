@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json as json_mod
 from unittest.mock import AsyncMock
 
 import httpx
@@ -1027,3 +1029,516 @@ class TestErrorDetail:
         assert detail.endswith("...")
         # 200 chars of text + "..." + prefix
         assert len(long_text) > 200
+
+
+# ── Edge case and boundary tests (T035/T036) ───────────────────────
+
+
+class TestEdgeCasesReservationNote:
+    """Edge case tests for add_reservation_note."""
+
+    @respx.mock
+    async def test_unicode_in_note_text(self) -> None:
+        """Unicode chars survive the read-modify-write cycle."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        res_path = f"{RESERVATIONS_ENDPOINT}/res-001"
+        respx.get(f"{BASE_URL}{res_path}").mock(
+            return_value=Response(
+                200,
+                json={"_id": "res-001", "note": "Existing"},
+            ),
+        )
+        put_route = respx.put(f"{BASE_URL}{res_path}").mock(
+            return_value=Response(200, json={"_id": "res-001"}),
+        )
+
+        note = "Gäste 🏠 日本語テスト — emoji ✅"
+        client = _make_actions_client()
+        result = await client.add_reservation_note("res-001", note)
+
+        assert result.success is True
+        payload = json_mod.loads(put_route.calls[0].request.content)
+        assert note in payload["note"]
+
+    @respx.mock
+    async def test_note_at_max_length_succeeds(self) -> None:
+        """Note exactly at MAX_NOTE_LENGTH is accepted."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        res_path = f"{RESERVATIONS_ENDPOINT}/res-001"
+        respx.get(f"{BASE_URL}{res_path}").mock(
+            return_value=Response(
+                200,
+                json={"_id": "res-001", "note": ""},
+            ),
+        )
+        put_route = respx.put(f"{BASE_URL}{res_path}").mock(
+            return_value=Response(200, json={"_id": "res-001"}),
+        )
+
+        max_note = "x" * MAX_NOTE_LENGTH
+        client = _make_actions_client()
+        result = await client.add_reservation_note(
+            "res-001",
+            max_note,
+        )
+
+        assert result.success is True
+        payload = json_mod.loads(
+            put_route.calls[0].request.content,
+        )
+        assert payload["note"] == max_note
+        assert len(payload["note"]) == MAX_NOTE_LENGTH
+
+    @respx.mock
+    async def test_special_chars_in_note(self) -> None:
+        """HTML entities and newlines survive round-trip."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        res_path = f"{RESERVATIONS_ENDPOINT}/res-001"
+        respx.get(f"{BASE_URL}{res_path}").mock(
+            return_value=Response(
+                200,
+                json={"_id": "res-001", "note": ""},
+            ),
+        )
+        put_route = respx.put(f"{BASE_URL}{res_path}").mock(
+            return_value=Response(200, json={"_id": "res-001"}),
+        )
+
+        note = '<b>bold</b> & "quoted"\nnewline'
+        client = _make_actions_client()
+        result = await client.add_reservation_note("res-001", note)
+
+        assert result.success is True
+        payload = json_mod.loads(put_route.calls[0].request.content)
+        assert payload["note"] == note
+
+    @respx.mock
+    async def test_existing_separator_in_note_preserved(self) -> None:
+        """Existing separator in note is not collapsed."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        res_path = f"{RESERVATIONS_ENDPOINT}/res-001"
+        existing = f"First{NOTE_SEPARATOR}Second"
+        respx.get(f"{BASE_URL}{res_path}").mock(
+            return_value=Response(
+                200,
+                json={"_id": "res-001", "note": existing},
+            ),
+        )
+        put_route = respx.put(f"{BASE_URL}{res_path}").mock(
+            return_value=Response(200, json={"_id": "res-001"}),
+        )
+
+        client = _make_actions_client()
+        await client.add_reservation_note("res-001", "Third")
+
+        payload = json_mod.loads(put_route.calls[0].request.content)
+        expected = f"{existing}{NOTE_SEPARATOR}Third"
+        assert payload["note"] == expected
+
+    @respx.mock
+    async def test_concurrent_note_additions(self) -> None:
+        """Multiple concurrent note additions all succeed."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        for rid in ("res-a", "res-b", "res-c"):
+            path = f"{RESERVATIONS_ENDPOINT}/{rid}"
+            respx.get(f"{BASE_URL}{path}").mock(
+                return_value=Response(
+                    200,
+                    json={"_id": rid, "note": ""},
+                ),
+            )
+            respx.put(f"{BASE_URL}{path}").mock(
+                return_value=Response(
+                    200,
+                    json={"_id": rid},
+                ),
+            )
+
+        client = _make_actions_client()
+        results = await asyncio.gather(
+            client.add_reservation_note("res-a", "Note A"),
+            client.add_reservation_note("res-b", "Note B"),
+            client.add_reservation_note("res-c", "Note C"),
+        )
+
+        assert all(r.success for r in results)
+        assert {r.target_id for r in results} == {
+            "res-a",
+            "res-b",
+            "res-c",
+        }
+
+    @respx.mock
+    async def test_deleted_reservation_returns_error(self) -> None:
+        """422 for deleted reservation raises GuestyActionError."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        res_path = f"{RESERVATIONS_ENDPOINT}/res-deleted"
+        respx.get(f"{BASE_URL}{res_path}").mock(
+            return_value=Response(
+                422,
+                text="Reservation not found",
+            ),
+        )
+
+        client = _make_actions_client()
+        with (
+            _patch("asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(
+                GuestyActionError,
+                match="Failed to fetch",
+            ) as exc_info,
+        ):
+            await client.add_reservation_note(
+                "res-deleted",
+                "note",
+            )
+
+        assert exc_info.value.target_id == "res-deleted"
+
+
+class TestEdgeCasesListingStatus:
+    """Edge case tests for set_listing_status."""
+
+    @respx.mock
+    async def test_deleted_listing_returns_error(self) -> None:
+        """422 for deleted listing raises GuestyActionError."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        path = f"{LISTINGS_ENDPOINT}/lst-gone"
+        respx.put(f"{BASE_URL}{path}").mock(
+            return_value=Response(422, text="Listing not found"),
+        )
+
+        client = _make_actions_client()
+        with (
+            _patch("asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(
+                GuestyActionError,
+                match="Failed to set listing status",
+            ) as exc_info,
+        ):
+            await client.set_listing_status("lst-gone", "active")
+
+        assert exc_info.value.target_id == "lst-gone"
+        assert exc_info.value.action_type == "set_listing_status"
+
+
+class TestEdgeCasesCreateTask:
+    """Edge case tests for create_task."""
+
+    @respx.mock
+    async def test_unicode_in_task_description(self) -> None:
+        """Unicode in description passes through to API."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        post_route = respx.post(
+            f"{BASE_URL}{TASKS_ENDPOINT}",
+        ).mock(
+            return_value=Response(
+                201,
+                json={"_id": "t-001", "title": "Clean"},
+            ),
+        )
+
+        desc = "Deep cleaning — floor 2 🧹"
+        client = _make_actions_client()
+        result = await client.create_task(
+            "lst-001",
+            "Clean",
+            description=desc,
+        )
+
+        assert result.success is True
+        payload = json_mod.loads(
+            post_route.calls[0].request.content,
+        )
+        assert payload["description"] == desc
+
+    @respx.mock
+    async def test_title_at_max_length_succeeds(self) -> None:
+        """Title exactly at MAX_TASK_TITLE_LENGTH is accepted."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        post_route = respx.post(
+            f"{BASE_URL}{TASKS_ENDPOINT}",
+        ).mock(
+            return_value=Response(
+                201,
+                json={"_id": "t-002", "title": "x"},
+            ),
+        )
+
+        max_title = "x" * MAX_TASK_TITLE_LENGTH
+        client = _make_actions_client()
+        result = await client.create_task("lst-001", max_title)
+
+        assert result.success is True
+        payload = json_mod.loads(
+            post_route.calls[0].request.content,
+        )
+        assert payload["title"] == max_title
+        assert len(payload["title"]) == MAX_TASK_TITLE_LENGTH
+
+    @respx.mock
+    async def test_description_at_max_length_succeeds(self) -> None:
+        """Desc exactly at MAX_DESCRIPTION_LENGTH is accepted."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        post_route = respx.post(
+            f"{BASE_URL}{TASKS_ENDPOINT}",
+        ).mock(
+            return_value=Response(
+                201,
+                json={"_id": "t-003", "title": "Task"},
+            ),
+        )
+
+        max_desc = "y" * MAX_DESCRIPTION_LENGTH
+        client = _make_actions_client()
+        result = await client.create_task(
+            "lst-001",
+            "Task",
+            description=max_desc,
+        )
+
+        assert result.success is True
+        payload = json_mod.loads(
+            post_route.calls[0].request.content,
+        )
+        assert payload["description"] == max_desc
+        assert len(payload["description"]) == MAX_DESCRIPTION_LENGTH
+
+    @respx.mock
+    async def test_special_chars_in_title(self) -> None:
+        """Special characters in task title pass through."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        post_route = respx.post(
+            f"{BASE_URL}{TASKS_ENDPOINT}",
+        ).mock(
+            return_value=Response(
+                201,
+                json={"_id": "t-004", "title": "x"},
+            ),
+        )
+
+        title = 'Fix AC — unit #3 "premium"'
+        client = _make_actions_client()
+        await client.create_task("lst-001", title)
+
+        payload = json_mod.loads(
+            post_route.calls[0].request.content,
+        )
+        assert payload["title"] == title
+
+
+class TestEdgeCasesCalendar:
+    """Edge case tests for set_calendar_availability."""
+
+    @respx.mock
+    async def test_calendar_422_error(self) -> None:
+        """422 response raises GuestyActionError."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        cal_path = CALENDAR_ENDPOINT.format(listing_id="lst-001")
+        respx.put(f"{BASE_URL}{cal_path}").mock(
+            return_value=Response(
+                422,
+                json={"error": "dates conflict with reservation"},
+            ),
+        )
+
+        client = _make_actions_client()
+        with (
+            _patch("asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(
+                GuestyActionError,
+                match="Failed to set calendar",
+            ) as exc_info,
+        ):
+            await client.set_calendar_availability(
+                "lst-001",
+                "2025-08-01",
+                "2025-08-05",
+                "block",
+            )
+
+        assert exc_info.value.target_id == "lst-001"
+
+    @respx.mock
+    async def test_concurrent_calendar_operations(self) -> None:
+        """Multiple concurrent calendar ops all complete."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        for lid in ("lst-a", "lst-b"):
+            cal_path = CALENDAR_ENDPOINT.format(listing_id=lid)
+            respx.put(f"{BASE_URL}{cal_path}").mock(
+                return_value=Response(
+                    200,
+                    json={"data": {"days": []}},
+                ),
+            )
+
+        client = _make_actions_client()
+        results = await asyncio.gather(
+            client.set_calendar_availability(
+                "lst-a",
+                "2025-08-01",
+                "2025-08-05",
+                "block",
+            ),
+            client.set_calendar_availability(
+                "lst-b",
+                "2025-09-01",
+                "2025-09-10",
+                "unblock",
+            ),
+        )
+
+        assert all(r.success for r in results)
+        assert results[0].target_id == "lst-a"
+        assert results[1].target_id == "lst-b"
+
+
+class TestEdgeCasesCustomField:
+    """Edge case tests for update_reservation_custom_field."""
+
+    @respx.mock
+    async def test_value_at_max_length_succeeds(self) -> None:
+        """Value exactly at MAX_CUSTOM_FIELD_LENGTH accepted."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        res_path = f"{RESERVATIONS_ENDPOINT}/res-001"
+        put_route = respx.put(f"{BASE_URL}{res_path}").mock(
+            return_value=Response(200, json={"_id": "res-001"}),
+        )
+
+        max_val = "z" * MAX_CUSTOM_FIELD_LENGTH
+        client = _make_actions_client()
+        result = await client.update_reservation_custom_field(
+            "res-001",
+            "cf-001",
+            max_val,
+        )
+
+        assert result.success is True
+        payload = json_mod.loads(
+            put_route.calls[0].request.content,
+        )
+        assert payload["customFields"]["cf-001"] == max_val
+        assert len(max_val) == MAX_CUSTOM_FIELD_LENGTH
+
+    @respx.mock
+    async def test_unicode_in_custom_field_value(self) -> None:
+        """Unicode in custom field value passes through."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        res_path = f"{RESERVATIONS_ENDPOINT}/res-001"
+        put_route = respx.put(f"{BASE_URL}{res_path}").mock(
+            return_value=Response(200, json={"_id": "res-001"}),
+        )
+
+        value = "Ünïcödé 值 🎉"
+        client = _make_actions_client()
+        result = await client.update_reservation_custom_field(
+            "res-001",
+            "cf-001",
+            value,
+        )
+
+        assert result.success is True
+        payload = json_mod.loads(
+            put_route.calls[0].request.content,
+        )
+        assert payload["customFields"]["cf-001"] == value
+
+    @respx.mock
+    async def test_deleted_reservation_custom_field(self) -> None:
+        """422 for deleted reservation raises GuestyActionError."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        res_path = f"{RESERVATIONS_ENDPOINT}/res-gone"
+        respx.put(f"{BASE_URL}{res_path}").mock(
+            return_value=Response(
+                422,
+                text="Reservation not found",
+            ),
+        )
+
+        client = _make_actions_client()
+        with (
+            _patch("asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(
+                GuestyActionError,
+                match="Failed to update custom field",
+            ) as exc_info,
+        ):
+            await client.update_reservation_custom_field(
+                "res-gone",
+                "cf-001",
+                "value",
+            )
+
+        assert exc_info.value.target_id == "res-gone"
+        assert exc_info.value.action_type == "update_reservation_custom_field"
+
+
+class TestErrorDetailEdgeCases:
+    """Edge case tests for _error_detail formatting."""
+
+    def test_empty_response_body(self) -> None:
+        """Error detail handles empty response body."""
+        response = Response(422, text="")
+        detail = GuestyActionsClient._error_detail(
+            "Action failed",
+            "res-001",
+            response,
+        )
+        assert "422" in detail
+        assert "res-001" in detail
+
+    def test_json_error_with_nested_structure(self) -> None:
+        """Error detail serializes nested JSON body."""
+        response = Response(
+            400,
+            json={
+                "error": {"code": "INVALID", "details": ["bad"]},
+            },
+        )
+        detail = GuestyActionsClient._error_detail(
+            "Action failed",
+            "lst-001",
+            response,
+        )
+        assert "INVALID" in detail
+        assert "400" in detail
