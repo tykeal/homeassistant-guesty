@@ -179,13 +179,13 @@ except GuestyCustomFieldError as err:
 ## Commit Conventions
 
 ```bash
-git commit -s -m "Feat(api): Add custom fields client
-
-Implement GuestyCustomFieldsClient with get_definitions()
-and set_field() methods for reading custom field
-definitions and writing values to listings/reservations.
-
-Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+git commit -s \
+  -m "Feat(api): Add custom fields client" \
+  -m "Implement GuestyCustomFieldsClient with
+get_definitions() and set_field() methods for reading
+custom field definitions and writing values to
+listings/reservations." \
+  -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
 ```
 
 - Types: Fix, Feat, Chore, Docs, Test, Refactor

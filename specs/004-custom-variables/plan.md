@@ -216,8 +216,8 @@ zero HA dependencies, extending the existing `api/` package.
     field value via `PUT /listings/{id}/custom-fields` or
     `PUT /reservations-v3/{id}/custom-fields`
   - `validate_value(value, field_type) -> None` — Validates
-    value type against definition; raises ValueError on
-    mismatch
+    value type against definition; raises
+    `GuestyCustomFieldError` on mismatch
   - Receives `GuestyApiClient` via dependency injection
   - Zero HA imports
 - `api/__init__.py` — Updated exports for custom field types
