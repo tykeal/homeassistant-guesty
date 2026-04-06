@@ -26,8 +26,8 @@ Immutable outcome of a write operation returned to callers.
 - When `success` is `False`, `error` must be non-empty
 - When `success` is `True`, `error` must be `None`
 
-**Pattern**: Frozen dataclass with `__post_init__` validation
-and `from_api_response()` factory method. Follows
+**Pattern**: Frozen dataclass with `__post_init__` validation.
+Follows
 `MessageDeliveryResult` pattern from Feature 005.
 
 ### GuestyActionError

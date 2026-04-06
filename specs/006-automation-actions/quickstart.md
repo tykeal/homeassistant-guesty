@@ -43,7 +43,7 @@ uv run ruff format --check custom_components/ tests/
 uv run mypy custom_components/ tests/
 
 # Docstring coverage
-uv run interrogate custom_components/
+uv run interrogate -v custom_components/
 ```
 
 ## Pre-Commit

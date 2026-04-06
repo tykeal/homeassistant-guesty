@@ -117,7 +117,7 @@ Content-Type: application/json
   "listingId": "listing-id",
   "title": "Cleaning after checkout",
   "description": "Full cleaning required",
-  "assigneeId": "user-id-or-null"
+  "assigneeId": null
 }
 ```
 
@@ -188,17 +188,21 @@ Content-Type: application/json
 
 ## Common Error Handling
 
-All endpoints share the following error handling patterns
-inherited from the existing API client (Feature 001):
+All endpoints share the following error handling patterns.
+The base `GuestyApiClient._request()` (Feature 001) handles
+401 (token refresh + retry), 403 (`GuestyAuthError`), 429
+(exponential backoff), and network errors
+(`GuestyConnectionError`). The actions client layer adds
+handling for responses the base client returns to callers:
 
-| HTTP Status | Behavior |
-| ----------- | -------- |
-| 401 | Invalidate token, refresh, retry once |
-| 403 | Raise `GuestyAuthError` |
-| 404 | Raise `GuestyActionError` (not found) |
-| 429 | Exponential backoff with jitter (3 retries) |
-| 5xx | Raise `GuestyConnectionError` |
-| Network err | Raise `GuestyConnectionError` |
+| HTTP Status | Handled by | Behavior |
+| ----------- | ---------- | -------- |
+| 401 | Base client | Invalidate token, refresh, retry once |
+| 403 | Base client | Raise `GuestyAuthError` |
+| 404 | Actions client | Raise `GuestyActionError` (not found) |
+| 429 | Base client | Exponential backoff with jitter (3 retries) |
+| 5xx | Actions client | Raise `GuestyConnectionError` |
+| Network err | Base client | Raise `GuestyConnectionError` |
 
 ## Rate Limits
 

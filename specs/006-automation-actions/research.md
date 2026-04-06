@@ -50,7 +50,8 @@ similarly supports partial updates for status changes.
 
 ### R2: Reservation Note Append Strategy
 
-**Decision**: Use `PUT /reservations/{id}` with the `note`
+**Decision**: Use `PUT /reservations/{reservation_id}` with the
+`note`
 field in the request body. Guesty treats the `note` field as a
 single text block, so appending requires reading the current
 note, concatenating the new text, and writing back.
@@ -95,9 +96,9 @@ states: active, inactive, and archived (derived from
 `pms.active`, `listed`, and `active` fields). For the set
 listing status action:
 
-- `active` → `PUT /listings/{id}` with
+- `active` → `PUT /listings/{listing_id}` with
   `{"active": true, "listed": true}`
-- `inactive` → `PUT /listings/{id}` with
+- `inactive` → `PUT /listings/{listing_id}` with
   `{"active": false}`
 
 **Alternatives considered**:
@@ -107,7 +108,8 @@ listing status action:
   Excluded from initial scope per spec (minimum: active
   and inactive).
 - Use availability settings endpoint: The
-  `/listings/{id}/availability-settings` endpoint controls
+  `/listings/{listing_id}/availability-settings` endpoint
+  controls
   channel-specific availability, which is more granular
   than needed for the status toggle use case.
 
@@ -168,7 +170,8 @@ reservations overlap the requested date range.
 
 ### R6: Custom Field Update Strategy
 
-**Decision**: Use `PUT /reservations/{id}` with the custom
+**Decision**: Use `PUT /reservations/{reservation_id}` with
+the custom
 fields payload to update reservation custom fields.
 
 **Rationale**: Guesty custom fields on reservations are
