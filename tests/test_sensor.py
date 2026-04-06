@@ -504,6 +504,9 @@ class TestSensorPlatformSetup:
         res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
         res_coordinator.data = {}
         res_coordinator.last_update_success = True
+        res_coordinator.async_add_listener = MagicMock(
+            return_value=MagicMock(),
+        )
 
         hass.data.setdefault(DOMAIN, {})
         hass.data[DOMAIN][entry.entry_id] = {
@@ -555,6 +558,9 @@ class TestNewListingDiscovery:
         res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
         res_coordinator.data = {}
         res_coordinator.last_update_success = True
+        res_coordinator.async_add_listener = MagicMock(
+            return_value=MagicMock(),
+        )
 
         hass.data.setdefault(DOMAIN, {})
         hass.data[DOMAIN][entry.entry_id] = {
@@ -689,6 +695,9 @@ class TestEdgeCases:
         res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
         res_coordinator.data = {}
         res_coordinator.last_update_success = True
+        res_coordinator.async_add_listener = MagicMock(
+            return_value=MagicMock(),
+        )
 
         hass.data.setdefault(DOMAIN, {})
         hass.data[DOMAIN][entry.entry_id] = {
@@ -1022,6 +1031,9 @@ class TestCustomFieldSensors:
         res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
         res_coordinator.data = {}
         res_coordinator.last_update_success = True
+        res_coordinator.async_add_listener = MagicMock(
+            return_value=MagicMock(),
+        )
 
         hass.data.setdefault(DOMAIN, {})
         hass.data[DOMAIN][entry.entry_id] = {
@@ -1069,6 +1081,9 @@ class TestCustomFieldSensors:
         res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
         res_coordinator.data = {}
         res_coordinator.last_update_success = True
+        res_coordinator.async_add_listener = MagicMock(
+            return_value=MagicMock(),
+        )
 
         hass.data.setdefault(DOMAIN, {})
         hass.data[DOMAIN][entry.entry_id] = {
@@ -1132,6 +1147,9 @@ class TestCustomFieldSensors:
         res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
         res_coordinator.data = {}
         res_coordinator.last_update_success = True
+        res_coordinator.async_add_listener = MagicMock(
+            return_value=MagicMock(),
+        )
 
         hass.data.setdefault(DOMAIN, {})
         hass.data[DOMAIN][entry.entry_id] = {
@@ -1196,6 +1214,9 @@ class TestCustomFieldSensors:
         res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
         res_coordinator.data = {}
         res_coordinator.last_update_success = True
+        res_coordinator.async_add_listener = MagicMock(
+            return_value=MagicMock(),
+        )
 
         hass.data.setdefault(DOMAIN, {})
         hass.data[DOMAIN][entry.entry_id] = {
