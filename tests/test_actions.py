@@ -1459,7 +1459,7 @@ class TestHandlerEdgeCases:
         hass: HomeAssistant,
         mock_actions_client: AsyncMock,
     ) -> None:
-        """GuestyApiError from set_status translated correctly."""
+        """GuestyApiError from set_listing_status translated."""
         entry = await _setup_entry(hass)
         hass.data[DOMAIN][entry.entry_id]["actions_client"] = mock_actions_client
 
@@ -1603,7 +1603,7 @@ class TestHandlerEdgeCases:
         hass: HomeAssistant,
         mock_actions_client: AsyncMock,
     ) -> None:
-        """GuestyApiError from update_field translated."""
+        """GuestyApiError from update_reservation_custom_field."""
         entry = await _setup_entry(hass)
         hass.data[DOMAIN][entry.entry_id]["actions_client"] = mock_actions_client
 
