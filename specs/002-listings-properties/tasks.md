@@ -214,10 +214,10 @@ handled gracefully.
 **Purpose**: Final validation, REUSE compliance, and quality
 gates across all phases
 
-- [ ] T036 Verify REUSE compliance on all new and modified files (SPDX headers where applicable, otherwise REUSE.toml annotations) for custom_components/guesty/coordinator.py, custom_components/guesty/entity.py, custom_components/guesty/sensor.py, custom_components/guesty/translations/en.json, tests/test_coordinator.py, and tests/test_sensor.py per REUSE.toml and constitution
-- [ ] T037 [P] Run full linting (`uv run ruff check custom_components/ tests/`), formatting (`uv run ruff format --check custom_components/ tests/`), type checking (`uv run mypy custom_components/`), and docstring coverage (`uv run interrogate custom_components/ -v`) with zero errors
-- [ ] T038 [P] Run complete test suite (`uv run pytest tests/ -x -q --cov=custom_components/guesty --cov-report=term-missing`) and verify no regressions from Feature 001 tests
-- [ ] T039 Execute quickstart.md developer workflow validation from specs/002-listings-properties/quickstart.md: verify test commands, linting commands, and architecture diagram accuracy against implemented code
+- [x] T036 Verify REUSE compliance on all new and modified files (SPDX headers where applicable, otherwise REUSE.toml annotations) for custom_components/guesty/coordinator.py, custom_components/guesty/entity.py, custom_components/guesty/sensor.py, custom_components/guesty/translations/en.json, tests/test_coordinator.py, and tests/test_sensor.py per REUSE.toml and constitution
+- [x] T037 [P] Run full linting (`uv run ruff check custom_components/ tests/`), formatting (`uv run ruff format --check custom_components/ tests/`), type checking (`uv run mypy custom_components/`), and docstring coverage (`uv run interrogate custom_components/ -v`) with zero errors
+- [x] T038 [P] Run complete test suite (`uv run pytest tests/ -x -q --cov=custom_components/guesty --cov-report=term-missing`) and verify no regressions from Feature 001 tests
+- [x] T039 Execute quickstart.md developer workflow validation from specs/002-listings-properties/quickstart.md: verify test commands, linting commands, and architecture diagram accuracy against implemented code
 
 **Checkpoint**: All quality gates pass. Full test suite green
 with coverage report. No regressions. REUSE-compliant headers on
