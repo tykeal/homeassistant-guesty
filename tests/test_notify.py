@@ -1712,9 +1712,9 @@ class TestSecurityValidation:
                 reservation_id="res-tok",
             )
 
-        oauth_token = "test-client-secret"
+        client_secret = "test-client-secret"
         for record in caplog.records:
-            assert oauth_token not in record.getMessage()
+            assert client_secret not in record.getMessage()
 
     async def test_no_guest_pii_in_logs(
         self,
@@ -1782,28 +1782,36 @@ class TestSecurityValidation:
         hass: HomeAssistant,
         mock_messaging_client: AsyncMock,
     ) -> None:
-        """Injection attempt in reservation_id handled safely."""
+        """Injection-like reservation_id passed through and errors safely."""
         entry = _make_entry()
         entity = GuestyNotifyEntity(mock_messaging_client, entry)
         entity.hass = hass
 
+        injected_id = "<script>alert(1)</script>"
         mock_messaging_client.send_message.side_effect = GuestyMessageError(
-            "No conversation found for reservation '<script>alert(1)</script>'",
-            reservation_id="<script>alert(1)</script>",
+            f"No conversation found for reservation '{injected_id}'",
+            reservation_id=injected_id,
         )
 
         with pytest.raises(HomeAssistantError):
             await entity.async_send_guest_message(
                 message="Hello",
-                reservation_id="<script>alert(1)</script>",
+                reservation_id=injected_id,
             )
+
+        mock_messaging_client.send_message.assert_called_once_with(
+            reservation_id=injected_id,
+            body="Hello",
+            channel=None,
+            template_variables=None,
+        )
 
     async def test_no_injection_in_message_body(
         self,
         hass: HomeAssistant,
         mock_messaging_client: AsyncMock,
     ) -> None:
-        """Injection attempt in message body passed through safely."""
+        """Injection-like message body passed through unchanged."""
         entry = _make_entry()
         entity = GuestyNotifyEntity(mock_messaging_client, entry)
         entity.hass = hass
@@ -1814,14 +1822,18 @@ class TestSecurityValidation:
             reservation_id="res-inj",
         )
 
-        # Body with injection attempt is passed through
-        # unchanged — the messaging client handles it
+        injection_body = '"; DROP TABLE messages; --'
         await entity.async_send_guest_message(
-            message='"; DROP TABLE messages; --',
+            message=injection_body,
             reservation_id="res-inj",
         )
 
-        mock_messaging_client.send_message.assert_called_once()
+        mock_messaging_client.send_message.assert_called_once_with(
+            reservation_id="res-inj",
+            body=injection_body,
+            channel=None,
+            template_variables=None,
+        )
 
 
 # ── Phase 4: Success Criteria Validation Tests (T027) ────────────────

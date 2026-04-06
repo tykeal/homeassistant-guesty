@@ -343,7 +343,6 @@ class GuestyApiClient:
 
         url = f"{self._base_url}{path}"
         backoff = INITIAL_BACKOFF
-        last_connect_exc: Exception | None = None
 
         for attempt in range(MAX_RETRIES + 1):
             token = await self._token_manager.get_token()
@@ -360,7 +359,6 @@ class GuestyApiClient:
                     },
                 )
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
-                last_connect_exc = exc
                 if attempt >= MAX_RETRIES:
                     raise GuestyConnectionError(
                         f"Failed to connect to Guesty API "
@@ -381,8 +379,6 @@ class GuestyApiClient:
                     MAX_BACKOFF,
                 )
                 continue
-
-            last_connect_exc = None
 
             if response.status_code == 401:
                 if _retried_auth:
@@ -448,11 +444,6 @@ class GuestyApiClient:
                 continue
 
             return response
-
-        if last_connect_exc is not None:  # pragma: no cover
-            raise GuestyConnectionError(
-                f"Failed to connect to Guesty API: {last_connect_exc}",
-            ) from last_connect_exc
 
         # Should not reach here, but just in case
         raise GuestyResponseError(  # pragma: no cover
