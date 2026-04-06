@@ -312,6 +312,29 @@ class GuestyApiClient:
             page = GuestyReservationsResponse.from_api_dict(data)
             all_reservations.extend(page.results)
 
+            if skip == 0 and results and _LOGGER.isEnabledFor(logging.DEBUG):
+                sample_item = results[0]
+                sample_keys: list[str] | str = (
+                    sorted(sample_item.keys())
+                    if isinstance(sample_item, dict)
+                    else "non-dict"
+                )
+                guest_item = (
+                    sample_item.get("guest", {})
+                    if isinstance(sample_item, dict)
+                    else "non-dict"
+                )
+                guest_keys: list[str] | str = (
+                    sorted(guest_item.keys())
+                    if isinstance(guest_item, dict)
+                    else "non-dict"
+                )
+                _LOGGER.debug(
+                    "Sample reservation keys: %s, guest keys: %s",
+                    sample_keys,
+                    guest_keys,
+                )
+
             if len(results) < RESERVATIONS_PAGE_SIZE:
                 break
 

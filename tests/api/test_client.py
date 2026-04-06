@@ -459,7 +459,7 @@ def _make_listing_dict(**overrides: Any) -> dict[str, Any]:
         },
         "propertyType": "apartment",
         "roomType": "Entire home/apartment",
-        "listingType": "SINGLE",
+        "type": "SINGLE",
         "bedrooms": 2,
         "bathrooms": 1.5,
         "accommodates": 5,
@@ -1309,6 +1309,44 @@ class TestGetReservations:
         primary_req = route.calls[0].request
         status_param = primary_req.url.params["status"]
         assert set(status_param.split(",")) == ACTIONABLE_STATUSES
+
+    @respx.mock
+    async def test_debug_logs_reservation_sample_keys(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Debug log emits sorted keys of first reservation and guest."""
+        import logging
+
+        _mock_token_endpoint()
+        reservations = [_make_reservation_dict()]
+        route = respx.get(f"{BASE_URL}/reservations")
+        route.side_effect = [
+            Response(
+                200,
+                json=_make_reservations_page(
+                    reservations,
+                    count=1,
+                ),
+            ),
+            Response(
+                200,
+                json=_make_reservations_page([], count=0),
+            ),
+        ]
+        client, _, _ = _make_client()
+        with caplog.at_level(
+            logging.DEBUG,
+            logger="custom_components.guesty.api.client",
+        ):
+            result = await client.get_reservations()
+        assert len(result) == 1
+        expected_keys = sorted(reservations[0].keys())
+        expected_guest_keys = sorted(
+            reservations[0]["guest"].keys(),
+        )
+        assert f"Sample reservation keys: {expected_keys}" in caplog.text
+        assert f"guest keys: {expected_guest_keys}" in caplog.text
 
 
 # ── Phase 4: Transient Failure Retry Tests (T025) ───────────────────
