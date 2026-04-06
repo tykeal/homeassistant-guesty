@@ -2226,8 +2226,8 @@ class TestEdgeCaseMissingOptionalFields:
         assert state.attributes["source"] is None
 
 
-class TestEdgeCaseMultipleListings:
-    """Tests for multiple reservations across listings."""
+class TestEdgeCaseSingleListingReservations:
+    """Tests for reservation edge cases within a single listing."""
 
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",

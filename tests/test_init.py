@@ -999,6 +999,10 @@ class TestEntityCleanup:
 
         assert entry.state is ConfigEntryState.NOT_LOADED
         assert entry.entry_id not in hass.data.get(DOMAIN, {})
+        # HA marks unloaded entities as unavailable (not removed)
+        post = hass.states.get(entity_id)
+        assert post is not None
+        assert post.state == "unavailable"
 
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
@@ -1050,11 +1054,11 @@ class TestEntityCleanup:
         known_entity = "sensor.beach_house_reservation_status"
         assert hass.states.get(known_entity) is not None
 
-        # Unknown listing does NOT have a reservation sensor
+        # Unknown listing does NOT create an additional reservation sensor
         all_states = hass.states.async_all("sensor")
-        unknown_entities = [
-            s
-            for s in all_states
-            if "listing_unknown" in s.entity_id and "reservation" in s.entity_id
+        reservation_status_entities = [
+            state.entity_id
+            for state in all_states
+            if state.entity_id.endswith("_reservation_status")
         ]
-        assert len(unknown_entities) == 0
+        assert reservation_status_entities == [known_entity]
