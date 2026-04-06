@@ -21,8 +21,9 @@ reservation), target identifier, field identifier, and value.
 It returns a structured response on success and raises clear
 errors on failure.
 
-A `CustomFieldsCoordinator` periodically fetches account-level
-custom field definitions from the Guesty `/custom-fields`
+A `CustomFieldsDefinitionCoordinator` periodically fetches
+account-level custom field definitions from the Guesty
+`/custom-fields`
 endpoint, caching field metadata (name, identifier, value type,
 applicability) for discovery and local type validation. The
 `api/` sub-package gains a `custom_fields.py` module containing
@@ -261,7 +262,8 @@ writes.
   - Create `CustomFieldsDefinitionCoordinator`
   - Perform initial definition refresh
   - Register `guesty.set_custom_field` service with
-    voluptuous schema and `supports_response=True`
+    voluptuous schema and
+    `supports_response=SupportsResponse.OPTIONAL`
   - Service handler: validates inputs, checks field exists
     in definitions, validates type, delegates to
     `GuestyCustomFieldsClient.set_field()`, returns

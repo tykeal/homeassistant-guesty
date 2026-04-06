@@ -46,14 +46,13 @@ Python >=3.14.2: Full type annotations, 100% docstring coverage,
 async/await patterns, frozen dataclasses for DTOs
 
 ## Recent Changes
-- 004-custom-vars-plan: Added Python >=3.14.2 + Home Assistant >=2026.4.0, httpx >=0.28
 
+- 004-custom-vars-plan: Added Python >=3.14.2 +
+  Home Assistant >=2026.4.0, httpx >=0.28
 - 003-reservations-plan: Added Python >=3.14.2 +
   Home Assistant >=2026.4.0, httpx >=0.28
 - 005-plan-notify: Added Python >=3.14.2 +
-  httpx (async HTTP), homeassistant (>=2026.4.0)
   Home Assistant >=2026.4.0, httpx >=0.28
-  httpx, homeassistant (>=2026.4.0)
 
 <!-- MANUAL ADDITIONS START -->
 <!-- MANUAL ADDITIONS END -->
