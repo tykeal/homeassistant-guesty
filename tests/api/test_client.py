@@ -454,6 +454,11 @@ class TestGetListings:
     @respx.mock
     async def test_single_page_fetch(self) -> None:
         """Single page with fewer results than limit stops."""
+        from custom_components.guesty.api.const import (
+            LISTINGS_FIELDS,
+            LISTINGS_PAGE_SIZE,
+        )
+
         respx.post(TOKEN_URL).mock(
             return_value=Response(
                 200,
@@ -461,7 +466,7 @@ class TestGetListings:
             ),
         )
         listings = [_make_listing_dict(_id=f"id-{i}") for i in range(5)]
-        respx.get(f"{BASE_URL}/listings").mock(
+        route = respx.get(f"{BASE_URL}/listings").mock(
             return_value=Response(
                 200,
                 json=_make_page_response(
@@ -477,10 +482,17 @@ class TestGetListings:
         assert len(result) == 5
         assert result[0].id == "id-0"
 
+        assert len(route.calls) == 1
+        params = route.calls[0].request.url.params
+        assert params["limit"] == str(LISTINGS_PAGE_SIZE)
+        assert params["skip"] == "0"
+        assert params["fields"] == " ".join(LISTINGS_FIELDS)
+
     @respx.mock
     async def test_multi_page_pagination(self) -> None:
         """Paginate through multiple pages to partial page."""
         from custom_components.guesty.api.const import (
+            LISTINGS_FIELDS,
             LISTINGS_PAGE_SIZE,
         )
 
@@ -529,16 +541,29 @@ class TestGetListings:
         result = await client.get_listings()
         assert len(result) == 230
 
+        expected_fields = " ".join(LISTINGS_FIELDS)
+        assert len(route.calls) == 3
+        for idx, call in enumerate(route.calls):
+            params = call.request.url.params
+            assert params["limit"] == str(LISTINGS_PAGE_SIZE)
+            assert params["skip"] == str(LISTINGS_PAGE_SIZE * idx)
+            assert params["fields"] == expected_fields
+
     @respx.mock
     async def test_empty_account(self) -> None:
         """Empty account returns empty list."""
+        from custom_components.guesty.api.const import (
+            LISTINGS_FIELDS,
+            LISTINGS_PAGE_SIZE,
+        )
+
         respx.post(TOKEN_URL).mock(
             return_value=Response(
                 200,
                 json=make_token_response(),
             ),
         )
-        respx.get(f"{BASE_URL}/listings").mock(
+        route = respx.get(f"{BASE_URL}/listings").mock(
             return_value=Response(
                 200,
                 json=_make_page_response([], count=0),
@@ -547,6 +572,12 @@ class TestGetListings:
         client, _, _ = _make_client()
         result = await client.get_listings()
         assert result == []
+
+        assert len(route.calls) == 1
+        params = route.calls[0].request.url.params
+        assert params["limit"] == str(LISTINGS_PAGE_SIZE)
+        assert params["skip"] == "0"
+        assert params["fields"] == " ".join(LISTINGS_FIELDS)
 
     @respx.mock
     async def test_auth_error_propagation(self) -> None:
