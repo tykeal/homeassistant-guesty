@@ -315,18 +315,18 @@ list within seconds of saving. No unnecessary API calls when settings unchanged
 **Purpose**: Verify all quality standards, run full validation suite, confirm
 100% coverage.
 
-- [ ] T041 [P] Verify 100% docstring coverage with uv run interrogate
+- [x] T041 [P] Verify 100% docstring coverage with uv run interrogate
       custom_components/guesty/ on all modified and new files
-- [ ] T042 [P] Verify mypy type checking passes with uv run mypy
+- [x] T042 [P] Verify mypy type checking passes with uv run mypy
       custom_components/guesty/ with no errors
-- [ ] T043 [P] Verify ruff linting and formatting passes with uv run ruff check
+- [x] T043 [P] Verify ruff linting and formatting passes with uv run ruff check
       and uv run ruff format --check on custom_components/ and tests/
-- [ ] T044 Run full test suite with uv run pytest tests/
+- [x] T044 Run full test suite with uv run pytest tests/
       --cov=custom_components/guesty --cov-report=term-missing to confirm 100%
       branch coverage
-- [ ] T045 Run all pre-commit hooks with pre-commit run --all-files to verify
+- [x] T045 Run all pre-commit hooks with pre-commit run --all-files to verify
       full compliance
-- [ ] T046 Validate quickstart.md development scenarios: run test commands,
+- [x] T046 Validate quickstart.md development scenarios: run test commands,
       linting commands, and verify commit conventions
 
 ---
