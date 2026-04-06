@@ -1075,7 +1075,7 @@ class TestEdgeCasesReservationNote:
                 json={"_id": "res-001", "note": ""},
             ),
         )
-        respx.put(f"{BASE_URL}{res_path}").mock(
+        put_route = respx.put(f"{BASE_URL}{res_path}").mock(
             return_value=Response(200, json={"_id": "res-001"}),
         )
 
@@ -1087,6 +1087,11 @@ class TestEdgeCasesReservationNote:
         )
 
         assert result.success is True
+        payload = json_mod.loads(
+            put_route.calls[0].request.content,
+        )
+        assert payload["note"] == max_note
+        assert len(payload["note"]) == MAX_NOTE_LENGTH
 
     @respx.mock
     async def test_special_chars_in_note(self) -> None:
@@ -1273,7 +1278,9 @@ class TestEdgeCasesCreateTask:
         respx.post(TOKEN_URL).mock(
             return_value=Response(200, json=make_token_response()),
         )
-        respx.post(f"{BASE_URL}{TASKS_ENDPOINT}").mock(
+        post_route = respx.post(
+            f"{BASE_URL}{TASKS_ENDPOINT}",
+        ).mock(
             return_value=Response(
                 201,
                 json={"_id": "t-002", "title": "x"},
@@ -1285,6 +1292,11 @@ class TestEdgeCasesCreateTask:
         result = await client.create_task("lst-001", max_title)
 
         assert result.success is True
+        payload = json_mod.loads(
+            post_route.calls[0].request.content,
+        )
+        assert payload["title"] == max_title
+        assert len(payload["title"]) == MAX_TASK_TITLE_LENGTH
 
     @respx.mock
     async def test_description_at_max_length_succeeds(self) -> None:
@@ -1292,7 +1304,9 @@ class TestEdgeCasesCreateTask:
         respx.post(TOKEN_URL).mock(
             return_value=Response(200, json=make_token_response()),
         )
-        respx.post(f"{BASE_URL}{TASKS_ENDPOINT}").mock(
+        post_route = respx.post(
+            f"{BASE_URL}{TASKS_ENDPOINT}",
+        ).mock(
             return_value=Response(
                 201,
                 json={"_id": "t-003", "title": "Task"},
@@ -1308,6 +1322,11 @@ class TestEdgeCasesCreateTask:
         )
 
         assert result.success is True
+        payload = json_mod.loads(
+            post_route.calls[0].request.content,
+        )
+        assert payload["description"] == max_desc
+        assert len(payload["description"]) == MAX_DESCRIPTION_LENGTH
 
     @respx.mock
     async def test_special_chars_in_title(self) -> None:
@@ -1416,7 +1435,7 @@ class TestEdgeCasesCustomField:
             return_value=Response(200, json=make_token_response()),
         )
         res_path = f"{RESERVATIONS_ENDPOINT}/res-001"
-        respx.put(f"{BASE_URL}{res_path}").mock(
+        put_route = respx.put(f"{BASE_URL}{res_path}").mock(
             return_value=Response(200, json={"_id": "res-001"}),
         )
 
@@ -1429,6 +1448,11 @@ class TestEdgeCasesCustomField:
         )
 
         assert result.success is True
+        payload = json_mod.loads(
+            put_route.calls[0].request.content,
+        )
+        assert payload["customFields"]["cf-001"] == max_val
+        assert len(max_val) == MAX_CUSTOM_FIELD_LENGTH
 
     @respx.mock
     async def test_unicode_in_custom_field_value(self) -> None:
