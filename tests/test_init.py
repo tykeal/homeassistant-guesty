@@ -87,7 +87,7 @@ class TestAsyncSetupEntry:
         mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
-        """Setup creates http_client, token_manager, api_client."""
+        """Setup creates token_manager, api_client, coordinator."""
         entry = _make_entry()
         entry.add_to_hass(hass)
 
@@ -98,7 +98,6 @@ class TestAsyncSetupEntry:
         assert DOMAIN in hass.data
         assert entry.entry_id in hass.data[DOMAIN]
         data = hass.data[DOMAIN][entry.entry_id]
-        assert "http_client" in data
         assert "token_manager" in data
         assert "api_client" in data
         assert "actions_client" in data
@@ -151,13 +150,13 @@ class TestAsyncSetupEntry:
         new_callable=AsyncMock,
         return_value=True,
     )
-    async def test_first_refresh_failure_closes_http(
+    async def test_first_refresh_failure_retries(
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
-        """First refresh failure closes HTTP client."""
+        """First refresh failure triggers setup retry."""
         entry = _make_entry()
         entry.add_to_hass(hass)
 
@@ -186,22 +185,24 @@ class TestAsyncSetupEntry:
         new_callable=AsyncMock,
         return_value=True,
     )
-    async def test_cf_refresh_failure_closes_http(
+    async def test_cf_refresh_failure_logs_warning_but_loads(
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
         mock_reservations: AsyncMock,
         mock_cf_defs: AsyncMock,
         hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """CF coordinator failure closes HTTP client."""
+        """CF coordinator failure logs warning but loads."""
         entry = _make_entry()
         entry.add_to_hass(hass)
 
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
-        assert entry.state is ConfigEntryState.SETUP_RETRY
+        assert entry.state is ConfigEntryState.LOADED
+        assert "Custom field definitions unavailable" in caplog.text
 
 
 class TestAsyncUnloadEntry:
@@ -239,7 +240,7 @@ class TestAsyncUnloadEntry:
         mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
-        """Unload closes HTTP client and removes hass.data."""
+        """Unload shuts down coordinators and removes hass.data."""
         entry = _make_entry()
         entry.add_to_hass(hass)
 
@@ -1215,7 +1216,7 @@ class TestAsyncSetupEntryCustomFields:
         new_callable=AsyncMock,
         return_value=True,
     )
-    async def test_cf_refresh_failure_retries(
+    async def test_cf_refresh_failure_still_loads(
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
@@ -1223,14 +1224,14 @@ class TestAsyncSetupEntryCustomFields:
         mock_get_defs: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
-        """Custom fields coordinator refresh failure retries."""
+        """Custom fields coordinator failure still loads entry."""
         entry = _make_entry()
         entry.add_to_hass(hass)
 
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
-        assert entry.state is ConfigEntryState.SETUP_RETRY
+        assert entry.state is ConfigEntryState.LOADED
 
     @patch(
         "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
@@ -1342,7 +1343,6 @@ class TestEntityCleanup:
         data = hass.data[DOMAIN][entry.entry_id]
         assert "reservations_coordinator" in data
         assert "coordinator" in data
-        assert "http_client" in data
 
         # Unload
         await hass.config_entries.async_unload(entry.entry_id)

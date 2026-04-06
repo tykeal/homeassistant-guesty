@@ -14,7 +14,6 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-import httpx
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import (
@@ -24,11 +23,11 @@ from homeassistant.core import (
     SupportsResponse,
 )
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
+from homeassistant.helpers.httpx_client import get_async_client
 
 from custom_components.guesty.api.actions import GuestyActionsClient
 from custom_components.guesty.api.auth import GuestyTokenManager
 from custom_components.guesty.api.client import GuestyApiClient
-from custom_components.guesty.api.const import DEFAULT_TIMEOUT
 from custom_components.guesty.api.custom_fields import GuestyCustomFieldsClient
 from custom_components.guesty.api.exceptions import (
     GuestyApiError,
@@ -184,10 +183,10 @@ async def async_setup_entry(
 ) -> bool:
     """Set up the Guesty integration from a config entry.
 
-    Creates the HTTP client, token manager, API client,
-    listings coordinator, and stores them in hass.data for use
-    by platforms. Tests the connection and raises
-    ConfigEntryNotReady on failure.
+    Uses Home Assistant's managed HTTP client, creates the token
+    manager, API client, coordinators, and stores them in
+    hass.data for use by platforms. Tests the connection and
+    raises ConfigEntryNotReady on failure.
 
     Args:
         hass: Home Assistant instance.
@@ -201,7 +200,7 @@ async def async_setup_entry(
             established.
     """
     storage = HATokenStorage(hass, entry)
-    http_client = httpx.AsyncClient(timeout=DEFAULT_TIMEOUT)
+    http_client = get_async_client(hass)
 
     token_manager = GuestyTokenManager(
         client_id=entry.data[CONF_CLIENT_ID],
@@ -223,7 +222,6 @@ async def async_setup_entry(
     try:
         await api_client.test_connection()
     except GuestyApiError as exc:
-        await http_client.aclose()
         raise ConfigEntryNotReady(
             f"Failed to connect to Guesty API: {exc.message}",
         ) from exc
@@ -233,11 +231,7 @@ async def async_setup_entry(
         entry=entry,
         api_client=api_client,
     )
-    try:
-        await coordinator.async_config_entry_first_refresh()
-    except ConfigEntryNotReady:
-        await http_client.aclose()
-        raise
+    await coordinator.async_config_entry_first_refresh()
 
     reservations_coordinator = ReservationsCoordinator(
         hass=hass,
@@ -245,11 +239,7 @@ async def async_setup_entry(
         api_client=api_client,
         listings_coordinator=coordinator,
     )
-    try:
-        await reservations_coordinator.async_config_entry_first_refresh()
-    except ConfigEntryNotReady:
-        await http_client.aclose()
-        raise
+    await reservations_coordinator.async_config_entry_first_refresh()
 
     messaging_client = GuestyMessagingClient(api_client)
     actions_client = GuestyActionsClient(api_client)
@@ -260,17 +250,20 @@ async def async_setup_entry(
         entry=entry,
         cf_client=cf_client,
     )
+    # Custom field definitions are optional — don't block setup
     try:
         await cf_coordinator.async_config_entry_first_refresh()
-    except ConfigEntryNotReady:
-        await coordinator.async_shutdown()
-        await reservations_coordinator.async_shutdown()
-        await http_client.aclose()
-        raise
+    except ConfigEntryNotReady as exc:
+        _LOGGER.warning(
+            "Custom field definitions unavailable; "
+            "set_custom_field service will not validate "
+            "field IDs until definitions load on next "
+            "refresh: %s",
+            exc,
+        )
 
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {
-        "http_client": http_client,
         "token_manager": token_manager,
         "api_client": api_client,
         "coordinator": coordinator,
@@ -452,7 +445,7 @@ async def async_unload_entry(
 ) -> bool:
     """Unload a Guesty config entry.
 
-    Closes the HTTP client and removes hass.data entry.
+    Shuts down coordinators and removes hass.data entry.
 
     Args:
         hass: Home Assistant instance.
@@ -477,8 +470,6 @@ async def async_unload_entry(
                 coord = data.get(key)
                 if coord is not None:
                     await coord.async_shutdown()
-            http_client: httpx.AsyncClient = data["http_client"]
-            await http_client.aclose()
 
         # Unregister service when no entries remain
         if not hass.data.get(DOMAIN):

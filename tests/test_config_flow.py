@@ -447,7 +447,10 @@ class TestValidateCredentialsDirect:
     """Tests for _validate_credentials without mocking it."""
 
     @respx.mock
-    async def test_validate_credentials_success(self) -> None:
+    async def test_validate_credentials_success(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
         """_validate_credentials succeeds with valid responses."""
         from custom_components.guesty.config_flow import (
             _validate_credentials,
@@ -466,7 +469,7 @@ class TestValidateCredentialsDirect:
             ),
         )
 
-        await _validate_credentials("test-id", "test-secret")
+        await _validate_credentials(hass, "test-id", "test-secret")
 
 
 class TestNullStorage:
