@@ -13,6 +13,7 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorEntityDescription,
 )
+from homeassistant.const import EntityCategory
 from homeassistant.helpers.typing import StateType
 
 from custom_components.guesty.api.models import GuestyListing
@@ -46,6 +47,68 @@ LISTING_SENSOR_DESCRIPTIONS: tuple[GuestyListingSensorEntityDescription, ...] = 
         translation_key="listing_status",
         entity_category=None,
         value_fn=lambda listing: listing.status,
+    ),
+    GuestyListingSensorEntityDescription(
+        key="name",
+        translation_key="listing_name",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda listing: listing.title,
+    ),
+    GuestyListingSensorEntityDescription(
+        key="nickname",
+        translation_key="listing_nickname",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda listing: listing.nickname,
+    ),
+    GuestyListingSensorEntityDescription(
+        key="address",
+        translation_key="listing_address",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda listing: (
+            listing.address.formatted() if listing.address else None
+        ),
+    ),
+    GuestyListingSensorEntityDescription(
+        key="property_type",
+        translation_key="listing_property_type",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda listing: listing.property_type,
+    ),
+    GuestyListingSensorEntityDescription(
+        key="room_type",
+        translation_key="listing_room_type",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda listing: listing.room_type,
+    ),
+    GuestyListingSensorEntityDescription(
+        key="bedrooms",
+        translation_key="listing_bedrooms",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda listing: listing.bedrooms,
+    ),
+    GuestyListingSensorEntityDescription(
+        key="bathrooms",
+        translation_key="listing_bathrooms",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda listing: listing.bathrooms,
+    ),
+    GuestyListingSensorEntityDescription(
+        key="timezone",
+        translation_key="listing_timezone",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda listing: listing.timezone,
+    ),
+    GuestyListingSensorEntityDescription(
+        key="check_in_time",
+        translation_key="listing_check_in_time",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda listing: listing.check_in_time,
+    ),
+    GuestyListingSensorEntityDescription(
+        key="check_out_time",
+        translation_key="listing_check_out_time",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda listing: listing.check_out_time,
     ),
 )
 
