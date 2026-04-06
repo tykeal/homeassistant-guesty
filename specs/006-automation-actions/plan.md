@@ -226,15 +226,17 @@ zero HA dependencies, extending the existing `api/` package.
 - Methods return `ActionResult` rather than raw API
   responses, consistent with `MessageDeliveryResult` pattern
 - Calendar availability uses
-  `PUT /availability-pricing/api/calendar/listings/{id}`
+  `PUT /availability-pricing/api/calendar/listings/{listing_id}`
   with a range payload containing `dateFrom` and `dateTo`;
   the client sends the requested range directly and does
   not expand it into per-day entries
-- Reservation notes use `PUT /reservations/{id}`;
-  listing status uses `PUT /listings/{id}`; tasks use
-  `POST /tasks-open-api/tasks`
+- Reservation notes use
+  `PUT /reservations/{reservation_id}`;
+  listing status uses `PUT /listings/{listing_id}`;
+  tasks use `POST /tasks-open-api/tasks`
 - Custom field updates use
-  `PUT /reservations/{id}` with custom fields payload
+  `PUT /reservations/{reservation_id}` with custom fields
+  payload
 - `GuestyActionError` includes `target_id` and
   `action_type` for clear error context in logs
 
