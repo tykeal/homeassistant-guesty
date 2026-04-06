@@ -488,7 +488,7 @@ def _calculate_backoff(
     """
     retry_after = _parse_retry_after(response)
     if retry_after is not None:
-        return min(retry_after, MAX_BACKOFF)
+        return max(0.1, min(retry_after, MAX_BACKOFF))
 
     return _jittered_delay(base_backoff)
 

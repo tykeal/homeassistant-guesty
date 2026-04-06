@@ -309,6 +309,36 @@ class TestRateLimitBackoff:
         assert result is True
         mock_sleep.assert_called_once()
 
+    @respx.mock
+    async def test_429_negative_retry_after_clamped(self) -> None:
+        """Negative Retry-After is clamped to minimum delay."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        mock_sleep = AsyncMock()
+        listings_route = respx.get(f"{BASE_URL}/listings")
+        listings_route.side_effect = [
+            Response(
+                429,
+                headers={"Retry-After": "-1"},
+            ),
+            Response(200, json={"results": []}),
+        ]
+
+        client, _, _ = _make_client()
+        with _patch("asyncio.sleep", mock_sleep):
+            result = await client.test_connection()
+
+        assert result is True
+        mock_sleep.assert_called_once()
+        delay = mock_sleep.call_args[0][0]
+        assert delay >= 0.1
+
 
 class TestConnectionTestFailure:
     """Tests for test_connection non-success responses."""
