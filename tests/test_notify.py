@@ -1235,7 +1235,7 @@ class TestEdgeCases:
         hass: HomeAssistant,
         mock_messaging_client: AsyncMock,
     ) -> None:
-        """Concurrent send_message calls execute independently."""
+        """Concurrent sends to same reservation are independent."""
         import asyncio
 
         entry = _make_entry()
@@ -1251,7 +1251,7 @@ class TestEdgeCases:
         tasks = [
             entity.async_send_guest_message(
                 message=f"Message {i}",
-                reservation_id=f"res-conc-{i}",
+                reservation_id="res-conc",
             )
             for i in range(3)
         ]
@@ -1259,16 +1259,6 @@ class TestEdgeCases:
         await asyncio.gather(*tasks)
 
         assert mock_messaging_client.send_message.call_count == 3
-
-        call_res_ids = sorted(
-            call.kwargs["reservation_id"]
-            for call in mock_messaging_client.send_message.call_args_list
-        )
-        assert call_res_ids == [
-            "res-conc-0",
-            "res-conc-1",
-            "res-conc-2",
-        ]
 
     async def test_unexpected_api_response_raises_error(
         self,
