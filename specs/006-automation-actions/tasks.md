@@ -39,15 +39,15 @@ five action services defined in the spec (SD-001 through SD-005).
 **Purpose**: Extend existing API package with action-specific constants,
 exception class, and result model needed by all user stories.
 
-- [ ] T001 [P] Add action endpoint paths and validation constants to
+- [x] T001 [P] Add action endpoint paths and validation constants to
   custom_components/guesty/api/const.py — add TASKS_ENDPOINT,
   CALENDAR_ENDPOINT, MAX_NOTE_LENGTH, MAX_TASK_TITLE_LENGTH,
   MAX_DESCRIPTION_LENGTH, MAX_CUSTOM_FIELD_LENGTH,
   VALID_LISTING_STATUSES, and VALID_CALENDAR_OPS per plan Phase 1
-- [ ] T002 [P] Add GuestyActionError exception to
+- [x] T002 [P] Add GuestyActionError exception to
   custom_components/guesty/api/exceptions.py — inherit GuestyApiError,
   add target_id and action_type fields per data-model.md
-- [ ] T003 [P] Add ActionResult frozen dataclass to
+- [x] T003 [P] Add ActionResult frozen dataclass to
   custom_components/guesty/api/models.py — fields success, target_id,
   error with `__post_init__` validation per data-model.md
 
@@ -62,44 +62,44 @@ that all user story phases depend on.
 **⚠️ CRITICAL**: No user story work can begin until this phase is
 complete.
 
-- [ ] T004 Create GuestyActionsClient class skeleton in
+- [x] T004 Create GuestyActionsClient class skeleton in
   custom_components/guesty/api/actions.py — constructor receives
   GuestyApiClient via dependency injection per messaging.py pattern;
   no action methods yet; include SPDX header and module docstring
-- [ ] T005 Update exports in
+- [x] T005 Update exports in
   `custom_components/guesty/api/__init__.py` — add ActionResult,
   GuestyActionError, and GuestyActionsClient to `__all__`
-- [ ] T006 Create HA service handler module
+- [x] T006 Create HA service handler module
   custom_components/guesty/actions.py — implement
   async_setup_actions(hass, entry) and async_unload_actions(hass,
   entry) with first-entry/last-entry guard logic, config entry
   resolution helper, and Voluptuous schema framework; no individual
   handlers yet; include SPDX header
-- [ ] T007 Wire actions client creation and service lifecycle in
+- [x] T007 Wire actions client creation and service lifecycle in
   `custom_components/guesty/__init__.py` — create GuestyActionsClient
   in async_setup_entry, store in hass.data, call
   async_setup_actions/async_unload_actions
-- [ ] T008 [P] Add five action service definitions to
+- [x] T008 [P] Add five action service definitions to
   custom_components/guesty/services.yaml — add_reservation_note,
   set_listing_status, create_task, set_calendar_availability,
   update_reservation_custom_field with required/optional fields per
   spec SD-001 through SD-005
-- [ ] T009 [P] Add action service strings to
+- [x] T009 [P] Add action service strings to
   custom_components/guesty/strings.json — add services section with
   name, description, and field descriptions for all five actions
-- [ ] T010 [P] Add action service translations to
+- [x] T010 [P] Add action service translations to
   custom_components/guesty/translations/en.json — mirror strings.json
   services section for English locale
-- [ ] T011 Add action test fixtures and helpers to
+- [x] T011 Add action test fixtures and helpers to
   tests/conftest.py — add mock_actions_client fixture returning
   AsyncMock of GuestyActionsClient, add make_action_result helper
-- [ ] T012 [P] Unit tests for ActionResult validation in
+- [x] T012 [P] Unit tests for ActionResult validation in
   tests/api/test_models.py — test frozen dataclass, target_id
   non-empty enforcement, success/error consistency invariants
-- [ ] T013 [P] Unit tests for GuestyActionError in
+- [x] T013 [P] Unit tests for GuestyActionError in
   tests/api/test_exceptions.py — test inheritance from
   GuestyApiError, target_id and action_type fields, string repr
-- [ ] T014 Unit tests for actions service registration lifecycle in
+- [x] T014 Unit tests for actions service registration lifecycle in
   tests/test_init.py — test GuestyActionsClient creation, storage in
   hass.data, setup/unload call sequence, multi-entry guard
 
@@ -122,12 +122,12 @@ overwriting existing content, and verify ActionResult is returned.
 > **NOTE: Write these tests FIRST, ensure they FAIL before
 > implementation**
 
-- [ ] T015 [P] [US1] Unit tests for add_reservation_note API method
+- [x] T015 [P] [US1] Unit tests for add_reservation_note API method
   in tests/api/test_actions.py — test successful append
   (read-modify-write), empty reservation note field, input validation
   (empty note, note exceeding MAX_NOTE_LENGTH, empty reservation_id),
   API 404 raises GuestyActionError, separator format between notes
-- [ ] T016 [P] [US1] HA handler tests for
+- [x] T016 [P] [US1] HA handler tests for
   guesty.add_reservation_note in tests/test_actions.py — test
   Voluptuous schema validation, successful service call returns
   ActionResult dict, GuestyActionError translated to
@@ -137,11 +137,11 @@ overwriting existing content, and verify ActionResult is returned.
 
 ### Implementation for User Story 1
 
-- [ ] T017 [US1] Implement add_reservation_note method in
+- [x] T017 [US1] Implement add_reservation_note method in
   custom_components/guesty/api/actions.py — validate inputs, GET
   current reservation note, append with separator, PUT combined note,
   return ActionResult; raise GuestyActionError on failure
-- [ ] T018 [US1] Implement _handle_add_reservation_note handler and
+- [x] T018 [US1] Implement _handle_add_reservation_note handler and
   register service in custom_components/guesty/actions.py — define
   Voluptuous schema for reservation_id and note_text, delegate to
   GuestyActionsClient, translate exceptions to HomeAssistantError,
@@ -167,24 +167,24 @@ PUT with correct payload, and verify ActionResult is returned.
 > **NOTE: Write these tests FIRST, ensure they FAIL before
 > implementation**
 
-- [ ] T019 [P] [US2] Unit tests for set_listing_status API method in
+- [x] T019 [P] [US2] Unit tests for set_listing_status API method in
   tests/api/test_actions.py — test activate (active=true, listed=true
   payload), deactivate (active=false payload), input validation
   (invalid status value, empty listing_id), API 404 raises
   GuestyActionError
-- [ ] T020 [P] [US2] HA handler tests for
+- [x] T020 [P] [US2] HA handler tests for
   guesty.set_listing_status in tests/test_actions.py — test
   Voluptuous schema validation (status restricted to active/inactive),
   successful service call, exception translation, response structure
 
 ### Implementation for User Story 2
 
-- [ ] T021 [US2] Implement set_listing_status method in
+- [x] T021 [US2] Implement set_listing_status method in
   custom_components/guesty/api/actions.py — validate listing_id and
   status against VALID_LISTING_STATUSES, PUT correct payload per
   research.md R3 (active: true+listed: true for activate, active:
   false for deactivate), return ActionResult
-- [ ] T022 [US2] Implement _handle_set_listing_status handler and
+- [x] T022 [US2] Implement _handle_set_listing_status handler and
   register service in custom_components/guesty/actions.py — define
   Voluptuous schema, delegate to GuestyActionsClient, translate
   exceptions, return response data
@@ -209,23 +209,23 @@ is returned.
 > **NOTE: Write these tests FIRST, ensure they FAIL before
 > implementation**
 
-- [ ] T023 [P] [US3] Unit tests for create_task API method in
+- [x] T023 [P] [US3] Unit tests for create_task API method in
   tests/api/test_actions.py — test successful creation with all
   fields, creation with required-only fields, input validation (empty
   title, title exceeding MAX_TASK_TITLE_LENGTH, description exceeding
   MAX_DESCRIPTION_LENGTH, empty listing_id), API error handling
-- [ ] T024 [P] [US3] HA handler tests for guesty.create_task in
+- [x] T024 [P] [US3] HA handler tests for guesty.create_task in
   tests/test_actions.py — test Voluptuous schema with required and
   optional fields, successful service call, exception translation,
   response structure
 
 ### Implementation for User Story 3
 
-- [ ] T025 [US3] Implement create_task method in
+- [x] T025 [US3] Implement create_task method in
   custom_components/guesty/api/actions.py — validate inputs, POST to
   TASKS_ENDPOINT with listingId, title, description, assigneeId
   payload per contract and research.md R4, return ActionResult
-- [ ] T026 [US3] Implement _handle_create_task handler and register
+- [x] T026 [US3] Implement _handle_create_task handler and register
   service in custom_components/guesty/actions.py — define Voluptuous
   schema with required listing_id/task_title and optional
   description/assignee, delegate and translate exceptions
@@ -250,13 +250,13 @@ availability-pricing endpoint, and verify ActionResult is returned.
 > **NOTE: Write these tests FIRST, ensure they FAIL before
 > implementation**
 
-- [ ] T027 [P] [US4] Unit tests for set_calendar_availability API
+- [x] T027 [P] [US4] Unit tests for set_calendar_availability API
   method in tests/api/test_actions.py — test block (status:
   unavailable payload), unblock (status: available payload), input
   validation (invalid date format, end before start, invalid
   operation, empty listing_id), API 409 conflict handling, date
   boundary cases
-- [ ] T028 [P] [US4] HA handler tests for
+- [x] T028 [P] [US4] HA handler tests for
   guesty.set_calendar_availability in tests/test_actions.py — test
   Voluptuous schema for all four required fields, date format
   validation, operation restricted to block/unblock, exception
@@ -264,12 +264,12 @@ availability-pricing endpoint, and verify ActionResult is returned.
 
 ### Implementation for User Story 4
 
-- [ ] T029 [US4] Implement set_calendar_availability method in
+- [x] T029 [US4] Implement set_calendar_availability method in
   custom_components/guesty/api/actions.py — validate inputs including
   date format and range, PUT to CALENDAR_ENDPOINT with dateFrom,
   dateTo, and status (unavailable/available) per research.md R5,
   handle 409 conflict as GuestyActionError, return ActionResult
-- [ ] T030 [US4] Implement _handle_set_calendar_availability handler
+- [x] T030 [US4] Implement _handle_set_calendar_availability handler
   and register service in custom_components/guesty/actions.py —
   define Voluptuous schema for listing_id, start_date, end_date, and
   operation, delegate and translate exceptions
@@ -295,23 +295,23 @@ customFields payload, and verify ActionResult is returned.
 > **NOTE: Write these tests FIRST, ensure they FAIL before
 > implementation**
 
-- [ ] T031 [P] [US5] Unit tests for update_reservation_custom_field
+- [x] T031 [P] [US5] Unit tests for update_reservation_custom_field
   API method in tests/api/test_actions.py — test successful update,
   input validation (empty reservation_id, empty custom_field_id,
   empty value, value exceeding MAX_CUSTOM_FIELD_LENGTH), API 404
   raises GuestyActionError, customFields payload format
-- [ ] T032 [P] [US5] HA handler tests for
+- [x] T032 [P] [US5] HA handler tests for
   guesty.update_reservation_custom_field in tests/test_actions.py —
   test Voluptuous schema for all three required fields, successful
   service call, exception translation, response structure
 
 ### Implementation for User Story 5
 
-- [ ] T033 [US5] Implement update_reservation_custom_field method in
+- [x] T033 [US5] Implement update_reservation_custom_field method in
   custom_components/guesty/api/actions.py — validate inputs, PUT to
   reservations endpoint with customFields object per research.md R6,
   return ActionResult
-- [ ] T034 [US5] Implement _handle_update_custom_field handler and
+- [x] T034 [US5] Implement _handle_update_custom_field handler and
   register service in custom_components/guesty/actions.py — define
   Voluptuous schema for reservation_id, custom_field_id, and value,
   delegate and translate exceptions
