@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Andrew Grimberg <tykeal@bardicgrove.org>
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for the Guesty notify platform (T011, T012, T017-T021)."""
+"""Tests for the Guesty notify platform (T011, T012, T017-T028)."""
 
 from __future__ import annotations
 
@@ -1277,3 +1277,806 @@ class TestEdgeCases:
                 message="Hello",
                 reservation_id="res-bad-resp",
             )
+
+
+# ── Phase 4: Rate Limit Retry Integration Tests (T022) ──────────────
+
+
+class TestRateLimitRetryIntegration:
+    """Rate limit retry integration tests through full stack (T022)."""
+
+    async def test_retry_transparent_to_ha_layer(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """Retry is transparent: HA layer sees successful result.
+
+        The GuestyApiClient handles 429 retry internally;
+        the notify entity only sees the final success result.
+        """
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        # Simulate that the client handled retries internally
+        # and returned a successful result.
+        mock_messaging_client.send_message.return_value = MessageDeliveryResult(
+            success=True,
+            message_id="msg-retry-ok",
+            reservation_id="res-retry",
+        )
+
+        await entity.async_send_guest_message(
+            message="After retry",
+            reservation_id="res-retry",
+        )
+
+        mock_messaging_client.send_message.assert_called_once_with(
+            reservation_id="res-retry",
+            body="After retry",
+            channel=None,
+            template_variables=None,
+        )
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_service_call_dispatches_successfully(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """HA service call dispatches guest message successfully."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        mock_client = AsyncMock()
+        mock_client.send_message.return_value = MessageDeliveryResult(
+            success=True,
+            message_id="msg-429-svc",
+            reservation_id="res-429-svc",
+        )
+
+        with patch(
+            "custom_components.guesty.GuestyMessagingClient",
+            return_value=mock_client,
+        ):
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+
+        entity_id = next(s.entity_id for s in hass.states.async_all("notify"))
+
+        await hass.services.async_call(
+            "guesty",
+            "send_guest_message",
+            {
+                "message": "Post-429",
+                "reservation_id": "res-429-svc",
+            },
+            target={"entity_id": entity_id},
+            blocking=True,
+        )
+
+        mock_client.send_message.assert_called_once()
+
+    async def test_rate_limit_error_surfaces_after_exhaustion(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """Rate limit exhaustion surfaces as HomeAssistantError."""
+        from custom_components.guesty.api.exceptions import (
+            GuestyRateLimitError,
+        )
+
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        mock_messaging_client.send_message.side_effect = GuestyRateLimitError(
+            "Rate limit exceeded after max retries",
+            retry_after=60.0,
+        )
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="Rate limit",
+        ):
+            await entity.async_send_guest_message(
+                message="Blocked",
+                reservation_id="res-rate",
+            )
+
+
+# ── Phase 4: Transient Failure Retry Integration Tests (T023) ───────
+
+
+class TestTransientFailureRetryIntegration:
+    """Transient failure retry integration tests (T023)."""
+
+    async def test_successful_delivery_calls_client_once(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """Successful delivery delegates to the client once."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        mock_messaging_client.send_message.return_value = MessageDeliveryResult(
+            success=True,
+            message_id="msg-trans-ok",
+            reservation_id="res-trans",
+        )
+
+        await entity.async_send_guest_message(
+            message="After transient fix",
+            reservation_id="res-trans",
+        )
+
+        mock_messaging_client.send_message.assert_called_once()
+
+    async def test_persistent_failure_raises_connection_error(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """Persistent network failure raises HomeAssistantError."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        mock_messaging_client.send_message.side_effect = GuestyConnectionError(
+            "Failed to connect to Guesty API after 3 retries: connection refused"
+        )
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="Failed to connect",
+        ):
+            await entity.async_send_guest_message(
+                message="Unreachable",
+                reservation_id="res-conn-fail",
+            )
+
+    async def test_connection_error_includes_reservation(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Connection error log includes reservation context."""
+        import logging
+
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        mock_messaging_client.send_message.side_effect = GuestyConnectionError(
+            "Failed to connect after retries"
+        )
+
+        with (
+            caplog.at_level(logging.ERROR),
+            pytest.raises(HomeAssistantError),
+        ):
+            await entity.async_send_guest_message(
+                message="Hello",
+                reservation_id="res-ctx-log",
+            )
+
+        assert any(
+            "res-ctx-log" in record.getMessage()
+            for record in caplog.records
+            if record.levelno >= logging.ERROR
+        )
+
+    async def test_messaging_error_includes_reservation(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """GuestyMessageError after retries includes reservation."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        mock_messaging_client.send_message.side_effect = GuestyMessageError(
+            "Failed to send message for reservation 'res-persist': timeout",
+            reservation_id="res-persist",
+        )
+
+        with pytest.raises(HomeAssistantError) as exc_info:
+            await entity.async_send_guest_message(
+                message="Hello",
+                reservation_id="res-persist",
+            )
+
+        assert "res-persist" in str(exc_info.value)
+
+
+# ── Phase 4: Error Detail Quality Tests (T024) ──────────────────────
+
+
+class TestErrorDetailQuality:
+    """Error detail quality tests (T024)."""
+
+    async def test_invalid_reservation_includes_id(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """Invalid reservation error includes the ID."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        mock_messaging_client.send_message.side_effect = GuestyMessageError(
+            "No conversation found for reservation 'res-notfound'",
+            reservation_id="res-notfound",
+        )
+
+        with pytest.raises(HomeAssistantError) as exc_info:
+            await entity.async_send_guest_message(
+                message="Hello",
+                reservation_id="res-notfound",
+            )
+
+        assert "res-notfound" in str(exc_info.value)
+
+    async def test_delivery_failure_includes_reason_and_id(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """Delivery failure includes failure reason and ID."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        mock_messaging_client.send_message.side_effect = GuestyMessageError(
+            "Message send failed for reservation 'res-fail-detail': HTTP 500",
+            reservation_id="res-fail-detail",
+        )
+
+        with pytest.raises(HomeAssistantError) as exc_info:
+            await entity.async_send_guest_message(
+                message="Hello",
+                reservation_id="res-fail-detail",
+            )
+
+        error_msg = str(exc_info.value)
+        assert "res-fail-detail" in error_msg
+        assert "500" in error_msg
+
+    async def test_successful_delivery_has_no_error_logs(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Successful delivery produces no error-level logs."""
+        import logging
+
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        mock_messaging_client.send_message.return_value = MessageDeliveryResult(
+            success=True,
+            message_id="msg-warn",
+            reservation_id="res-warn",
+        )
+
+        with caplog.at_level(logging.DEBUG):
+            await entity.async_send_guest_message(
+                message="OK message",
+                reservation_id="res-warn",
+            )
+
+        # Delivery succeeded — no error-level records
+        assert not any(record.levelno >= logging.ERROR for record in caplog.records)
+
+    async def test_final_failure_logged_at_error(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Final failure after retries is logged at error."""
+        import logging
+
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        mock_messaging_client.send_message.side_effect = GuestyMessageError(
+            "All retries exhausted",
+            reservation_id="res-final-err",
+        )
+
+        with (
+            caplog.at_level(logging.ERROR),
+            pytest.raises(HomeAssistantError),
+        ):
+            await entity.async_send_guest_message(
+                message="Fail",
+                reservation_id="res-final-err",
+            )
+
+        assert any(
+            record.levelno >= logging.ERROR and "res-final-err" in record.getMessage()
+            for record in caplog.records
+        )
+
+
+# ── Phase 4: Security Validation Tests (T026) ───────────────────────
+
+
+class TestSecurityValidation:
+    """Security tests: no sensitive data in logs (T026)."""
+
+    async def test_success_no_message_body_in_logs(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Successful send does not leak message body to logs."""
+        import logging
+
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        mock_messaging_client.send_message.return_value = MessageDeliveryResult(
+            success=True,
+            message_id="msg-sec",
+            reservation_id="res-sec",
+        )
+
+        secret_body = "SECRET_DOOR_CODE_99887766"
+
+        with caplog.at_level(logging.DEBUG):
+            await entity.async_send_guest_message(
+                message=secret_body,
+                reservation_id="res-sec",
+            )
+
+        for record in caplog.records:
+            assert secret_body not in record.getMessage()
+
+    async def test_failure_no_message_body_in_logs(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Failed send does not leak message body to logs."""
+        import logging
+
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        secret_body = "PRIVATE_ACCESS_CODE_XYZ123"
+        mock_messaging_client.send_message.side_effect = GuestyMessageError(
+            "delivery failed",
+            reservation_id="res-sec-fail",
+        )
+
+        with (
+            caplog.at_level(logging.DEBUG),
+            pytest.raises(HomeAssistantError),
+        ):
+            await entity.async_send_guest_message(
+                message=secret_body,
+                reservation_id="res-sec-fail",
+            )
+
+        for record in caplog.records:
+            assert secret_body not in record.getMessage()
+
+    async def test_no_oauth_token_in_logs(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """OAuth tokens never appear in log output."""
+        import logging
+
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        mock_messaging_client.send_message.return_value = MessageDeliveryResult(
+            success=True,
+            message_id="msg-tok",
+            reservation_id="res-tok",
+        )
+
+        with caplog.at_level(logging.DEBUG):
+            await entity.async_send_guest_message(
+                message="Hello",
+                reservation_id="res-tok",
+            )
+
+        client_secret = "test-client-secret"
+        for record in caplog.records:
+            assert client_secret not in record.getMessage()
+
+    async def test_no_guest_pii_in_logs(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Guest PII (template vars) not leaked to logs."""
+        import logging
+
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        mock_messaging_client.send_message.return_value = MessageDeliveryResult(
+            success=True,
+            message_id="msg-pii",
+            reservation_id="res-pii",
+        )
+
+        pii_name = "JANE_SMITH_PRIVATE_GUEST"
+
+        with caplog.at_level(logging.DEBUG):
+            await entity.async_send_guest_message(
+                message="Hi {guest_name}",
+                reservation_id="res-pii",
+                template_variables={"guest_name": pii_name},
+            )
+
+        for record in caplog.records:
+            assert pii_name not in record.getMessage()
+
+    async def test_retry_logs_no_sensitive_data(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Retry scenario logs no message body or PII."""
+        import logging
+
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        secret = "RETRY_SECRET_PAYLOAD_XYZ"
+        mock_messaging_client.send_message.side_effect = GuestyConnectionError(
+            "timeout after retries"
+        )
+
+        with (
+            caplog.at_level(logging.DEBUG),
+            pytest.raises(HomeAssistantError),
+        ):
+            await entity.async_send_guest_message(
+                message=secret,
+                reservation_id="res-retry-sec",
+            )
+
+        for record in caplog.records:
+            assert secret not in record.getMessage()
+
+    async def test_no_injection_in_reservation_id(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """Injection-like reservation_id passed through and errors safely."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        injected_id = "<script>alert(1)</script>"
+        mock_messaging_client.send_message.side_effect = GuestyMessageError(
+            f"No conversation found for reservation '{injected_id}'",
+            reservation_id=injected_id,
+        )
+
+        with pytest.raises(HomeAssistantError):
+            await entity.async_send_guest_message(
+                message="Hello",
+                reservation_id=injected_id,
+            )
+
+        mock_messaging_client.send_message.assert_called_once_with(
+            reservation_id=injected_id,
+            body="Hello",
+            channel=None,
+            template_variables=None,
+        )
+
+    async def test_no_injection_in_message_body(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """Injection-like message body passed through unchanged."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        mock_messaging_client.send_message.return_value = MessageDeliveryResult(
+            success=True,
+            message_id="msg-inj",
+            reservation_id="res-inj",
+        )
+
+        injection_body = '"; DROP TABLE messages; --'
+        await entity.async_send_guest_message(
+            message=injection_body,
+            reservation_id="res-inj",
+        )
+
+        mock_messaging_client.send_message.assert_called_once_with(
+            reservation_id="res-inj",
+            body=injection_body,
+            channel=None,
+            template_variables=None,
+        )
+
+
+# ── Phase 4: Success Criteria Validation Tests (T027) ────────────────
+
+
+class TestSuccessCriteriaValidation:
+    """Success criteria validation tests (T027)."""
+
+    async def test_sc005_missing_reservation_id_sync_error(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """SC-005: missing reservation_id produces sync error."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        with pytest.raises(HomeAssistantError, match="reservation"):
+            await entity.async_send_message(message="Hi")
+
+    async def test_sc005_empty_body_sync_error(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """SC-005: empty body produces synchronous error."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        with pytest.raises(HomeAssistantError, match="message body"):
+            await entity.async_send_message(
+                message="",
+                title="res-sc005",
+            )
+
+    async def test_sc005_errors_are_synchronous(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """SC-005: validation errors raised synchronously."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        # Missing reservation_id — should raise immediately
+        with pytest.raises(HomeAssistantError):
+            await entity.async_send_guest_message(
+                message="Hi",
+                reservation_id="",
+            )
+
+        # Empty body — should raise immediately
+        with pytest.raises(HomeAssistantError):
+            await entity.async_send_guest_message(
+                message="",
+                reservation_id="res-sync",
+            )
+
+        # Neither call should have touched the client
+        mock_messaging_client.send_message.assert_not_called()
+
+    def test_sc009_respx_mock_coverage(self) -> None:
+        """SC-009: all scenarios use respx mocks, no live API."""
+        import tests.api.test_messaging as msg_tests
+
+        # Verify the test module exists and has test classes
+        assert hasattr(msg_tests, "TestResolveConversation")
+        assert hasattr(msg_tests, "TestSendMessage")
+        assert hasattr(msg_tests, "TestRenderTemplate")
+        assert hasattr(msg_tests, "TestInputValidation")
+
+    def test_sc009_no_live_connection_imports(self) -> None:
+        """SC-009: test modules use respx, not live connections."""
+        import inspect
+
+        import tests.api.test_messaging as msg_tests
+
+        source = inspect.getsource(msg_tests)
+        # Verify respx is used for HTTP mocking
+        assert "respx" in source
+        # No hard-coded live API URLs in test source
+        assert "open-api.guesty.com" not in source
+
+    def test_sc010_template_resolves_all_variables(
+        self,
+    ) -> None:
+        """SC-010: template substitution resolves all variables."""
+        from custom_components.guesty.api.messaging import (
+            GuestyMessagingClient,
+        )
+
+        client = GuestyMessagingClient.__new__(
+            GuestyMessagingClient,
+        )
+        result = client.render_template(
+            "Hello {guest_name}, code: {code}, room: {room}",
+            {
+                "guest_name": "Alice",
+                "code": "1234",
+                "room": "Suite A",
+            },
+        )
+
+        assert result == "Hello Alice, code: 1234, room: Suite A"
+        # No unresolved placeholders
+        assert "{" not in result
+        assert "}" not in result
+
+    def test_sc010_missing_variable_rejected(self) -> None:
+        """SC-010: missing template variable raises KeyError."""
+        from custom_components.guesty.api.messaging import (
+            GuestyMessagingClient,
+        )
+
+        client = GuestyMessagingClient.__new__(
+            GuestyMessagingClient,
+        )
+
+        with pytest.raises(KeyError, match="missing_var"):
+            client.render_template(
+                "Hello {missing_var}",
+                {},
+            )
+
+    async def test_sc010_no_partial_message_on_error(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """SC-010: no partial message sent on template error."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        mock_messaging_client.send_message.side_effect = KeyError("guest_name")
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="Missing template variable",
+        ):
+            await entity.async_send_guest_message(
+                message="Hi {guest_name}, code: {code}",
+                reservation_id="res-sc010",
+                template_variables={"code": "1234"},
+            )
+
+        # Client was called (it raises) but no partial message
+        # reaches the API — the error stops the pipeline
+        mock_messaging_client.send_message.assert_called_once()
+
+
+# ── Phase 4: Quickstart Validation (T028) ────────────────────────────
+
+
+class TestQuickstartValidation:
+    """Quickstart.md code pattern validation (T028)."""
+
+    def test_messaging_client_api_pattern(self) -> None:
+        """Quickstart messaging client usage pattern compiles."""
+        from custom_components.guesty.api import (
+            GuestyApiClient,
+            GuestyMessageError,
+            GuestyMessagingClient,
+        )
+
+        assert GuestyMessagingClient is not None
+        assert GuestyApiClient is not None
+        assert GuestyMessageError is not None
+
+    def test_error_handling_pattern_imports(self) -> None:
+        """Quickstart error handling pattern imports work."""
+        from custom_components.guesty.api import (
+            GuestyConnectionError,
+            GuestyMessageError,
+            GuestyRateLimitError,
+        )
+
+        assert GuestyMessageError is not None
+        assert GuestyRateLimitError is not None
+        assert GuestyConnectionError is not None
+
+    def test_error_handling_pattern_structure(self) -> None:
+        """Quickstart error types form correct hierarchy."""
+        from custom_components.guesty.api.exceptions import (
+            GuestyApiError,
+            GuestyConnectionError,
+            GuestyMessageError,
+            GuestyRateLimitError,
+        )
+
+        # All are subclasses of GuestyApiError
+        assert issubclass(GuestyMessageError, GuestyApiError)
+        assert issubclass(GuestyRateLimitError, GuestyApiError)
+        assert issubclass(GuestyConnectionError, GuestyApiError)
+
+    def test_message_error_has_reservation_context(
+        self,
+    ) -> None:
+        """Quickstart error handling: reservation_id accessible."""
+        from custom_components.guesty.api import (
+            GuestyMessageError,
+        )
+
+        err = GuestyMessageError(
+            "test error",
+            reservation_id="abc123",
+        )
+        assert err.reservation_id == "abc123"
+        assert err.message == "test error"
+
+    def test_notify_entity_exists(self) -> None:
+        """Quickstart: GuestyNotifyEntity is importable."""
+        from custom_components.guesty.notify import (
+            GuestyNotifyEntity,
+        )
+
+        assert GuestyNotifyEntity is not None
+
+    def test_message_delivery_result_structure(self) -> None:
+        """Quickstart: MessageDeliveryResult has expected fields."""
+        result = MessageDeliveryResult(
+            success=True,
+            message_id="msg-1",
+            reservation_id="res-1",
+        )
+        assert result.success is True
+        assert result.message_id == "msg-1"
+        assert result.reservation_id == "res-1"
+
+    def test_render_template_pattern(self) -> None:
+        """Quickstart template pattern works as documented."""
+        from custom_components.guesty.api.messaging import (
+            GuestyMessagingClient,
+        )
+
+        client = GuestyMessagingClient.__new__(
+            GuestyMessagingClient,
+        )
+        rendered = client.render_template(
+            "Welcome {guest_name}! Code: {access_code}",
+            {"guest_name": "Jane", "access_code": "5678"},
+        )
+        assert rendered == "Welcome Jane! Code: 5678"

@@ -319,8 +319,9 @@ class GuestyApiClient:
     ) -> httpx.Response:
         """Make an authenticated API request with retry logic.
 
-        Adds Authorization header, retries on 429 with exponential
-        backoff, and reactively refreshes token on 401.
+        Adds Authorization header, retries on 429 and transient
+        failures (connect/timeout errors, 5xx responses) with
+        exponential backoff, and reactively refreshes token on 401.
 
         Args:
             method: HTTP method (GET, POST, etc.).
@@ -334,7 +335,7 @@ class GuestyApiClient:
 
         Raises:
             GuestyAuthError: On persistent 401 after token refresh.
-            GuestyConnectionError: On network failures.
+            GuestyConnectionError: On network failures after retries.
             GuestyRateLimitError: On 429 after max retries.
             GuestyResponseError: On unexpected response formats.
         """
@@ -358,9 +359,26 @@ class GuestyApiClient:
                     },
                 )
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
-                raise GuestyConnectionError(
-                    f"Failed to connect to Guesty API: {exc}",
-                ) from exc
+                if attempt >= MAX_RETRIES:
+                    raise GuestyConnectionError(
+                        f"Failed to connect to Guesty API "
+                        f"after {MAX_RETRIES} retries: {exc}",
+                    ) from exc
+
+                delay = _calculate_transient_backoff(backoff)
+                _LOGGER.warning(
+                    "Transient error, retrying in %.1fs (attempt %d/%d): %s",
+                    delay,
+                    attempt + 1,
+                    MAX_RETRIES,
+                    exc,
+                )
+                await asyncio.sleep(delay)
+                backoff = min(
+                    backoff * BACKOFF_MULTIPLIER,
+                    MAX_BACKOFF,
+                )
+                continue
 
             if response.status_code == 401:
                 if _retried_auth:
@@ -388,20 +406,45 @@ class GuestyApiClient:
                     backoff,
                     response,
                 )
-                _LOGGER.debug(
+                _LOGGER.warning(
                     "Rate limited, retrying in %.1fs (attempt %d/%d)",
                     delay,
                     attempt + 1,
                     MAX_RETRIES,
                 )
                 await asyncio.sleep(delay)
-                backoff = min(backoff * BACKOFF_MULTIPLIER, MAX_BACKOFF)
+                backoff = min(
+                    backoff * BACKOFF_MULTIPLIER,
+                    MAX_BACKOFF,
+                )
                 continue
 
             if response.status_code == 403:
                 raise GuestyAuthError(
                     "Insufficient permissions for this API endpoint",
                 )
+
+            if _is_transient_5xx(response.status_code):
+                if attempt >= MAX_RETRIES:
+                    raise GuestyConnectionError(
+                        f"Server error {response.status_code} "
+                        f"after {MAX_RETRIES} retries",
+                    )
+
+                delay = _calculate_transient_backoff(backoff)
+                _LOGGER.warning(
+                    "Server error %d, retrying in %.1fs (attempt %d/%d)",
+                    response.status_code,
+                    delay,
+                    attempt + 1,
+                    MAX_RETRIES,
+                )
+                await asyncio.sleep(delay)
+                backoff = min(
+                    backoff * BACKOFF_MULTIPLIER,
+                    MAX_BACKOFF,
+                )
+                continue
 
             return response
 
@@ -448,12 +491,52 @@ def _calculate_backoff(
     """
     retry_after = _parse_retry_after(response)
     if retry_after is not None:
-        return min(retry_after, MAX_BACKOFF)
+        return max(0.1, min(retry_after, MAX_BACKOFF))
 
-    # Apply ±25% jitter
+    return _jittered_delay(base_backoff)
+
+
+def _jittered_delay(base_backoff: float) -> float:
+    """Apply ±25% jitter to a base backoff delay.
+
+    Args:
+        base_backoff: Current backoff delay in seconds.
+
+    Returns:
+        Delay in seconds with jitter applied, minimum 0.1s.
+    """
     delay = min(base_backoff, MAX_BACKOFF)
     jitter = delay * 0.25 * (2 * random.random() - 1)
     return max(0.1, delay + jitter)
+
+
+def _calculate_transient_backoff(base_backoff: float) -> float:
+    """Calculate backoff delay with jitter for transient errors.
+
+    Args:
+        base_backoff: Current backoff delay in seconds.
+
+    Returns:
+        Delay in seconds before next retry.
+    """
+    return _jittered_delay(base_backoff)
+
+
+_TRANSIENT_STATUS_CODES: frozenset[int] = frozenset(
+    {500, 502, 503, 504},
+)
+
+
+def _is_transient_5xx(status_code: int) -> bool:
+    """Check if an HTTP status code is a transient server error.
+
+    Args:
+        status_code: HTTP response status code.
+
+    Returns:
+        True if the status code is a retryable 5xx error.
+    """
+    return status_code in _TRANSIENT_STATUS_CODES
 
 
 def _build_reservation_filters(
