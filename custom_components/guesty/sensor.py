@@ -7,9 +7,10 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from homeassistant.components.sensor import (
+    SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
 )
@@ -63,6 +64,8 @@ LISTING_SENSOR_DESCRIPTIONS: tuple[GuestyListingSensorEntityDescription, ...] = 
     GuestyListingSensorEntityDescription(
         key="status",
         translation_key="listing_status",
+        device_class=SensorDeviceClass.ENUM,
+        options=["active", "inactive", "archived"],
         entity_category=None,
         value_fn=lambda listing: listing.status,
     ),
@@ -480,6 +483,15 @@ class GuestyReservationSensor(
     """
 
     _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.ENUM
+
+    _BASE_OPTIONS: ClassVar[list[str]] = [
+        "no_reservation",
+        "awaiting_checkin",
+        "checked_in",
+        "checked_out",
+        "canceled",
+    ]
 
     def __init__(
         self,
@@ -501,6 +513,27 @@ class GuestyReservationSensor(
         self._listings_coordinator = listings_coordinator
         self._attr_unique_id = f"{entry.unique_id}_{listing_id}_reservation_status"
         self._attr_translation_key = "reservation_status"
+
+    @property
+    def options(self) -> list[str]:
+        """Return valid state options, including unknown statuses.
+
+        Derives the current status directly from the selected
+        reservation to avoid duplicating work performed by
+        ``native_value`` and its info-level logging for unknown
+        statuses.
+
+        Returns:
+            List of valid state option strings.
+        """
+        selected = _select_reservation(self._reservations)
+        if selected is None:
+            return list(self._BASE_OPTIONS)
+        status = selected.status
+        mapped = "awaiting_checkin" if status == "confirmed" else status
+        if mapped not in self._BASE_OPTIONS:
+            return [*self._BASE_OPTIONS, mapped]
+        return list(self._BASE_OPTIONS)
 
     @property
     def native_value(self) -> StateType:

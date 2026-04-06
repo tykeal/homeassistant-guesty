@@ -187,7 +187,12 @@
     "entity": {
         "sensor": {
             "listing_status": {
-                "name": "Listing status"
+                "name": "Listing status",
+                "state": {
+                    "active": "Active",
+                    "inactive": "Inactive",
+                    "archived": "Archived"
+                }
             },
             "listing_name": {
                 "name": "Listing name"
@@ -229,7 +234,14 @@
                 "name": "Custom field"
             },
             "reservation_status": {
-                "name": "Reservation status"
+                "name": "Reservation status",
+                "state": {
+                    "no_reservation": "No reservation",
+                    "awaiting_checkin": "Awaiting check-in",
+                    "checked_in": "Checked in",
+                    "checked_out": "Checked out",
+                    "canceled": "Canceled"
+                }
             },
             "reservation_total": {
                 "name": "Reservation total"
