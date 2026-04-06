@@ -59,7 +59,7 @@ async def async_setup_entry(
             vol.Required("reservation_id"): str,
             vol.Optional("channel"): str,
             vol.Optional("template_variables"): vol.Schema(
-                {str: str},
+                {str: vol.Coerce(str)},
             ),
         },
         "async_send_guest_message",

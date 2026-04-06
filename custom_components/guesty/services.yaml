@@ -27,7 +27,7 @@ send_guest_message:
     channel:
       name: Channel
       description: >-
-        Messaging channel to use (e.g., email, sms, airbnb).
+        Messaging channel to use (e.g., email, sms, airbnb2).
         If omitted, Guesty selects the default channel.
       required: false
       example: "email"
