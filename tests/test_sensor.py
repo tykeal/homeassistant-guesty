@@ -13,6 +13,7 @@ from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -1423,3 +1424,151 @@ class TestCustomFieldSensors:
         ]
         assert len(custom_sensors) == 1
         assert custom_sensors[0].entity_description.key == "custom_pool_type"
+
+
+class TestReaddedListingRecreatesEntities:
+    """Test re-added listing recreates device and sensors (T034)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
+    async def test_readded_listing_recreates_sensors(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """T034: Re-selecting listing recreates its sensors.
+
+        Simulates the full reload cycle: both listings present,
+        then listing_b removed (deselect reload), then listing_b
+        re-added (re-select reload).  Each call to the sensor
+        platform's async_setup_entry creates a fresh known_ids
+        set, so re-added listings are always discovered.
+        """
+        listing_b = GuestyListing(
+            id="listing-002",
+            title="Mountain Cabin",
+            nickname="cabin",
+            status="active",
+            address=None,
+            property_type="house",
+            room_type="entire_home",
+            listing_type="SINGLE",
+            bedrooms=3,
+            bathrooms=2.0,
+            accommodates=6,
+            timezone="America/Denver",
+            check_in_time="16:00",
+            check_out_time="10:00",
+            tags=(),
+            custom_fields=MappingProxyType({}),
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        coordinator.async_add_listener = MagicMock(
+            return_value=MagicMock(),
+        )
+
+        res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        res_coordinator.data = {}
+        res_coordinator.last_update_success = True
+        res_coordinator.async_add_listener = MagicMock(
+            return_value=MagicMock(),
+        )
+
+        hass.data.setdefault(DOMAIN, {})
+        hass.data[DOMAIN][entry.entry_id] = {
+            "coordinator": coordinator,
+            "reservations_coordinator": res_coordinator,
+        }
+
+        def _make_collector() -> tuple[
+            list[Entity],
+            AddEntitiesCallback,
+        ]:
+            """Return a fresh entity list and add-entities callback.
+
+            Returns:
+                Tuple of (entity list, add callback).
+            """
+            entities: list[Entity] = []
+
+            def _add(
+                new: Iterable[Entity],
+                update_before_add: bool = False,
+            ) -> None:
+                """Capture entities added by the platform.
+
+                Args:
+                    new: Entities to add.
+                    update_before_add: Whether to update first.
+                """
+                entities.extend(list(new))
+
+            return entities, _add  # type: ignore[return-value]
+
+        def _unique_ids(
+            entities: list[Entity],
+        ) -> set[str]:
+            """Extract unique_ids from entity list.
+
+            Args:
+                entities: List of entities to inspect.
+
+            Returns:
+                Set of unique_id strings.
+            """
+            return {
+                e.unique_id for e in entities if hasattr(e, "unique_id") and e.unique_id
+            }
+
+        # Phase 1: Both listings present
+        coordinator.data = {
+            sample_listing.id: sample_listing,
+            listing_b.id: listing_b,
+        }
+        phase1, add1 = _make_collector()
+        await async_setup_entry(hass, entry, add1)
+
+        ids1 = _unique_ids(phase1)
+        assert any(sample_listing.id in uid for uid in ids1)
+        assert any(listing_b.id in uid for uid in ids1)
+
+        # Phase 2: Simulate reload after deselecting listing_b
+        coordinator.data = {
+            sample_listing.id: sample_listing,
+        }
+        coordinator.async_add_listener = MagicMock(
+            return_value=MagicMock(),
+        )
+        phase2, add2 = _make_collector()
+        await async_setup_entry(hass, entry, add2)
+
+        ids2 = _unique_ids(phase2)
+        assert any(sample_listing.id in uid for uid in ids2)
+        assert not any(listing_b.id in uid for uid in ids2)
+
+        # Phase 3: Simulate reload after re-selecting listing_b
+        coordinator.data = {
+            sample_listing.id: sample_listing,
+            listing_b.id: listing_b,
+        }
+        coordinator.async_add_listener = MagicMock(
+            return_value=MagicMock(),
+        )
+        phase3, add3 = _make_collector()
+        await async_setup_entry(hass, entry, add3)
+
+        ids3 = _unique_ids(phase3)
+        assert any(sample_listing.id in uid for uid in ids3)
+        assert any(listing_b.id in uid for uid in ids3)

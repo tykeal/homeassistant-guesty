@@ -40,6 +40,7 @@ from custom_components.guesty.const import (
     CONF_CLIENT_SECRET,
     CONF_RESERVATION_SCAN_INTERVAL,
     CONF_SCAN_INTERVAL,
+    CONF_SELECTED_LISTINGS,
     DEFAULT_RESERVATION_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
@@ -384,16 +385,31 @@ async def async_setup_entry(
             supports_response=SupportsResponse.OPTIONAL,
         )
 
+    _prev_selected = entry.options.get(CONF_SELECTED_LISTINGS)
+
     async def _async_options_updated(
         hass: HomeAssistant,
         entry: ConfigEntry,
     ) -> None:
-        """Handle options update by reconfiguring coordinators.
+        """Handle options update by reloading or reconfiguring.
+
+        When the selected-listings filter changes, reloads the
+        config entry so that all entities and devices are cleanly
+        torn down and recreated with the new filter.  When only
+        polling intervals change, updates coordinators in place.
 
         Args:
             hass: Home Assistant instance.
             entry: The config entry that was updated.
         """
+        nonlocal _prev_selected
+
+        new_selected = entry.options.get(CONF_SELECTED_LISTINGS)
+        if new_selected != _prev_selected:
+            _prev_selected = new_selected
+            await hass.config_entries.async_reload(entry.entry_id)
+            return
+
         from datetime import timedelta
 
         interval = entry.options.get(

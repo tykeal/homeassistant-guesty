@@ -1456,3 +1456,245 @@ class TestSetupEntryNoFilterOptions:
         assert entry.state is ConfigEntryState.LOADED
         assert DOMAIN in hass.data
         assert entry.entry_id in hass.data[DOMAIN]
+
+
+class TestDeselectedDeviceRemoval:
+    """Tests for listing filter changes triggering reload (T030-T033)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for removal tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_options_updated_reloads_when_deselected(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """T030: Deselecting a listing triggers config entry reload."""
+        from custom_components.guesty.api.models import (
+            GuestyListing,
+        )
+
+        listing_a = sample_listing
+        assert isinstance(listing_a, GuestyListing)
+
+        mock_listings.return_value = [listing_a]
+
+        entry = _make_entry(
+            options={
+                CONF_SELECTED_LISTINGS: [
+                    listing_a.id,
+                    "listing-002",
+                ],
+            },
+        )
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        with patch.object(
+            hass.config_entries,
+            "async_reload",
+            new_callable=AsyncMock,
+        ) as mock_reload:
+            hass.config_entries.async_update_entry(
+                entry,
+                options={
+                    CONF_SELECTED_LISTINGS: [listing_a.id],
+                },
+            )
+            await hass.async_block_till_done()
+
+            mock_reload.assert_awaited_once_with(entry.entry_id)
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_options_updated_reloads_when_multiple_deselected(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """T031: Deselecting multiple listings triggers reload."""
+        from custom_components.guesty.api.models import (
+            GuestyListing,
+        )
+
+        listing_a = sample_listing
+        assert isinstance(listing_a, GuestyListing)
+
+        mock_listings.return_value = [listing_a]
+
+        entry = _make_entry(
+            options={
+                CONF_SELECTED_LISTINGS: [
+                    listing_a.id,
+                    "listing-002",
+                    "listing-003",
+                ],
+            },
+        )
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        with patch.object(
+            hass.config_entries,
+            "async_reload",
+            new_callable=AsyncMock,
+        ) as mock_reload:
+            hass.config_entries.async_update_entry(
+                entry,
+                options={
+                    CONF_SELECTED_LISTINGS: [listing_a.id],
+                },
+            )
+            await hass.async_block_till_done()
+
+            mock_reload.assert_awaited_once_with(entry.entry_id)
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_options_updated_no_reload_when_same_selection(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """T032: Same selection does not trigger reload."""
+        from custom_components.guesty.api.models import (
+            GuestyListing,
+        )
+
+        listing_a = sample_listing
+        assert isinstance(listing_a, GuestyListing)
+
+        mock_listings.return_value = [listing_a]
+
+        entry = _make_entry(
+            options={
+                CONF_SELECTED_LISTINGS: [listing_a.id],
+            },
+        )
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        with patch.object(
+            hass.config_entries,
+            "async_reload",
+            new_callable=AsyncMock,
+        ) as mock_reload:
+            hass.config_entries.async_update_entry(
+                entry,
+                options={
+                    CONF_SELECTED_LISTINGS: [listing_a.id],
+                },
+            )
+            await hass.async_block_till_done()
+
+            mock_reload.assert_not_awaited()
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_options_updated_reloads_none_to_explicit(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """T033: None to explicit selection triggers reload."""
+        from custom_components.guesty.api.models import (
+            GuestyListing,
+        )
+
+        listing_a = sample_listing
+        assert isinstance(listing_a, GuestyListing)
+
+        mock_listings.return_value = [listing_a]
+
+        # Start with no filter (None = all tracked)
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        with patch.object(
+            hass.config_entries,
+            "async_reload",
+            new_callable=AsyncMock,
+        ) as mock_reload:
+            hass.config_entries.async_update_entry(
+                entry,
+                options={
+                    CONF_SELECTED_LISTINGS: [listing_a.id],
+                },
+            )
+            await hass.async_block_till_done()
+
+            mock_reload.assert_awaited_once_with(entry.entry_id)

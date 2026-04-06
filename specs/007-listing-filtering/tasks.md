@@ -235,31 +235,31 @@ orphaned entities. Re-select and verify fresh entities created.
 > **NOTE: Write these tests FIRST, ensure they FAIL before implementation
 > (Constitution I)**
 
-- [ ] T030 [US4] Write test: _async_options_updated removes device via
+- [x] T030 [US4] Write test: _async_options_updated removes device via
       dev_registry.async_update_device(device.id,
       remove_config_entry_id=entry.entry_id) when listing deselected in
       tests/test_init.py
-- [ ] T031 [US4] Write test: _async_options_updated removes multiple devices
+- [x] T031 [US4] Write test: _async_options_updated removes multiple devices
       when multiple listings are deselected simultaneously in tests/test_init.py
-- [ ] T032 [US4] Write test: _async_options_updated does not remove devices for
+- [x] T032 [US4] Write test: _async_options_updated does not remove devices for
       listings that remain in selected_listings in tests/test_init.py
-- [ ] T033 [US4] Write test: _async_options_updated handles transition from None
+- [x] T033 [US4] Write test: _async_options_updated handles transition from None
       (no prior filter, all tracked) to explicit selected_listings without
       removing still-selected devices in tests/test_init.py
-- [ ] T034 [P] [US4] Write test: entity platform recreates device and sensors
+- [x] T034 [P] [US4] Write test: entity platform recreates device and sensors
       when previously deselected listing is re-added to selected_listings and
       coordinator refreshes in tests/test_sensor.py
 
 ### Implementation for US4
 
-- [ ] T035 [US4] Implement `_remove_deselected_devices` helper: use
+- [x] T035 [US4] Implement `_remove_deselected_devices` helper: use
       dr.async_get(hass) and dr.async_entries_for_config_entry
       to iterate devices, extract listing IDs from
       device.identifiers tuples where identifier\[0\] == DOMAIN,
       call async_update_device(remove_config_entry_id=)
       for devices with listing IDs not in selected set in
       custom_components/guesty/\_\_init\_\_.py
-- [ ] T036 [US4] Integrate `_remove_deselected_devices` into
+- [x] T036 [US4] Integrate `_remove_deselected_devices` into
       `_async_options_updated`: detect selected_listings
       presence in updated options and call cleanup helper,
       add dr import to
