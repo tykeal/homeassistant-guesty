@@ -8,7 +8,7 @@ from collections.abc import Generator
 from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.core import HomeAssistant
