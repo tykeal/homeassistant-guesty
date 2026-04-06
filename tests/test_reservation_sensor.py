@@ -860,3 +860,52 @@ class TestReservationSensorEdgeCases:
             entry=entry,
         )
         assert sensor._reservations == []
+
+    def test_available_false_when_listing_disappeared(
+        self,
+    ) -> None:
+        """available returns False when listing is not in listings data."""
+        from unittest.mock import MagicMock
+
+        from custom_components.guesty.sensor import (
+            GuestyReservationSensor,
+        )
+
+        res_coordinator = MagicMock()
+        res_coordinator.data = {}
+        res_coordinator.last_update_success = True
+        listings_coordinator = MagicMock()
+        listings_coordinator.data = {"other-listing": MagicMock()}
+
+        entry = _make_entry()
+        sensor = GuestyReservationSensor(
+            coordinator=res_coordinator,
+            listings_coordinator=listings_coordinator,
+            listing_id="listing-001",
+            entry=entry,
+        )
+        assert sensor.available is False
+
+    def test_available_false_when_data_none(
+        self,
+    ) -> None:
+        """available returns False when coordinator data is None."""
+        from unittest.mock import MagicMock
+
+        from custom_components.guesty.sensor import (
+            GuestyReservationSensor,
+        )
+
+        res_coordinator = MagicMock()
+        res_coordinator.data = None
+        res_coordinator.last_update_success = True
+        listings_coordinator = MagicMock()
+
+        entry = _make_entry()
+        sensor = GuestyReservationSensor(
+            coordinator=res_coordinator,
+            listings_coordinator=listings_coordinator,
+            listing_id="listing-001",
+            entry=entry,
+        )
+        assert sensor.available is False

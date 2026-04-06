@@ -469,14 +469,22 @@ class GuestyReservationSensor(
 
     @property
     def available(self) -> bool:
-        """Return True when coordinator is healthy.
+        """Return True when coordinator is healthy and listing exists.
+
+        Checks both reservation coordinator health and whether the
+        listing is still tracked by the listings coordinator, to
+        avoid false state-change events on disappeared listings.
 
         Returns:
-            True when the coordinator has valid data.
+            True when the sensor should be available.
         """
         if not super().available:
             return False
-        return self.coordinator.data is not None
+        if self.coordinator.data is None:
+            return False
+        # Also check listing is still tracked
+        listings_data = self._listings_coordinator.data
+        return listings_data is None or self._listing_id in listings_data
 
     @property
     def _reservations(self) -> list[GuestyReservation]:

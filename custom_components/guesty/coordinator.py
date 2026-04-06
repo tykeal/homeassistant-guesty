@@ -223,14 +223,14 @@ class ReservationsCoordinator(
             known_ids = set(self.listings_coordinator.data.keys())
 
         result: dict[str, list[GuestyReservation]] = {}
+        if not known_ids and grouped:
+            _LOGGER.debug(
+                "No known listings yet; skipping %d reservation(s)",
+                len(reservations),
+            )
+            return result
+
         for listing_id, listing_reservations in grouped.items():
-            if not known_ids:
-                _LOGGER.debug(
-                    "No known listings yet; skipping reservation "
-                    "filtering for listing %s",
-                    listing_id,
-                )
-                continue
             if listing_id not in known_ids:
                 _LOGGER.warning(
                     "Skipping reservations for unknown listing %s",
