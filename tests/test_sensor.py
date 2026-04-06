@@ -707,3 +707,111 @@ class TestEdgeCases:
 
         # Still no entities since data is still None
         assert len(added_entities) == 0
+
+
+class TestSensorAvailability:
+    """Tests for sensor entity availability (T029)."""
+
+    def test_available_true_when_listing_present(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        mock_coordinator: AsyncMock,
+    ) -> None:
+        """available returns True when listing in coordinator data."""
+        mock_coordinator.disappeared_listing_ids = set()
+        entry = mock_coordinator.config_entry
+        desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "status")
+
+        sensor = GuestyListingSensor(
+            coordinator=mock_coordinator,
+            listing_id=sample_listing.id,
+            entry=entry,
+            description=desc,
+        )
+
+        assert sensor.available is True
+
+    def test_available_false_when_listing_disappeared(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        mock_coordinator: AsyncMock,
+    ) -> None:
+        """available returns False when listing in disappeared set."""
+        mock_coordinator.disappeared_listing_ids = {sample_listing.id}
+        entry = mock_coordinator.config_entry
+        desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "status")
+
+        sensor = GuestyListingSensor(
+            coordinator=mock_coordinator,
+            listing_id=sample_listing.id,
+            entry=entry,
+            description=desc,
+        )
+
+        assert sensor.available is False
+
+    def test_available_false_when_listing_absent(
+        self,
+        hass: HomeAssistant,
+        mock_coordinator: AsyncMock,
+    ) -> None:
+        """available returns False when listing not in data at all."""
+        mock_coordinator.disappeared_listing_ids = set()
+        entry = mock_coordinator.config_entry
+        desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "status")
+
+        sensor = GuestyListingSensor(
+            coordinator=mock_coordinator,
+            listing_id="nonexistent",
+            entry=entry,
+            description=desc,
+        )
+
+        assert sensor.available is False
+
+    def test_available_false_when_data_none(
+        self,
+        hass: HomeAssistant,
+        mock_coordinator: AsyncMock,
+    ) -> None:
+        """available returns False when coordinator data is None."""
+        mock_coordinator.data = None
+        mock_coordinator.disappeared_listing_ids = set()
+        entry = mock_coordinator.config_entry
+        desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "status")
+
+        sensor = GuestyListingSensor(
+            coordinator=mock_coordinator,
+            listing_id="anything",
+            entry=entry,
+            description=desc,
+        )
+
+        assert sensor.available is False
+
+    def test_available_regained_on_reappear(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        mock_coordinator: AsyncMock,
+    ) -> None:
+        """Entity regains availability when listing reappears."""
+        mock_coordinator.disappeared_listing_ids = {sample_listing.id}
+        entry = mock_coordinator.config_entry
+        desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "status")
+
+        sensor = GuestyListingSensor(
+            coordinator=mock_coordinator,
+            listing_id=sample_listing.id,
+            entry=entry,
+            description=desc,
+        )
+
+        # Currently unavailable
+        assert sensor.available is False
+
+        # Listing reappears: remove from disappeared
+        mock_coordinator.disappeared_listing_ids = set()
+        assert sensor.available is True
