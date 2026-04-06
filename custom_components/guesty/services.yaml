@@ -48,13 +48,13 @@ send_guest_message:
 set_custom_field:
   name: Set custom field
   description: >-
-    Set the value of a custom field on a Guesty listing
-    or reservation.
+    Set a custom field value on a Guesty listing or
+    reservation.
   fields:
     target_type:
       name: Target type
       description: >-
-        The type of entity to update (listing or reservation).
+        Entity type to update (listing or reservation).
       required: true
       example: "listing"
       selector:
@@ -65,26 +65,26 @@ set_custom_field:
     target_id:
       name: Target ID
       description: >-
-        The Guesty listing or reservation ID.
+        The Guesty listing or reservation ID to update.
       required: true
-      example: "abc123def456"
+      example: "637bad36abcdef123456"
       selector:
         text:
     field_id:
       name: Field ID
       description: >-
-        The custom field identifier from Guesty.
+        The custom field definition ID.
       required: true
-      example: "cf-text-001"
+      example: "637bad36abcdef789012"
       selector:
         text:
     value:
       name: Value
       description: >-
-        The new value for the custom field. Type must match
-        the field definition (text, number, or boolean).
+        The value to set. Type must match the field
+        definition (text, number, or boolean).
       required: true
-      example: "my-value"
+      example: "new-value"
       selector:
         object:
 

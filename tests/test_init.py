@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
@@ -53,6 +54,16 @@ def _make_entry(**overrides: object) -> MockConfigEntry:
 
 class TestAsyncSetupEntry:
     """Tests for async_setup_entry."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
 
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
@@ -155,9 +166,56 @@ class TestAsyncSetupEntry:
 
         assert entry.state is ConfigEntryState.SETUP_RETRY
 
+    @patch(
+        "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+        new_callable=AsyncMock,
+        side_effect=GuestyConnectionError("cf network down"),
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_cf_refresh_failure_closes_http(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        mock_cf_defs: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """CF coordinator failure closes HTTP client."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        assert entry.state is ConfigEntryState.SETUP_RETRY
+
 
 class TestAsyncUnloadEntry:
     """Tests for async_unload_entry."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for unload tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
 
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
@@ -198,6 +256,16 @@ class TestAsyncUnloadEntry:
 
 class TestHATokenStorage:
     """Tests for HATokenStorage persistence."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for token tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
 
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
@@ -351,6 +419,16 @@ class TestHATokenStorage:
 
 class TestHATokenStorageCorruptedCounters:
     """Tests for HATokenStorage handling corrupted counter data."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for counter tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
 
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
@@ -522,6 +600,16 @@ class TestHATokenStorageCorruptedCounters:
 class TestLogSanitization:
     """Tests ensuring credentials never appear in logs."""
 
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for log tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
@@ -562,6 +650,16 @@ class TestLogSanitization:
 
 class TestEndToEnd:
     """End-to-end integration tests spanning full lifecycle."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for e2e tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
 
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
@@ -619,6 +717,16 @@ class TestEndToEnd:
 
 class TestCoordinatorSetup:
     """Tests for coordinator integration in async_setup_entry."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for coord tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
 
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
@@ -768,6 +876,16 @@ class TestCoordinatorSetup:
 
 class TestReservationsCoordinatorSetup:
     """Tests for ReservationsCoordinator in async_setup_entry."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for res tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
 
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
@@ -1172,6 +1290,16 @@ class TestAsyncSetupEntryCustomFields:
 
 class TestEntityCleanup:
     """Tests for entity and coordinator cleanup on unload (T031)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for cleanup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
 
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",

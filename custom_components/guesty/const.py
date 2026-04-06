@@ -43,8 +43,8 @@ MIN_RESERVATION_SCAN_INTERVAL: int = 5
 # Service name for setting custom field values.
 SERVICE_SET_CUSTOM_FIELD: str = "set_custom_field"
 
-# Configuration key for the custom field definitions scan interval.
+# Configuration key for the custom fields definition scan interval.
 CONF_CF_SCAN_INTERVAL: str = "cf_scan_interval"
 
-# Default scan interval in minutes for the custom fields coordinator.
+# Default scan interval in minutes for custom fields definitions.
 DEFAULT_CF_SCAN_INTERVAL: int = 15

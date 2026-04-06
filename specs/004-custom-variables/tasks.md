@@ -203,9 +203,9 @@ verification.
 
 <!-- markdownlint-disable MD013 -->
 
-- [ ] T031 [US5] Write rate limit retry integration tests: mock 429 response with `Retry-After` header on first `set_field` call followed by 200 success on retry; verify field eventually updated; verify retry used exponential backoff via `GuestyApiClient` in `tests/test_custom_field_service.py`
-- [ ] T032 [US5] Write transient failure retry tests: mock transient network error on initial `set_field` call followed by 200 success on retry; verify field eventually updated; mock persistent failure and verify `GuestyConnectionError` raised after retries exhausted; verify error includes target type, target ID, and field ID context in `tests/test_custom_field_service.py`
-- [ ] T033 [US5] Write error detail quality tests: invalid field ID (not in definitions) returns error listing available fields for target type; type mismatch returns error identifying expected vs actual type; missing target (404) returns error with target type and ID; errors logged at appropriate severity (warning for retries, error for final failure) in `tests/test_custom_field_service.py`
+- [x] T031 [US5] Write rate limit retry integration tests: mock 429 response with `Retry-After` header on first `set_field` call followed by 200 success on retry; verify field eventually updated; verify retry used exponential backoff via `GuestyApiClient` in `tests/test_custom_field_service.py`
+- [x] T032 [US5] Write transient failure retry tests: mock transient network error on initial `set_field` call followed by 200 success on retry; verify field eventually updated; mock persistent failure and verify `GuestyConnectionError` raised after retries exhausted; verify error includes target type, target ID, and field ID context in `tests/test_custom_field_service.py`
+- [x] T033 [US5] Write error detail quality tests: invalid field ID (not in definitions) returns error listing available fields for target type; type mismatch returns error identifying expected vs actual type; missing target (404) returns error with target type and ID; errors logged at appropriate severity (warning for retries, error for final failure) in `tests/test_custom_field_service.py`
 
 <!-- markdownlint-enable MD013 -->
 
@@ -213,10 +213,10 @@ verification.
 
 <!-- markdownlint-disable MD013 -->
 
-- [ ] T034 Write security tests verifying no custom field values (may contain access codes, PII per FR-014), OAuth tokens, or target identifiers appear in log output at any log level (DEBUG through CRITICAL) during successful update, failed update, and retry scenarios using caplog fixture in `tests/test_custom_field_service.py`
-- [ ] T035 Write integration tests: full data flow from `guesty.set_custom_field` service call through coordinator validation through `GuestyCustomFieldsClient.set_field()` to mocked Guesty response and back to structured service response, covering both listing and reservation paths in `tests/test_custom_field_service.py`
-- [ ] T036 Write success criteria validation tests: SC-001 update completes in <10s (mocked); SC-005 invalid calls produce errors within 2s; SC-006 definitions discoverable within 2 refreshes; SC-007 no event loop blocking; SC-009 all scenarios testable without live Guesty in `tests/test_custom_field_service.py`
-- [ ] T037 Run quickstart.md validation: verify all code examples in `specs/004-custom-variables/quickstart.md` compile and execute correctly against mocked API fixtures; verify documented error handling patterns work as described
+- [x] T034 Write security tests verifying no custom field values (may contain access codes, PII per FR-014), OAuth tokens, or target identifiers appear in log output at any log level (DEBUG through CRITICAL) during successful update, failed update, and retry scenarios using caplog fixture in `tests/test_custom_field_service.py`
+- [x] T035 Write integration tests: full data flow from `guesty.set_custom_field` service call through coordinator validation through `GuestyCustomFieldsClient.set_field()` to mocked Guesty response and back to structured service response, covering both listing and reservation paths in `tests/test_custom_field_service.py`
+- [x] T036 Write success criteria validation tests: SC-001 update completes in <10s (mocked); SC-005 invalid calls produce errors within 2s; SC-006 definitions discoverable within 2 refreshes; SC-007 no event loop blocking; SC-009 all scenarios testable without live Guesty in `tests/test_custom_field_service.py`
+- [x] T037 Run quickstart.md validation: verify all code examples in `specs/004-custom-variables/quickstart.md` compile and execute correctly against mocked API fixtures; verify documented error handling patterns work as described
 
 <!-- markdownlint-enable MD013 -->
 
