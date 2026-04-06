@@ -12,6 +12,7 @@ from custom_components.guesty.api.exceptions import (
     GuestyApiError,
     GuestyAuthError,
     GuestyConnectionError,
+    GuestyMessageError,
     GuestyRateLimitError,
     GuestyResponseError,
 )
@@ -128,3 +129,51 @@ class TestGuestyResponseError:
         """GuestyResponseError stores the message attribute."""
         error = GuestyResponseError("unexpected format")
         assert error.message == "unexpected format"
+
+
+class TestGuestyMessageError:
+    """Tests for the GuestyMessageError exception."""
+
+    def test_inherits_from_base(self) -> None:
+        """GuestyMessageError is a subclass of GuestyApiError."""
+        assert issubclass(GuestyMessageError, GuestyApiError)
+
+    def test_construction_with_message_only(self) -> None:
+        """GuestyMessageError stores message with None defaults."""
+        error = GuestyMessageError("delivery failed")
+        assert error.message == "delivery failed"
+        assert error.reservation_id is None
+        assert error.available_channels is None
+
+    def test_construction_with_reservation_id(self) -> None:
+        """GuestyMessageError stores reservation_id context."""
+        error = GuestyMessageError(
+            "not found",
+            reservation_id="res-123",
+        )
+        assert error.reservation_id == "res-123"
+
+    def test_construction_with_available_channels(self) -> None:
+        """GuestyMessageError stores available_channels context."""
+        error = GuestyMessageError(
+            "channel unavailable",
+            available_channels=("email", "sms"),
+        )
+        assert error.available_channels == ("email", "sms")
+
+    def test_attributes_accessible_after_construction(self) -> None:
+        """All attributes are accessible after construction."""
+        error = GuestyMessageError(
+            "test error",
+            reservation_id="res-456",
+            available_channels=("email",),
+        )
+        assert error.message == "test error"
+        assert error.reservation_id == "res-456"
+        assert error.available_channels == ("email",)
+        assert str(error) == "test error"
+
+    def test_caught_as_base(self) -> None:
+        """GuestyMessageError can be caught as GuestyApiError."""
+        with pytest.raises(GuestyApiError):
+            raise GuestyMessageError("test")

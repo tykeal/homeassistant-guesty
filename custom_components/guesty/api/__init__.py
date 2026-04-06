@@ -16,11 +16,18 @@ from custom_components.guesty.api.exceptions import (
     GuestyApiError,
     GuestyAuthError,
     GuestyConnectionError,
+    GuestyMessageError,
     GuestyRateLimitError,
     GuestyResponseError,
 )
+from custom_components.guesty.api.messaging import (
+    GuestyMessagingClient,
+)
 from custom_components.guesty.api.models import (
     CachedToken,
+    Conversation,
+    MessageDeliveryResult,
+    MessageRequest,
     TokenStorage,
 )
 
@@ -28,12 +35,17 @@ __all__ = [
     "BASE_URL",
     "TOKEN_URL",
     "CachedToken",
+    "Conversation",
     "GuestyApiClient",
     "GuestyApiError",
     "GuestyAuthError",
     "GuestyConnectionError",
+    "GuestyMessageError",
+    "GuestyMessagingClient",
     "GuestyRateLimitError",
     "GuestyResponseError",
     "GuestyTokenManager",
+    "MessageDeliveryResult",
+    "MessageRequest",
     "TokenStorage",
 ]
