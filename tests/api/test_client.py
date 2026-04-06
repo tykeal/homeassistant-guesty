@@ -1,10 +1,11 @@
 # SPDX-FileCopyrightText: 2026 Andrew Grimberg <tykeal@bardicgrove.org>
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for GuestyApiClient including test_connection."""
+"""Tests for GuestyApiClient including test_connection and listings."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import AsyncMock
 
 import httpx
@@ -384,3 +385,347 @@ class TestForbiddenResponse:
         client, _, _ = _make_client()
         with pytest.raises(AuthError, match="Insufficient permissions"):
             await client.test_connection()
+
+
+# ── get_listings() Tests (T006) ─────────────────────────────────────
+
+
+def _make_listing_dict(**overrides: Any) -> dict[str, Any]:
+    """Create a Guesty API listing dictionary with defaults.
+
+    Args:
+        **overrides: Fields to override on the default listing.
+
+    Returns:
+        Dictionary matching the Guesty listings API format.
+    """
+    defaults: dict[str, Any] = {
+        "_id": "507f1f77bcf86cd799439011",
+        "title": "Beach House",
+        "nickname": "Beach Alt",
+        "listed": True,
+        "active": True,
+        "address": {
+            "full": "123 Beach Rd, Miami, FL 33139, USA",
+        },
+        "propertyType": "apartment",
+        "roomType": "Entire home/apartment",
+        "numberOfBedrooms": 2,
+        "numberOfBathrooms": 1.5,
+        "timezone": "America/New_York",
+        "defaultCheckInTime": "15:00",
+        "defaultCheckoutTime": "11:00",
+        "tags": ["pet-friendly"],
+        "customFields": {"region": "southeast"},
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+def _make_page_response(
+    listings: list[dict[str, Any]],
+    *,
+    count: int = 1,
+    limit: int = 100,
+    skip: int = 0,
+) -> dict[str, Any]:
+    """Create a Guesty listings page response.
+
+    Args:
+        listings: Array of listing dictionaries.
+        count: Total count metadata.
+        limit: Page size.
+        skip: Offset.
+
+    Returns:
+        Dictionary matching the listings endpoint format.
+    """
+    return {
+        "results": listings,
+        "count": count,
+        "limit": limit,
+        "skip": skip,
+    }
+
+
+class TestGetListings:
+    """Tests for GuestyApiClient.get_listings()."""
+
+    @respx.mock
+    async def test_single_page_fetch(self) -> None:
+        """Single page with fewer results than limit stops."""
+        from custom_components.guesty.api.const import (
+            LISTINGS_FIELDS,
+            LISTINGS_PAGE_SIZE,
+        )
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        listings = [_make_listing_dict(_id=f"id-{i}") for i in range(5)]
+        route = respx.get(f"{BASE_URL}/listings").mock(
+            return_value=Response(
+                200,
+                json=_make_page_response(
+                    listings,
+                    count=5,
+                    limit=100,
+                    skip=0,
+                ),
+            ),
+        )
+        client, _, _ = _make_client()
+        result = await client.get_listings()
+        assert len(result) == 5
+        assert result[0].id == "id-0"
+
+        assert len(route.calls) == 1
+        params = route.calls[0].request.url.params
+        assert params["limit"] == str(LISTINGS_PAGE_SIZE)
+        assert params["skip"] == "0"
+        assert params["fields"] == " ".join(LISTINGS_FIELDS)
+
+    @respx.mock
+    async def test_multi_page_pagination(self) -> None:
+        """Paginate through multiple pages to partial page."""
+        from custom_components.guesty.api.const import (
+            LISTINGS_FIELDS,
+            LISTINGS_PAGE_SIZE,
+        )
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        page1 = [_make_listing_dict(_id=f"p1-{i}") for i in range(LISTINGS_PAGE_SIZE)]
+        page2 = [_make_listing_dict(_id=f"p2-{i}") for i in range(LISTINGS_PAGE_SIZE)]
+        page3 = [_make_listing_dict(_id=f"p3-{i}") for i in range(30)]
+
+        route = respx.get(f"{BASE_URL}/listings")
+        route.side_effect = [
+            Response(
+                200,
+                json=_make_page_response(
+                    page1,
+                    count=230,
+                    limit=LISTINGS_PAGE_SIZE,
+                    skip=0,
+                ),
+            ),
+            Response(
+                200,
+                json=_make_page_response(
+                    page2,
+                    count=230,
+                    limit=LISTINGS_PAGE_SIZE,
+                    skip=LISTINGS_PAGE_SIZE,
+                ),
+            ),
+            Response(
+                200,
+                json=_make_page_response(
+                    page3,
+                    count=230,
+                    limit=LISTINGS_PAGE_SIZE,
+                    skip=LISTINGS_PAGE_SIZE * 2,
+                ),
+            ),
+        ]
+
+        client, _, _ = _make_client()
+        result = await client.get_listings()
+        assert len(result) == 230
+
+        expected_fields = " ".join(LISTINGS_FIELDS)
+        assert len(route.calls) == 3
+        for idx, call in enumerate(route.calls):
+            params = call.request.url.params
+            assert params["limit"] == str(LISTINGS_PAGE_SIZE)
+            assert params["skip"] == str(LISTINGS_PAGE_SIZE * idx)
+            assert params["fields"] == expected_fields
+
+    @respx.mock
+    async def test_empty_account(self) -> None:
+        """Empty account returns empty list."""
+        from custom_components.guesty.api.const import (
+            LISTINGS_FIELDS,
+            LISTINGS_PAGE_SIZE,
+        )
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        route = respx.get(f"{BASE_URL}/listings").mock(
+            return_value=Response(
+                200,
+                json=_make_page_response([], count=0),
+            ),
+        )
+        client, _, _ = _make_client()
+        result = await client.get_listings()
+        assert result == []
+
+        assert len(route.calls) == 1
+        params = route.calls[0].request.url.params
+        assert params["limit"] == str(LISTINGS_PAGE_SIZE)
+        assert params["skip"] == "0"
+        assert params["fields"] == " ".join(LISTINGS_FIELDS)
+
+    @respx.mock
+    async def test_auth_error_propagation(self) -> None:
+        """GuestyAuthError propagates from get_listings."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                401,
+                json={"error": "invalid_client"},
+            ),
+        )
+        client, _, _ = _make_client()
+        with pytest.raises(GuestyAuthError):
+            await client.get_listings()
+
+    @respx.mock
+    async def test_connection_error_propagation(self) -> None:
+        """GuestyConnectionError propagates from get_listings."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}/listings").mock(
+            side_effect=httpx.ConnectError("refused"),
+        )
+        client, _, _ = _make_client()
+        with pytest.raises(GuestyConnectionError):
+            await client.get_listings()
+
+    @respx.mock
+    async def test_response_error_on_malformed(self) -> None:
+        """GuestyResponseError on malformed API response."""
+        from custom_components.guesty.api.exceptions import (
+            GuestyResponseError,
+        )
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}/listings").mock(
+            return_value=Response(
+                200,
+                json={"unexpected": "format"},
+            ),
+        )
+        client, _, _ = _make_client()
+        with pytest.raises(GuestyResponseError):
+            await client.get_listings()
+
+    @respx.mock
+    async def test_non_success_status_raises(self) -> None:
+        """Non-success HTTP status raises GuestyResponseError."""
+        from custom_components.guesty.api.exceptions import (
+            GuestyResponseError,
+        )
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}/listings").mock(
+            return_value=Response(500, text="Server Error"),
+        )
+        client, _, _ = _make_client()
+        with pytest.raises(
+            GuestyResponseError,
+            match="Listings fetch failed",
+        ):
+            await client.get_listings()
+
+    @respx.mock
+    async def test_invalid_json_raises(self) -> None:
+        """Non-JSON response body raises GuestyResponseError."""
+        from custom_components.guesty.api.exceptions import (
+            GuestyResponseError,
+        )
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}/listings").mock(
+            return_value=Response(
+                200,
+                content=b"not json",
+                headers={"content-type": "text/plain"},
+            ),
+        )
+        client, _, _ = _make_client()
+        with pytest.raises(
+            GuestyResponseError,
+            match="not valid JSON",
+        ):
+            await client.get_listings()
+
+    @respx.mock
+    async def test_non_dict_json_raises(self) -> None:
+        """Non-dict JSON body raises GuestyResponseError."""
+        from custom_components.guesty.api.exceptions import (
+            GuestyResponseError,
+        )
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}/listings").mock(
+            return_value=Response(200, json=[1, 2, 3]),
+        )
+        client, _, _ = _make_client()
+        with pytest.raises(
+            GuestyResponseError,
+            match="must be a JSON object",
+        ):
+            await client.get_listings()
+
+    @respx.mock
+    async def test_non_list_results_raises(self) -> None:
+        """Non-list results field raises GuestyResponseError."""
+        from custom_components.guesty.api.exceptions import (
+            GuestyResponseError,
+        )
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}/listings").mock(
+            return_value=Response(
+                200,
+                json={"results": "not-a-list", "count": 0},
+            ),
+        )
+        client, _, _ = _make_client()
+        with pytest.raises(
+            GuestyResponseError,
+            match="must be a list",
+        ):
+            await client.get_listings()

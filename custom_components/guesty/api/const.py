@@ -57,3 +57,28 @@ KNOWN_CHANNEL_TYPES: frozenset[str] = frozenset(
         "whatsapp",
     }
 )
+
+# Guesty Open API v1 listings endpoint path.
+LISTINGS_ENDPOINT: str = "/listings"
+
+# Maximum listings per page (Guesty API maximum).
+LISTINGS_PAGE_SIZE: int = 100
+
+# Fields requested from the listings endpoint.
+LISTINGS_FIELDS: tuple[str, ...] = (
+    "_id",
+    "title",
+    "nickname",
+    "listed",
+    "active",
+    "address",
+    "propertyType",
+    "roomType",
+    "numberOfBedrooms",
+    "numberOfBathrooms",
+    "timezone",
+    "defaultCheckInTime",
+    "defaultCheckoutTime",
+    "tags",
+    "customFields",
+)

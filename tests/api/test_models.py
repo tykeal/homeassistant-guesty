@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Andrew Grimberg <tykeal@bardicgrove.org>
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for CachedToken dataclass and TokenStorage protocol."""
+"""Tests for API data models including tokens and listing models."""
 
 from __future__ import annotations
 
@@ -14,6 +14,9 @@ from custom_components.guesty.api.const import MAX_MESSAGE_LENGTH
 from custom_components.guesty.api.models import (
     CachedToken,
     Conversation,
+    GuestyAddress,
+    GuestyListing,
+    GuestyListingsResponse,
     MessageDeliveryResult,
     MessageRequest,
     TokenStorage,
@@ -375,3 +378,507 @@ class TestMessageDeliveryResult:
         result = MessageDeliveryResult(success=True)
         with pytest.raises(AttributeError):
             result.success = False  # type: ignore[misc]
+
+
+# ── GuestyAddress Tests (T003) ──────────────────────────────────────
+
+
+def _make_full_address_dict() -> dict[str, str]:
+    """Create a complete Guesty API address dictionary.
+
+    Returns:
+        Dictionary matching the Guesty API address format.
+    """
+    return {
+        "full": "123 Beach Rd, Miami, FL 33139, USA",
+        "street": "123 Beach Rd",
+        "city": "Miami",
+        "state": "FL",
+        "zipcode": "33139",
+        "country": "USA",
+    }
+
+
+class TestGuestyAddressFromApiDict:
+    """Tests for GuestyAddress.from_api_dict class method."""
+
+    def test_full_address(self) -> None:
+        """from_api_dict parses a complete address dictionary."""
+        data = _make_full_address_dict()
+        addr = GuestyAddress.from_api_dict(data)
+        assert addr is not None
+        assert addr.full == "123 Beach Rd, Miami, FL 33139, USA"
+        assert addr.street == "123 Beach Rd"
+        assert addr.city == "Miami"
+        assert addr.state == "FL"
+        assert addr.zipcode == "33139"
+        assert addr.country == "USA"
+
+    def test_partial_address(self) -> None:
+        """from_api_dict handles partial address with some None."""
+        data = {"city": "Miami", "state": "FL"}
+        addr = GuestyAddress.from_api_dict(data)
+        assert addr is not None
+        assert addr.full is None
+        assert addr.street is None
+        assert addr.city == "Miami"
+        assert addr.state == "FL"
+        assert addr.zipcode is None
+        assert addr.country is None
+
+    def test_none_input_returns_none(self) -> None:
+        """from_api_dict returns None when input is None."""
+        assert GuestyAddress.from_api_dict(None) is None
+
+    def test_empty_dict_returns_none(self) -> None:
+        """from_api_dict returns None when input is empty dict."""
+        assert GuestyAddress.from_api_dict({}) is None
+
+    def test_non_dict_truthy_returns_none(self) -> None:
+        """from_api_dict returns None for non-dict truthy value."""
+        assert GuestyAddress.from_api_dict("123 Main St") is None  # type: ignore[arg-type]
+
+
+class TestGuestyAddressFormatted:
+    """Tests for GuestyAddress.formatted method."""
+
+    def test_returns_full_when_present(self) -> None:
+        """formatted() returns full address when available."""
+        addr = GuestyAddress.from_api_dict(_make_full_address_dict())
+        assert addr is not None
+        assert addr.formatted() == "123 Beach Rd, Miami, FL 33139, USA"
+
+    def test_joins_components_when_full_absent(self) -> None:
+        """formatted() joins non-empty components with comma."""
+        data = {"street": "123 Beach Rd", "city": "Miami"}
+        addr = GuestyAddress.from_api_dict(data)
+        assert addr is not None
+        assert addr.formatted() == "123 Beach Rd, Miami"
+
+    def test_returns_none_when_all_empty(self) -> None:
+        """formatted() returns None when all components empty."""
+        addr = GuestyAddress(
+            full=None,
+            street=None,
+            city=None,
+            state=None,
+            zipcode=None,
+            country=None,
+        )
+        assert addr.formatted() is None
+
+
+class TestGuestyAddressFrozen:
+    """Tests for GuestyAddress immutability."""
+
+    def test_frozen(self) -> None:
+        """GuestyAddress fields cannot be modified."""
+        addr = GuestyAddress.from_api_dict(_make_full_address_dict())
+        assert addr is not None
+        with pytest.raises(AttributeError):
+            addr.full = "new"  # type: ignore[misc]
+
+
+# ── GuestyListing Tests (T004) ──────────────────────────────────────
+
+
+def _make_listing_dict(**overrides: Any) -> dict[str, Any]:
+    """Create a complete Guesty API listing dictionary.
+
+    Args:
+        **overrides: Fields to override on the default listing.
+
+    Returns:
+        Dictionary matching the Guesty API listing format.
+    """
+    defaults: dict[str, Any] = {
+        "_id": "507f1f77bcf86cd799439011",
+        "title": "Beach House",
+        "nickname": "Beach Alt Name",
+        "listed": True,
+        "active": True,
+        "address": _make_full_address_dict(),
+        "propertyType": "apartment",
+        "roomType": "Entire home/apartment",
+        "numberOfBedrooms": 2,
+        "numberOfBathrooms": 1.5,
+        "timezone": "America/New_York",
+        "defaultCheckInTime": "15:00",
+        "defaultCheckoutTime": "11:00",
+        "tags": ["pet-friendly", "beachfront"],
+        "customFields": {
+            "maintenance_status": "good",
+            "region": "southeast",
+        },
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+class TestGuestyListingFromApiDict:
+    """Tests for GuestyListing.from_api_dict class method."""
+
+    def test_complete_data(self) -> None:
+        """from_api_dict parses all fields from complete data."""
+        listing = GuestyListing.from_api_dict(_make_listing_dict())
+        assert listing is not None
+        assert listing.id == "507f1f77bcf86cd799439011"
+        assert listing.title == "Beach House"
+        assert listing.nickname == "Beach Alt Name"
+        assert listing.status == "active"
+        assert listing.address is not None
+        assert listing.property_type == "apartment"
+        assert listing.room_type == "Entire home/apartment"
+        assert listing.bedrooms == 2
+        assert listing.bathrooms == 1.5
+        assert listing.timezone == "America/New_York"
+        assert listing.check_in_time == "15:00"
+        assert listing.check_out_time == "11:00"
+        assert listing.tags == ("pet-friendly", "beachfront")
+        assert listing.custom_fields == {
+            "maintenance_status": "good",
+            "region": "southeast",
+        }
+
+    def test_missing_id_returns_none(self) -> None:
+        """from_api_dict returns None when _id is missing."""
+        data = _make_listing_dict()
+        del data["_id"]
+        assert GuestyListing.from_api_dict(data) is None
+
+    def test_empty_id_returns_none(self) -> None:
+        """from_api_dict returns None when _id is empty."""
+        assert (
+            GuestyListing.from_api_dict(
+                _make_listing_dict(_id=""),
+            )
+            is None
+        )
+
+
+class TestGuestyListingStatusDerivation:
+    """Tests for listing status derivation logic."""
+
+    def test_active_status(self) -> None:
+        """listed=true and active=true yields active status."""
+        listing = GuestyListing.from_api_dict(
+            _make_listing_dict(listed=True, active=True),
+        )
+        assert listing is not None
+        assert listing.status == "active"
+
+    def test_inactive_listed_false(self) -> None:
+        """listed=false yields inactive status."""
+        listing = GuestyListing.from_api_dict(
+            _make_listing_dict(listed=False, active=True),
+        )
+        assert listing is not None
+        assert listing.status == "inactive"
+
+    def test_inactive_active_false(self) -> None:
+        """active=false yields inactive status."""
+        listing = GuestyListing.from_api_dict(
+            _make_listing_dict(listed=True, active=False),
+        )
+        assert listing is not None
+        assert listing.status == "inactive"
+
+    def test_archived_status(self) -> None:
+        """Explicit archive indicator yields archived status."""
+        data = _make_listing_dict()
+        data["pms"] = {"active": False}
+        listing = GuestyListing.from_api_dict(data)
+        assert listing is not None
+        assert listing.status == "archived"
+
+    def test_default_listed_true(self) -> None:
+        """Missing listed field defaults to true."""
+        data = _make_listing_dict()
+        del data["listed"]
+        listing = GuestyListing.from_api_dict(data)
+        assert listing is not None
+        assert listing.status == "active"
+
+    def test_default_active_true(self) -> None:
+        """Missing active field defaults to true."""
+        data = _make_listing_dict()
+        del data["active"]
+        listing = GuestyListing.from_api_dict(data)
+        assert listing is not None
+        assert listing.status == "active"
+
+
+class TestGuestyListingTitleFallback:
+    """Tests for listing title fallback chain."""
+
+    def test_title_present(self) -> None:
+        """Title is used when present."""
+        listing = GuestyListing.from_api_dict(
+            _make_listing_dict(title="My Title"),
+        )
+        assert listing is not None
+        assert listing.title == "My Title"
+
+    def test_falls_back_to_nickname(self) -> None:
+        """Title falls back to nickname when absent."""
+        data = _make_listing_dict(nickname="Alt Name")
+        del data["title"]
+        listing = GuestyListing.from_api_dict(data)
+        assert listing is not None
+        assert listing.title == "Alt Name"
+
+    def test_falls_back_to_unknown(self) -> None:
+        """Title falls back to Unknown when both absent."""
+        data = _make_listing_dict()
+        del data["title"]
+        del data["nickname"]
+        listing = GuestyListing.from_api_dict(data)
+        assert listing is not None
+        assert listing.title == "Unknown"
+
+
+class TestGuestyListingDefaults:
+    """Tests for GuestyListing default value handling."""
+
+    def test_timezone_defaults_to_utc(self) -> None:
+        """Missing timezone defaults to UTC."""
+        data = _make_listing_dict()
+        del data["timezone"]
+        listing = GuestyListing.from_api_dict(data)
+        assert listing is not None
+        assert listing.timezone == "UTC"
+
+    def test_null_timezone_defaults_to_utc(self) -> None:
+        """Null timezone defaults to UTC."""
+        data = _make_listing_dict()
+        data["timezone"] = None
+        listing = GuestyListing.from_api_dict(data)
+        assert listing is not None
+        assert listing.timezone == "UTC"
+
+    def test_empty_string_timezone_defaults_to_utc(self) -> None:
+        """Empty string timezone defaults to UTC."""
+        data = _make_listing_dict()
+        data["timezone"] = ""
+        listing = GuestyListing.from_api_dict(data)
+        assert listing is not None
+        assert listing.timezone == "UTC"
+
+    def test_tags_coerced_to_tuple(self) -> None:
+        """Tags list is coerced to immutable tuple."""
+        listing = GuestyListing.from_api_dict(
+            _make_listing_dict(tags=["a", "b"]),
+        )
+        assert listing is not None
+        assert listing.tags == ("a", "b")
+        assert isinstance(listing.tags, tuple)
+
+    def test_empty_tags(self) -> None:
+        """Missing tags default to empty tuple."""
+        data = _make_listing_dict()
+        del data["tags"]
+        listing = GuestyListing.from_api_dict(data)
+        assert listing is not None
+        assert listing.tags == ()
+
+    def test_custom_fields_coerced_to_strings(self) -> None:
+        """Custom field values are coerced to strings."""
+        listing = GuestyListing.from_api_dict(
+            _make_listing_dict(
+                customFields={"count": 42, "ok": True},
+            ),
+        )
+        assert listing is not None
+        assert listing.custom_fields == {
+            "count": "42",
+            "ok": "True",
+        }
+
+    def test_bedrooms_none_when_absent(self) -> None:
+        """Bedrooms is None when not in API data."""
+        data = _make_listing_dict()
+        del data["numberOfBedrooms"]
+        listing = GuestyListing.from_api_dict(data)
+        assert listing is not None
+        assert listing.bedrooms is None
+
+    def test_bathrooms_none_when_absent(self) -> None:
+        """Bathrooms is None when not in API data."""
+        data = _make_listing_dict()
+        del data["numberOfBathrooms"]
+        listing = GuestyListing.from_api_dict(data)
+        assert listing is not None
+        assert listing.bathrooms is None
+
+    def test_no_address(self) -> None:
+        """Missing address yields None."""
+        data = _make_listing_dict()
+        del data["address"]
+        listing = GuestyListing.from_api_dict(data)
+        assert listing is not None
+        assert listing.address is None
+
+
+class TestGuestyListingFrozen:
+    """Tests for GuestyListing immutability."""
+
+    def test_frozen(self) -> None:
+        """GuestyListing fields cannot be modified."""
+        listing = GuestyListing.from_api_dict(_make_listing_dict())
+        assert listing is not None
+        with pytest.raises(AttributeError):
+            listing.title = "new"  # type: ignore[misc]
+
+    def test_custom_fields_immutable(self) -> None:
+        """custom_fields mapping cannot be mutated."""
+        listing = GuestyListing.from_api_dict(_make_listing_dict())
+        assert listing is not None
+        with pytest.raises(TypeError):
+            listing.custom_fields["new_key"] = "val"  # type: ignore[index]
+
+
+class TestGuestyListingDefensiveValidation:
+    """Tests for defensive type validation in from_api_dict."""
+
+    def test_non_dict_custom_fields_yields_empty(self) -> None:
+        """Non-dict customFields degrades to empty mapping."""
+        listing = GuestyListing.from_api_dict(
+            _make_listing_dict(customFields="not-a-dict"),
+        )
+        assert listing is not None
+        assert dict(listing.custom_fields) == {}
+
+    def test_non_list_tags_yields_empty(self) -> None:
+        """Non-list tags degrades to empty tuple."""
+        listing = GuestyListing.from_api_dict(
+            _make_listing_dict(tags="not-a-list"),
+        )
+        assert listing is not None
+        assert listing.tags == ()
+
+    def test_non_string_tags_filtered(self) -> None:
+        """Non-string tag entries are filtered out."""
+        listing = GuestyListing.from_api_dict(
+            _make_listing_dict(tags=["ok", 42, None, "good"]),
+        )
+        assert listing is not None
+        assert listing.tags == ("ok", "good")
+
+
+# ── GuestyListingsResponse Tests (T005) ─────────────────────────────
+
+
+def _make_listings_response(
+    *,
+    count: int = 1,
+    limit: int = 100,
+    skip: int = 0,
+    listings: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Create a Guesty API listings response dictionary.
+
+    Args:
+        count: Total count from API metadata.
+        limit: Page size used.
+        skip: Offset used.
+        listings: Override the results array.
+
+    Returns:
+        Dictionary matching the listings endpoint format.
+    """
+    if listings is None:
+        listings = [_make_listing_dict()]
+    return {
+        "results": listings,
+        "count": count,
+        "limit": limit,
+        "skip": skip,
+    }
+
+
+class TestGuestyListingsResponseFromApiDict:
+    """Tests for GuestyListingsResponse.from_api_dict."""
+
+    def test_parses_valid_listings(self) -> None:
+        """from_api_dict parses valid listings array."""
+        data = _make_listings_response(count=1)
+        resp = GuestyListingsResponse.from_api_dict(data)
+        assert len(resp.results) == 1
+        assert resp.results[0].id == "507f1f77bcf86cd799439011"
+
+    def test_filters_none_entries(self) -> None:
+        """from_api_dict filters listings with missing _id."""
+        listings = [
+            _make_listing_dict(),
+            {"title": "No ID listing"},
+        ]
+        data = _make_listings_response(
+            listings=listings,
+            count=2,
+        )
+        resp = GuestyListingsResponse.from_api_dict(data)
+        assert len(resp.results) == 1
+
+    def test_preserves_pagination_fields(self) -> None:
+        """count, limit, skip fields are preserved."""
+        data = _make_listings_response(
+            count=42,
+            limit=100,
+            skip=200,
+        )
+        resp = GuestyListingsResponse.from_api_dict(data)
+        assert resp.count == 42
+        assert resp.limit == 100
+        assert resp.skip == 200
+
+    def test_empty_results(self) -> None:
+        """Empty results array yields empty tuple."""
+        data = _make_listings_response(
+            listings=[],
+            count=0,
+        )
+        resp = GuestyListingsResponse.from_api_dict(data)
+        assert resp.results == ()
+        assert resp.count == 0
+
+
+class TestGuestyListingsResponseFrozen:
+    """Tests for GuestyListingsResponse immutability."""
+
+    def test_frozen(self) -> None:
+        """GuestyListingsResponse fields cannot be modified."""
+        resp = GuestyListingsResponse.from_api_dict(
+            _make_listings_response(),
+        )
+        with pytest.raises(AttributeError):
+            resp.count = 99  # type: ignore[misc]
+
+
+class TestGuestyListingsResponseDefensive:
+    """Tests for defensive validation in from_api_dict."""
+
+    def test_non_dict_items_skipped(self) -> None:
+        """Non-dict items in results are skipped."""
+        data = {
+            "results": [
+                _make_listing_dict(),
+                "not-a-dict",
+                42,
+            ],
+            "count": 3,
+            "limit": 100,
+            "skip": 0,
+        }
+        resp = GuestyListingsResponse.from_api_dict(data)
+        assert len(resp.results) == 1
+
+    def test_non_list_results_yields_empty(self) -> None:
+        """Non-list results field degrades to empty tuple."""
+        data = {
+            "results": "not-a-list",
+            "count": 0,
+            "limit": 100,
+            "skip": 0,
+        }
+        resp = GuestyListingsResponse.from_api_dict(data)
+        assert resp.results == ()
