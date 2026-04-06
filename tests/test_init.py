@@ -1755,14 +1755,17 @@ class TestIntervalRefreshOnOptionsUpdate:
             patch.object(
                 coord,
                 "async_request_refresh",
+                new_callable=AsyncMock,
             ) as mock_list_refresh,
             patch.object(
                 res_coord,
                 "async_request_refresh",
+                new_callable=AsyncMock,
             ) as mock_res_refresh,
             patch.object(
                 cf_coord,
                 "async_request_refresh",
+                new_callable=AsyncMock,
             ) as mock_cf_refresh,
         ):
             hass.config_entries.async_update_entry(
@@ -1771,9 +1774,9 @@ class TestIntervalRefreshOnOptionsUpdate:
             )
             await hass.async_block_till_done()
 
-            mock_list_refresh.assert_called_once()
-            mock_res_refresh.assert_called_once()
-            mock_cf_refresh.assert_called_once()
+            mock_list_refresh.assert_awaited_once()
+            mock_res_refresh.assert_awaited_once()
+            mock_cf_refresh.assert_awaited_once()
 
         assert coord.update_interval == timedelta(minutes=10)
 
@@ -1803,7 +1806,7 @@ class TestIntervalRefreshOnOptionsUpdate:
         entry = _make_entry(
             options={
                 CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
-                CONF_RESERVATION_SCAN_INTERVAL: (DEFAULT_RESERVATION_SCAN_INTERVAL),
+                CONF_RESERVATION_SCAN_INTERVAL: DEFAULT_RESERVATION_SCAN_INTERVAL,
                 CONF_CF_SCAN_INTERVAL: DEFAULT_CF_SCAN_INTERVAL,
             },
         )
@@ -1824,30 +1827,33 @@ class TestIntervalRefreshOnOptionsUpdate:
             patch.object(
                 coord,
                 "async_request_refresh",
+                new_callable=AsyncMock,
             ) as mock_list_refresh,
             patch.object(
                 res_coord,
                 "async_request_refresh",
+                new_callable=AsyncMock,
             ) as mock_res_refresh,
             patch.object(
                 cf_coord,
                 "async_request_refresh",
+                new_callable=AsyncMock,
             ) as mock_cf_refresh,
         ):
             hass.config_entries.async_update_entry(
                 entry,
                 options={
                     CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
-                    CONF_RESERVATION_SCAN_INTERVAL: (DEFAULT_RESERVATION_SCAN_INTERVAL),
+                    CONF_RESERVATION_SCAN_INTERVAL: DEFAULT_RESERVATION_SCAN_INTERVAL,
                     CONF_CF_SCAN_INTERVAL: DEFAULT_CF_SCAN_INTERVAL,
                 },
             )
             await hass.async_block_till_done()
 
             mock_reload.assert_not_awaited()
-            mock_list_refresh.assert_not_called()
-            mock_res_refresh.assert_not_called()
-            mock_cf_refresh.assert_not_called()
+            mock_list_refresh.assert_not_awaited()
+            mock_res_refresh.assert_not_awaited()
+            mock_cf_refresh.assert_not_awaited()
 
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
@@ -1893,10 +1899,12 @@ class TestIntervalRefreshOnOptionsUpdate:
             patch.object(
                 coord,
                 "async_request_refresh",
+                new_callable=AsyncMock,
             ) as mock_list_refresh,
             patch.object(
                 res_coord,
                 "async_request_refresh",
+                new_callable=AsyncMock,
             ) as mock_res_refresh,
         ):
             hass.config_entries.async_update_entry(
@@ -1908,8 +1916,8 @@ class TestIntervalRefreshOnOptionsUpdate:
             await hass.async_block_till_done()
 
             mock_reload.assert_awaited_once_with(entry.entry_id)
-            mock_list_refresh.assert_not_called()
-            mock_res_refresh.assert_not_called()
+            mock_list_refresh.assert_not_awaited()
+            mock_res_refresh.assert_not_awaited()
 
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
@@ -1956,10 +1964,12 @@ class TestIntervalRefreshOnOptionsUpdate:
             patch.object(
                 coord,
                 "async_request_refresh",
+                new_callable=AsyncMock,
             ) as mock_list_refresh,
             patch.object(
                 res_coord,
                 "async_request_refresh",
+                new_callable=AsyncMock,
             ) as mock_res_refresh,
         ):
             hass.config_entries.async_update_entry(
@@ -1972,8 +1982,8 @@ class TestIntervalRefreshOnOptionsUpdate:
             await hass.async_block_till_done()
 
             mock_reload.assert_not_awaited()
-            mock_list_refresh.assert_called_once()
-            mock_res_refresh.assert_called_once()
+            mock_list_refresh.assert_awaited_once()
+            mock_res_refresh.assert_awaited_once()
 
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
@@ -2020,10 +2030,12 @@ class TestIntervalRefreshOnOptionsUpdate:
             patch.object(
                 coord,
                 "async_request_refresh",
+                new_callable=AsyncMock,
             ) as mock_list_refresh,
             patch.object(
                 res_coord,
                 "async_request_refresh",
+                new_callable=AsyncMock,
             ) as mock_res_refresh,
         ):
             hass.config_entries.async_update_entry(
@@ -2036,5 +2048,5 @@ class TestIntervalRefreshOnOptionsUpdate:
             await hass.async_block_till_done()
 
             mock_reload.assert_awaited_once_with(entry.entry_id)
-            mock_list_refresh.assert_not_called()
-            mock_res_refresh.assert_not_called()
+            mock_list_refresh.assert_not_awaited()
+            mock_res_refresh.assert_not_awaited()
