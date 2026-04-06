@@ -15,8 +15,12 @@ from custom_components.guesty.api.models import (
     CachedToken,
     Conversation,
     GuestyAddress,
+    GuestyGuest,
     GuestyListing,
     GuestyListingsResponse,
+    GuestyMoney,
+    GuestyReservation,
+    GuestyReservationsResponse,
     MessageDeliveryResult,
     MessageRequest,
     TokenStorage,
@@ -882,3 +886,499 @@ class TestGuestyListingsResponseDefensive:
         }
         resp = GuestyListingsResponse.from_api_dict(data)
         assert resp.results == ()
+
+
+# ── GuestyGuest Tests (T001) ────────────────────────────────────────
+
+
+def _make_guest_dict(**overrides: Any) -> dict[str, Any]:
+    """Create a Guesty API guest dictionary with defaults.
+
+    Args:
+        **overrides: Fields to override on the default guest.
+
+    Returns:
+        Dictionary matching the Guesty API guest format.
+    """
+    defaults: dict[str, Any] = {
+        "fullName": "Jane Smith",
+        "phone": "+1-555-0123",
+        "email": "jane@example.com",
+        "_id": "guest-001",
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+class TestGuestyGuestFromApiDict:
+    """Tests for GuestyGuest.from_api_dict class method."""
+
+    def test_full_guest_data(self) -> None:
+        """from_api_dict parses a complete guest dictionary."""
+        guest = GuestyGuest.from_api_dict(_make_guest_dict())
+        assert guest is not None
+        assert guest.full_name == "Jane Smith"
+        assert guest.phone == "+1-555-0123"
+        assert guest.email == "jane@example.com"
+        assert guest.guest_id == "guest-001"
+
+    def test_none_input_returns_none(self) -> None:
+        """from_api_dict returns None when input is None."""
+        assert GuestyGuest.from_api_dict(None) is None
+
+    def test_empty_dict_returns_none(self) -> None:
+        """from_api_dict returns None when input is empty dict."""
+        assert GuestyGuest.from_api_dict({}) is None
+
+    def test_partial_guest_missing_phone_email(self) -> None:
+        """from_api_dict handles missing optional fields."""
+        data = {"fullName": "John Doe"}
+        guest = GuestyGuest.from_api_dict(data)
+        assert guest is not None
+        assert guest.full_name == "John Doe"
+        assert guest.phone is None
+        assert guest.email is None
+        assert guest.guest_id is None
+
+    def test_non_dict_input_returns_none(self) -> None:
+        """from_api_dict returns None for non-dict input."""
+        assert GuestyGuest.from_api_dict("not-a-dict") is None  # type: ignore[arg-type]
+
+
+class TestGuestyGuestFrozen:
+    """Tests for GuestyGuest immutability."""
+
+    def test_frozen(self) -> None:
+        """GuestyGuest fields cannot be modified."""
+        guest = GuestyGuest.from_api_dict(_make_guest_dict())
+        assert guest is not None
+        with pytest.raises(AttributeError):
+            guest.full_name = "new"  # type: ignore[misc]
+
+
+# ── GuestyMoney Tests (T001) ────────────────────────────────────────
+
+
+def _make_money_dict(**overrides: Any) -> dict[str, Any]:
+    """Create a Guesty API money dictionary with defaults.
+
+    Args:
+        **overrides: Fields to override on the default money.
+
+    Returns:
+        Dictionary matching the Guesty API money format.
+    """
+    defaults: dict[str, Any] = {
+        "totalPaid": 1250.00,
+        "balanceDue": 0.00,
+        "currency": "USD",
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+class TestGuestyMoneyFromApiDict:
+    """Tests for GuestyMoney.from_api_dict class method."""
+
+    def test_full_money_data(self) -> None:
+        """from_api_dict parses a complete money dictionary."""
+        money = GuestyMoney.from_api_dict(_make_money_dict())
+        assert money is not None
+        assert money.total_paid == 1250.00
+        assert money.balance_due == 0.00
+        assert money.currency == "USD"
+
+    def test_none_input_returns_none(self) -> None:
+        """from_api_dict returns None when input is None."""
+        assert GuestyMoney.from_api_dict(None) is None
+
+    def test_empty_dict_returns_none(self) -> None:
+        """from_api_dict returns None when input is empty dict."""
+        assert GuestyMoney.from_api_dict({}) is None
+
+    def test_partial_money_missing_fields(self) -> None:
+        """from_api_dict handles missing optional fields."""
+        data = {"totalPaid": 500.0}
+        money = GuestyMoney.from_api_dict(data)
+        assert money is not None
+        assert money.total_paid == 500.0
+        assert money.balance_due is None
+        assert money.currency is None
+
+    def test_non_dict_input_returns_none(self) -> None:
+        """from_api_dict returns None for non-dict input."""
+        assert GuestyMoney.from_api_dict("not-a-dict") is None  # type: ignore[arg-type]
+
+
+class TestGuestyMoneyFrozen:
+    """Tests for GuestyMoney immutability."""
+
+    def test_frozen(self) -> None:
+        """GuestyMoney fields cannot be modified."""
+        money = GuestyMoney.from_api_dict(_make_money_dict())
+        assert money is not None
+        with pytest.raises(AttributeError):
+            money.total_paid = 999.0  # type: ignore[misc]
+
+
+# ── GuestyReservation Tests (T002) ──────────────────────────────────
+
+
+def _make_reservation_dict(**overrides: Any) -> dict[str, Any]:
+    """Create a Guesty API reservation dictionary with defaults.
+
+    Args:
+        **overrides: Fields to override on the default reservation.
+
+    Returns:
+        Dictionary matching the Guesty API reservation format.
+    """
+    defaults: dict[str, Any] = {
+        "_id": "res-001",
+        "listingId": "listing-001",
+        "status": "confirmed",
+        "checkIn": "2025-08-17T15:00:00.000Z",
+        "checkOut": "2025-08-22T11:00:00.000Z",
+        "confirmationCode": "GY-h5SdcsBL",
+        "checkInDateLocalized": "2025-08-17",
+        "checkOutDateLocalized": "2025-08-22",
+        "plannedArrival": "16:00",
+        "plannedDeparture": "10:00",
+        "nightsCount": 5,
+        "guestsCount": 3,
+        "guest": _make_guest_dict(),
+        "money": _make_money_dict(),
+        "source": "airbnb",
+        "note": "Late check-in requested",
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+class TestGuestyReservationFromApiDict:
+    """Tests for GuestyReservation.from_api_dict class method."""
+
+    def test_complete_data(self) -> None:
+        """from_api_dict parses all fields from complete data."""
+        res = GuestyReservation.from_api_dict(
+            _make_reservation_dict(),
+        )
+        assert res is not None
+        assert res.id == "res-001"
+        assert res.listing_id == "listing-001"
+        assert res.status == "confirmed"
+        assert res.check_in == datetime(
+            2025,
+            8,
+            17,
+            15,
+            0,
+            0,
+            tzinfo=UTC,
+        )
+        assert res.check_out == datetime(
+            2025,
+            8,
+            22,
+            11,
+            0,
+            0,
+            tzinfo=UTC,
+        )
+        assert res.confirmation_code == "GY-h5SdcsBL"
+        assert res.check_in_local == "2025-08-17"
+        assert res.check_out_local == "2025-08-22"
+        assert res.planned_arrival == "16:00"
+        assert res.planned_departure == "10:00"
+        assert res.nights_count == 5
+        assert res.guests_count == 3
+        assert res.source == "airbnb"
+        assert res.note == "Late check-in requested"
+        assert res.guest is not None
+        assert res.guest.full_name == "Jane Smith"
+        assert res.money is not None
+        assert res.money.total_paid == 1250.00
+
+    def test_missing_id_returns_none(self) -> None:
+        """from_api_dict returns None when _id is missing."""
+        data = _make_reservation_dict()
+        del data["_id"]
+        assert GuestyReservation.from_api_dict(data) is None
+
+    def test_empty_id_returns_none(self) -> None:
+        """from_api_dict returns None when _id is empty."""
+        assert (
+            GuestyReservation.from_api_dict(
+                _make_reservation_dict(_id=""),
+            )
+            is None
+        )
+
+    def test_missing_listing_id_returns_none(self) -> None:
+        """from_api_dict returns None when listingId is missing."""
+        data = _make_reservation_dict()
+        del data["listingId"]
+        assert GuestyReservation.from_api_dict(data) is None
+
+    def test_empty_listing_id_returns_none(self) -> None:
+        """from_api_dict returns None for empty listingId."""
+        assert (
+            GuestyReservation.from_api_dict(
+                _make_reservation_dict(listingId=""),
+            )
+            is None
+        )
+
+    def test_missing_status_returns_none(self) -> None:
+        """from_api_dict returns None when status is missing."""
+        data = _make_reservation_dict()
+        del data["status"]
+        assert GuestyReservation.from_api_dict(data) is None
+
+    def test_empty_status_returns_none(self) -> None:
+        """from_api_dict returns None for empty status."""
+        assert (
+            GuestyReservation.from_api_dict(
+                _make_reservation_dict(status=""),
+            )
+            is None
+        )
+
+    def test_unparsable_check_in_returns_none(self) -> None:
+        """from_api_dict returns None for unparsable checkIn."""
+        assert (
+            GuestyReservation.from_api_dict(
+                _make_reservation_dict(checkIn="not-a-date"),
+            )
+            is None
+        )
+
+    def test_missing_check_in_returns_none(self) -> None:
+        """from_api_dict returns None when checkIn is missing."""
+        data = _make_reservation_dict()
+        del data["checkIn"]
+        assert GuestyReservation.from_api_dict(data) is None
+
+    def test_unparsable_check_out_returns_none(self) -> None:
+        """from_api_dict returns None for unparsable checkOut."""
+        assert (
+            GuestyReservation.from_api_dict(
+                _make_reservation_dict(checkOut="not-a-date"),
+            )
+            is None
+        )
+
+    def test_missing_check_out_returns_none(self) -> None:
+        """from_api_dict returns None when checkOut is missing."""
+        data = _make_reservation_dict()
+        del data["checkOut"]
+        assert GuestyReservation.from_api_dict(data) is None
+
+    def test_unknown_status_passed_through(self) -> None:
+        """Unknown statuses are accepted per FR-025."""
+        res = GuestyReservation.from_api_dict(
+            _make_reservation_dict(status="future_unknown"),
+        )
+        assert res is not None
+        assert res.status == "future_unknown"
+
+    def test_optional_fields_default_to_none(self) -> None:
+        """Optional fields default to None when absent."""
+        data = {
+            "_id": "res-minimal",
+            "listingId": "listing-001",
+            "status": "confirmed",
+            "checkIn": "2025-08-17T15:00:00.000Z",
+            "checkOut": "2025-08-22T11:00:00.000Z",
+        }
+        res = GuestyReservation.from_api_dict(data)
+        assert res is not None
+        assert res.confirmation_code is None
+        assert res.check_in_local is None
+        assert res.check_out_local is None
+        assert res.planned_arrival is None
+        assert res.planned_departure is None
+        assert res.nights_count is None
+        assert res.guests_count is None
+        assert res.source is None
+        assert res.note is None
+        assert res.guest is None
+        assert res.money is None
+
+    def test_nested_guest_parsed(self) -> None:
+        """Nested guest object is parsed via from_api_dict."""
+        res = GuestyReservation.from_api_dict(
+            _make_reservation_dict(),
+        )
+        assert res is not None
+        assert res.guest is not None
+        assert res.guest.full_name == "Jane Smith"
+        assert res.guest.phone == "+1-555-0123"
+
+    def test_nested_money_parsed(self) -> None:
+        """Nested money object is parsed via from_api_dict."""
+        res = GuestyReservation.from_api_dict(
+            _make_reservation_dict(),
+        )
+        assert res is not None
+        assert res.money is not None
+        assert res.money.total_paid == 1250.00
+        assert res.money.currency == "USD"
+
+    def test_null_check_in_returns_none(self) -> None:
+        """from_api_dict returns None when checkIn is None."""
+        assert (
+            GuestyReservation.from_api_dict(
+                _make_reservation_dict(checkIn=None),
+            )
+            is None
+        )
+
+    def test_null_check_out_returns_none(self) -> None:
+        """from_api_dict returns None when checkOut is None."""
+        assert (
+            GuestyReservation.from_api_dict(
+                _make_reservation_dict(checkOut=None),
+            )
+            is None
+        )
+
+    def test_naive_datetime_gets_utc(self) -> None:
+        """Naive datetime strings are assigned UTC timezone."""
+        res = GuestyReservation.from_api_dict(
+            _make_reservation_dict(
+                checkIn="2025-08-17T15:00:00",
+                checkOut="2025-08-22T11:00:00",
+            ),
+        )
+        assert res is not None
+        assert res.check_in.tzinfo == UTC
+        assert res.check_out.tzinfo == UTC
+
+
+class TestGuestyReservationFrozen:
+    """Tests for GuestyReservation immutability."""
+
+    def test_frozen(self) -> None:
+        """GuestyReservation fields cannot be modified."""
+        res = GuestyReservation.from_api_dict(
+            _make_reservation_dict(),
+        )
+        assert res is not None
+        with pytest.raises(AttributeError):
+            res.status = "checked_in"  # type: ignore[misc]
+
+
+# ── GuestyReservationsResponse Tests (T003) ─────────────────────────
+
+
+def _make_reservations_response(
+    *,
+    count: int = 1,
+    limit: int = 100,
+    skip: int = 0,
+    reservations: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Create a Guesty API reservations response dictionary.
+
+    Args:
+        count: Total count from API metadata.
+        limit: Page size used.
+        skip: Offset used.
+        reservations: Override the results array.
+
+    Returns:
+        Dictionary matching the reservations endpoint format.
+    """
+    if reservations is None:
+        reservations = [_make_reservation_dict()]
+    return {
+        "results": reservations,
+        "count": count,
+        "limit": limit,
+        "skip": skip,
+    }
+
+
+class TestGuestyReservationsResponseFromApiDict:
+    """Tests for GuestyReservationsResponse.from_api_dict."""
+
+    def test_parses_valid_reservations(self) -> None:
+        """from_api_dict parses valid reservations array."""
+        data = _make_reservations_response(count=1)
+        resp = GuestyReservationsResponse.from_api_dict(data)
+        assert len(resp.results) == 1
+        assert resp.results[0].id == "res-001"
+
+    def test_filters_none_entries(self) -> None:
+        """from_api_dict filters invalid reservations."""
+        reservations = [
+            _make_reservation_dict(),
+            {"status": "confirmed"},  # missing _id
+        ]
+        data = _make_reservations_response(
+            reservations=reservations,
+            count=2,
+        )
+        resp = GuestyReservationsResponse.from_api_dict(data)
+        assert len(resp.results) == 1
+
+    def test_preserves_pagination_fields(self) -> None:
+        """count, limit, skip fields are preserved."""
+        data = _make_reservations_response(
+            count=42,
+            limit=100,
+            skip=200,
+        )
+        resp = GuestyReservationsResponse.from_api_dict(data)
+        assert resp.count == 42
+        assert resp.limit == 100
+        assert resp.skip == 200
+
+    def test_empty_results(self) -> None:
+        """Empty results array yields empty tuple."""
+        data = _make_reservations_response(
+            reservations=[],
+            count=0,
+        )
+        resp = GuestyReservationsResponse.from_api_dict(data)
+        assert resp.results == ()
+        assert resp.count == 0
+
+    def test_non_dict_items_skipped(self) -> None:
+        """Non-dict items in results are skipped."""
+        data = {
+            "results": [
+                _make_reservation_dict(),
+                "not-a-dict",
+                42,
+            ],
+            "count": 3,
+            "limit": 100,
+            "skip": 0,
+        }
+        resp = GuestyReservationsResponse.from_api_dict(data)
+        assert len(resp.results) == 1
+
+    def test_non_list_results_yields_empty(self) -> None:
+        """Non-list results field degrades to empty tuple."""
+        data = {
+            "results": "not-a-list",
+            "count": 0,
+            "limit": 100,
+            "skip": 0,
+        }
+        resp = GuestyReservationsResponse.from_api_dict(data)
+        assert resp.results == ()
+
+
+class TestGuestyReservationsResponseFrozen:
+    """Tests for GuestyReservationsResponse immutability."""
+
+    def test_frozen(self) -> None:
+        """GuestyReservationsResponse fields cannot be modified."""
+        resp = GuestyReservationsResponse.from_api_dict(
+            _make_reservations_response(),
+        )
+        with pytest.raises(AttributeError):
+            resp.count = 99  # type: ignore[misc]

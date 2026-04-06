@@ -53,7 +53,7 @@ is complete. All reservation domain logic lives in `api/`.
 
 <!-- markdownlint-disable MD013 -->
 
-- [ ] T001 Write unit tests for `GuestyGuest` frozen dataclass
+- [x] T001 Write unit tests for `GuestyGuest` frozen dataclass
   (`from_api_dict` with full guest data returns populated
   instance, `None` input returns `None`, empty dict returns
   `None`, partial guest with missing phone/email fields) and
@@ -61,7 +61,7 @@ is complete. All reservation domain logic lives in `api/`.
   financial data, `None` input returns `None`, empty dict
   returns `None`, partial money with missing fields) in
   `tests/api/test_models.py`
-- [ ] T002 Write unit tests for `GuestyReservation` frozen
+- [x] T002 Write unit tests for `GuestyReservation` frozen
   dataclass (`from_api_dict` with complete API data dict,
   missing `_id` returns `None`, missing `listingId` returns
   `None`, missing `status` returns `None`, unparsable
@@ -69,12 +69,12 @@ is complete. All reservation domain logic lives in `api/`.
   passed through as-is per FR-025, optional fields default to
   `None`, nested `guest` and `money` objects parsed via their
   `from_api_dict` factories) in `tests/api/test_models.py`
-- [ ] T003 Write unit tests for `GuestyReservationsResponse`
+- [x] T003 Write unit tests for `GuestyReservationsResponse`
   (`from_api_dict` parses valid results array via
   `GuestyReservation.from_api_dict`, filters `None` entries
   for invalid reservations, `count`/`limit`/`skip` fields
   preserved from API response) in `tests/api/test_models.py`
-- [ ] T004 [P] Write unit tests for
+- [x] T004 [P] Write unit tests for
   `GuestyApiClient.get_reservations()`: single-page fetch
   (results count < limit stops pagination), multi-page
   pagination (two full pages + partial third page), empty
@@ -94,24 +94,24 @@ is complete. All reservation domain logic lives in `api/`.
 
 <!-- markdownlint-disable MD013 -->
 
-- [ ] T005 [P] Add reservation constants
+- [x] T005 [P] Add reservation constants
   (`RESERVATIONS_ENDPOINT`, `RESERVATIONS_PAGE_SIZE = 100`,
   `RESERVATIONS_FIELDS` tuple with all requested field names
   per contracts/guesty-reservations-api.md,
   `ACTIONABLE_STATUSES` frozenset, `DEFAULT_PAST_DAYS = 30`,
   `DEFAULT_FUTURE_DAYS = 365`) to
   `custom_components/guesty/api/const.py`
-- [ ] T006 Implement `GuestyGuest` frozen dataclass with fields
+- [x] T006 Implement `GuestyGuest` frozen dataclass with fields
   (`full_name`, `phone`, `email`, `guest_id` — all
   `str | None`) and `from_api_dict(data: dict | None)` factory
   returning `None` for `None` or empty input in
   `custom_components/guesty/api/models.py`
-- [ ] T007 Implement `GuestyMoney` frozen dataclass with fields
+- [x] T007 Implement `GuestyMoney` frozen dataclass with fields
   (`total_paid`, `balance_due`, `currency`) and
   `from_api_dict(data: dict | None)` factory returning `None`
   for `None` or empty input in
   `custom_components/guesty/api/models.py`
-- [ ] T008 Implement `GuestyReservation` frozen dataclass with
+- [x] T008 Implement `GuestyReservation` frozen dataclass with
   all fields per data-model.md (`id`, `listing_id`, `status`,
   `check_in`, `check_out`, `confirmation_code`,
   `check_in_local`, `check_out_local`, `planned_arrival`,
@@ -121,12 +121,12 @@ is complete. All reservation domain logic lives in `api/`.
   dates, skips records missing required fields with warning,
   and delegates nested guest/money parsing in
   `custom_components/guesty/api/models.py`
-- [ ] T009 Implement `GuestyReservationsResponse` frozen
+- [x] T009 Implement `GuestyReservationsResponse` frozen
   dataclass with fields (`results`, `count`, `limit`, `skip`)
   and `from_api_dict(data: dict)` factory that parses results
   via `GuestyReservation.from_api_dict` filtering `None`
   entries in `custom_components/guesty/api/models.py`
-- [ ] T010 Implement `async get_reservations(self, *,
+- [x] T010 Implement `async get_reservations(self, *,
   past_days=DEFAULT_PAST_DAYS,
   future_days=DEFAULT_FUTURE_DAYS,
   statuses: frozenset[str] | None = None)` on
@@ -137,7 +137,7 @@ is complete. All reservation domain logic lives in `api/`.
   parameter, `sort=_id`, de-duplication by reservation ID,
   using existing `_request()` method in
   `custom_components/guesty/api/client.py`
-- [ ] T011 [P] Export `GuestyGuest`, `GuestyMoney`,
+- [x] T011 [P] Export `GuestyGuest`, `GuestyMoney`,
   `GuestyReservation`, `GuestyReservationsResponse` from
   `custom_components/guesty/api/__init__.py`
 

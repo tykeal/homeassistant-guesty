@@ -4,21 +4,29 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import random
+from datetime import UTC, datetime, timedelta
 
 import httpx
 
 from custom_components.guesty.api.auth import GuestyTokenManager
 from custom_components.guesty.api.const import (
+    ACTIONABLE_STATUSES,
     BACKOFF_MULTIPLIER,
     BASE_URL,
+    DEFAULT_FUTURE_DAYS,
+    DEFAULT_PAST_DAYS,
     INITIAL_BACKOFF,
     LISTINGS_ENDPOINT,
     LISTINGS_FIELDS,
     LISTINGS_PAGE_SIZE,
     MAX_BACKOFF,
     MAX_RETRIES,
+    RESERVATIONS_ENDPOINT,
+    RESERVATIONS_FIELDS,
+    RESERVATIONS_PAGE_SIZE,
 )
 from custom_components.guesty.api.exceptions import (
     GuestyAuthError,
@@ -29,6 +37,8 @@ from custom_components.guesty.api.exceptions import (
 from custom_components.guesty.api.models import (
     GuestyListing,
     GuestyListingsResponse,
+    GuestyReservation,
+    GuestyReservationsResponse,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -160,6 +170,143 @@ class GuestyApiClient:
             skip += LISTINGS_PAGE_SIZE
 
         return all_listings
+
+    async def get_reservations(
+        self,
+        *,
+        past_days: int = DEFAULT_PAST_DAYS,
+        future_days: int = DEFAULT_FUTURE_DAYS,
+        statuses: frozenset[str] | None = None,
+    ) -> list[GuestyReservation]:
+        """Fetch reservations with date and status filters.
+
+        Makes two paginated requests to the Guesty reservations
+        endpoint:
+        1. Primary: checkIn date-range filter with status filter
+           for the configurable window.
+        2. Secondary: checked_in status only (no date filter)
+           to capture long-stay active reservations whose
+           checkIn predates the date window.
+
+        Results are merged and de-duplicated by reservation ID.
+        Reservations missing required fields (_id, listingId,
+        status, checkIn, checkOut) are skipped with a warning.
+
+        Args:
+            past_days: Days in the past for the check-in
+                date filter window. Default 30.
+            future_days: Days in the future for the check-in
+                date filter window. Default 365.
+            statuses: Set of reservation statuses to include.
+                Defaults to ACTIONABLE_STATUSES if None.
+
+        Returns:
+            De-duplicated list of valid GuestyReservation
+            objects from both requests.
+
+        Raises:
+            GuestyAuthError: On authentication failure.
+            GuestyConnectionError: On network failure.
+            GuestyRateLimitError: On rate limit exhaustion.
+            GuestyResponseError: On malformed API response.
+        """
+        if statuses is None:
+            statuses = ACTIONABLE_STATUSES
+
+        now = datetime.now(UTC)
+        past_boundary = (now - timedelta(days=past_days)).isoformat()
+        future_boundary = (now + timedelta(days=future_days)).isoformat()
+
+        primary_filters = _build_reservation_filters(
+            past_boundary=past_boundary,
+            future_boundary=future_boundary,
+            statuses=statuses,
+        )
+        primary = await self._fetch_all_reservations(
+            primary_filters,
+        )
+
+        secondary_filters = _build_checked_in_filters()
+        secondary = await self._fetch_all_reservations(
+            secondary_filters,
+        )
+
+        return _merge_reservations(primary, secondary)
+
+    async def _fetch_all_reservations(
+        self,
+        filters: list[dict[str, object]],
+    ) -> list[GuestyReservation]:
+        """Paginate through all reservation pages.
+
+        Args:
+            filters: JSON-serializable filter list for the
+                Guesty API filters parameter.
+
+        Returns:
+            List of parsed GuestyReservation objects.
+
+        Raises:
+            GuestyAuthError: On authentication failure.
+            GuestyConnectionError: On network failure.
+            GuestyRateLimitError: On rate limit exhaustion.
+            GuestyResponseError: On malformed API response.
+        """
+        all_reservations: list[GuestyReservation] = []
+        skip = 0
+        fields = " ".join(RESERVATIONS_FIELDS)
+        filters_json = json.dumps(filters)
+
+        while True:
+            response = await self._request(
+                "GET",
+                RESERVATIONS_ENDPOINT,
+                params={
+                    "limit": RESERVATIONS_PAGE_SIZE,
+                    "skip": skip,
+                    "fields": fields,
+                    "sort": "_id",
+                    "filters": filters_json,
+                },
+            )
+
+            if not response.is_success:
+                raise GuestyResponseError(
+                    f"Reservations fetch failed: status {response.status_code}",
+                )
+
+            try:
+                data = response.json()
+            except Exception as exc:
+                raise GuestyResponseError(
+                    "Reservations response is not valid JSON",
+                ) from exc
+
+            if not isinstance(data, dict):
+                raise GuestyResponseError(
+                    "Reservations response must be a JSON object",
+                )
+
+            results = data.get("results")
+            if results is None:
+                raise GuestyResponseError(
+                    "Reservations response missing results",
+                )
+
+            if not isinstance(results, list):
+                raise GuestyResponseError(
+                    "Reservations results must be a list",
+                )
+
+            page = GuestyReservationsResponse.from_api_dict(data)
+            all_reservations.extend(page.results)
+
+            if len(results) < RESERVATIONS_PAGE_SIZE:
+                break
+
+            skip += RESERVATIONS_PAGE_SIZE
+
+        return all_reservations
 
     async def _request(
         self,
@@ -307,3 +454,78 @@ def _calculate_backoff(
     delay = min(base_backoff, MAX_BACKOFF)
     jitter = delay * 0.25 * (2 * random.random() - 1)
     return max(0.1, delay + jitter)
+
+
+def _build_reservation_filters(
+    *,
+    past_boundary: str,
+    future_boundary: str,
+    statuses: frozenset[str],
+) -> list[dict[str, object]]:
+    """Build filter list for the primary reservation request.
+
+    Args:
+        past_boundary: ISO 8601 start of the date window.
+        future_boundary: ISO 8601 end of the date window.
+        statuses: Set of statuses to include.
+
+    Returns:
+        List of filter dicts for the Guesty filters parameter.
+    """
+    return [
+        {
+            "field": "checkIn",
+            "operator": "$between",
+            "from": past_boundary,
+            "to": future_boundary,
+        },
+        {
+            "field": "status",
+            "operator": "$contains",
+            "value": sorted(statuses),
+        },
+    ]
+
+
+def _build_checked_in_filters() -> list[dict[str, object]]:
+    """Build filter list for the secondary checked_in request.
+
+    Returns:
+        List of filter dicts selecting only checked_in status.
+    """
+    return [
+        {
+            "field": "status",
+            "operator": "$eq",
+            "value": "checked_in",
+        },
+    ]
+
+
+def _merge_reservations(
+    primary: list[GuestyReservation],
+    secondary: list[GuestyReservation],
+) -> list[GuestyReservation]:
+    """Merge and de-duplicate two reservation lists by ID.
+
+    Primary results take precedence. Secondary results are
+    added only if their ID is not already present.
+
+    Args:
+        primary: Reservations from the date-range request.
+        secondary: Reservations from the checked_in request.
+
+    Returns:
+        De-duplicated list of reservations.
+    """
+    seen: set[str] = set()
+    merged: list[GuestyReservation] = []
+    for reservation in primary:
+        if reservation.id not in seen:
+            seen.add(reservation.id)
+            merged.append(reservation)
+    for reservation in secondary:
+        if reservation.id not in seen:
+            seen.add(reservation.id)
+            merged.append(reservation)
+    return merged

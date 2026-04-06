@@ -493,3 +493,271 @@ class GuestyListingsResponse:
             limit=data.get("limit", 100),
             skip=data.get("skip", 0),
         )
+
+
+# ── Reservation Data Models ─────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class GuestyGuest:
+    """Guest contact information from a Guesty reservation.
+
+    Attributes:
+        full_name: Guest display name.
+        phone: Contact phone number.
+        email: Contact email address.
+        guest_id: Guesty guest identifier.
+    """
+
+    full_name: str | None = None
+    phone: str | None = None
+    email: str | None = None
+    guest_id: str | None = None
+
+    @classmethod
+    def from_api_dict(
+        cls,
+        data: dict[str, Any] | None,
+    ) -> GuestyGuest | None:
+        """Create a GuestyGuest from a Guesty API guest dict.
+
+        Args:
+            data: Guest dictionary from the API, or None.
+
+        Returns:
+            A GuestyGuest instance, or None if input is None
+            or empty dict.
+        """
+        if not data or not isinstance(data, dict):
+            return None
+        return cls(
+            full_name=data.get("fullName"),
+            phone=data.get("phone"),
+            email=data.get("email"),
+            guest_id=data.get("_id"),
+        )
+
+
+@dataclass(frozen=True)
+class GuestyMoney:
+    """Financial summary for a Guesty reservation.
+
+    Attributes:
+        total_paid: Total paid amount.
+        balance_due: Outstanding balance.
+        currency: ISO currency code.
+    """
+
+    total_paid: float | None = None
+    balance_due: float | None = None
+    currency: str | None = None
+
+    @classmethod
+    def from_api_dict(
+        cls,
+        data: dict[str, Any] | None,
+    ) -> GuestyMoney | None:
+        """Create a GuestyMoney from a Guesty API money dict.
+
+        Args:
+            data: Money dictionary from the API, or None.
+
+        Returns:
+            A GuestyMoney instance, or None if input is None
+            or empty dict.
+        """
+        if not data or not isinstance(data, dict):
+            return None
+        return cls(
+            total_paid=data.get("totalPaid"),
+            balance_due=data.get("balanceDue"),
+            currency=data.get("currency"),
+        )
+
+
+@dataclass(frozen=True)
+class GuestyReservation:
+    """A Guesty reservation/booking record.
+
+    Frozen dataclass representing a single reservation from the
+    Guesty Open API. Required fields are ``id``, ``listing_id``,
+    ``status``, ``check_in``, and ``check_out``; all others are
+    optional.
+
+    Attributes:
+        id: Guesty reservation identifier.
+        listing_id: Parent listing reference.
+        status: Reservation lifecycle state.
+        check_in: UTC check-in datetime.
+        check_out: UTC check-out datetime.
+        confirmation_code: Booking confirmation code.
+        check_in_local: Localized check-in date string.
+        check_out_local: Localized check-out date string.
+        planned_arrival: Override arrival time.
+        planned_departure: Override departure time.
+        nights_count: Stay duration in nights.
+        guests_count: Party size.
+        source: Booking channel.
+        note: Reservation notes.
+        guest: Guest contact information.
+        money: Financial summary.
+    """
+
+    id: str
+    listing_id: str
+    status: str
+    check_in: datetime
+    check_out: datetime
+    confirmation_code: str | None = None
+    check_in_local: str | None = None
+    check_out_local: str | None = None
+    planned_arrival: str | None = None
+    planned_departure: str | None = None
+    nights_count: int | None = None
+    guests_count: int | None = None
+    source: str | None = None
+    note: str | None = None
+    guest: GuestyGuest | None = None
+    money: GuestyMoney | None = None
+
+    @classmethod
+    def from_api_dict(
+        cls,
+        data: dict[str, Any],
+    ) -> GuestyReservation | None:
+        """Create a GuestyReservation from a Guesty API dict.
+
+        Returns None if required fields (``_id``, ``listingId``,
+        ``status``, ``checkIn``, ``checkOut``) are missing or
+        invalid. Logs a warning for each skipped reservation.
+
+        Args:
+            data: Reservation dictionary from the Guesty API.
+
+        Returns:
+            A GuestyReservation instance, or None if invalid.
+        """
+        reservation_id = data.get("_id", "")
+        if not reservation_id:
+            _LOGGER.warning("Skipping reservation with missing _id")
+            return None
+
+        listing_id = data.get("listingId", "")
+        if not listing_id:
+            _LOGGER.warning(
+                "Skipping reservation %s with missing listingId",
+                reservation_id,
+            )
+            return None
+
+        status = data.get("status", "")
+        if not status:
+            _LOGGER.warning(
+                "Skipping reservation %s with missing status",
+                reservation_id,
+            )
+            return None
+
+        check_in = _parse_iso_datetime(data.get("checkIn"))
+        if check_in is None:
+            _LOGGER.warning(
+                "Skipping reservation %s with unparsable checkIn",
+                reservation_id,
+            )
+            return None
+
+        check_out = _parse_iso_datetime(data.get("checkOut"))
+        if check_out is None:
+            _LOGGER.warning(
+                "Skipping reservation %s with unparsable checkOut",
+                reservation_id,
+            )
+            return None
+
+        return cls(
+            id=reservation_id,
+            listing_id=listing_id,
+            status=status,
+            check_in=check_in,
+            check_out=check_out,
+            confirmation_code=data.get("confirmationCode"),
+            check_in_local=data.get("checkInDateLocalized"),
+            check_out_local=data.get("checkOutDateLocalized"),
+            planned_arrival=data.get("plannedArrival"),
+            planned_departure=data.get("plannedDeparture"),
+            nights_count=data.get("nightsCount"),
+            guests_count=data.get("guestsCount"),
+            source=data.get("source"),
+            note=data.get("note"),
+            guest=GuestyGuest.from_api_dict(data.get("guest")),
+            money=GuestyMoney.from_api_dict(data.get("money")),
+        )
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    """Parse an ISO 8601 datetime string to a timezone-aware datetime.
+
+    Args:
+        value: The value to parse (expected string).
+
+    Returns:
+        A timezone-aware datetime, or None if parsing fails.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt
+
+
+@dataclass(frozen=True)
+class GuestyReservationsResponse:
+    """Paginated response from the reservations endpoint.
+
+    Attributes:
+        results: Immutable tuple of parsed valid reservations.
+        count: Total count from API metadata.
+        limit: Page size used.
+        skip: Offset used.
+    """
+
+    results: tuple[GuestyReservation, ...]
+    count: int
+    limit: int
+    skip: int
+
+    @classmethod
+    def from_api_dict(
+        cls,
+        data: dict[str, Any],
+    ) -> GuestyReservationsResponse:
+        """Create from an API response dictionary.
+
+        Parses ``results`` via ``GuestyReservation.from_api_dict()``,
+        filtering out None entries and non-dict items.
+
+        Args:
+            data: Response dictionary from the reservations endpoint.
+
+        Returns:
+            A GuestyReservationsResponse instance.
+        """
+        raw_results = data.get("results", [])
+        if not isinstance(raw_results, list):
+            raw_results = []
+        reservations = tuple(
+            reservation
+            for item in raw_results
+            if isinstance(item, dict)
+            and (reservation := GuestyReservation.from_api_dict(item)) is not None
+        )
+        return cls(
+            results=reservations,
+            count=data.get("count", 0),
+            limit=data.get("limit", 100),
+            skip=data.get("skip", 0),
+        )
