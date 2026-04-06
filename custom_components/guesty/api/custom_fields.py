@@ -173,6 +173,9 @@ class GuestyCustomFieldsClient:
                 detail = json.dumps(response.json())
             except Exception:
                 detail = response.text
+            # Truncate to avoid leaking sensitive values.
+            if len(detail) > 200:
+                detail = detail[:200] + "..."
             raise GuestyCustomFieldError(
                 f"Custom field update failed ({response.status_code}): {detail}",
                 target_type=target_type,

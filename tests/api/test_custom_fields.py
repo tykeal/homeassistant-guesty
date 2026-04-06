@@ -42,13 +42,6 @@ _FIELD_DEF_ALERT: dict[str, Any] = {
     "objectType": "listing",
 }
 
-_FIELD_DEF_BOTH: dict[str, Any] = {
-    "id": "637bad36abcdefaaaaaa",
-    "name": "Priority Score",
-    "type": "number",
-    "objectType": "both",
-}
-
 
 def _make_custom_fields_client() -> GuestyCustomFieldsClient:
     """Create a GuestyCustomFieldsClient with test defaults.
@@ -410,6 +403,31 @@ class TestSetField:
                 field_id="cf-txt",
                 value="v",
             )
+
+    @respx.mock
+    async def test_error_body_truncated(self) -> None:
+        """Long error response body is truncated in exception."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        long_body = {"error": "x" * 300}
+        respx.put(
+            f"{BASE_URL}/listings/lst-long/custom-fields",
+        ).mock(
+            return_value=Response(400, json=long_body),
+        )
+        client = _make_custom_fields_client()
+        with pytest.raises(GuestyCustomFieldError) as exc_info:
+            await client.set_field(
+                target_type="listing",
+                target_id="lst-long",
+                field_id="cf-long",
+                value="v",
+            )
+        assert "..." in exc_info.value.message
 
     @respx.mock
     async def test_api_error_propagation(self) -> None:
