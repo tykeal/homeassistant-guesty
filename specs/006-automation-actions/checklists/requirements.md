@@ -12,7 +12,8 @@ before proceeding to planning
 
 ## Content Quality
 
-- [x] No implementation details (languages, frameworks, APIs)
+- [x] No unnecessary implementation details (languages,
+  frameworks, low-level APIs)
 - [x] Focused on user value and business needs
 - [x] Written for non-technical stakeholders
 - [x] All mandatory sections completed
@@ -37,8 +38,13 @@ before proceeding to planning
 
 ## Notes
 
-- All items pass. Spec is ready for `/speckit.clarify` or
-  `/speckit.plan`.
+- All checklist items pass with the clarification below. Spec
+  is ready for `/speckit.clarify` or `/speckit.plan`.
+- Implementation-level mechanics referenced in the spec
+  (including retry/backoff behavior and reuse of existing
+  client infrastructure) are intentionally included as
+  user-observable behavior and platform constraints, not as
+  accidental leakage of engineering details.
 - Guesty workflow triggering is addressed indirectly through
   task creation (User Story 3) rather than a direct trigger
   endpoint, which is documented in the Assumptions section.

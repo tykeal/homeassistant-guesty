@@ -47,7 +47,7 @@ events on booking records.
 **Acceptance Scenarios**:
 
 1. **Given** the integration is configured and authenticated,
-   **When** the user calls the update reservation notes action
+   **When** the user calls the add reservation note action
    with a valid reservation identifier and note text, **Then**
    the note is added to the reservation in Guesty and a success
    confirmation is returned.
@@ -62,8 +62,10 @@ events on booking records.
    the action adds a note, **Then** the note appears in the
    Guesty reservation record without overwriting existing notes.
 5. **Given** an automation triggers the action, **When** the
-   note is added successfully, **Then** the automation continues
-   to the next step without blocking.
+   note is added successfully, **Then** the action executes
+   asynchronously without degrading Home Assistant
+   responsiveness, and the automation can proceed to its next
+   step after the service call completes.
 
 ---
 
@@ -282,7 +284,7 @@ each action.
   (`guesty.add_reservation_note`):
   - Required: `reservation_id` (string — Guesty reservation
     identifier), `note_text` (string — note content to append).
-  - Validation: `note_text` MUST be 1 to 5 000 characters.
+  - Validation: `note_text` MUST be 1 to 5000 characters.
   - Behavior: appends the note without overwriting existing
     notes or unrelated reservation data.
 
@@ -300,7 +302,7 @@ each action.
     description), `assignee` (string — Guesty user identifier
     or assignee reference).
   - Validation: `task_title` MUST be 1 to 255 characters;
-    `description`, when provided, MUST be 1 to 5 000
+    `description`, when provided, MUST be 1 to 5000
     characters.
   - Behavior: associates the created task with the specified
     listing.
@@ -321,7 +323,7 @@ each action.
   - Required: `reservation_id` (string — Guesty reservation
     identifier), `custom_field_id` (string — Guesty custom
     field identifier), `value` (string — new field value).
-  - Validation: `value` MUST be 1 to 5 000 characters unless
+  - Validation: `value` MUST be 1 to 5000 characters unless
     Guesty enforces a stricter field-specific limit.
 
 ### Functional Requirements
@@ -399,11 +401,11 @@ each action.
   communication.
 - **FR-022**: Each action MUST return a structured response
   containing at minimum a `success` indicator (boolean) and
-  the `entity_id` of the targeted resource (reservation or
-  listing identifier). On failure the response MUST include
-  an `error` field with a human-readable reason. This response
-  structure enables automations to branch on success or failure
-  using standard conditional logic.
+  a `target_id` field identifying the targeted Guesty resource
+  (reservation or listing identifier). On failure the response
+  MUST include an `error` field with a human-readable reason.
+  This response structure enables automations to branch on
+  success or failure using standard conditional logic.
 
 ### Key Entities
 
