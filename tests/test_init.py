@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Generator
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
@@ -185,7 +186,7 @@ class TestAsyncSetupEntry:
         new_callable=AsyncMock,
         return_value=True,
     )
-    async def test_cf_refresh_failure_logs_warning_but_loads(
+    async def test_cf_refresh_failure_logs_debug_but_loads(
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
@@ -194,12 +195,13 @@ class TestAsyncSetupEntry:
         hass: HomeAssistant,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """CF coordinator failure logs warning but loads."""
+        """CF coordinator failure logs debug but loads."""
         entry = _make_entry()
         entry.add_to_hass(hass)
 
-        await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
+        with caplog.at_level(logging.DEBUG):
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
 
         assert entry.state is ConfigEntryState.LOADED
         assert "Custom field definitions unavailable" in caplog.text

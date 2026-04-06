@@ -79,7 +79,7 @@ class TestGetDefinitions:
                 json=make_token_response(),
             ),
         )
-        respx.get(f"{BASE_URL}/custom-fields").mock(
+        respx.get(f"{BASE_URL}/properties-api/custom-fields").mock(
             return_value=Response(
                 200,
                 json=[_FIELD_DEF_DOOR_CODE, _FIELD_DEF_ALERT],
@@ -103,7 +103,7 @@ class TestGetDefinitions:
                 json=make_token_response(),
             ),
         )
-        respx.get(f"{BASE_URL}/custom-fields").mock(
+        respx.get(f"{BASE_URL}/properties-api/custom-fields").mock(
             return_value=Response(200, json=[]),
         )
         client = _make_custom_fields_client()
@@ -120,7 +120,7 @@ class TestGetDefinitions:
                 json=make_token_response(),
             ),
         )
-        respx.get(f"{BASE_URL}/custom-fields").mock(
+        respx.get(f"{BASE_URL}/properties-api/custom-fields").mock(
             return_value=Response(
                 200,
                 json=[_FIELD_DEF_DOOR_CODE, incomplete],
@@ -140,7 +140,7 @@ class TestGetDefinitions:
                 json=make_token_response(),
             ),
         )
-        respx.get(f"{BASE_URL}/custom-fields").mock(
+        respx.get(f"{BASE_URL}/properties-api/custom-fields").mock(
             return_value=Response(403, json={"error": "forbidden"}),
         )
         client = _make_custom_fields_client()
@@ -156,7 +156,7 @@ class TestGetDefinitions:
                 json=make_token_response(),
             ),
         )
-        respx.get(f"{BASE_URL}/custom-fields").mock(
+        respx.get(f"{BASE_URL}/properties-api/custom-fields").mock(
             return_value=Response(
                 422,
                 json={"error": "Unprocessable"},
@@ -175,7 +175,7 @@ class TestGetDefinitions:
                 json=make_token_response(),
             ),
         )
-        respx.get(f"{BASE_URL}/custom-fields").mock(
+        respx.get(f"{BASE_URL}/properties-api/custom-fields").mock(
             return_value=Response(
                 200,
                 json={"results": []},
@@ -196,7 +196,7 @@ class TestGetDefinitions:
                 json=make_token_response(),
             ),
         )
-        respx.get(f"{BASE_URL}/custom-fields").mock(
+        respx.get(f"{BASE_URL}/properties-api/custom-fields").mock(
             return_value=Response(
                 200,
                 content=b"not json",
