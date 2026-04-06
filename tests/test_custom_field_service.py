@@ -347,7 +347,7 @@ class TestServiceHandler:
             ),
             pytest.raises(
                 HomeAssistantError,
-                match="422",
+                match="Custom field update failed",
             ),
         ):
             await hass.services.async_call(
@@ -401,7 +401,7 @@ class TestServiceHandler:
             ),
             pytest.raises(
                 HomeAssistantError,
-                match="network failure",
+                match="API error during",
             ),
         ):
             await hass.services.async_call(
@@ -675,7 +675,7 @@ class TestReservationCustomFields:
                     field_id="cf-door-code",
                 ),
             ),
-            pytest.raises(HomeAssistantError, match="404"),
+            pytest.raises(HomeAssistantError, match="update failed"),
         ):
             await hass.services.async_call(
                 DOMAIN,

@@ -361,13 +361,17 @@ async def async_setup_entry(
                 "Custom field update failed for %s",
                 target_type,
             )
-            raise HomeAssistantError(str(err)) from err
+            raise HomeAssistantError(
+                f"Custom field update failed for {err.target_type}/{err.field_id}",
+            ) from err
         except GuestyApiError as err:
             _LOGGER.error(
                 "API error during custom field update for %s",
                 target_type,
             )
-            raise HomeAssistantError(str(err)) from err
+            raise HomeAssistantError(
+                f"API error during custom field update for {target_type}",
+            ) from err
 
         if call.return_response:
             return {
