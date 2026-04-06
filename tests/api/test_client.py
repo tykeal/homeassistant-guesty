@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock
@@ -19,6 +20,7 @@ from custom_components.guesty.api.const import BASE_URL, TOKEN_URL
 from custom_components.guesty.api.exceptions import (
     GuestyAuthError,
     GuestyConnectionError,
+    GuestyResponseError,
 )
 from custom_components.guesty.api.models import CachedToken
 from tests.conftest import (
@@ -729,3 +731,502 @@ class TestGetListings:
             match="must be a list",
         ):
             await client.get_listings()
+
+
+# ── get_reservations() Tests (T004) ─────────────────────────────────
+
+
+def _make_reservation_dict(**overrides: Any) -> dict[str, Any]:
+    """Create a Guesty API reservation dictionary with defaults.
+
+    Args:
+        **overrides: Fields to override on the default reservation.
+
+    Returns:
+        Dictionary matching the Guesty API reservation format.
+    """
+    defaults: dict[str, Any] = {
+        "_id": "res-001",
+        "listingId": "listing-001",
+        "status": "confirmed",
+        "checkIn": "2025-08-17T15:00:00.000Z",
+        "checkOut": "2025-08-22T11:00:00.000Z",
+        "confirmationCode": "GY-h5SdcsBL",
+        "checkInDateLocalized": "2025-08-17",
+        "checkOutDateLocalized": "2025-08-22",
+        "plannedArrival": "16:00",
+        "plannedDeparture": "10:00",
+        "nightsCount": 5,
+        "guestsCount": 3,
+        "guest": {
+            "fullName": "Jane Smith",
+            "phone": "+1-555-0123",
+            "email": "jane@example.com",
+        },
+        "money": {
+            "totalPaid": 1250.00,
+            "balanceDue": 0.00,
+            "currency": "USD",
+        },
+        "source": "airbnb",
+        "note": "Late check-in",
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+def _make_reservations_page(
+    reservations: list[dict[str, Any]],
+    *,
+    count: int = 1,
+    limit: int = 100,
+    skip: int = 0,
+) -> dict[str, Any]:
+    """Create a Guesty reservations page response.
+
+    Args:
+        reservations: Array of reservation dictionaries.
+        count: Total count metadata.
+        limit: Page size.
+        skip: Offset.
+
+    Returns:
+        Dictionary matching the reservations endpoint format.
+    """
+    return {
+        "results": reservations,
+        "count": count,
+        "limit": limit,
+        "skip": skip,
+    }
+
+
+def _mock_token_endpoint() -> None:
+    """Mock the token endpoint for all reservation tests."""
+    respx.post(TOKEN_URL).mock(
+        return_value=Response(200, json=make_token_response()),
+    )
+
+
+class TestGetReservations:
+    """Tests for GuestyApiClient.get_reservations()."""
+
+    @respx.mock
+    async def test_single_page_fetch(self) -> None:
+        """Single page with fewer results than limit stops."""
+        from custom_components.guesty.api.const import (
+            RESERVATIONS_FIELDS,
+            RESERVATIONS_PAGE_SIZE,
+        )
+
+        _mock_token_endpoint()
+        reservations = [_make_reservation_dict(_id=f"res-{i}") for i in range(5)]
+        route = respx.get(f"{BASE_URL}/reservations")
+        route.side_effect = [
+            # Primary request
+            Response(
+                200,
+                json=_make_reservations_page(
+                    reservations,
+                    count=5,
+                ),
+            ),
+            # Secondary checked_in request
+            Response(
+                200,
+                json=_make_reservations_page([], count=0),
+            ),
+        ]
+        client, _, _ = _make_client()
+        result = await client.get_reservations()
+        assert len(result) == 5
+        assert result[0].id == "res-0"
+
+        # Verify primary request params
+        primary_req = route.calls[0].request
+        params = primary_req.url.params
+        assert params["limit"] == str(RESERVATIONS_PAGE_SIZE)
+        assert params["skip"] == "0"
+        assert params["sort"] == "_id"
+        assert params["fields"] == " ".join(RESERVATIONS_FIELDS)
+        # Verify filters contain checkIn and status
+        filters = json.loads(params["filters"])
+        assert len(filters) == 2
+        assert filters[0]["field"] == "checkIn"
+        assert filters[0]["operator"] == "$between"
+        assert filters[1]["field"] == "status"
+        assert filters[1]["operator"] == "$contains"
+
+    @respx.mock
+    async def test_multi_page_pagination(self) -> None:
+        """Paginate through multiple pages."""
+        from custom_components.guesty.api.const import (
+            RESERVATIONS_PAGE_SIZE,
+        )
+
+        _mock_token_endpoint()
+        page1 = [
+            _make_reservation_dict(_id=f"p1-{i}") for i in range(RESERVATIONS_PAGE_SIZE)
+        ]
+        page2 = [_make_reservation_dict(_id=f"p2-{i}") for i in range(30)]
+        route = respx.get(f"{BASE_URL}/reservations")
+        route.side_effect = [
+            # Primary: page 1 (full)
+            Response(
+                200,
+                json=_make_reservations_page(
+                    page1,
+                    count=130,
+                    limit=RESERVATIONS_PAGE_SIZE,
+                    skip=0,
+                ),
+            ),
+            # Primary: page 2 (partial)
+            Response(
+                200,
+                json=_make_reservations_page(
+                    page2,
+                    count=130,
+                    limit=RESERVATIONS_PAGE_SIZE,
+                    skip=RESERVATIONS_PAGE_SIZE,
+                ),
+            ),
+            # Secondary: empty
+            Response(
+                200,
+                json=_make_reservations_page([], count=0),
+            ),
+        ]
+        client, _, _ = _make_client()
+        result = await client.get_reservations()
+        assert len(result) == 130
+
+    @respx.mock
+    async def test_empty_account_returns_empty_list(self) -> None:
+        """Empty account returns empty list."""
+        _mock_token_endpoint()
+        route = respx.get(f"{BASE_URL}/reservations")
+        route.side_effect = [
+            Response(
+                200,
+                json=_make_reservations_page([], count=0),
+            ),
+            Response(
+                200,
+                json=_make_reservations_page([], count=0),
+            ),
+        ]
+        client, _, _ = _make_client()
+        result = await client.get_reservations()
+        assert result == []
+
+    @respx.mock
+    async def test_dual_request_merge(self) -> None:
+        """Primary and secondary results are merged."""
+        _mock_token_endpoint()
+        primary = [_make_reservation_dict(_id="primary-1")]
+        secondary = [
+            _make_reservation_dict(
+                _id="secondary-1",
+                status="checked_in",
+            ),
+        ]
+        route = respx.get(f"{BASE_URL}/reservations")
+        route.side_effect = [
+            Response(
+                200,
+                json=_make_reservations_page(primary, count=1),
+            ),
+            Response(
+                200,
+                json=_make_reservations_page(
+                    secondary,
+                    count=1,
+                ),
+            ),
+        ]
+        client, _, _ = _make_client()
+        result = await client.get_reservations()
+        assert len(result) == 2
+        ids = {r.id for r in result}
+        assert ids == {"primary-1", "secondary-1"}
+
+    @respx.mock
+    async def test_deduplication_by_reservation_id(self) -> None:
+        """Duplicate IDs across requests are de-duplicated."""
+        _mock_token_endpoint()
+        shared = _make_reservation_dict(
+            _id="shared-1",
+            status="checked_in",
+        )
+        route = respx.get(f"{BASE_URL}/reservations")
+        route.side_effect = [
+            Response(
+                200,
+                json=_make_reservations_page(
+                    [shared],
+                    count=1,
+                ),
+            ),
+            Response(
+                200,
+                json=_make_reservations_page(
+                    [shared],
+                    count=1,
+                ),
+            ),
+        ]
+        client, _, _ = _make_client()
+        result = await client.get_reservations()
+        assert len(result) == 1
+        assert result[0].id == "shared-1"
+
+    @respx.mock
+    async def test_secondary_checked_in_filter(self) -> None:
+        """Secondary request uses checked_in status filter."""
+        _mock_token_endpoint()
+        route = respx.get(f"{BASE_URL}/reservations")
+        route.side_effect = [
+            Response(
+                200,
+                json=_make_reservations_page([], count=0),
+            ),
+            Response(
+                200,
+                json=_make_reservations_page([], count=0),
+            ),
+        ]
+        client, _, _ = _make_client()
+        await client.get_reservations()
+        # Second call is the secondary request
+        secondary_req = route.calls[1].request
+        filters = json.loads(
+            secondary_req.url.params["filters"],
+        )
+        assert len(filters) == 1
+        assert filters[0]["field"] == "status"
+        assert filters[0]["operator"] == "$eq"
+        assert filters[0]["value"] == "checked_in"
+
+    @respx.mock
+    async def test_date_range_boundaries(self) -> None:
+        """Date boundaries computed from past/future days."""
+        from unittest.mock import patch as _patch
+
+        from custom_components.guesty.api.client import (
+            datetime as client_datetime,
+        )
+
+        _mock_token_endpoint()
+        fixed_now = datetime(2025, 8, 1, 12, 0, 0, tzinfo=UTC)
+        route = respx.get(f"{BASE_URL}/reservations")
+        route.side_effect = [
+            Response(
+                200,
+                json=_make_reservations_page([], count=0),
+            ),
+            Response(
+                200,
+                json=_make_reservations_page([], count=0),
+            ),
+        ]
+        client, _, _ = _make_client()
+        with _patch(
+            "custom_components.guesty.api.client.datetime",
+            wraps=client_datetime,
+        ) as mock_dt:
+            mock_dt.now.return_value = fixed_now
+            await client.get_reservations(
+                past_days=7,
+                future_days=14,
+            )
+
+        primary_req = route.calls[0].request
+        filters = json.loads(
+            primary_req.url.params["filters"],
+        )
+        checkin_filter = filters[0]
+        assert "2025-07-25" in checkin_filter["from"]
+        assert "2025-08-15" in checkin_filter["to"]
+
+    @respx.mock
+    async def test_custom_statuses(self) -> None:
+        """Custom statuses are passed through in filter."""
+        _mock_token_endpoint()
+        route = respx.get(f"{BASE_URL}/reservations")
+        route.side_effect = [
+            Response(
+                200,
+                json=_make_reservations_page([], count=0),
+            ),
+            Response(
+                200,
+                json=_make_reservations_page([], count=0),
+            ),
+        ]
+        client, _, _ = _make_client()
+        custom = frozenset({"confirmed", "checked_in"})
+        await client.get_reservations(statuses=custom)
+        primary_req = route.calls[0].request
+        filters = json.loads(
+            primary_req.url.params["filters"],
+        )
+        status_filter = filters[1]
+        assert sorted(status_filter["value"]) == [
+            "checked_in",
+            "confirmed",
+        ]
+
+    @respx.mock
+    async def test_auth_error_propagation(self) -> None:
+        """GuestyAuthError propagates from get_reservations."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                401,
+                json={"error": "invalid_client"},
+            ),
+        )
+        client, _, _ = _make_client()
+        with pytest.raises(GuestyAuthError):
+            await client.get_reservations()
+
+    @respx.mock
+    async def test_connection_error_propagation(self) -> None:
+        """GuestyConnectionError propagates."""
+        _mock_token_endpoint()
+        respx.get(f"{BASE_URL}/reservations").mock(
+            side_effect=httpx.ConnectError("refused"),
+        )
+        client, _, _ = _make_client()
+        with pytest.raises(GuestyConnectionError):
+            await client.get_reservations()
+
+    @respx.mock
+    async def test_response_error_on_malformed_json(self) -> None:
+        """GuestyResponseError on malformed API response."""
+        _mock_token_endpoint()
+        respx.get(f"{BASE_URL}/reservations").mock(
+            return_value=Response(
+                200,
+                content=b"not json",
+                headers={"content-type": "text/plain"},
+            ),
+        )
+        client, _, _ = _make_client()
+        with pytest.raises(
+            GuestyResponseError,
+            match="not valid JSON",
+        ):
+            await client.get_reservations()
+
+    @respx.mock
+    async def test_response_error_on_non_dict(self) -> None:
+        """GuestyResponseError on non-dict JSON response."""
+        _mock_token_endpoint()
+        respx.get(f"{BASE_URL}/reservations").mock(
+            return_value=Response(200, json=[1, 2, 3]),
+        )
+        client, _, _ = _make_client()
+        with pytest.raises(
+            GuestyResponseError,
+            match="must be a JSON object",
+        ):
+            await client.get_reservations()
+
+    @respx.mock
+    async def test_response_error_on_missing_results(self) -> None:
+        """GuestyResponseError when results key is absent."""
+        _mock_token_endpoint()
+        respx.get(f"{BASE_URL}/reservations").mock(
+            return_value=Response(
+                200,
+                json={"unexpected": "format"},
+            ),
+        )
+        client, _, _ = _make_client()
+        with pytest.raises(GuestyResponseError):
+            await client.get_reservations()
+
+    @respx.mock
+    async def test_response_error_on_non_list_results(self) -> None:
+        """GuestyResponseError when results is not a list."""
+        _mock_token_endpoint()
+        respx.get(f"{BASE_URL}/reservations").mock(
+            return_value=Response(
+                200,
+                json={"results": "not-a-list", "count": 0},
+            ),
+        )
+        client, _, _ = _make_client()
+        with pytest.raises(
+            GuestyResponseError,
+            match="must be a list",
+        ):
+            await client.get_reservations()
+
+    @respx.mock
+    async def test_response_error_on_non_success(self) -> None:
+        """Non-success HTTP status raises GuestyResponseError."""
+        _mock_token_endpoint()
+        respx.get(f"{BASE_URL}/reservations").mock(
+            return_value=Response(500, text="Server Error"),
+        )
+        client, _, _ = _make_client()
+        with pytest.raises(
+            GuestyResponseError,
+            match="Reservations fetch failed",
+        ):
+            await client.get_reservations()
+
+    @respx.mock
+    async def test_invalid_reservations_skipped(self) -> None:
+        """Reservations with missing fields are skipped."""
+        _mock_token_endpoint()
+        valid = _make_reservation_dict(_id="valid-1")
+        invalid = {"status": "confirmed"}  # missing _id
+        route = respx.get(f"{BASE_URL}/reservations")
+        route.side_effect = [
+            Response(
+                200,
+                json=_make_reservations_page(
+                    [valid, invalid],
+                    count=2,
+                ),
+            ),
+            Response(
+                200,
+                json=_make_reservations_page([], count=0),
+            ),
+        ]
+        client, _, _ = _make_client()
+        result = await client.get_reservations()
+        assert len(result) == 1
+        assert result[0].id == "valid-1"
+
+    @respx.mock
+    async def test_default_actionable_statuses(self) -> None:
+        """Default statuses filter uses ACTIONABLE_STATUSES."""
+        from custom_components.guesty.api.const import (
+            ACTIONABLE_STATUSES,
+        )
+
+        _mock_token_endpoint()
+        route = respx.get(f"{BASE_URL}/reservations")
+        route.side_effect = [
+            Response(
+                200,
+                json=_make_reservations_page([], count=0),
+            ),
+            Response(
+                200,
+                json=_make_reservations_page([], count=0),
+            ),
+        ]
+        client, _, _ = _make_client()
+        await client.get_reservations()
+        primary_req = route.calls[0].request
+        filters = json.loads(
+            primary_req.url.params["filters"],
+        )
+        status_filter = filters[1]
+        assert set(status_filter["value"]) == ACTIONABLE_STATUSES
