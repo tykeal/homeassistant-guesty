@@ -649,3 +649,52 @@ class TestGetListings:
             match="not valid JSON",
         ):
             await client.get_listings()
+
+    @respx.mock
+    async def test_non_dict_json_raises(self) -> None:
+        """Non-dict JSON body raises GuestyResponseError."""
+        from custom_components.guesty.api.exceptions import (
+            GuestyResponseError,
+        )
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}/listings").mock(
+            return_value=Response(200, json=[1, 2, 3]),
+        )
+        client, _, _ = _make_client()
+        with pytest.raises(
+            GuestyResponseError,
+            match="must be a JSON object",
+        ):
+            await client.get_listings()
+
+    @respx.mock
+    async def test_non_list_results_raises(self) -> None:
+        """Non-list results field raises GuestyResponseError."""
+        from custom_components.guesty.api.exceptions import (
+            GuestyResponseError,
+        )
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}/listings").mock(
+            return_value=Response(
+                200,
+                json={"results": "not-a-list", "count": 0},
+            ),
+        )
+        client, _, _ = _make_client()
+        with pytest.raises(
+            GuestyResponseError,
+            match="must be a list",
+        ):
+            await client.get_listings()

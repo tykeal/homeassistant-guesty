@@ -135,15 +135,26 @@ class GuestyApiClient:
                     "Listings response is not valid JSON",
                 ) from exc
 
-            if "results" not in data:
+            if not isinstance(data, dict):
+                raise GuestyResponseError(
+                    "Listings response must be a JSON object",
+                )
+
+            results = data.get("results")
+            if results is None:
                 raise GuestyResponseError(
                     "Listings response missing results",
+                )
+
+            if not isinstance(results, list):
+                raise GuestyResponseError(
+                    "Listings results must be a list",
                 )
 
             page = GuestyListingsResponse.from_api_dict(data)
             all_listings.extend(page.results)
 
-            if len(data["results"]) < LISTINGS_PAGE_SIZE:
+            if len(results) < LISTINGS_PAGE_SIZE:
                 break
 
             skip += LISTINGS_PAGE_SIZE

@@ -709,6 +709,41 @@ class TestGuestyListingFrozen:
         with pytest.raises(AttributeError):
             listing.title = "new"  # type: ignore[misc]
 
+    def test_custom_fields_immutable(self) -> None:
+        """custom_fields mapping cannot be mutated."""
+        listing = GuestyListing.from_api_dict(_make_listing_dict())
+        assert listing is not None
+        with pytest.raises(TypeError):
+            listing.custom_fields["new_key"] = "val"  # type: ignore[index]
+
+
+class TestGuestyListingDefensiveValidation:
+    """Tests for defensive type validation in from_api_dict."""
+
+    def test_non_dict_custom_fields_yields_empty(self) -> None:
+        """Non-dict customFields degrades to empty mapping."""
+        listing = GuestyListing.from_api_dict(
+            _make_listing_dict(customFields="not-a-dict"),
+        )
+        assert listing is not None
+        assert dict(listing.custom_fields) == {}
+
+    def test_non_list_tags_yields_empty(self) -> None:
+        """Non-list tags degrades to empty tuple."""
+        listing = GuestyListing.from_api_dict(
+            _make_listing_dict(tags="not-a-list"),
+        )
+        assert listing is not None
+        assert listing.tags == ()
+
+    def test_non_string_tags_filtered(self) -> None:
+        """Non-string tag entries are filtered out."""
+        listing = GuestyListing.from_api_dict(
+            _make_listing_dict(tags=["ok", 42, None, "good"]),
+        )
+        assert listing is not None
+        assert listing.tags == ("ok", "good")
+
 
 # ── GuestyListingsResponse Tests (T005) ─────────────────────────────
 
@@ -777,13 +812,13 @@ class TestGuestyListingsResponseFromApiDict:
         assert resp.skip == 200
 
     def test_empty_results(self) -> None:
-        """Empty results array yields empty list."""
+        """Empty results array yields empty tuple."""
         data = _make_listings_response(
             listings=[],
             count=0,
         )
         resp = GuestyListingsResponse.from_api_dict(data)
-        assert resp.results == []
+        assert resp.results == ()
         assert resp.count == 0
 
 
@@ -797,3 +832,33 @@ class TestGuestyListingsResponseFrozen:
         )
         with pytest.raises(AttributeError):
             resp.count = 99  # type: ignore[misc]
+
+
+class TestGuestyListingsResponseDefensive:
+    """Tests for defensive validation in from_api_dict."""
+
+    def test_non_dict_items_skipped(self) -> None:
+        """Non-dict items in results are skipped."""
+        data = {
+            "results": [
+                _make_listing_dict(),
+                "not-a-dict",
+                42,
+            ],
+            "count": 3,
+            "limit": 100,
+            "skip": 0,
+        }
+        resp = GuestyListingsResponse.from_api_dict(data)
+        assert len(resp.results) == 1
+
+    def test_non_list_results_yields_empty(self) -> None:
+        """Non-list results field degrades to empty tuple."""
+        data = {
+            "results": "not-a-list",
+            "count": 0,
+            "limit": 100,
+            "skip": 0,
+        }
+        resp = GuestyListingsResponse.from_api_dict(data)
+        assert resp.results == ()

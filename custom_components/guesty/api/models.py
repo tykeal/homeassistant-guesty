@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from types import MappingProxyType
 from typing import Any, Protocol
 
 from custom_components.guesty.api.const import (
@@ -344,7 +345,7 @@ class GuestyListing:
         check_in_time: Default check-in time (HH:MM), or None.
         check_out_time: Default check-out time (HH:MM), or None.
         tags: Immutable tuple of listing tags.
-        custom_fields: Custom name-value pairs as strings.
+        custom_fields: Immutable mapping of custom name-value pairs.
     """
 
     id: str
@@ -360,7 +361,7 @@ class GuestyListing:
     check_in_time: str | None
     check_out_time: str | None
     tags: tuple[str, ...]
-    custom_fields: dict[str, str]
+    custom_fields: MappingProxyType[str, str]
 
     @classmethod
     def from_api_dict(
@@ -389,10 +390,16 @@ class GuestyListing:
         title = data.get("title") or nickname or "Unknown"
 
         raw_tags = data.get("tags", [])
-        tags = tuple(raw_tags) if raw_tags else ()
+        tags = (
+            tuple(tag for tag in raw_tags if isinstance(tag, str))
+            if isinstance(raw_tags, (list, tuple))
+            else ()
+        )
 
         raw_cf = data.get("customFields", {})
-        custom_fields = {k: str(v) for k, v in raw_cf.items()} if raw_cf else {}
+        custom_fields = MappingProxyType(
+            {k: str(v) for k, v in raw_cf.items()} if isinstance(raw_cf, dict) else {},
+        )
 
         return cls(
             id=listing_id,
@@ -444,13 +451,13 @@ class GuestyListingsResponse:
     """Pagination response wrapper for the listings endpoint.
 
     Attributes:
-        results: Parsed listings (filtered for valid entries).
+        results: Immutable tuple of parsed valid listings.
         count: Total count from API metadata.
         limit: Page size used.
         skip: Offset used.
     """
 
-    results: list[GuestyListing]
+    results: tuple[GuestyListing, ...]
     count: int
     limit: int
     skip: int
@@ -463,7 +470,7 @@ class GuestyListingsResponse:
         """Create from an API response dictionary.
 
         Parses ``results`` via ``GuestyListing.from_api_dict()``,
-        filtering out None entries (invalid listings).
+        filtering out None entries and non-dict items.
 
         Args:
             data: Response dictionary from the listings endpoint.
@@ -472,11 +479,14 @@ class GuestyListingsResponse:
             A GuestyListingsResponse instance.
         """
         raw_results = data.get("results", [])
-        listings = [
+        if not isinstance(raw_results, list):
+            raw_results = []
+        listings = tuple(
             listing
             for item in raw_results
-            if (listing := GuestyListing.from_api_dict(item)) is not None
-        ]
+            if isinstance(item, dict)
+            and (listing := GuestyListing.from_api_dict(item)) is not None
+        )
         return cls(
             results=listings,
             count=data.get("count", 0),
