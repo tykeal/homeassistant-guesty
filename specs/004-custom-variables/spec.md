@@ -15,6 +15,12 @@ results, etc.) back into Guesty custom fields on listings. These
 custom variables can then be used in Guesty templates, reports,
 and automation workflows."
 
+> **Terminology note**: "Custom variables" in this feature refers
+> to Guesty's "custom fields" — user-defined name-value pairs
+> that can be attached to listings and reservations. This
+> specification uses the term "custom fields" consistently to
+> align with Guesty's API and dashboard terminology.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Set a Custom Field on a Listing (Priority: P1)
@@ -172,8 +178,8 @@ what is shown in the Guesty dashboard.
 
 1. **Given** the Guesty account has custom fields defined, **When**
    the integration fetches custom field definitions, **Then** each
-   field's name, identifier, and value type are available within
-   Home Assistant.
+   field's name, identifier, value type, and applicability (listing,
+   reservation, or both) are available within Home Assistant.
 2. **Given** the Guesty account has no custom fields defined,
    **When** the integration fetches definitions, **Then** an empty
    list is returned without errors.
@@ -183,6 +189,10 @@ what is shown in the Guesty dashboard.
 4. **Given** a custom field is deleted in Guesty, **When** the next
    data refresh occurs, **Then** the deleted field is removed from
    the available fields list.
+5. **Given** custom fields exist for both listings and reservations,
+   **When** the user queries available fields for a specific target
+   type, **Then** only fields applicable to that target type are
+   shown.
 
 ---
 
@@ -284,14 +294,18 @@ validation errors, retries, and error messages.
   automations and scripts, supporting standard service call
   patterns including template rendering for dynamic values.
 - **FR-008**: The integration MUST fetch and cache account-level
-  custom field definitions (name, identifier, value type) to
-  enable field discovery and local type validation.
+  custom field definitions (name, identifier, value type,
+  applicability) to enable field discovery, entity-type-based
+  filtering, and local type validation. Applicability MUST
+  indicate whether a field applies to listings, reservations,
+  or both.
 - **FR-009**: Custom field definitions MUST be refreshed
   periodically, with a default refresh interval matching the
   listing data refresh.
 - **FR-010**: The integration MUST expose custom field definitions
-  (name, identifier, value type) so users can discover available
-  fields within Home Assistant.
+  (name, identifier, value type, applicability) so users can
+  discover available fields within Home Assistant for the
+  relevant target entity type.
 - **FR-011**: The service MUST handle rate limit responses from
   Guesty by retrying with exponential backoff and jitter,
   consistent with the rate limit handling from Feature 001.
@@ -325,9 +339,9 @@ directly covered by user story acceptance scenarios.
 
 1. **Given** the custom field definitions have been fetched
    (FR-008), **When** the user calls the service with a field
-   identifier not present in the definitions, **Then** the service
-   returns a clear error listing available fields for the target
-   entity type.
+   identifier not present in the definitions for the specified
+   target entity type, **Then** the service returns a clear error
+   listing available fields for that entity type.
 2. **Given** the custom field definitions cache has expired
    (FR-009), **When** the next scheduled refresh occurs, **Then**
    the definitions are re-fetched and the cache is updated.
@@ -347,10 +361,10 @@ directly covered by user story acceptance scenarios.
 
 - **Custom Field Definition**: An account-level definition of a
   custom field. Key attributes: unique identifier (field ID),
-  display name, value type (text, number, boolean), and the
-  entity types it applies to (listing, reservation, or both).
-  Definitions are managed in Guesty and fetched by the
-  integration for discovery and validation.
+  display name, value type (text, number, boolean), and
+  applicability indicating whether the field applies to listings,
+  reservations, or both. Definitions are managed in Guesty and
+  fetched by the integration for discovery and validation.
 - **Custom Field Value**: A specific value assigned to a custom
   field on a listing or reservation. Key attributes: the field
   identifier (referencing a Custom Field Definition), the value
