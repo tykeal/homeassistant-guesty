@@ -399,12 +399,12 @@ class TestAutomationCompatibility:
         new_callable=AsyncMock,
         return_value=True,
     )
-    async def test_service_call_renders_ha_templates(
+    async def test_service_call_passes_resolved_message(
         self,
         mock_test: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
-        """HA template-rendered message sends resolved text."""
+        """Pre-resolved HA template message is passed through."""
         entry = _make_entry()
         entry.add_to_hass(hass)
 
@@ -424,17 +424,21 @@ class TestAutomationCompatibility:
 
         entity_id = next(s.entity_id for s in hass.states.async_all("notify"))
 
+        # HA resolves templates before the service call reaches
+        # the entity, so the entity receives the resolved string.
+        resolved_msg = "Your code is 9876"
+
         await hass.services.async_call(
             "notify",
             "send_message",
-            {"message": "Hello from HA", "title": "res-tpl"},
+            {"message": resolved_msg, "title": "res-tpl"},
             target={"entity_id": entity_id},
             blocking=True,
         )
 
         mock_client.send_message.assert_called_once_with(
             reservation_id="res-tpl",
-            body="Hello from HA",
+            body=resolved_msg,
         )
 
     @patch(

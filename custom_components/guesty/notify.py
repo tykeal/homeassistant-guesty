@@ -119,7 +119,9 @@ class GuestyNotifyEntity(NotifyEntity):
             )
         except GuestyMessageError as exc:
             _LOGGER.error(
-                "Message delivery failed for reservation '%s'",
+                "Message delivery failed for reservation '%s': %s",
                 title,
+                exc,
+                exc_info=exc,
             )
             raise HomeAssistantError(str(exc)) from exc
