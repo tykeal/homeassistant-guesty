@@ -1459,7 +1459,7 @@ class TestSetupEntryNoFilterOptions:
 
 
 class TestDeselectedDeviceRemoval:
-    """Tests for clean removal of deselected listing devices (T030-T033)."""
+    """Tests for listing filter changes triggering reload (T030-T033)."""
 
     @pytest.fixture(autouse=True)
     def _mock_cf_defs(self) -> Generator[None]:
@@ -1485,7 +1485,7 @@ class TestDeselectedDeviceRemoval:
         new_callable=AsyncMock,
         return_value=True,
     )
-    async def test_options_updated_removes_device_when_deselected(
+    async def test_options_updated_reloads_when_deselected(
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
@@ -1493,43 +1493,21 @@ class TestDeselectedDeviceRemoval:
         hass: HomeAssistant,
         sample_listing: object,
     ) -> None:
-        """T030: Deselecting a listing removes its device."""
-        from types import MappingProxyType
-
-        from homeassistant.helpers import device_registry as dr
-
+        """T030: Deselecting a listing triggers config entry reload."""
         from custom_components.guesty.api.models import (
             GuestyListing,
         )
 
         listing_a = sample_listing
         assert isinstance(listing_a, GuestyListing)
-        listing_b = GuestyListing(
-            id="listing-002",
-            title="Mountain Cabin",
-            nickname="cabin",
-            status="active",
-            address=None,
-            property_type="house",
-            room_type="entire_home",
-            listing_type="SINGLE",
-            bedrooms=3,
-            bathrooms=2.0,
-            accommodates=6,
-            timezone="America/Denver",
-            check_in_time="16:00",
-            check_out_time="10:00",
-            tags=(),
-            custom_fields=MappingProxyType({}),
-        )
 
-        mock_listings.return_value = [listing_a, listing_b]
+        mock_listings.return_value = [listing_a]
 
         entry = _make_entry(
             options={
                 CONF_SELECTED_LISTINGS: [
                     listing_a.id,
-                    listing_b.id,
+                    "listing-002",
                 ],
             },
         )
@@ -1537,172 +1515,136 @@ class TestDeselectedDeviceRemoval:
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
-        dev_reg = dr.async_get(hass)
-        devices_before = dr.async_entries_for_config_entry(
-            dev_reg,
-            entry.entry_id,
-        )
-        all_listing_ids = {listing_a.id, listing_b.id}
-        device_ids_before = {
-            identifier[1]
-            for dev in devices_before
-            for identifier in dev.identifiers
-            if identifier[0] == DOMAIN and identifier[1] in all_listing_ids
-        }
-        assert listing_a.id in device_ids_before
-        assert listing_b.id in device_ids_before
+        with patch.object(
+            hass.config_entries,
+            "async_reload",
+            new_callable=AsyncMock,
+        ) as mock_reload:
+            hass.config_entries.async_update_entry(
+                entry,
+                options={
+                    CONF_SELECTED_LISTINGS: [listing_a.id],
+                },
+            )
+            await hass.async_block_till_done()
 
-        # Deselect listing_b
-        hass.config_entries.async_update_entry(
-            entry,
+            mock_reload.assert_awaited_once_with(entry.entry_id)
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_options_updated_reloads_when_multiple_deselected(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """T031: Deselecting multiple listings triggers reload."""
+        from custom_components.guesty.api.models import (
+            GuestyListing,
+        )
+
+        listing_a = sample_listing
+        assert isinstance(listing_a, GuestyListing)
+
+        mock_listings.return_value = [listing_a]
+
+        entry = _make_entry(
+            options={
+                CONF_SELECTED_LISTINGS: [
+                    listing_a.id,
+                    "listing-002",
+                    "listing-003",
+                ],
+            },
+        )
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        with patch.object(
+            hass.config_entries,
+            "async_reload",
+            new_callable=AsyncMock,
+        ) as mock_reload:
+            hass.config_entries.async_update_entry(
+                entry,
+                options={
+                    CONF_SELECTED_LISTINGS: [listing_a.id],
+                },
+            )
+            await hass.async_block_till_done()
+
+            mock_reload.assert_awaited_once_with(entry.entry_id)
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_options_updated_no_reload_when_same_selection(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """T032: Same selection does not trigger reload."""
+        from custom_components.guesty.api.models import (
+            GuestyListing,
+        )
+
+        listing_a = sample_listing
+        assert isinstance(listing_a, GuestyListing)
+
+        mock_listings.return_value = [listing_a]
+
+        entry = _make_entry(
             options={
                 CONF_SELECTED_LISTINGS: [listing_a.id],
             },
         )
-        await hass.async_block_till_done()
-
-        devices_after = dr.async_entries_for_config_entry(
-            dev_reg,
-            entry.entry_id,
-        )
-        device_ids_after = {
-            identifier[1]
-            for dev in devices_after
-            for identifier in dev.identifiers
-            if identifier[0] == DOMAIN and identifier[1] in all_listing_ids
-        }
-        assert listing_a.id in device_ids_after
-        assert listing_b.id not in device_ids_after
-
-    @patch(
-        "custom_components.guesty.GuestyApiClient.get_reservations",
-        new_callable=AsyncMock,
-        return_value=[],
-    )
-    @patch(
-        "custom_components.guesty.GuestyApiClient.get_listings",
-        new_callable=AsyncMock,
-    )
-    @patch(
-        "custom_components.guesty.GuestyApiClient.test_connection",
-        new_callable=AsyncMock,
-        return_value=True,
-    )
-    async def test_options_updated_removes_multiple_devices(
-        self,
-        mock_test: AsyncMock,
-        mock_listings: AsyncMock,
-        mock_reservations: AsyncMock,
-        hass: HomeAssistant,
-        sample_listing: object,
-    ) -> None:
-        """T031: Deselecting multiple listings removes all devices."""
-        from types import MappingProxyType
-
-        from homeassistant.helpers import device_registry as dr
-
-        from custom_components.guesty.api.models import (
-            GuestyListing,
-        )
-
-        listing_a = sample_listing
-        assert isinstance(listing_a, GuestyListing)
-        listing_b = GuestyListing(
-            id="listing-002",
-            title="Mountain Cabin",
-            nickname="cabin",
-            status="active",
-            address=None,
-            property_type="house",
-            room_type="entire_home",
-            listing_type="SINGLE",
-            bedrooms=3,
-            bathrooms=2.0,
-            accommodates=6,
-            timezone="America/Denver",
-            check_in_time="16:00",
-            check_out_time="10:00",
-            tags=(),
-            custom_fields=MappingProxyType({}),
-        )
-        listing_c = GuestyListing(
-            id="listing-003",
-            title="Lake House",
-            nickname="lake",
-            status="active",
-            address=None,
-            property_type="house",
-            room_type="entire_home",
-            listing_type="SINGLE",
-            bedrooms=2,
-            bathrooms=1.0,
-            accommodates=4,
-            timezone="America/Chicago",
-            check_in_time="14:00",
-            check_out_time="11:00",
-            tags=(),
-            custom_fields=MappingProxyType({}),
-        )
-
-        mock_listings.return_value = [
-            listing_a,
-            listing_b,
-            listing_c,
-        ]
-
-        entry = _make_entry(
-            options={
-                CONF_SELECTED_LISTINGS: [
-                    listing_a.id,
-                    listing_b.id,
-                    listing_c.id,
-                ],
-            },
-        )
         entry.add_to_hass(hass)
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
-        dev_reg = dr.async_get(hass)
-        devices_before = dr.async_entries_for_config_entry(
-            dev_reg,
-            entry.entry_id,
-        )
-        all_listing_ids = {
-            listing_a.id,
-            listing_b.id,
-            listing_c.id,
-        }
-        listing_ids_before = {
-            identifier[1]
-            for dev in devices_before
-            for identifier in dev.identifiers
-            if identifier[0] == DOMAIN and identifier[1] in all_listing_ids
-        }
-        assert listing_a.id in listing_ids_before
-        assert listing_b.id in listing_ids_before
-        assert listing_c.id in listing_ids_before
+        with patch.object(
+            hass.config_entries,
+            "async_reload",
+            new_callable=AsyncMock,
+        ) as mock_reload:
+            hass.config_entries.async_update_entry(
+                entry,
+                options={
+                    CONF_SELECTED_LISTINGS: [listing_a.id],
+                },
+            )
+            await hass.async_block_till_done()
 
-        # Deselect listing_b and listing_c
-        hass.config_entries.async_update_entry(
-            entry,
-            options={
-                CONF_SELECTED_LISTINGS: [listing_a.id],
-            },
-        )
-        await hass.async_block_till_done()
-
-        devices_after = dr.async_entries_for_config_entry(
-            dev_reg,
-            entry.entry_id,
-        )
-        listing_ids_after = {
-            identifier[1]
-            for dev in devices_after
-            for identifier in dev.identifiers
-            if identifier[0] == DOMAIN and identifier[1] in all_listing_ids
-        }
-        assert listing_ids_after == {listing_a.id}
+            mock_reload.assert_not_awaited()
 
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
@@ -1718,7 +1660,7 @@ class TestDeselectedDeviceRemoval:
         new_callable=AsyncMock,
         return_value=True,
     )
-    async def test_options_updated_keeps_selected_devices(
+    async def test_options_updated_reloads_none_to_explicit(
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
@@ -1726,143 +1668,15 @@ class TestDeselectedDeviceRemoval:
         hass: HomeAssistant,
         sample_listing: object,
     ) -> None:
-        """T032: Selected listings keep their devices."""
-        from types import MappingProxyType
-
-        from homeassistant.helpers import device_registry as dr
-
+        """T033: None to explicit selection triggers reload."""
         from custom_components.guesty.api.models import (
             GuestyListing,
         )
 
         listing_a = sample_listing
         assert isinstance(listing_a, GuestyListing)
-        listing_b = GuestyListing(
-            id="listing-002",
-            title="Mountain Cabin",
-            nickname="cabin",
-            status="active",
-            address=None,
-            property_type="house",
-            room_type="entire_home",
-            listing_type="SINGLE",
-            bedrooms=3,
-            bathrooms=2.0,
-            accommodates=6,
-            timezone="America/Denver",
-            check_in_time="16:00",
-            check_out_time="10:00",
-            tags=(),
-            custom_fields=MappingProxyType({}),
-        )
 
-        mock_listings.return_value = [listing_a, listing_b]
-
-        entry = _make_entry(
-            options={
-                CONF_SELECTED_LISTINGS: [
-                    listing_a.id,
-                    listing_b.id,
-                ],
-            },
-        )
-        entry.add_to_hass(hass)
-        await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
-
-        dev_reg = dr.async_get(hass)
-        devices_before = dr.async_entries_for_config_entry(
-            dev_reg,
-            entry.entry_id,
-        )
-        all_listing_ids = {listing_a.id, listing_b.id}
-        listing_ids_before = {
-            identifier[1]
-            for dev in devices_before
-            for identifier in dev.identifiers
-            if identifier[0] == DOMAIN and identifier[1] in all_listing_ids
-        }
-        assert listing_a.id in listing_ids_before
-        assert listing_b.id in listing_ids_before
-
-        # Update options but keep both selected
-        hass.config_entries.async_update_entry(
-            entry,
-            options={
-                CONF_SELECTED_LISTINGS: [
-                    listing_a.id,
-                    listing_b.id,
-                ],
-            },
-        )
-        await hass.async_block_till_done()
-
-        devices_after = dr.async_entries_for_config_entry(
-            dev_reg,
-            entry.entry_id,
-        )
-        listing_ids_after = {
-            identifier[1]
-            for dev in devices_after
-            for identifier in dev.identifiers
-            if identifier[0] == DOMAIN and identifier[1] in all_listing_ids
-        }
-        assert listing_a.id in listing_ids_after
-        assert listing_b.id in listing_ids_after
-
-    @patch(
-        "custom_components.guesty.GuestyApiClient.get_reservations",
-        new_callable=AsyncMock,
-        return_value=[],
-    )
-    @patch(
-        "custom_components.guesty.GuestyApiClient.get_listings",
-        new_callable=AsyncMock,
-    )
-    @patch(
-        "custom_components.guesty.GuestyApiClient.test_connection",
-        new_callable=AsyncMock,
-        return_value=True,
-    )
-    async def test_options_updated_none_to_explicit_keeps_selected(
-        self,
-        mock_test: AsyncMock,
-        mock_listings: AsyncMock,
-        mock_reservations: AsyncMock,
-        hass: HomeAssistant,
-        sample_listing: object,
-    ) -> None:
-        """T033: None to explicit selection keeps selected devices."""
-        from types import MappingProxyType
-
-        from homeassistant.helpers import device_registry as dr
-
-        from custom_components.guesty.api.models import (
-            GuestyListing,
-        )
-
-        listing_a = sample_listing
-        assert isinstance(listing_a, GuestyListing)
-        listing_b = GuestyListing(
-            id="listing-002",
-            title="Mountain Cabin",
-            nickname="cabin",
-            status="active",
-            address=None,
-            property_type="house",
-            room_type="entire_home",
-            listing_type="SINGLE",
-            bedrooms=3,
-            bathrooms=2.0,
-            accommodates=6,
-            timezone="America/Denver",
-            check_in_time="16:00",
-            check_out_time="10:00",
-            tags=(),
-            custom_fields=MappingProxyType({}),
-        )
-
-        mock_listings.return_value = [listing_a, listing_b]
+        mock_listings.return_value = [listing_a]
 
         # Start with no filter (None = all tracked)
         entry = _make_entry()
@@ -1870,39 +1684,17 @@ class TestDeselectedDeviceRemoval:
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
-        dev_reg = dr.async_get(hass)
-        devices_before = dr.async_entries_for_config_entry(
-            dev_reg,
-            entry.entry_id,
-        )
-        all_listing_ids = {listing_a.id, listing_b.id}
-        listing_ids_before = {
-            identifier[1]
-            for dev in devices_before
-            for identifier in dev.identifiers
-            if identifier[0] == DOMAIN and identifier[1] in all_listing_ids
-        }
-        assert listing_a.id in listing_ids_before
-        assert listing_b.id in listing_ids_before
+        with patch.object(
+            hass.config_entries,
+            "async_reload",
+            new_callable=AsyncMock,
+        ) as mock_reload:
+            hass.config_entries.async_update_entry(
+                entry,
+                options={
+                    CONF_SELECTED_LISTINGS: [listing_a.id],
+                },
+            )
+            await hass.async_block_till_done()
 
-        # Transition from None to explicit (keep listing_a only)
-        hass.config_entries.async_update_entry(
-            entry,
-            options={
-                CONF_SELECTED_LISTINGS: [listing_a.id],
-            },
-        )
-        await hass.async_block_till_done()
-
-        devices_after = dr.async_entries_for_config_entry(
-            dev_reg,
-            entry.entry_id,
-        )
-        listing_ids_after = {
-            identifier[1]
-            for dev in devices_after
-            for identifier in dev.identifiers
-            if identifier[0] == DOMAIN and identifier[1] in all_listing_ids
-        }
-        assert listing_a.id in listing_ids_after
-        assert listing_b.id not in listing_ids_after
+            mock_reload.assert_awaited_once_with(entry.entry_id)

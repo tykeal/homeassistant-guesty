@@ -13,6 +13,7 @@ from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -1443,7 +1444,14 @@ class TestReaddedListingRecreatesEntities:
         hass: HomeAssistant,
         sample_listing: GuestyListing,
     ) -> None:
-        """T034: Re-selecting listing recreates its sensors."""
+        """T034: Re-selecting listing recreates its sensors.
+
+        Simulates the full reload cycle: both listings present,
+        then listing_b removed (deselect reload), then listing_b
+        re-added (re-select reload).  Each call to the sensor
+        platform's async_setup_entry creates a fresh known_ids
+        set, so re-added listings are always discovered.
+        """
         listing_b = GuestyListing(
             id="listing-002",
             title="Mountain Cabin",
@@ -1467,8 +1475,6 @@ class TestReaddedListingRecreatesEntities:
         entry.add_to_hass(hass)
 
         coordinator = AsyncMock(spec=DataUpdateCoordinator)
-        # Start with only listing_a (listing_b deselected)
-        coordinator.data = {sample_listing.id: sample_listing}
         coordinator.async_add_listener = MagicMock(
             return_value=MagicMock(),
         )
@@ -1486,46 +1492,83 @@ class TestReaddedListingRecreatesEntities:
             "reservations_coordinator": res_coordinator,
         }
 
-        added_entities: list[Entity] = []
+        def _make_collector() -> tuple[
+            list[Entity],
+            AddEntitiesCallback,
+        ]:
+            """Return a fresh entity list and add-entities callback.
 
-        def mock_add_entities(
-            new_entities: Iterable[Entity],
-            update_before_add: bool = False,
-        ) -> None:
-            """Capture entities added by the platform.
+            Returns:
+                Tuple of (entity list, add callback).
+            """
+            entities: list[Entity] = []
+
+            def _add(
+                new: Iterable[Entity],
+                update_before_add: bool = False,
+            ) -> None:
+                """Capture entities added by the platform.
+
+                Args:
+                    new: Entities to add.
+                    update_before_add: Whether to update first.
+                """
+                entities.extend(list(new))
+
+            return entities, _add  # type: ignore[return-value]
+
+        def _unique_ids(
+            entities: list[Entity],
+        ) -> set[str]:
+            """Extract unique_ids from entity list.
 
             Args:
-                new_entities: Entities to add.
-                update_before_add: Whether to update first.
+                entities: List of entities to inspect.
+
+            Returns:
+                Set of unique_id strings.
             """
-            added_entities.extend(list(new_entities))
+            return {
+                e.unique_id for e in entities if hasattr(e, "unique_id") and e.unique_id
+            }
 
-        await async_setup_entry(hass, entry, mock_add_entities)
-        initial_count = len(added_entities)
-
-        # Verify only listing_a sensors exist
-        ids_before = {
-            e.unique_id
-            for e in added_entities
-            if hasattr(e, "unique_id") and e.unique_id
-        }
-        assert any(sample_listing.id in uid for uid in ids_before)
-        assert not any("listing-002" in uid for uid in ids_before)
-
-        # Simulate re-adding listing_b (coordinator refresh)
+        # Phase 1: Both listings present
         coordinator.data = {
             sample_listing.id: sample_listing,
             listing_b.id: listing_b,
         }
+        phase1, add1 = _make_collector()
+        await async_setup_entry(hass, entry, add1)
 
-        listener_call = coordinator.async_add_listener.call_args
-        assert listener_call is not None
-        listener_fn = listener_call[0][0]
-        listener_fn()
+        ids1 = _unique_ids(phase1)
+        assert any(sample_listing.id in uid for uid in ids1)
+        assert any(listing_b.id in uid for uid in ids1)
 
-        new_entities = added_entities[initial_count:]
-        assert len(new_entities) > 0
-        new_ids = {
-            e.unique_id for e in new_entities if hasattr(e, "unique_id") and e.unique_id
+        # Phase 2: Simulate reload after deselecting listing_b
+        coordinator.data = {
+            sample_listing.id: sample_listing,
         }
-        assert any("listing-002" in uid for uid in new_ids)
+        coordinator.async_add_listener = MagicMock(
+            return_value=MagicMock(),
+        )
+        phase2, add2 = _make_collector()
+        await async_setup_entry(hass, entry, add2)
+
+        ids2 = _unique_ids(phase2)
+        assert any(sample_listing.id in uid for uid in ids2)
+        assert not any(listing_b.id in uid for uid in ids2)
+
+        # Phase 3: Simulate reload after re-selecting listing_b
+        coordinator.data = {
+            sample_listing.id: sample_listing,
+            listing_b.id: listing_b,
+        }
+        coordinator.async_add_listener = MagicMock(
+            return_value=MagicMock(),
+        )
+        phase3, add3 = _make_collector()
+        await async_setup_entry(hass, entry, add3)
+
+        ids3 = _unique_ids(phase3)
+        assert any(sample_listing.id in uid for uid in ids3)
+        assert any(listing_b.id in uid for uid in ids3)

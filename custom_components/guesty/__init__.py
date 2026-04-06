@@ -23,7 +23,6 @@ from homeassistant.core import (
     SupportsResponse,
 )
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
-from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.httpx_client import get_async_client
 
 from custom_components.guesty.api.actions import GuestyActionsClient
@@ -177,40 +176,6 @@ class HATokenStorage:
 # Verify protocol compliance at type-check time only
 if TYPE_CHECKING:
     _check: TokenStorage = HATokenStorage.__new__(HATokenStorage)
-
-
-def _remove_deselected_devices(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-    selected_ids: set[str],
-) -> None:
-    """Remove devices for listings no longer in the selected set.
-
-    Iterates devices registered to this config entry, extracts
-    listing IDs from device identifiers, and removes any device
-    whose listing ID is not in *selected_ids*.
-
-    Args:
-        hass: Home Assistant instance.
-        entry: The config entry owning the devices.
-        selected_ids: Listing IDs that should remain.
-    """
-    dev_registry = dr.async_get(hass)
-    for device in dr.async_entries_for_config_entry(
-        dev_registry,
-        entry.entry_id,
-    ):
-        for identifier in device.identifiers:
-            if (
-                identifier[0] == DOMAIN
-                and identifier[1] != entry.entry_id
-                and identifier[1] not in selected_ids
-            ):
-                dev_registry.async_update_device(
-                    device.id,
-                    remove_config_entry_id=entry.entry_id,
-                )
-                break
 
 
 async def async_setup_entry(
@@ -420,26 +385,30 @@ async def async_setup_entry(
             supports_response=SupportsResponse.OPTIONAL,
         )
 
+    _prev_selected = entry.options.get(CONF_SELECTED_LISTINGS)
+
     async def _async_options_updated(
         hass: HomeAssistant,
         entry: ConfigEntry,
     ) -> None:
-        """Handle options update by reconfiguring coordinators.
+        """Handle options update by reloading or reconfiguring.
 
-        Removes devices for deselected listings and updates
-        coordinator polling intervals.
+        When the selected-listings filter changes, reloads the
+        config entry so that all entities and devices are cleanly
+        torn down and recreated with the new filter.  When only
+        polling intervals change, updates coordinators in place.
 
         Args:
             hass: Home Assistant instance.
             entry: The config entry that was updated.
         """
-        selected = entry.options.get(CONF_SELECTED_LISTINGS)
-        if selected is not None:
-            _remove_deselected_devices(
-                hass,
-                entry,
-                set(selected),
-            )
+        nonlocal _prev_selected
+
+        new_selected = entry.options.get(CONF_SELECTED_LISTINGS)
+        if new_selected != _prev_selected:
+            _prev_selected = new_selected
+            await hass.config_entries.async_reload(entry.entry_id)
+            return
 
         from datetime import timedelta
 
