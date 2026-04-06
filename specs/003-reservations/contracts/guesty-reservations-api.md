@@ -155,8 +155,15 @@ async def get_reservations(
 ) -> list[GuestyReservation]:
     """Fetch reservations with date and status filters.
 
-    Iterates through all pages of the Guesty reservations
-    endpoint, requesting 100 reservations per page.
+    Makes two paginated requests to the Guesty reservations
+    endpoint:
+    1. Primary: checkIn date-range filter with status filter
+       for the configurable window.
+    2. Secondary: checked_in status only (no date filter)
+       to capture long-stay active reservations whose
+       checkIn predates the date window.
+
+    Results are merged and de-duplicated by reservation ID.
     Reservations missing required fields (_id, listingId,
     status, checkIn, checkOut) are skipped with a warning.
 
@@ -169,7 +176,8 @@ async def get_reservations(
             Defaults to ACTIONABLE_STATUSES if None.
 
     Returns:
-        List of valid GuestyReservation objects.
+        De-duplicated list of valid GuestyReservation
+        objects from both requests.
 
     Raises:
         GuestyAuthError: On authentication failure.
