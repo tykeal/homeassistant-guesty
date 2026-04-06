@@ -376,7 +376,7 @@ unavailable when no financial data exists.
 
 <!-- markdownlint-disable MD013 -->
 
-- [ ] T026 [US4] Write tests for financial diagnostic sensors:
+- [x] T026 [US4] Write tests for financial diagnostic sensors:
   `reservation_total` `native_value` returns
   `money.total_paid`, `reservation_balance` returns
   `money.balance_due`, `reservation_currency` returns
@@ -394,15 +394,15 @@ unavailable when no financial data exists.
 
 <!-- markdownlint-disable MD013 -->
 
-- [ ] T027 [US4] Add `reservation_total`,
+- [x] T027 [US4] Add `reservation_total`,
   `reservation_balance`, `reservation_currency` sensor
   descriptions with
   `entity_category=EntityCategory.DIAGNOSTIC` and
   appropriate `value_fn` callables to
-  `RESERVATION_SENSOR_DESCRIPTIONS`; update
+  `RESERVATION_FINANCIAL_DESCRIPTIONS`; update
   `async_setup_entry` to create financial sensors per listing
   in `custom_components/guesty/sensor.py`
-- [ ] T028 [P] [US4] Add translations for
+- [x] T028 [P] [US4] Add translations for
   `reservation_total` ("Reservation total"),
   `reservation_balance` ("Reservation balance"),
   `reservation_currency` ("Reservation currency") to
