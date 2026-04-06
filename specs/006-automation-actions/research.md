@@ -17,11 +17,11 @@ each action:
 
 | Action | Method | Endpoint |
 | ------ | ------ | -------- |
-| Add reservation note | PUT | `/reservations/{id}` |
-| Set listing status | PUT | `/listings/{id}` |
+| Add reservation note | PUT | `/reservations/{reservation_id}` |
+| Set listing status | PUT | `/listings/{listing_id}` |
 | Create task | POST | `/tasks-open-api/tasks` |
 | Calendar availability | PUT | (see below) |
-| Update custom field | PUT | `/reservations/{id}` |
+| Update custom field | PUT | `/reservations/{reservation_id}` |
 
 **Calendar endpoint**: The Guesty availability/pricing calendar
 API uses
@@ -32,7 +32,8 @@ with a JSON body containing a date range, using `dateFrom` and
 
 **Rationale**: These endpoints are documented in the Guesty
 Open API v1 reference and Postman collection. The reservation
-update endpoint (`PUT /reservations/{id}`) accepts partial
+update endpoint (`PUT /reservations/{reservation_id}`) accepts
+partial
 updates, allowing notes and custom fields to be set without
 overwriting other reservation data. The listings endpoint
 similarly supports partial updates for status changes.

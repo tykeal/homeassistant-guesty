@@ -111,7 +111,7 @@ GuestyActionsClient → delegates to → GuestyApiClient
 GuestyActionError → raised by → GuestyActionsClient
 HA service handlers → call → GuestyActionsClient
 HA service handlers → translate → GuestyActionError
-  → ServiceValidationError
+  → HomeAssistantError
 ```
 
 ## State Transitions
@@ -124,7 +124,7 @@ cycle:
 2. Parameters valid → call GuestyActionsClient method
 3. API success → return ActionResult(success=True)
 4. API failure → raise GuestyActionError → translate to
-   ServiceValidationError
+   HomeAssistantError
 
 Local sensor state updates on the next coordinator polling
 cycle (eventual consistency).

@@ -40,7 +40,7 @@ uv run ruff check custom_components/ tests/
 uv run ruff format --check custom_components/ tests/
 
 # Type checking
-uv run mypy custom_components/
+uv run mypy custom_components/ tests/
 
 # Docstring coverage
 uv run interrogate custom_components/
@@ -66,7 +66,7 @@ uv run pre-commit run --all-files
 │  actions.py (HA side)         │
 │  - Voluptuous schema          │
 │  - Exception translation      │
-│  - ServiceValidationError     │
+│  - HomeAssistantError         │
 └──────────┬────────────────────┘
            │ method call
            ▼

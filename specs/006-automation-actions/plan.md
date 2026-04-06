@@ -28,7 +28,7 @@ HA-independent `api/` sub-package (zero `homeassistant.*`
 imports) containing input validation, write-operation methods,
 and response models. An HA-side `actions.py` module bridges the
 API client to Home Assistant's service infrastructure, translating
-exceptions into `ServiceValidationError` for clear automation
+exceptions into `HomeAssistantError` for clear automation
 feedback. Each action returns a structured `ActionResult` with
 success indicator, target identifier, and error details.
 
@@ -81,7 +81,7 @@ Phase 1 design.*
 - **VII. UX Consistency**: ✅ PASS — Domain-level services
   follow standard HA service call patterns; action parameters
   use explicit IDs matching Guesty identifiers; error messages
-  are clear and actionable via `ServiceValidationError`.
+  are clear and actionable via `HomeAssistantError`.
 - **VIII. Performance Requirements**: ✅ PASS — Full async
   via `GuestyActionsClient`; no event loop blocking; rate
   limit awareness inherited from existing API client; all
@@ -260,7 +260,7 @@ infrastructure.
     - `async _handle_update_custom_field(call)`
   - Each handler extracts parameters from `ServiceCall`,
     delegates to `GuestyActionsClient`, translates
-    exceptions to `ServiceValidationError`
+    exceptions to `HomeAssistantError`
   - Returns `ActionResult` as service response data
     (FR-022)
 - `services.yaml` — Extended with five service definitions:
@@ -285,7 +285,7 @@ infrastructure.
 - Service handlers return response data for automation
   branching (`supports_response=SupportsResponse.OPTIONAL`)
 - Exception translation follows `notify.py` pattern:
-  `GuestyActionError` → `ServiceValidationError`,
+  `GuestyActionError` → `HomeAssistantError`,
   `GuestyApiError` → `HomeAssistantError`
 - Voluptuous schemas validate service call parameters
   before handler execution
