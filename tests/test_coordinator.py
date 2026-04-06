@@ -303,10 +303,21 @@ class TestDisappearedListings:
 
         # Listing disappears
         api_client.get_listings = AsyncMock(return_value=[])
-        with caplog.at_level(logging.WARNING):
+        caplog.clear()
+        with caplog.at_level(
+            logging.WARNING,
+            logger="custom_components.guesty.coordinator",
+        ):
             await coordinator._async_update_data()
 
-        assert sample_listing.id in caplog.text
+        matching = [
+            r
+            for r in caplog.records
+            if r.name == "custom_components.guesty.coordinator"
+            and r.levelno == logging.WARNING
+            and sample_listing.id in r.getMessage()
+        ]
+        assert len(matching) == 1
 
     async def test_last_known_good_data_retained_on_error(
         self,

@@ -720,6 +720,7 @@ class TestSensorAvailability:
     ) -> None:
         """available returns True when listing in coordinator data."""
         mock_coordinator.disappeared_listing_ids = set()
+        mock_coordinator.last_update_success = True
         entry = mock_coordinator.config_entry
         desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "status")
 
@@ -740,6 +741,7 @@ class TestSensorAvailability:
     ) -> None:
         """available returns False when listing in disappeared set."""
         mock_coordinator.disappeared_listing_ids = {sample_listing.id}
+        mock_coordinator.last_update_success = True
         entry = mock_coordinator.config_entry
         desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "status")
 
@@ -759,6 +761,7 @@ class TestSensorAvailability:
     ) -> None:
         """available returns False when listing not in data at all."""
         mock_coordinator.disappeared_listing_ids = set()
+        mock_coordinator.last_update_success = True
         entry = mock_coordinator.config_entry
         desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "status")
 
@@ -779,6 +782,7 @@ class TestSensorAvailability:
         """available returns False when coordinator data is None."""
         mock_coordinator.data = None
         mock_coordinator.disappeared_listing_ids = set()
+        mock_coordinator.last_update_success = True
         entry = mock_coordinator.config_entry
         desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "status")
 
@@ -799,6 +803,7 @@ class TestSensorAvailability:
     ) -> None:
         """Entity regains availability when listing reappears."""
         mock_coordinator.disappeared_listing_ids = {sample_listing.id}
+        mock_coordinator.last_update_success = True
         entry = mock_coordinator.config_entry
         desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "status")
 
