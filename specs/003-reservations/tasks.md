@@ -14,10 +14,10 @@ tasks MUST be completed (Red phase) and verified FAILING before
 their corresponding implementation tasks (Green phase). Each phase
 becomes an independent PR.
 
-**Organization**: Tasks are grouped by implementation phase aligned
-with plan.md. User stories are mapped to the phase where their
-functionality is delivered. Phase boundaries align with
-independently deployable increments.
+**Organization**: Tasks are grouped into an implementation-phase
+breakdown derived from plan.md, but re-organized here for task
+sequencing and independently deployable increments. User stories
+are mapped to the phase where their functionality is delivered.
 
 ## Format: `[ID] [P?] [Story?] Description`
 
@@ -65,7 +65,7 @@ is complete. All reservation domain logic lives in `api/`.
   dataclass (`from_api_dict` with complete API data dict,
   missing `_id` returns `None`, missing `listingId` returns
   `None`, missing `status` returns `None`, unparsable
-  `checkIn`/`checkOut` dates returns `None`, unknown status
+  `checkIn`/`checkOut` dates return `None`, unknown status
   passed through as-is per FR-025, optional fields default to
   `None`, nested `guest` and `money` objects parsed via their
   `from_api_dict` factories) in `tests/api/test_models.py`
@@ -126,14 +126,17 @@ is complete. All reservation domain logic lives in `api/`.
   and `from_api_dict(data: dict)` factory that parses results
   via `GuestyReservation.from_api_dict` filtering `None`
   entries in `custom_components/guesty/api/models.py`
-- [ ] T010 Implement `async get_reservations(self, *, past_days,
-  future_days, statuses)` on `GuestyApiClient` with
-  dual-request pattern (primary: `checkIn` `$between` date
-  range + `status` `$contains` filter; secondary:
-  `checked_in`-only without date filter per R2), skip-based
-  pagination, explicit `fields` parameter, `sort=_id`,
-  de-duplication by reservation ID, using existing `_request()`
-  method in `custom_components/guesty/api/client.py`
+- [ ] T010 Implement `async get_reservations(self, *,
+  past_days=DEFAULT_PAST_DAYS,
+  future_days=DEFAULT_FUTURE_DAYS,
+  statuses: frozenset[str] | None = None)` on
+  `GuestyApiClient` with dual-request pattern (primary:
+  `checkIn` `$between` date range + `status` `$contains`
+  filter; secondary: `checked_in`-only without date filter
+  per R2), skip-based pagination, explicit `fields`
+  parameter, `sort=_id`, de-duplication by reservation ID,
+  using existing `_request()` method in
+  `custom_components/guesty/api/client.py`
 - [ ] T011 [P] Export `GuestyGuest`, `GuestyMoney`,
   `GuestyReservation`, `GuestyReservationsResponse` from
   `custom_components/guesty/api/__init__.py`
@@ -243,7 +246,7 @@ HA automations listen to.
   `ReservationsCoordinator(DataUpdateCoordinator[dict[str, list[GuestyReservation]]])`
   with `__init__` accepting `hass`, `entry`, `api_client`,
   and `listings_coordinator`; `_async_update_data` fetching
-  via `api_client.get_reservations(past_days, future_days)`,
+  via `api_client.get_reservations(past_days=past_days, future_days=future_days)`,
   grouping by `listing_id`, filtering unknown listing IDs via
   `listings_coordinator.data` keys with warning log per
   FR-017, sorting per-listing by `check_in`, raising
