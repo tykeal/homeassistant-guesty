@@ -16,7 +16,7 @@ from homeassistant.components.notify import NotifyEntity
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
 
-from custom_components.guesty.api.exceptions import GuestyMessageError
+from custom_components.guesty.api.exceptions import GuestyApiError, GuestyMessageError
 from custom_components.guesty.api.messaging import GuestyMessagingClient
 from custom_components.guesty.const import DOMAIN
 
@@ -120,6 +120,14 @@ class GuestyNotifyEntity(NotifyEntity):
         except GuestyMessageError as exc:
             _LOGGER.error(
                 "Message delivery failed for reservation '%s': %s",
+                title,
+                exc,
+                exc_info=True,
+            )
+            raise HomeAssistantError(str(exc)) from exc
+        except GuestyApiError as exc:
+            _LOGGER.error(
+                "API error for reservation '%s': %s",
                 title,
                 exc,
                 exc_info=True,

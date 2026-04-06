@@ -12,7 +12,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.guesty.api.exceptions import GuestyMessageError
+from custom_components.guesty.api.exceptions import (
+    GuestyConnectionError,
+    GuestyMessageError,
+)
 from custom_components.guesty.api.models import MessageDeliveryResult
 from custom_components.guesty.const import (
     CONF_CLIENT_ID,
@@ -296,6 +299,34 @@ class TestGuestyNotifyEntitySendMessage:
                 message="x" * 20000,
                 title="res-val",
             )
+
+    async def test_api_error_maps_to_ha_error(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """GuestyApiError subclasses map to HomeAssistantError."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        mock_messaging_client.send_message.side_effect = GuestyConnectionError(
+            "network timeout"
+        )
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="network timeout",
+        ) as exc_info:
+            await entity.async_send_message(
+                message="Hello",
+                title="res-conn",
+            )
+
+        assert isinstance(
+            exc_info.value.__cause__,
+            GuestyConnectionError,
+        )
 
 
 class TestNotifyPlatformSetup:
