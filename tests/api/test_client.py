@@ -1487,10 +1487,10 @@ class TestTransientRetry:
         assert result is True
 
     @respx.mock
-    async def test_500_exhausts_retries_returns_response(
+    async def test_500_exhausts_retries_raises_error(
         self,
     ) -> None:
-        """Persistent 500 returns response after retry exhaustion."""
+        """Persistent 500 raises GuestyResponseError after retries."""
         from unittest.mock import patch as _patch
 
         from custom_components.guesty.api.exceptions import (

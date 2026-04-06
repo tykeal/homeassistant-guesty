@@ -1908,7 +1908,7 @@ class TestSuccessCriteriaValidation:
         # No hard-coded live API URLs in test source
         assert "open-api.guesty.com" not in source
 
-    async def test_sc010_template_resolves_all_variables(
+    def test_sc010_template_resolves_all_variables(
         self,
     ) -> None:
         """SC-010: template substitution resolves all variables."""
@@ -1933,7 +1933,7 @@ class TestSuccessCriteriaValidation:
         assert "{" not in result
         assert "}" not in result
 
-    async def test_sc010_missing_variable_rejected(self) -> None:
+    def test_sc010_missing_variable_rejected(self) -> None:
         """SC-010: missing template variable raises KeyError."""
         from custom_components.guesty.api.messaging import (
             GuestyMessagingClient,
@@ -1982,7 +1982,7 @@ class TestSuccessCriteriaValidation:
 class TestQuickstartValidation:
     """Quickstart.md code pattern validation (T028)."""
 
-    async def test_messaging_client_api_pattern(self) -> None:
+    def test_messaging_client_api_pattern(self) -> None:
         """Quickstart messaging client usage pattern compiles."""
         from custom_components.guesty.api import (
             GuestyApiClient,
@@ -1994,7 +1994,7 @@ class TestQuickstartValidation:
         assert GuestyApiClient is not None
         assert GuestyMessageError is not None
 
-    async def test_error_handling_pattern_imports(self) -> None:
+    def test_error_handling_pattern_imports(self) -> None:
         """Quickstart error handling pattern imports work."""
         from custom_components.guesty.api import (
             GuestyConnectionError,
@@ -2006,7 +2006,7 @@ class TestQuickstartValidation:
         assert GuestyRateLimitError is not None
         assert GuestyConnectionError is not None
 
-    async def test_error_handling_pattern_structure(self) -> None:
+    def test_error_handling_pattern_structure(self) -> None:
         """Quickstart error types form correct hierarchy."""
         from custom_components.guesty.api.exceptions import (
             GuestyApiError,
@@ -2020,7 +2020,7 @@ class TestQuickstartValidation:
         assert issubclass(GuestyRateLimitError, GuestyApiError)
         assert issubclass(GuestyConnectionError, GuestyApiError)
 
-    async def test_message_error_has_reservation_context(
+    def test_message_error_has_reservation_context(
         self,
     ) -> None:
         """Quickstart error handling: reservation_id accessible."""
@@ -2035,7 +2035,7 @@ class TestQuickstartValidation:
         assert err.reservation_id == "abc123"
         assert err.message == "test error"
 
-    async def test_notify_entity_exists(self) -> None:
+    def test_notify_entity_exists(self) -> None:
         """Quickstart: GuestyNotifyEntity is importable."""
         from custom_components.guesty.notify import (
             GuestyNotifyEntity,
@@ -2043,7 +2043,7 @@ class TestQuickstartValidation:
 
         assert GuestyNotifyEntity is not None
 
-    async def test_message_delivery_result_structure(self) -> None:
+    def test_message_delivery_result_structure(self) -> None:
         """Quickstart: MessageDeliveryResult has expected fields."""
         result = MessageDeliveryResult(
             success=True,
@@ -2054,7 +2054,7 @@ class TestQuickstartValidation:
         assert result.message_id == "msg-1"
         assert result.reservation_id == "res-1"
 
-    async def test_render_template_pattern(self) -> None:
+    def test_render_template_pattern(self) -> None:
         """Quickstart template pattern works as documented."""
         from custom_components.guesty.api.messaging import (
             GuestyMessagingClient,
