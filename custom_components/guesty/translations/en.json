@@ -35,18 +35,10 @@
                 "title": "Filter by Tags",
                 "description": "Optionally enter Guesty tags to narrow the listing selector. Leave empty to see all listings.",
                 "data": {
-                    "tag_filter": "Guesty tags",
-                    "scan_interval": "Listing scan interval (minutes)",
-                    "reservation_scan_interval": "Reservation scan interval (minutes)",
-                    "past_days": "Reservation past days",
-                    "future_days": "Reservation future days"
+                    "tag_filter": "Guesty tags"
                 },
                 "data_description": {
-                    "tag_filter": "Enter one or more Guesty listing tags. Only listings with matching tags will appear in the selector.",
-                    "scan_interval": "How often to poll the Guesty API for listing updates. Minimum 5 minutes.",
-                    "reservation_scan_interval": "How often to poll the Guesty API for reservation updates. Minimum 5 minutes.",
-                    "past_days": "Number of past days to include in reservation queries.",
-                    "future_days": "Number of future days to include in reservation queries."
+                    "tag_filter": "Enter one or more Guesty listing tags. Only listings with matching tags will appear in the selector."
                 }
             },
             "select_listings": {

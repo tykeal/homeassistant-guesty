@@ -17,15 +17,24 @@ from homeassistant.config_entries import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.httpx_client import get_async_client
+from homeassistant.helpers.selector import (
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+    TextSelector,
+    TextSelectorConfig,
+)
 
 from custom_components.guesty.api.auth import GuestyTokenManager
 from custom_components.guesty.api.client import GuestyApiClient
 from custom_components.guesty.api.exceptions import (
+    GuestyApiError,
     GuestyAuthError,
     GuestyConnectionError,
     GuestyRateLimitError,
 )
-from custom_components.guesty.api.models import CachedToken
+from custom_components.guesty.api.models import CachedToken, GuestyListing
 from custom_components.guesty.const import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
@@ -33,6 +42,8 @@ from custom_components.guesty.const import (
     CONF_PAST_DAYS,
     CONF_RESERVATION_SCAN_INTERVAL,
     CONF_SCAN_INTERVAL,
+    CONF_SELECTED_LISTINGS,
+    CONF_TAG_FILTER,
     DEFAULT_RESERVATION_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
@@ -296,7 +307,13 @@ class GuestyConfigFlow(ConfigFlow, domain=DOMAIN):
 class GuestyOptionsFlowHandler(OptionsFlow):
     """Handle options flow for the Guesty integration.
 
-    Allows configuring the scan interval for listings polling.
+    Three-step wizard: tag filter → listing selection → intervals.
+
+    Attributes:
+        _config_entry: The config entry being configured.
+        _tag_filter: Tag filter values from step 1.
+        _selected_listings: Selected listing IDs from step 2.
+        _available_listings: Listings fetched from the API.
     """
 
     def __init__(self, config_entry: ConfigEntry) -> None:
@@ -306,16 +323,140 @@ class GuestyOptionsFlowHandler(OptionsFlow):
             config_entry: The config entry being configured.
         """
         self._config_entry = config_entry
+        self._tag_filter: list[str] = []
+        self._selected_listings: list[str] = []
+        self._available_listings: list[GuestyListing] = []
 
     async def async_step_init(
         self,
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
-        """Handle the initial options step.
+        """Handle the tag filter step and fetch listings.
 
-        Presents a form for configuring scan_interval, reservation
-        scan interval, past days, and future days. The schema
-        validates minimum interval and positive day requirements.
+        Shows an optional tag filter field. On submit, fetches all
+        listings from the API and transitions to select_listings.
+
+        Args:
+            user_input: User-provided form data, or None for
+                initial display.
+
+        Returns:
+            Config flow result (form or next step).
+        """
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            self._tag_filter = user_input.get(CONF_TAG_FILTER, [])
+            try:
+                api_client: GuestyApiClient = self.hass.data[DOMAIN][
+                    self._config_entry.entry_id
+                ]["api_client"]
+                self._available_listings = await api_client.get_listings()
+            except GuestyAuthError:
+                errors["base"] = "invalid_auth"
+            except GuestyRateLimitError:
+                errors["base"] = "rate_limited"
+            except GuestyApiError:
+                errors["base"] = "cannot_connect"
+            else:
+                return await self.async_step_select_listings()
+
+        current_tags = self._config_entry.options.get(
+            CONF_TAG_FILTER,
+            [],
+        )
+
+        schema = vol.Schema(
+            {
+                vol.Optional(
+                    CONF_TAG_FILTER,
+                    default=current_tags,
+                ): TextSelector(
+                    TextSelectorConfig(multiple=True),
+                ),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=schema,
+            errors=errors,
+        )
+
+    async def async_step_select_listings(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Handle the listing selection step.
+
+        Builds a multi-select list of available listings with
+        labels in "{title} — {address}" format. Validates that
+        at least one listing is selected.
+
+        Args:
+            user_input: User-provided form data, or None for
+                initial display.
+
+        Returns:
+            Config flow result (form or next step).
+        """
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            selected = user_input.get(CONF_SELECTED_LISTINGS, [])
+            if not selected:
+                errors["base"] = "no_listings_selected"
+            else:
+                self._selected_listings = selected
+                return await self.async_step_intervals()
+
+        options: list[SelectOptionDict] = []
+        for listing in self._available_listings:
+            addr = listing.address.formatted() if listing.address else None
+            label = f"{listing.title} \u2014 {addr or 'No address'}"
+            options.append(
+                SelectOptionDict(value=listing.id, label=label),
+            )
+
+        current = self._config_entry.options.get(
+            CONF_SELECTED_LISTINGS,
+        )
+        if current is None:
+            default = [listing.id for listing in self._available_listings]
+        else:
+            available_ids = {listing.id for listing in self._available_listings}
+            default = [lid for lid in current if lid in available_ids]
+
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_SELECTED_LISTINGS,
+                    default=default,
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=options,
+                        multiple=True,
+                        mode=SelectSelectorMode.LIST,
+                    ),
+                ),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="select_listings",
+            data_schema=schema,
+            errors=errors,
+        )
+
+    async def async_step_intervals(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Handle the polling intervals step.
+
+        Presents scan interval, reservation scan interval, past
+        days, and future days fields. On submit, merges data from
+        all three steps and creates the entry.
 
         Args:
             user_input: User-provided form data, or None for
@@ -328,6 +469,8 @@ class GuestyOptionsFlowHandler(OptionsFlow):
             return self.async_create_entry(
                 title="",
                 data={
+                    CONF_TAG_FILTER: self._tag_filter,
+                    CONF_SELECTED_LISTINGS: self._selected_listings,
                     CONF_SCAN_INTERVAL: user_input[CONF_SCAN_INTERVAL],
                     CONF_RESERVATION_SCAN_INTERVAL: user_input[
                         CONF_RESERVATION_SCAN_INTERVAL
@@ -393,6 +536,6 @@ class GuestyOptionsFlowHandler(OptionsFlow):
         )
 
         return self.async_show_form(
-            step_id="init",
+            step_id="intervals",
             data_schema=schema,
         )
