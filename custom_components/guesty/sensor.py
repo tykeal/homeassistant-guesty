@@ -484,7 +484,9 @@ class GuestyReservationSensor(
             return False
         # Also check listing is still tracked
         listings_data = self._listings_coordinator.data
-        return listings_data is None or self._listing_id in listings_data
+        if listings_data is None:
+            return False
+        return self._listing_id in listings_data
 
     @property
     def _reservations(self) -> list[GuestyReservation]:

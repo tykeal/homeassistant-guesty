@@ -886,6 +886,31 @@ class TestReservationSensorEdgeCases:
         )
         assert sensor.available is False
 
+    def test_available_false_when_listings_data_none(
+        self,
+    ) -> None:
+        """available returns False when listings coordinator data is None."""
+        from unittest.mock import MagicMock
+
+        from custom_components.guesty.sensor import (
+            GuestyReservationSensor,
+        )
+
+        res_coordinator = MagicMock()
+        res_coordinator.data = {"listing-001": []}
+        res_coordinator.last_update_success = True
+        listings_coordinator = MagicMock()
+        listings_coordinator.data = None
+
+        entry = _make_entry()
+        sensor = GuestyReservationSensor(
+            coordinator=res_coordinator,
+            listings_coordinator=listings_coordinator,
+            listing_id="listing-001",
+            entry=entry,
+        )
+        assert sensor.available is False
+
     def test_available_false_when_data_none(
         self,
     ) -> None:
