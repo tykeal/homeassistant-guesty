@@ -33,10 +33,16 @@
         "step": {
             "init": {
                 "data": {
-                    "scan_interval": "Scan interval (minutes)"
+                    "scan_interval": "Listing scan interval (minutes)",
+                    "reservation_scan_interval": "Reservation scan interval (minutes)",
+                    "past_days": "Reservation past days",
+                    "future_days": "Reservation future days"
                 },
                 "data_description": {
-                    "scan_interval": "How often to poll the Guesty API for listing updates. Minimum 5 minutes."
+                    "scan_interval": "How often to poll the Guesty API for listing updates. Minimum 5 minutes.",
+                    "reservation_scan_interval": "How often to poll the Guesty API for reservation updates. Minimum 5 minutes.",
+                    "past_days": "Number of past days to include in reservation queries.",
+                    "future_days": "Number of future days to include in reservation queries."
                 }
             }
         },
@@ -84,6 +90,9 @@
             },
             "listing_custom_field": {
                 "name": "Custom field"
+            },
+            "reservation_status": {
+                "name": "Reservation status"
             }
         }
     }
