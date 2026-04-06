@@ -21,12 +21,14 @@ from custom_components.guesty.api.exceptions import (
 )
 from custom_components.guesty.api.models import CachedToken
 from custom_components.guesty.const import (
+    CONF_CF_SCAN_INTERVAL,
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
     CONF_RESERVATION_SCAN_INTERVAL,
     CONF_SCAN_INTERVAL,
     CONF_SELECTED_LISTINGS,
     CONF_TAG_FILTER,
+    DEFAULT_CF_SCAN_INTERVAL,
     DEFAULT_RESERVATION_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
@@ -1698,3 +1700,353 @@ class TestDeselectedDeviceRemoval:
             await hass.async_block_till_done()
 
             mock_reload.assert_awaited_once_with(entry.entry_id)
+
+
+class TestIntervalRefreshOnOptionsUpdate:
+    """Tests for immediate refresh on interval changes (T037-T039)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_interval_change_triggers_refresh(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """T037: Interval change calls async_request_refresh."""
+        from datetime import timedelta
+
+        entry = _make_entry(
+            options={CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL},
+        )
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        coord = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+        res_coord = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        cf_coord = hass.data[DOMAIN][entry.entry_id]["cf_coordinator"]
+
+        with (
+            patch.object(
+                coord,
+                "async_request_refresh",
+                new_callable=AsyncMock,
+            ) as mock_list_refresh,
+            patch.object(
+                res_coord,
+                "async_request_refresh",
+                new_callable=AsyncMock,
+            ) as mock_res_refresh,
+            patch.object(
+                cf_coord,
+                "async_request_refresh",
+                new_callable=AsyncMock,
+            ) as mock_cf_refresh,
+        ):
+            hass.config_entries.async_update_entry(
+                entry,
+                options={CONF_SCAN_INTERVAL: 10},
+            )
+            await hass.async_block_till_done()
+
+            mock_list_refresh.assert_awaited_once()
+            mock_res_refresh.assert_awaited_once()
+            mock_cf_refresh.assert_awaited_once()
+
+        assert coord.update_interval == timedelta(minutes=10)
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_no_refresh_when_nothing_changes(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """T038: No refresh when options saved with identical values."""
+        entry = _make_entry(
+            options={
+                CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
+                CONF_RESERVATION_SCAN_INTERVAL: DEFAULT_RESERVATION_SCAN_INTERVAL,
+                CONF_CF_SCAN_INTERVAL: DEFAULT_CF_SCAN_INTERVAL,
+            },
+        )
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        coord = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+        res_coord = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        cf_coord = hass.data[DOMAIN][entry.entry_id]["cf_coordinator"]
+
+        with (
+            patch.object(
+                hass.config_entries,
+                "async_reload",
+                new_callable=AsyncMock,
+            ) as mock_reload,
+            patch.object(
+                coord,
+                "async_request_refresh",
+                new_callable=AsyncMock,
+            ) as mock_list_refresh,
+            patch.object(
+                res_coord,
+                "async_request_refresh",
+                new_callable=AsyncMock,
+            ) as mock_res_refresh,
+            patch.object(
+                cf_coord,
+                "async_request_refresh",
+                new_callable=AsyncMock,
+            ) as mock_cf_refresh,
+        ):
+            hass.config_entries.async_update_entry(
+                entry,
+                options={
+                    CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
+                    CONF_RESERVATION_SCAN_INTERVAL: DEFAULT_RESERVATION_SCAN_INTERVAL,
+                    CONF_CF_SCAN_INTERVAL: DEFAULT_CF_SCAN_INTERVAL,
+                },
+            )
+            await hass.async_block_till_done()
+
+            mock_reload.assert_not_awaited()
+            mock_list_refresh.assert_not_awaited()
+            mock_res_refresh.assert_not_awaited()
+            mock_cf_refresh.assert_not_awaited()
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_reload_when_listings_change_not_refresh(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """T039: Listings change triggers reload, not refresh."""
+        entry = _make_entry(
+            options={
+                CONF_SELECTED_LISTINGS: ["listing-001"],
+            },
+        )
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        coord = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+        res_coord = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+
+        with (
+            patch.object(
+                hass.config_entries,
+                "async_reload",
+                new_callable=AsyncMock,
+            ) as mock_reload,
+            patch.object(
+                coord,
+                "async_request_refresh",
+                new_callable=AsyncMock,
+            ) as mock_list_refresh,
+            patch.object(
+                res_coord,
+                "async_request_refresh",
+                new_callable=AsyncMock,
+            ) as mock_res_refresh,
+        ):
+            hass.config_entries.async_update_entry(
+                entry,
+                options={
+                    CONF_SELECTED_LISTINGS: ["listing-002"],
+                },
+            )
+            await hass.async_block_till_done()
+
+            mock_reload.assert_awaited_once_with(entry.entry_id)
+            mock_list_refresh.assert_not_awaited()
+            mock_res_refresh.assert_not_awaited()
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_only_interval_change_refreshes_not_reloads(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """T039: Only interval change refreshes, does not reload."""
+        entry = _make_entry(
+            options={
+                CONF_SELECTED_LISTINGS: ["listing-001"],
+                CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
+            },
+        )
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        coord = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+        res_coord = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+
+        with (
+            patch.object(
+                hass.config_entries,
+                "async_reload",
+                new_callable=AsyncMock,
+            ) as mock_reload,
+            patch.object(
+                coord,
+                "async_request_refresh",
+                new_callable=AsyncMock,
+            ) as mock_list_refresh,
+            patch.object(
+                res_coord,
+                "async_request_refresh",
+                new_callable=AsyncMock,
+            ) as mock_res_refresh,
+        ):
+            hass.config_entries.async_update_entry(
+                entry,
+                options={
+                    CONF_SELECTED_LISTINGS: ["listing-001"],
+                    CONF_SCAN_INTERVAL: 10,
+                },
+            )
+            await hass.async_block_till_done()
+
+            mock_reload.assert_not_awaited()
+            mock_list_refresh.assert_awaited_once()
+            mock_res_refresh.assert_awaited_once()
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_both_change_triggers_reload_only(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """T039: Both listings and interval change triggers reload."""
+        entry = _make_entry(
+            options={
+                CONF_SELECTED_LISTINGS: ["listing-001"],
+                CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
+            },
+        )
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        coord = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+        res_coord = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+
+        with (
+            patch.object(
+                hass.config_entries,
+                "async_reload",
+                new_callable=AsyncMock,
+            ) as mock_reload,
+            patch.object(
+                coord,
+                "async_request_refresh",
+                new_callable=AsyncMock,
+            ) as mock_list_refresh,
+            patch.object(
+                res_coord,
+                "async_request_refresh",
+                new_callable=AsyncMock,
+            ) as mock_res_refresh,
+        ):
+            hass.config_entries.async_update_entry(
+                entry,
+                options={
+                    CONF_SELECTED_LISTINGS: ["listing-002"],
+                    CONF_SCAN_INTERVAL: 10,
+                },
+            )
+            await hass.async_block_till_done()
+
+            mock_reload.assert_awaited_once_with(entry.entry_id)
+            mock_list_refresh.assert_not_awaited()
+            mock_res_refresh.assert_not_awaited()
