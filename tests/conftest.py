@@ -140,10 +140,13 @@ def _auto_mock_cf_definitions(
     Yields:
         None after applying the patch.
     """
-    # Skip for API-level tests that use respx/httpx mocking
-    if "api" in str(request.path):
-        yield
-        return
+    # Skip only for API-level tests under tests/api/
+    path_parts = request.path.parts
+    if "tests" in path_parts:
+        idx = path_parts.index("tests")
+        if len(path_parts) > idx + 1 and path_parts[idx + 1] == "api":
+            yield
+            return
 
     with patch(
         "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",

@@ -1235,7 +1235,10 @@ class TestCustomFieldsDefinitionCoordinator:
         self,
         hass: HomeAssistant,
     ) -> None:
-        """Default update_interval is 15 minutes."""
+        """Default update_interval matches DEFAULT_CF_SCAN_INTERVAL."""
+        from custom_components.guesty.const import (
+            DEFAULT_CF_SCAN_INTERVAL,
+        )
         from custom_components.guesty.coordinator import (
             CustomFieldsDefinitionCoordinator,
         )
@@ -1250,7 +1253,9 @@ class TestCustomFieldsDefinitionCoordinator:
             entry=entry,
             cf_client=mock_client,
         )
-        assert coordinator.update_interval == timedelta(minutes=15)
+        assert coordinator.update_interval == timedelta(
+            minutes=DEFAULT_CF_SCAN_INTERVAL,
+        )
 
     async def test_api_error_raises_update_failed(
         self,
