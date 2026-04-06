@@ -339,6 +339,7 @@ class GuestyListing:
         address: Structured address, or None.
         property_type: E.g., apartment, house, villa.
         room_type: E.g., entire home, private room.
+        listing_type: Single vs multi-unit (SINGLE, MULTI).
         bedrooms: Number of bedrooms, or None.
         bathrooms: Bathroom count (half-baths), or None.
         accommodates: Maximum guest capacity, or None.
@@ -356,6 +357,7 @@ class GuestyListing:
     address: GuestyAddress | None
     property_type: str | None
     room_type: str | None
+    listing_type: str | None
     bedrooms: int | None
     bathrooms: float | None
     accommodates: int | None
@@ -413,6 +415,7 @@ class GuestyListing:
             ),
             property_type=data.get("propertyType"),
             room_type=data.get("roomType"),
+            listing_type=data.get("listingType"),
             bedrooms=data.get("bedrooms"),
             bathrooms=data.get("bathrooms"),
             accommodates=data.get("accommodates"),

@@ -508,6 +508,7 @@ def _make_listing_dict(**overrides: Any) -> dict[str, Any]:
         "address": _make_full_address_dict(),
         "propertyType": "apartment",
         "roomType": "Entire home/apartment",
+        "listingType": "SINGLE",
         "bedrooms": 2,
         "bathrooms": 1.5,
         "accommodates": 5,
@@ -538,6 +539,7 @@ class TestGuestyListingFromApiDict:
         assert listing.address is not None
         assert listing.property_type == "apartment"
         assert listing.room_type == "Entire home/apartment"
+        assert listing.listing_type == "SINGLE"
         assert listing.bedrooms == 2
         assert listing.bathrooms == 1.5
         assert listing.accommodates == 5

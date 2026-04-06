@@ -204,6 +204,9 @@
             "listing_room_type": {
                 "name": "Room type"
             },
+            "listing_listing_type": {
+                "name": "Listing type"
+            },
             "listing_bedrooms": {
                 "name": "Bedrooms"
             },
