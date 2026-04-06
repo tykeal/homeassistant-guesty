@@ -1011,8 +1011,6 @@ class TestTemplateVariableSubstitution:
 
     async def test_substitution_produces_rendered_body(
         self,
-        hass: HomeAssistant,
-        mock_messaging_client: AsyncMock,
     ) -> None:
         """Verify rendered body contains substituted values."""
         from custom_components.guesty.api.messaging import (
