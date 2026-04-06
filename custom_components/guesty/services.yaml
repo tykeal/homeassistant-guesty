@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: 2025 Andrew Grimberg <tykeal@bardicgrove.org>
+# SPDX-License-Identifier: Apache-2.0
+send_guest_message:
+  name: Send guest message
+  description: >-
+    Send a message to a guest via their Guesty reservation
+    conversation.
+  target:
+    entity:
+      integration: guesty
+      domain: notify
+  fields:
+    message:
+      name: Message
+      description: The message body to send.
+      required: true
+      example: "Welcome to your stay!"
+      selector:
+        text:
+    reservation_id:
+      name: Reservation ID
+      description: The Guesty reservation ID for the guest.
+      required: true
+      example: "abc123def456"
+      selector:
+        text:
+    channel:
+      name: Channel
+      description: >-
+        Messaging channel to use (e.g., email, sms, airbnb).
+        If omitted, Guesty selects the default channel.
+      required: false
+      example: "email"
+      selector:
+        text:
+    template_variables:
+      name: Template variables
+      description: >-
+        Key-value pairs for template variable substitution in
+        the message body.
+      required: false
+      example:
+        guest_name: "John"
+        check_in: "2025-01-15"
+      selector:
+        object:
