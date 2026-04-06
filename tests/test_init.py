@@ -947,6 +947,173 @@ class TestReservationsCoordinatorSetup:
         assert entry.state is ConfigEntryState.SETUP_RETRY
 
 
+
+class TestAsyncSetupEntryCustomFields:
+    """Tests for custom field integration in async_setup_entry (T018)."""
+
+    @patch(
+        "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_setup_creates_cf_client_and_coordinator(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        mock_get_defs: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Setup creates custom fields client and coordinator."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        assert entry.state is ConfigEntryState.LOADED
+        data = hass.data[DOMAIN][entry.entry_id]
+        assert "cf_client" in data
+        assert "cf_coordinator" in data
+
+    @patch(
+        "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_setup_registers_service(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        mock_get_defs: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Setup registers guesty.set_custom_field service."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        assert hass.services.has_service(DOMAIN, "set_custom_field")
+
+    @patch(
+        "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_unload_removes_service_and_coordinator(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        mock_get_defs: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Unload cleans up coordinator and service."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        assert entry.state is ConfigEntryState.LOADED
+        assert hass.services.has_service(DOMAIN, "set_custom_field")
+
+        await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+
+        assert entry.state is ConfigEntryState.NOT_LOADED
+        assert not hass.services.has_service(
+            DOMAIN,
+            "set_custom_field",
+        )
+
+    @patch(
+        "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+        new_callable=AsyncMock,
+        side_effect=GuestyConnectionError(
+            "custom fields API unreachable",
+        ),
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_cf_refresh_failure_retries(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        mock_get_defs: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Custom fields coordinator refresh failure retries."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        assert entry.state is ConfigEntryState.SETUP_RETRY
+
+
 class TestEntityCleanup:
     """Tests for entity and coordinator cleanup on unload (T031)."""
 

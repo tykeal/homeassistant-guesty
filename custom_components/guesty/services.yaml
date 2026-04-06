@@ -44,3 +44,46 @@ send_guest_message:
         check_in: "2025-01-15"
       selector:
         object:
+
+set_custom_field:
+  name: Set custom field
+  description: >-
+    Set the value of a custom field on a Guesty listing
+    or reservation.
+  fields:
+    target_type:
+      name: Target type
+      description: >-
+        The type of entity to update (listing or reservation).
+      required: true
+      example: "listing"
+      selector:
+        select:
+          options:
+            - listing
+            - reservation
+    target_id:
+      name: Target ID
+      description: >-
+        The Guesty listing or reservation ID.
+      required: true
+      example: "abc123def456"
+      selector:
+        text:
+    field_id:
+      name: Field ID
+      description: >-
+        The custom field identifier from Guesty.
+      required: true
+      example: "cf-text-001"
+      selector:
+        text:
+    value:
+      name: Value
+      description: >-
+        The new value for the custom field. Type must match
+        the field definition (text, number, or boolean).
+      required: true
+      example: "my-value"
+      selector:
+        object:

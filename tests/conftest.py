@@ -4,10 +4,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.core import HomeAssistant
@@ -16,6 +17,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.guesty.api.models import (
     CachedToken,
     GuestyAddress,
+    GuestyCustomFieldDefinition,
     GuestyGuest,
     GuestyListing,
     GuestyMoney,
@@ -120,6 +122,33 @@ def auto_enable_custom_integrations(
     This fixture ensures HA's loader discovers the custom_components/
     directory for integration tests.
     """
+
+
+@pytest.fixture(autouse=True)
+def _auto_mock_cf_definitions(request: pytest.FixtureRequest) -> Generator[None]:
+    """Auto-mock custom field definitions for integration tests.
+
+    Prevents real API calls during setup. Skipped for tests in the
+    api/ subdirectory. Tests that need specific definitions can
+    override with their own patch.
+
+    Args:
+        request: Pytest fixture request for path inspection.
+
+    Yields:
+        None after applying the patch.
+    """
+    # Skip for API-level tests that use respx/httpx mocking
+    if "api" in str(request.path):
+        yield
+        return
+
+    with patch(
+        "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+        new_callable=AsyncMock,
+        return_value=[],
+    ):
+        yield
 
 
 @pytest.fixture
@@ -427,3 +456,132 @@ def mock_reservations_coordinator(
     )
     coordinator.last_update_success = True
     return coordinator
+
+
+# ── Custom field test helpers (T015) ────────────────────────────────
+
+
+def make_custom_field_definition_dict(
+    **overrides: Any,
+) -> dict[str, Any]:
+    """Create a Guesty API custom field definition dict.
+
+    Args:
+        **overrides: Fields to override on the defaults.
+
+    Returns:
+        Dictionary matching the Guesty custom field definition
+        response format.
+    """
+    defaults: dict[str, Any] = {
+        "id": "cf-text-001",
+        "name": "WiFi Password",
+        "type": "text",
+        "objectType": "listing",
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+def sample_custom_field_definitions() -> list[GuestyCustomFieldDefinition]:
+    """Return a list of sample custom field definitions.
+
+    Includes a listing field, a reservation field, and a
+    both-target field.
+
+    Returns:
+        List of three GuestyCustomFieldDefinition instances.
+    """
+    return [
+        GuestyCustomFieldDefinition(
+            field_id="cf-text-001",
+            name="WiFi Password",
+            field_type="text",
+            applicable_to=frozenset({"listing"}),
+        ),
+        GuestyCustomFieldDefinition(
+            field_id="cf-num-002",
+            name="Deposit Amount",
+            field_type="number",
+            applicable_to=frozenset({"reservation"}),
+        ),
+        GuestyCustomFieldDefinition(
+            field_id="cf-bool-003",
+            name="Pet Friendly",
+            field_type="boolean",
+            applicable_to=frozenset({"listing", "reservation"}),
+        ),
+    ]
+
+
+@pytest.fixture
+def mock_cf_definitions() -> list[GuestyCustomFieldDefinition]:
+    """Provide sample custom field definitions.
+
+    Returns:
+        List of sample GuestyCustomFieldDefinition instances.
+    """
+    return sample_custom_field_definitions()
+
+
+@pytest.fixture
+def mock_cf_coordinator(
+    mock_cf_definitions: list[GuestyCustomFieldDefinition],
+) -> AsyncMock:
+    """Provide a mocked CustomFieldsDefinitionCoordinator.
+
+    Args:
+        mock_cf_definitions: Sample definitions for coordinator data.
+
+    Returns:
+        An AsyncMock mimicking CustomFieldsDefinitionCoordinator.
+    """
+    coordinator = AsyncMock()
+    coordinator.data = mock_cf_definitions
+    coordinator.last_update_success = True
+
+    def _get_field(
+        field_id: str,
+    ) -> GuestyCustomFieldDefinition | None:
+        """Look up a field by ID."""
+        for defn in mock_cf_definitions:
+            if defn.field_id == field_id:
+                return defn
+        return None
+
+    def _get_fields_for_target(
+        target_type: str,
+    ) -> list[GuestyCustomFieldDefinition]:
+        """Filter definitions by target type."""
+        return [d for d in mock_cf_definitions if target_type in d.applicable_to]
+
+    coordinator.get_field = _get_field
+    coordinator.get_fields_for_target = _get_fields_for_target
+    return coordinator
+
+
+@pytest.fixture
+def mock_cf_client() -> AsyncMock:
+    """Provide a mock GuestyCustomFieldsClient.
+
+    Returns:
+        An AsyncMock configured as a GuestyCustomFieldsClient.
+    """
+    from custom_components.guesty.api.models import (
+        GuestyCustomFieldResult,
+    )
+
+    client = AsyncMock()
+    client.get_definitions = AsyncMock(
+        return_value=sample_custom_field_definitions(),
+    )
+    client.set_field = AsyncMock(
+        return_value=GuestyCustomFieldResult(
+            success=True,
+            target_type="listing",
+            target_id="listing-001",
+            field_id="cf-text-001",
+        ),
+    )
+    client.validate_value = AsyncMock()
+    return client
