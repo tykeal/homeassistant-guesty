@@ -136,12 +136,12 @@ fields show `None` state rather than causing errors.
 
 ### Phase 3 Tests (write first — must FAIL before implementation)
 
-- [ ] T025 [US3] Write tests for all 11 property detail sensors: verify `native_value` for name (`listing.title`), nickname (`listing.nickname`), address (`listing.address.formatted()`), property\_type, room\_type, bedrooms, bathrooms, timezone, check\_in\_time, check\_out\_time; test `entity_category` is `EntityCategory.DIAGNOSTIC` for all; test None returned for optional fields when missing in tests/test_sensor.py
+- [x] T025 [US3] Write tests for all 11 property detail sensors: verify `native_value` for name (`listing.title`), nickname (`listing.nickname`), address (`listing.address.formatted()`), property\_type, room\_type, bedrooms, bathrooms, timezone, check\_in\_time, check\_out\_time; test `entity_category` is `EntityCategory.DIAGNOSTIC` for all; test None returned for optional fields when missing in tests/test_sensor.py
 
 ### Phase 3 Implementation
 
-- [ ] T026 [US3] Add 11 `GuestyListingSensorEntityDescription` entries to `LISTING_SENSOR_DESCRIPTIONS` tuple: name (`key="name"`, `translation_key="listing_name"`), nickname, address (`value_fn` calls `listing.address.formatted()` with None guard), property\_type, room\_type, bedrooms, bathrooms, timezone, check\_in\_time, check\_out\_time — all with `entity_category=EntityCategory.DIAGNOSTIC` and appropriate `value_fn` callables per data-model.md sensor mapping in custom_components/guesty/sensor.py
-- [ ] T027 [P] [US3] Add translations for all 11 detail sensors in custom_components/guesty/strings.json and custom_components/guesty/translations/en.json using the nested JSON structure: under `entity` → `sensor`, add `listing_name`, `listing_nickname`, `listing_address`, `listing_property_type`, `listing_room_type`, `listing_bedrooms`, `listing_bathrooms`, `listing_timezone`, `listing_check_in_time`, `listing_check_out_time` each with a `name` key
+- [x] T026 [US3] Add 11 `GuestyListingSensorEntityDescription` entries to `LISTING_SENSOR_DESCRIPTIONS` tuple: name (`key="name"`, `translation_key="listing_name"`), nickname, address (`value_fn` calls `listing.address.formatted()` with None guard), property\_type, room\_type, bedrooms, bathrooms, timezone, check\_in\_time, check\_out\_time — all with `entity_category=EntityCategory.DIAGNOSTIC` and appropriate `value_fn` callables per data-model.md sensor mapping in custom_components/guesty/sensor.py
+- [x] T027 [P] [US3] Add translations for all 11 detail sensors in custom_components/guesty/strings.json and custom_components/guesty/translations/en.json using the nested JSON structure: under `entity` → `sensor`, add `listing_name`, `listing_nickname`, `listing_address`, `listing_property_type`, `listing_room_type`, `listing_bedrooms`, `listing_bathrooms`, `listing_timezone`, `listing_check_in_time`, `listing_check_out_time` each with a `name` key
 
 **Checkpoint**: Each listing device now exposes 12 sensors (1
 status + 11 detail). Detail sensors use diagnostic entity
