@@ -28,6 +28,7 @@ from custom_components.guesty.sensor import (
     LISTING_SENSOR_DESCRIPTIONS,
     GuestyListingSensor,
     async_setup_entry,
+    create_custom_field_description,
 )
 
 
@@ -841,3 +842,382 @@ class TestSensorAvailability:
         )
 
         assert sensor.available is False
+
+
+class TestTagsSensor:
+    """Tests for tags sensor (T032)."""
+
+    def test_tags_description_exists(self) -> None:
+        """Tags sensor description in LISTING_SENSOR_DESCRIPTIONS."""
+        desc = next(
+            (d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "tags"),
+            None,
+        )
+        assert desc is not None
+
+    def test_tags_entity_category_diagnostic(self) -> None:
+        """Tags sensor entity_category is DIAGNOSTIC."""
+        desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "tags")
+        assert desc.entity_category == EntityCategory.DIAGNOSTIC
+
+    def test_tags_native_value_comma_separated(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        mock_coordinator: AsyncMock,
+    ) -> None:
+        """Tags sensor returns comma-separated tag string."""
+        desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "tags")
+        sensor = GuestyListingSensor(
+            coordinator=mock_coordinator,
+            listing_id=sample_listing.id,
+            entry=mock_coordinator.config_entry,
+            description=desc,
+        )
+        assert sensor.native_value == "premium, beachfront"
+
+    def test_tags_native_value_empty_string_for_no_tags(
+        self,
+        hass: HomeAssistant,
+        mock_coordinator: AsyncMock,
+    ) -> None:
+        """Tags sensor returns empty string when no tags."""
+        listing = GuestyListing(
+            id="no-tags",
+            title="No Tags",
+            nickname=None,
+            status="active",
+            address=None,
+            property_type=None,
+            room_type=None,
+            bedrooms=None,
+            bathrooms=None,
+            timezone="UTC",
+            check_in_time=None,
+            check_out_time=None,
+            tags=(),
+            custom_fields=MappingProxyType({}),
+        )
+        mock_coordinator.data = {"no-tags": listing}
+        desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "tags")
+        sensor = GuestyListingSensor(
+            coordinator=mock_coordinator,
+            listing_id="no-tags",
+            entry=mock_coordinator.config_entry,
+            description=desc,
+        )
+        assert sensor.native_value == ""
+
+
+class TestCustomFieldSensors:
+    """Tests for dynamic custom field sensors (T032)."""
+
+    def test_custom_field_description_unique_id_slug(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        mock_coordinator: AsyncMock,
+    ) -> None:
+        """Custom field sensor unique_id includes custom_{slug}."""
+        desc = create_custom_field_description("region")
+        sensor = GuestyListingSensor(
+            coordinator=mock_coordinator,
+            listing_id=sample_listing.id,
+            entry=mock_coordinator.config_entry,
+            description=desc,
+        )
+        assert sensor.unique_id is not None
+        assert "custom_region" in sensor.unique_id
+
+    def test_custom_field_description_entity_category(
+        self,
+    ) -> None:
+        """Custom field sensor entity_category is DIAGNOSTIC."""
+        desc = create_custom_field_description("region")
+        assert desc.entity_category == EntityCategory.DIAGNOSTIC
+
+    def test_custom_field_native_value(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        mock_coordinator: AsyncMock,
+    ) -> None:
+        """Custom field sensor returns the field value."""
+        desc = create_custom_field_description("region")
+        sensor = GuestyListingSensor(
+            coordinator=mock_coordinator,
+            listing_id=sample_listing.id,
+            entry=mock_coordinator.config_entry,
+            description=desc,
+        )
+        assert sensor.native_value == "southeast"
+
+    def test_custom_field_translation_key(self) -> None:
+        """Custom field sensor has listing_custom_field key."""
+        desc = create_custom_field_description("region")
+        assert desc.translation_key == "listing_custom_field"
+
+    def test_custom_field_name_with_spaces(self) -> None:
+        """Custom field with spaces gets slugified key."""
+        desc = create_custom_field_description("My Field Name")
+        assert desc.key == "custom_my_field_name"
+
+    def test_custom_field_name_set_to_field_name(self) -> None:
+        """Custom field description name matches field name."""
+        desc = create_custom_field_description("region")
+        assert desc.name == "region"
+
+    def test_custom_field_slug_collision_disambiguated(self) -> None:
+        """Colliding slugs get a numeric suffix."""
+        seen: dict[str, int] = {}
+        d1 = create_custom_field_description("Pool Type", seen)
+        d2 = create_custom_field_description("pool_type", seen)
+        assert d1.key == "custom_pool_type"
+        assert d2.key == "custom_pool_type_1"
+        assert d1.key != d2.key
+
+    async def test_no_custom_field_sensors_when_empty(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """No custom field sensors when custom_fields is empty."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        listing = GuestyListing(
+            id="no-cf",
+            title="No Custom Fields",
+            nickname=None,
+            status="active",
+            address=None,
+            property_type=None,
+            room_type=None,
+            bedrooms=None,
+            bathrooms=None,
+            timezone="UTC",
+            check_in_time=None,
+            check_out_time=None,
+            tags=(),
+            custom_fields=MappingProxyType({}),
+        )
+        coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        coordinator.data = {"no-cf": listing}
+        coordinator.async_add_listener = MagicMock(return_value=MagicMock())
+
+        hass.data.setdefault(DOMAIN, {})
+        hass.data[DOMAIN][entry.entry_id] = {
+            "coordinator": coordinator,
+        }
+
+        added_entities: list[Entity] = []
+
+        def mock_add_entities(
+            new_entities: Iterable[Entity],
+            update_before_add: bool = False,
+        ) -> None:
+            """Capture entities.
+
+            Args:
+                new_entities: Entities to add.
+                update_before_add: Whether to update first.
+            """
+            added_entities.extend(list(new_entities))
+
+        await async_setup_entry(hass, entry, mock_add_entities)
+
+        custom_sensors = [
+            e
+            for e in added_entities
+            if isinstance(e, GuestyListingSensor)
+            and e.entity_description.key.startswith("custom_")
+        ]
+        assert len(custom_sensors) == 0
+
+    async def test_custom_field_sensors_created_in_setup(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """Custom field sensors created during setup."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        coordinator.data = {sample_listing.id: sample_listing}
+        coordinator.async_add_listener = MagicMock(return_value=MagicMock())
+
+        hass.data.setdefault(DOMAIN, {})
+        hass.data[DOMAIN][entry.entry_id] = {
+            "coordinator": coordinator,
+        }
+
+        added_entities: list[Entity] = []
+
+        def mock_add_entities(
+            new_entities: Iterable[Entity],
+            update_before_add: bool = False,
+        ) -> None:
+            """Capture entities.
+
+            Args:
+                new_entities: Entities to add.
+                update_before_add: Whether to update first.
+            """
+            added_entities.extend(list(new_entities))
+
+        await async_setup_entry(hass, entry, mock_add_entities)
+
+        custom_sensors = [
+            e
+            for e in added_entities
+            if isinstance(e, GuestyListingSensor)
+            and e.entity_description.key.startswith("custom_")
+        ]
+        assert len(custom_sensors) == 1
+        assert custom_sensors[0].entity_description.key == "custom_region"
+
+    async def test_multiple_custom_fields_create_multiple_sensors(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Multiple custom fields create one sensor each."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        listing = GuestyListing(
+            id="multi-cf",
+            title="Multi CF",
+            nickname=None,
+            status="active",
+            address=None,
+            property_type=None,
+            room_type=None,
+            bedrooms=None,
+            bathrooms=None,
+            timezone="UTC",
+            check_in_time=None,
+            check_out_time=None,
+            tags=(),
+            custom_fields=MappingProxyType({"region": "west", "color": "blue"}),
+        )
+        coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        coordinator.data = {"multi-cf": listing}
+        coordinator.async_add_listener = MagicMock(return_value=MagicMock())
+
+        hass.data.setdefault(DOMAIN, {})
+        hass.data[DOMAIN][entry.entry_id] = {
+            "coordinator": coordinator,
+        }
+
+        added_entities: list[Entity] = []
+
+        def mock_add_entities(
+            new_entities: Iterable[Entity],
+            update_before_add: bool = False,
+        ) -> None:
+            """Capture entities.
+
+            Args:
+                new_entities: Entities to add.
+                update_before_add: Whether to update first.
+            """
+            added_entities.extend(list(new_entities))
+
+        await async_setup_entry(hass, entry, mock_add_entities)
+
+        custom_sensors = [
+            e
+            for e in added_entities
+            if isinstance(e, GuestyListingSensor)
+            and e.entity_description.key.startswith("custom_")
+        ]
+        assert len(custom_sensors) == 2
+        keys = {s.entity_description.key for s in custom_sensors}
+        assert keys == {"custom_region", "custom_color"}
+
+    async def test_custom_field_discovery_on_new_listing(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Custom field sensors created when new listing discovered."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        listing1 = GuestyListing(
+            id="listing-a",
+            title="Listing A",
+            nickname=None,
+            status="active",
+            address=None,
+            property_type=None,
+            room_type=None,
+            bedrooms=None,
+            bathrooms=None,
+            timezone="UTC",
+            check_in_time=None,
+            check_out_time=None,
+            tags=(),
+            custom_fields=MappingProxyType({}),
+        )
+        coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        coordinator.data = {"listing-a": listing1}
+        coordinator.async_add_listener = MagicMock(return_value=MagicMock())
+
+        hass.data.setdefault(DOMAIN, {})
+        hass.data[DOMAIN][entry.entry_id] = {
+            "coordinator": coordinator,
+        }
+
+        added_entities: list[Entity] = []
+
+        def mock_add_entities(
+            new_entities: Iterable[Entity],
+            update_before_add: bool = False,
+        ) -> None:
+            """Capture entities.
+
+            Args:
+                new_entities: Entities to add.
+                update_before_add: Whether to update first.
+            """
+            added_entities.extend(list(new_entities))
+
+        await async_setup_entry(hass, entry, mock_add_entities)
+        initial_count = len(added_entities)
+
+        # New listing with custom fields
+        listing2 = GuestyListing(
+            id="listing-b",
+            title="Listing B",
+            nickname=None,
+            status="active",
+            address=None,
+            property_type=None,
+            room_type=None,
+            bedrooms=None,
+            bathrooms=None,
+            timezone="UTC",
+            check_in_time=None,
+            check_out_time=None,
+            tags=(),
+            custom_fields=MappingProxyType({"pool_type": "heated"}),
+        )
+        coordinator.data = {
+            "listing-a": listing1,
+            "listing-b": listing2,
+        }
+
+        listener_call = coordinator.async_add_listener.call_args
+        assert listener_call is not None
+        listener_fn = listener_call[0][0]
+        listener_fn()
+
+        new_entities = added_entities[initial_count:]
+        custom_sensors = [
+            e
+            for e in new_entities
+            if isinstance(e, GuestyListingSensor)
+            and e.entity_description.key.startswith("custom_")
+        ]
+        assert len(custom_sensors) == 1
+        assert custom_sensors[0].entity_description.key == "custom_pool_type"
