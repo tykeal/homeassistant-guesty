@@ -761,6 +761,342 @@ class TestSensorEntitySetup:
         assert device is not None
 
 
+class TestGuestInformation:
+    """Tests for US3 — guest information edge cases (T023)."""
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_missing_guest_phone_shows_none(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Guest with no phone shows None for guest_phone."""
+        mock_listings.return_value = [sample_listing]
+        reservation = _make_reservation(
+            res_id="res-no-phone",
+            status="checked_in",
+            guest=GuestyGuest(
+                full_name="Bob Jones",
+                phone=None,
+                email="bob@example.com",
+            ),
+        )
+        mock_reservations.return_value = [reservation]
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        state = hass.states.get(
+            "sensor.beach_house_reservation_status",
+        )
+        assert state is not None
+        attrs = state.attributes
+        assert attrs["guest_name"] == "Bob Jones"
+        assert attrs["guest_phone"] is None
+        assert attrs["guest_email"] == "bob@example.com"
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_missing_guest_email_shows_none(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Guest with no email shows None for guest_email."""
+        mock_listings.return_value = [sample_listing]
+        reservation = _make_reservation(
+            res_id="res-no-email",
+            status="checked_in",
+            guest=GuestyGuest(
+                full_name="Carol White",
+                phone="+15551234567",
+                email=None,
+            ),
+        )
+        mock_reservations.return_value = [reservation]
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        state = hass.states.get(
+            "sensor.beach_house_reservation_status",
+        )
+        assert state is not None
+        attrs = state.attributes
+        assert attrs["guest_name"] == "Carol White"
+        assert attrs["guest_phone"] == "+15551234567"
+        assert attrs["guest_email"] is None
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_upcoming_reservations_include_guest_names(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Upcoming reservation summaries include guest names (FR-009)."""
+        mock_listings.return_value = [sample_listing]
+        active = _make_reservation(
+            res_id="r-active",
+            status="checked_in",
+            guest=GuestyGuest(full_name="Current Guest"),
+        )
+        upcoming_with_guest = _make_reservation(
+            res_id="r-upcoming-1",
+            status="confirmed",
+            check_in=datetime(2025, 9, 1, 15, 0, 0, tzinfo=UTC),
+            check_out=datetime(2025, 9, 5, 11, 0, 0, tzinfo=UTC),
+            guest=GuestyGuest(full_name="Future Guest"),
+        )
+        upcoming_no_guest = _make_reservation(
+            res_id="r-upcoming-2",
+            status="confirmed",
+            check_in=datetime(2025, 10, 1, 15, 0, 0, tzinfo=UTC),
+            check_out=datetime(2025, 10, 5, 11, 0, 0, tzinfo=UTC),
+            guest=None,
+        )
+        mock_reservations.return_value = [
+            active,
+            upcoming_with_guest,
+            upcoming_no_guest,
+        ]
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        state = hass.states.get(
+            "sensor.beach_house_reservation_status",
+        )
+        assert state is not None
+        upcoming = state.attributes["upcoming_reservations"]
+        assert len(upcoming) == 2
+        assert upcoming[0]["guest_name"] == "Future Guest"
+        assert upcoming[1]["guest_name"] is None
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_partial_guest_data_name_only(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Name-only guest exposes name while phone/email are None."""
+        mock_listings.return_value = [sample_listing]
+        reservation = _make_reservation(
+            res_id="res-name-only",
+            status="checked_in",
+            guest=GuestyGuest(
+                full_name="Dan Brown",
+                phone=None,
+                email=None,
+            ),
+        )
+        mock_reservations.return_value = [reservation]
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        state = hass.states.get(
+            "sensor.beach_house_reservation_status",
+        )
+        assert state is not None
+        attrs = state.attributes
+        assert attrs["guest_name"] == "Dan Brown"
+        assert attrs["guest_phone"] is None
+        assert attrs["guest_email"] is None
+
+
+class TestSensorErrorResilience:
+    """Tests for US5 — sensor availability during API failures (T025)."""
+
+    def test_sensor_stale_data_accessible_when_coordinator_fails(
+        self,
+    ) -> None:
+        """Sensor retains data access when coordinator has stale data."""
+        from unittest.mock import MagicMock
+
+        from custom_components.guesty.sensor import (
+            GuestyReservationSensor,
+        )
+
+        reservation = _make_reservation(
+            res_id="res-stale",
+            status="checked_in",
+        )
+
+        res_coordinator = MagicMock()
+        res_coordinator.data = {"listing-001": [reservation]}
+        res_coordinator.last_update_success = False
+        listings_coordinator = MagicMock()
+        listings_coordinator.data = {"listing-001": MagicMock()}
+
+        entry = _make_entry()
+        sensor = GuestyReservationSensor(
+            coordinator=res_coordinator,
+            listings_coordinator=listings_coordinator,
+            listing_id="listing-001",
+            entry=entry,
+        )
+
+        # Data is still accessible via _reservations
+        assert sensor._reservations == [reservation]
+        # But sensor reports unavailable to HA
+        assert sensor.available is False
+
+    def test_sensor_recovers_with_fresh_data(
+        self,
+    ) -> None:
+        """Sensors recover to fresh data when API succeeds (US5-S3)."""
+        from unittest.mock import MagicMock
+
+        from custom_components.guesty.sensor import (
+            GuestyReservationSensor,
+        )
+
+        old_reservation = _make_reservation(
+            res_id="res-old",
+            status="checked_in",
+        )
+        new_reservation = _make_reservation(
+            res_id="res-new",
+            status="confirmed",
+        )
+
+        res_coordinator = MagicMock()
+        listings_coordinator = MagicMock()
+        listings_coordinator.data = {"listing-001": MagicMock()}
+
+        entry = _make_entry()
+        sensor = GuestyReservationSensor(
+            coordinator=res_coordinator,
+            listings_coordinator=listings_coordinator,
+            listing_id="listing-001",
+            entry=entry,
+        )
+
+        # Simulate failure: stale data, unavailable
+        res_coordinator.data = {"listing-001": [old_reservation]}
+        res_coordinator.last_update_success = False
+        assert sensor.available is False
+        assert sensor.native_value == "checked_in"
+
+        # Simulate recovery: fresh data, available
+        res_coordinator.data = {"listing-001": [new_reservation]}
+        res_coordinator.last_update_success = True
+        assert sensor.available is True
+        assert sensor.native_value == "awaiting_checkin"
+
+    def test_unavailable_during_outage_prevents_misfire(
+        self,
+    ) -> None:
+        """Unavailable state during outage prevents automation misfire."""
+        from unittest.mock import MagicMock
+
+        from custom_components.guesty.sensor import (
+            GuestyReservationSensor,
+        )
+
+        reservation = _make_reservation(
+            res_id="res-stale",
+            status="checked_in",
+        )
+
+        res_coordinator = MagicMock()
+        res_coordinator.data = {"listing-001": [reservation]}
+        res_coordinator.last_update_success = False
+        listings_coordinator = MagicMock()
+        listings_coordinator.data = {"listing-001": MagicMock()}
+
+        entry = _make_entry()
+        sensor = GuestyReservationSensor(
+            coordinator=res_coordinator,
+            listings_coordinator=listings_coordinator,
+            listing_id="listing-001",
+            entry=entry,
+        )
+
+        # Sensor is unavailable — HA will not use its value
+        assert sensor.available is False
+        # native_value still computes from stale data
+        assert sensor.native_value == "checked_in"
+        # extra_state_attributes still populated from stale data
+        attrs = sensor.extra_state_attributes
+        assert attrs["reservation_id"] == "res-stale"
+
+
 class TestReservationSensorEdgeCases:
     """Tests for GuestyReservationSensor edge case branches."""
 
