@@ -8,6 +8,7 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import voluptuous as vol
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -320,6 +321,96 @@ class TestActionServiceRegistration:
         mock_actions_client.add_reservation_note.assert_awaited_once()
         other_client.add_reservation_note.assert_not_awaited()
         assert result == _result_dict(target_id="res-001")
+
+
+# ── Schema Validation Tests ─────────────────────────────────────────
+
+
+class TestSchemaValidation:
+    """Tests for Voluptuous schema enforcement."""
+
+    async def test_set_listing_status_rejects_bad_status(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Invalid status value is rejected by schema."""
+        await _setup_entry(hass)
+
+        with pytest.raises(vol.Invalid):
+            await hass.services.async_call(
+                DOMAIN,
+                "set_listing_status",
+                {
+                    "listing_id": "listing-001",
+                    "status": "bogus",
+                },
+                blocking=True,
+            )
+
+    async def test_set_calendar_rejects_bad_operation(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Invalid operation value is rejected by schema."""
+        await _setup_entry(hass)
+
+        with pytest.raises(vol.Invalid):
+            await hass.services.async_call(
+                DOMAIN,
+                "set_calendar_availability",
+                {
+                    "listing_id": "listing-001",
+                    "start_date": "2025-08-01",
+                    "end_date": "2025-08-05",
+                    "operation": "delete",
+                },
+                blocking=True,
+            )
+
+    async def test_add_note_missing_required_field(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Missing required field is rejected by schema."""
+        await _setup_entry(hass)
+
+        with pytest.raises(vol.Invalid):
+            await hass.services.async_call(
+                DOMAIN,
+                "add_reservation_note",
+                {"reservation_id": "res-001"},
+                blocking=True,
+            )
+
+    async def test_create_task_missing_required_field(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Missing required listing_id is rejected by schema."""
+        await _setup_entry(hass)
+
+        with pytest.raises(vol.Invalid):
+            await hass.services.async_call(
+                DOMAIN,
+                "create_task",
+                {"task_title": "Test"},
+                blocking=True,
+            )
+
+    async def test_update_field_missing_all_required(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Missing all required fields is rejected by schema."""
+        await _setup_entry(hass)
+
+        with pytest.raises(vol.Invalid):
+            await hass.services.async_call(
+                DOMAIN,
+                "update_reservation_custom_field",
+                {},
+                blocking=True,
+            )
 
 
 # ── Add Reservation Note Tests ──────────────────────────────────────
