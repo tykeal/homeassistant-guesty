@@ -27,7 +27,7 @@ uv sync --all-extras --group dev
 uv run pytest tests/ -x -q
 
 # Run only listing-related tests (after implementation)
-uv run pytest tests/test_models.py \
+uv run pytest tests/api/test_models.py \
   tests/test_coordinator.py \
   tests/test_sensor.py -x -q -v
 
