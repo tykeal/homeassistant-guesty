@@ -24,6 +24,7 @@ from custom_components.guesty.const import (
     CONF_CLIENT_SECRET,
     DOMAIN,
 )
+from tests.conftest import make_token_response
 
 # ── Patch targets ───────────────────────────────────────────────────
 
@@ -1082,12 +1083,7 @@ class TestIntegrationEndToEnd:
             respx.post(TOKEN_URL).mock(
                 return_value=Response(
                     200,
-                    json={
-                        "token_type": "Bearer",
-                        "access_token": "test-jwt",
-                        "expires_in": 86400,
-                        "scope": "open-api",
-                    },
+                    json=make_token_response(),
                 ),
             )
             res_path = f"{RESERVATIONS_ENDPOINT}/res-e2e"
@@ -1152,12 +1148,7 @@ class TestIntegrationEndToEnd:
             respx.post(TOKEN_URL).mock(
                 return_value=Response(
                     200,
-                    json={
-                        "token_type": "Bearer",
-                        "access_token": "test-jwt",
-                        "expires_in": 86400,
-                        "scope": "open-api",
-                    },
+                    json=make_token_response(),
                 ),
             )
             path = f"{LISTINGS_ENDPOINT}/lst-e2e"
@@ -1215,12 +1206,7 @@ class TestIntegrationEndToEnd:
             respx.post(TOKEN_URL).mock(
                 return_value=Response(
                     200,
-                    json={
-                        "token_type": "Bearer",
-                        "access_token": "test-jwt",
-                        "expires_in": 86400,
-                        "scope": "open-api",
-                    },
+                    json=make_token_response(),
                 ),
             )
             post_route = respx.post(
@@ -1281,12 +1267,7 @@ class TestIntegrationEndToEnd:
             respx.post(TOKEN_URL).mock(
                 return_value=Response(
                     200,
-                    json={
-                        "token_type": "Bearer",
-                        "access_token": "test-jwt",
-                        "expires_in": 86400,
-                        "scope": "open-api",
-                    },
+                    json=make_token_response(),
                 ),
             )
             cal_path = CALENDAR_ENDPOINT.format(
@@ -1349,12 +1330,7 @@ class TestIntegrationEndToEnd:
             respx.post(TOKEN_URL).mock(
                 return_value=Response(
                     200,
-                    json={
-                        "token_type": "Bearer",
-                        "access_token": "test-jwt",
-                        "expires_in": 86400,
-                        "scope": "open-api",
-                    },
+                    json=make_token_response(),
                 ),
             )
             res_path = f"{RESERVATIONS_ENDPOINT}/res-e2e"
@@ -1410,12 +1386,7 @@ class TestIntegrationEndToEnd:
             respx.post(TOKEN_URL).mock(
                 return_value=Response(
                     200,
-                    json={
-                        "token_type": "Bearer",
-                        "access_token": "test-jwt",
-                        "expires_in": 86400,
-                        "scope": "open-api",
-                    },
+                    json=make_token_response(),
                 ),
             )
             res_path = f"{RESERVATIONS_ENDPOINT}/res-bad"
