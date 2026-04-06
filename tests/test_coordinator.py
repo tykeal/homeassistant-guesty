@@ -15,7 +15,6 @@ from homeassistant.helpers.update_coordinator import UpdateFailed
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.guesty.api.exceptions import (
-    GuestyApiError,
     GuestyAuthError,
     GuestyConnectionError,
     GuestyRateLimitError,
@@ -1131,7 +1130,7 @@ class TestCustomFieldsDefinitionCoordinator:
         await coordinator.async_refresh()
 
         assert coordinator.data == _SAMPLE_DEFS
-        cf_client.get_definitions.assert_called_once()
+        cf_client.get_definitions.assert_awaited_once()
 
     async def test_definitions_expose_name_id_type_applicability(
         self,

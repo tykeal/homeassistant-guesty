@@ -628,7 +628,7 @@ class TestReservationCustomFields:
                 blocking=True,
             )
 
-        mock_set.assert_called_once_with(
+        mock_set.assert_awaited_once_with(
             target_type="reservation",
             target_id="res-789",
             field_id="cf-door-code",
@@ -756,7 +756,7 @@ class TestAutomationCompatibility:
                 },
                 blocking=True,
             )
-        mock_set.assert_called_once()
+        mock_set.assert_awaited_once()
 
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
@@ -1148,7 +1148,7 @@ class TestEdgeCases:
                 },
                 blocking=True,
             )
-        mock_set.assert_called_once_with(
+        mock_set.assert_awaited_once_with(
             target_type="listing",
             target_id="lst-u",
             field_id="cf-region",
@@ -2088,7 +2088,7 @@ class TestIntegrationDataFlow:
                 return_response=True,
             )
 
-        mock_set.assert_called_once_with(
+        mock_set.assert_awaited_once_with(
             target_type="listing",
             target_id="lst-e2e",
             field_id="cf-region",
@@ -2150,12 +2150,9 @@ class TestIntegrationDataFlow:
                 return_response=True,
             )
 
-        mock_set.assert_called_once()
+        mock_set.assert_awaited_once()
         assert result is not None
         assert result["target_type"] == "reservation"
-
-
-# ── T036: Success Criteria Validation Tests ──────────────────────────
 
 
 class TestSuccessCriteria:
