@@ -16,7 +16,10 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.guesty.api.models import (
     CachedToken,
     GuestyAddress,
+    GuestyGuest,
     GuestyListing,
+    GuestyMoney,
+    GuestyReservation,
     TokenStorage,
 )
 from custom_components.guesty.const import (
@@ -283,3 +286,144 @@ def mock_messaging_client() -> AsyncMock:
     client.resolve_conversation = AsyncMock()
     client.render_template = AsyncMock()
     return client
+
+
+# ── Reservation test helpers ────────────────────────────────────────
+
+
+def make_guest_dict(**overrides: Any) -> dict[str, Any]:
+    """Create a Guesty API guest dict with sensible defaults.
+
+    Args:
+        **overrides: Fields to override on the defaults.
+
+    Returns:
+        Dictionary matching the Guesty API guest object format.
+    """
+    defaults: dict[str, Any] = {
+        "fullName": "John Doe",
+        "phone": "+15551234567",
+        "email": "john@example.com",
+        "_id": "guest-001",
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+def make_money_dict(**overrides: Any) -> dict[str, Any]:
+    """Create a Guesty API money dict with sensible defaults.
+
+    Args:
+        **overrides: Fields to override on the defaults.
+
+    Returns:
+        Dictionary matching the Guesty API money object format.
+    """
+    defaults: dict[str, Any] = {
+        "totalPaid": 500.00,
+        "balanceDue": 100.00,
+        "currency": "USD",
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+def make_reservation_dict(**overrides: Any) -> dict[str, Any]:
+    """Create a Guesty API reservation dict with sensible defaults.
+
+    Args:
+        **overrides: Fields to override on the defaults.
+
+    Returns:
+        Dictionary matching the Guesty API reservation response.
+    """
+    defaults: dict[str, Any] = {
+        "_id": "res-001",
+        "listingId": "listing-001",
+        "status": "confirmed",
+        "checkIn": "2025-08-01T15:00:00+00:00",
+        "checkOut": "2025-08-05T11:00:00+00:00",
+        "confirmationCode": "CONF-ABC",
+        "checkInDateLocalized": "2025-08-01",
+        "checkOutDateLocalized": "2025-08-05",
+        "plannedArrival": "15:00",
+        "plannedDeparture": "11:00",
+        "nightsCount": 4,
+        "guestsCount": 2,
+        "source": "airbnb",
+        "note": "Late arrival",
+        "guest": make_guest_dict(),
+        "money": make_money_dict(),
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+@pytest.fixture
+def sample_reservation() -> GuestyReservation:
+    """Provide a valid GuestyReservation instance for tests.
+
+    Returns:
+        A GuestyReservation with default test values.
+    """
+    return GuestyReservation(
+        id="res-001",
+        listing_id="listing-001",
+        status="confirmed",
+        check_in=datetime(2025, 8, 1, 15, 0, 0, tzinfo=UTC),
+        check_out=datetime(2025, 8, 5, 11, 0, 0, tzinfo=UTC),
+        confirmation_code="CONF-ABC",
+        check_in_local="2025-08-01",
+        check_out_local="2025-08-05",
+        planned_arrival="15:00",
+        planned_departure="11:00",
+        nights_count=4,
+        guests_count=2,
+        source="airbnb",
+        note="Late arrival",
+        guest=GuestyGuest(
+            full_name="John Doe",
+            phone="+15551234567",
+            email="john@example.com",
+            guest_id="guest-001",
+        ),
+        money=GuestyMoney(
+            total_paid=500.00,
+            balance_due=100.00,
+            currency="USD",
+        ),
+    )
+
+
+@pytest.fixture
+def mock_reservations_coordinator(
+    hass: HomeAssistant,
+    sample_listing: GuestyListing,
+    sample_reservation: GuestyReservation,
+) -> AsyncMock:
+    """Provide a mocked ReservationsCoordinator with sample data.
+
+    Args:
+        hass: Home Assistant instance.
+        sample_listing: The sample listing for coordinator data.
+        sample_reservation: The sample reservation for data.
+
+    Returns:
+        An AsyncMock mimicking ReservationsCoordinator.
+    """
+    coordinator = AsyncMock()
+    coordinator.data = {
+        sample_listing.id: [sample_reservation],
+    }
+    coordinator.hass = hass
+    coordinator.config_entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Guesty (test)",
+        data={
+            CONF_CLIENT_ID: FAKE_CLIENT_ID,
+            CONF_CLIENT_SECRET: FAKE_CLIENT_SECRET,
+        },
+        unique_id=FAKE_CLIENT_ID,
+    )
+    coordinator.last_update_success = True
+    return coordinator
