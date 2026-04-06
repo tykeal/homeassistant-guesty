@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
+from types import MappingProxyType
 from unittest.mock import AsyncMock
 
 import pytest
@@ -192,3 +194,275 @@ class TestListingsCoordinator:
 
         data = await coordinator._async_update_data()
         assert data == {}
+
+
+class TestDisappearedListings:
+    """Tests for disappeared listing tracking (T028)."""
+
+    async def test_disappeared_listing_ids_initially_empty(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """disappeared_listing_ids is empty on init."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+
+        coordinator = ListingsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+        )
+
+        assert coordinator.disappeared_listing_ids == set()
+
+    async def test_disappeared_listing_detected(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """Listing absent from current fetch is marked disappeared."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_listings = AsyncMock(
+            return_value=[sample_listing],
+        )
+
+        coordinator = ListingsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+        )
+
+        # First fetch — establishes baseline
+        await coordinator._async_update_data()
+
+        # Second fetch — listing disappears
+        api_client.get_listings = AsyncMock(return_value=[])
+        await coordinator._async_update_data()
+
+        assert sample_listing.id in coordinator.disappeared_listing_ids
+
+    async def test_disappeared_listing_cleared_on_reappear(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """Disappeared listing ID cleared when listing reappears."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_listings = AsyncMock(
+            return_value=[sample_listing],
+        )
+
+        coordinator = ListingsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+        )
+
+        # First fetch
+        await coordinator._async_update_data()
+
+        # Listing disappears
+        api_client.get_listings = AsyncMock(return_value=[])
+        await coordinator._async_update_data()
+        assert sample_listing.id in coordinator.disappeared_listing_ids
+
+        # Listing reappears
+        api_client.get_listings = AsyncMock(
+            return_value=[sample_listing],
+        )
+        await coordinator._async_update_data()
+        assert sample_listing.id not in coordinator.disappeared_listing_ids
+
+    async def test_disappeared_listing_warning_logged(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Warning logged for each disappeared listing ID."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_listings = AsyncMock(
+            return_value=[sample_listing],
+        )
+
+        coordinator = ListingsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+        )
+
+        # First fetch
+        await coordinator._async_update_data()
+
+        # Listing disappears
+        api_client.get_listings = AsyncMock(return_value=[])
+        caplog.clear()
+        with caplog.at_level(
+            logging.WARNING,
+            logger="custom_components.guesty.coordinator",
+        ):
+            await coordinator._async_update_data()
+
+        matching = [
+            r
+            for r in caplog.records
+            if r.name == "custom_components.guesty.coordinator"
+            and r.levelno == logging.WARNING
+            and sample_listing.id in r.getMessage()
+        ]
+        assert len(matching) == 1
+
+    async def test_last_known_good_data_retained_on_error(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """Coordinator retains last-known-good data after error."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_listings = AsyncMock(
+            return_value=[sample_listing],
+        )
+
+        coordinator = ListingsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+        )
+
+        # Successful first refresh through the public coordinator flow
+        await coordinator.async_refresh()
+        assert coordinator.last_update_success is True
+        assert coordinator.data == {sample_listing.id: sample_listing}
+
+        # Now API fails during a coordinator refresh
+        api_client.get_listings = AsyncMock(
+            side_effect=GuestyConnectionError("network down"),
+        )
+        await coordinator.async_refresh()
+
+        # DataUpdateCoordinator preserves last-known-good data
+        assert coordinator.last_update_success is False
+        assert coordinator.data == {sample_listing.id: sample_listing}
+
+    async def test_recovery_updates_data_after_error(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """Data updated on recovery after API error."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_listings = AsyncMock(
+            return_value=[sample_listing],
+        )
+
+        coordinator = ListingsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+        )
+
+        # First successful refresh
+        await coordinator.async_refresh()
+        assert coordinator.last_update_success is True
+
+        # API error during refresh
+        api_client.get_listings = AsyncMock(
+            side_effect=GuestyConnectionError("network down"),
+        )
+        await coordinator.async_refresh()
+        assert coordinator.last_update_success is False
+
+        # Recovery with new listing
+        new_listing = GuestyListing(
+            id="listing-002",
+            title="Mountain Cabin",
+            nickname="cabin",
+            status="active",
+            address=None,
+            property_type="house",
+            room_type="entire_home",
+            bedrooms=3,
+            bathrooms=2.0,
+            timezone="America/Denver",
+            check_in_time="16:00",
+            check_out_time="10:00",
+            tags=(),
+            custom_fields=MappingProxyType({}),
+        )
+        api_client.get_listings = AsyncMock(
+            return_value=[sample_listing, new_listing],
+        )
+        await coordinator.async_refresh()
+        assert coordinator.last_update_success is True
+        assert coordinator.data is not None
+        assert new_listing.id in coordinator.data
+        assert sample_listing.id in coordinator.data
+
+    async def test_disappeared_not_set_on_first_fetch(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """No disappeared IDs on first successful fetch."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_listings = AsyncMock(
+            return_value=[sample_listing],
+        )
+
+        coordinator = ListingsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+        )
+
+        await coordinator._async_update_data()
+        assert coordinator.disappeared_listing_ids == set()
+
+    async def test_disappeared_ids_preserved_on_api_error(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """disappeared_listing_ids unchanged after UpdateFailed."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_listings = AsyncMock(
+            return_value=[sample_listing],
+        )
+
+        coordinator = ListingsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+        )
+
+        # First fetch
+        await coordinator._async_update_data()
+
+        # Listing disappears
+        api_client.get_listings = AsyncMock(return_value=[])
+        await coordinator._async_update_data()
+        assert sample_listing.id in coordinator.disappeared_listing_ids
+
+        # API error — disappeared set should be unchanged
+        api_client.get_listings = AsyncMock(
+            side_effect=GuestyResponseError("bad response"),
+        )
+        with pytest.raises(UpdateFailed):
+            await coordinator._async_update_data()
+
+        assert sample_listing.id in coordinator.disappeared_listing_ids

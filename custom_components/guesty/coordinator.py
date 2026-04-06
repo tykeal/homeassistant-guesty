@@ -42,6 +42,8 @@ class ListingsCoordinator(
     Attributes:
         api_client: The Guesty API client instance.
         config_entry: The integration config entry.
+        disappeared_listing_ids: IDs of listings previously present
+            but absent in the most recent successful fetch.
     """
 
     config_entry: ConfigEntry
@@ -60,6 +62,8 @@ class ListingsCoordinator(
             api_client: Guesty API client for fetching listings.
         """
         self.api_client = api_client
+        self.disappeared_listing_ids: set[str] = set()
+        self._previous_listing_ids: set[str] | None = None
         interval_minutes = entry.options.get(
             CONF_SCAN_INTERVAL,
             DEFAULT_SCAN_INTERVAL,
@@ -77,6 +81,11 @@ class ListingsCoordinator(
     ) -> dict[str, GuestyListing]:
         """Fetch all listings and return as a dict keyed by ID.
 
+        Compares fetched listing IDs against previous data to track
+        disappeared listings. IDs present before but absent now are
+        added to ``disappeared_listing_ids``; IDs that reappear are
+        removed from the set. A warning is logged per disappeared ID.
+
         Returns:
             Dictionary mapping listing ID to GuestyListing.
 
@@ -90,4 +99,19 @@ class ListingsCoordinator(
                 f"Error fetching listings: {exc.message}",
             ) from exc
 
-        return {listing.id: listing for listing in listings}
+        new_data = {listing.id: listing for listing in listings}
+        current_ids = set(new_data.keys())
+
+        if self._previous_listing_ids is not None:
+            newly_disappeared = self._previous_listing_ids - current_ids
+            for lid in newly_disappeared:
+                _LOGGER.warning(
+                    "Listing %s disappeared from API response",
+                    lid,
+                )
+            self.disappeared_listing_ids = (
+                self.disappeared_listing_ids | newly_disappeared
+            ) - current_ids
+
+        self._previous_listing_ids = current_ids
+        return new_data

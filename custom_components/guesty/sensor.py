@@ -156,6 +156,26 @@ class GuestyListingSensor(GuestyEntity, SensorEntity):
             return None
         return self.entity_description.value_fn(listing)
 
+    @property
+    def available(self) -> bool:
+        """Return True only when the listing is present and not disappeared.
+
+        Combines the parent coordinator health check with listing-level
+        presence: the entity is unavailable if the coordinator itself is
+        unhealthy, the listing ID is absent from coordinator data, or the
+        listing ID is in the coordinator's disappeared set.
+
+        Returns:
+            True when the listing is available, False otherwise.
+        """
+        if not super().available:
+            return False
+        if self.coordinator.data is None:
+            return False
+        if self._listing_id in self.coordinator.disappeared_listing_ids:
+            return False
+        return self._listing_id in self.coordinator.data
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
