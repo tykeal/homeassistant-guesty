@@ -302,7 +302,7 @@ jobs:
           # Strip leading 'v' if present
           VERSION="${TAG#v}"
           echo "Setting version to: $VERSION"
-          cd "${{ github.workspace }}/custom_components/turnovercal"
+          cd "${{ github.workspace }}/custom_components/guesty"
           jq --arg v "$VERSION" '.version = $v' manifest.json \
             > manifest.tmp && mv manifest.tmp manifest.json
           echo "Updated manifest.json:"
@@ -312,9 +312,9 @@ jobs:
         shell: bash
         run: |
           # Create ZIP of the integration directory
-          cd "${{ github.workspace }}/custom_components/turnovercal"
+          cd "${{ github.workspace }}/custom_components/guesty"
           zip -r \
-            "${{ github.workspace }}/turnovercal.zip" \
+            "${{ github.workspace }}/guesty.zip" \
             ./ \
             -x '*__pycache__/*' '*.pyc'
 
@@ -323,7 +323,7 @@ jobs:
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f  # v7.0.0
         with:
           name: integration-zip
-          path: turnovercal.zip
+          path: guesty.zip
           retention-days: 45
 
   attach-artefacts:
