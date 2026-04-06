@@ -337,7 +337,7 @@ validation.
   calls, special characters and unicode in note/description, maximum
   length boundary values, token expiry during action → auto-refresh →
   retry, deleted reservation/listing returns not found error
-- [ ] T037 Run quickstart.md validation scenarios per
+- [x] T037 Run quickstart.md validation scenarios per
   specs/006-automation-actions/quickstart.md — execute test commands,
   linter commands, and verify architecture matches documented
   structure

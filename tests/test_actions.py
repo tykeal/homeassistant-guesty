@@ -4,16 +4,32 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import AsyncGenerator
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
+import respx
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from httpx import Response
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.guesty.api.actions import GuestyActionsClient
+from custom_components.guesty.api.auth import GuestyTokenManager
+from custom_components.guesty.api.client import GuestyApiClient
+from custom_components.guesty.api.const import (
+    BASE_URL,
+    CALENDAR_ENDPOINT,
+    LISTINGS_ENDPOINT,
+    RESERVATIONS_ENDPOINT,
+    TASKS_ENDPOINT,
+    TOKEN_URL,
+)
 from custom_components.guesty.api.exceptions import (
     GuestyActionError,
     GuestyApiError,
@@ -24,7 +40,7 @@ from custom_components.guesty.const import (
     CONF_CLIENT_SECRET,
     DOMAIN,
 )
-from tests.conftest import make_token_response
+from tests.conftest import FakeTokenStorage, make_token_response
 
 # ── Patch targets ───────────────────────────────────────────────────
 
@@ -1066,14 +1082,12 @@ class TestIntegrationEndToEnd:
         hass: HomeAssistant,
     ) -> None:
         """Full path: service → handler → client → API."""
-        import json as json_mod
 
         import respx
         from httpx import Response
 
         from custom_components.guesty.api.const import (
             BASE_URL,
-            RESERVATIONS_ENDPOINT,
             TOKEN_URL,
         )
 
@@ -1120,7 +1134,7 @@ class TestIntegrationEndToEnd:
             "success": True,
             "target_id": "res-e2e",
         }
-        payload = json_mod.loads(
+        payload = json.loads(
             put_route.calls[0].request.content,
         )
         assert "Old note" in payload["note"]
@@ -1131,7 +1145,6 @@ class TestIntegrationEndToEnd:
         hass: HomeAssistant,
     ) -> None:
         """Full path: service → handler → client → API."""
-        import json as json_mod
 
         import respx
         from httpx import Response
@@ -1179,7 +1192,7 @@ class TestIntegrationEndToEnd:
             "success": True,
             "target_id": "lst-e2e",
         }
-        payload = json_mod.loads(
+        payload = json.loads(
             put_route.calls[0].request.content,
         )
         assert payload == {"active": False}
@@ -1189,14 +1202,12 @@ class TestIntegrationEndToEnd:
         hass: HomeAssistant,
     ) -> None:
         """Full path: service → handler → client → API."""
-        import json as json_mod
 
         import respx
         from httpx import Response
 
         from custom_components.guesty.api.const import (
             BASE_URL,
-            TASKS_ENDPOINT,
             TOKEN_URL,
         )
 
@@ -1238,7 +1249,7 @@ class TestIntegrationEndToEnd:
             "success": True,
             "target_id": "task-e2e",
         }
-        payload = json_mod.loads(
+        payload = json.loads(
             post_route.calls[0].request.content,
         )
         assert payload["listingId"] == "lst-e2e"
@@ -1250,14 +1261,12 @@ class TestIntegrationEndToEnd:
         hass: HomeAssistant,
     ) -> None:
         """Full path: service → handler → client → API."""
-        import json as json_mod
 
         import respx
         from httpx import Response
 
         from custom_components.guesty.api.const import (
             BASE_URL,
-            CALENDAR_ENDPOINT,
             TOKEN_URL,
         )
 
@@ -1299,7 +1308,7 @@ class TestIntegrationEndToEnd:
             "success": True,
             "target_id": "lst-e2e",
         }
-        payload = json_mod.loads(
+        payload = json.loads(
             put_route.calls[0].request.content,
         )
         assert payload == {
@@ -1313,14 +1322,12 @@ class TestIntegrationEndToEnd:
         hass: HomeAssistant,
     ) -> None:
         """Full path: service → handler → client → API."""
-        import json as json_mod
 
         import respx
         from httpx import Response
 
         from custom_components.guesty.api.const import (
             BASE_URL,
-            RESERVATIONS_ENDPOINT,
             TOKEN_URL,
         )
 
@@ -1359,7 +1366,7 @@ class TestIntegrationEndToEnd:
             "success": True,
             "target_id": "res-e2e",
         }
-        payload = json_mod.loads(
+        payload = json.loads(
             put_route.calls[0].request.content,
         )
         assert payload == {
@@ -1376,7 +1383,6 @@ class TestIntegrationEndToEnd:
 
         from custom_components.guesty.api.const import (
             BASE_URL,
-            RESERVATIONS_ENDPOINT,
             TOKEN_URL,
         )
 
@@ -1593,6 +1599,117 @@ class TestHandlerEdgeCases:
                     "reservation_id": "res-001",
                     "field_id": "cf-001",
                     "value": "test",
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+
+# ── End-to-End Integration Tests (T035) ─────────────────────────────
+
+
+@pytest.fixture
+async def real_actions_client() -> AsyncGenerator[GuestyActionsClient]:
+    """Yield a real GuestyActionsClient for e2e tests.
+
+    Creates a real httpx.AsyncClient and properly closes it
+    after the test completes.
+
+    Yields:
+        A GuestyActionsClient backed by test fakes and a real
+        httpx.AsyncClient (intercepted by respx in tests).
+    """
+    storage = FakeTokenStorage()
+    http = httpx.AsyncClient()
+    mgr = GuestyTokenManager(
+        client_id="test-client-id",
+        client_secret="test-client-secret",
+        http_client=http,
+        storage=storage,
+        refresh_buffer=0,
+    )
+    api = GuestyApiClient(token_manager=mgr, http_client=http)
+    yield GuestyActionsClient(api)
+    await http.aclose()
+
+
+def _mock_token() -> None:
+    """Register a respx route for the Guesty token endpoint."""
+    respx.post(TOKEN_URL).mock(
+        return_value=Response(200, json=make_token_response()),
+    )
+
+
+class TestEndToEndIntegration:
+    """End-to-end tests for response structure and error propagation (T035).
+
+    These tests exercise the complete path: HA service call →
+    handler → real GuestyActionsClient → real GuestyApiClient →
+    respx-mocked HTTP → ActionResult response. Verifies
+    automation compatibility (FR-017) and response structure
+    (FR-022).
+    """
+
+    @respx.mock
+    async def test_e2e_response_has_no_error_key_on_success(
+        self,
+        hass: HomeAssistant,
+        real_actions_client: GuestyActionsClient,
+    ) -> None:
+        """FR-022: success response omits the error key."""
+        entry = await _setup_entry(hass)
+        hass.data[DOMAIN][entry.entry_id]["actions_client"] = real_actions_client
+
+        _mock_token()
+        lst_url = f"{BASE_URL}{LISTINGS_ENDPOINT}/lst-chk"
+        respx.put(lst_url).mock(
+            return_value=Response(
+                200,
+                json={"_id": "lst-chk", "active": False},
+            ),
+        )
+
+        result = await hass.services.async_call(
+            DOMAIN,
+            "set_listing_status",
+            {
+                "listing_id": "lst-chk",
+                "status": "inactive",
+            },
+            blocking=True,
+            return_response=True,
+        )
+
+        assert result is not None
+        assert "error" not in result
+        assert set(result.keys()) == {"success", "target_id"}
+
+    @respx.mock
+    async def test_e2e_error_becomes_ha_error(
+        self,
+        hass: HomeAssistant,
+        real_actions_client: GuestyActionsClient,
+    ) -> None:
+        """HTTP 422 propagates as HomeAssistantError."""
+        entry = await _setup_entry(hass)
+        hass.data[DOMAIN][entry.entry_id]["actions_client"] = real_actions_client
+
+        _mock_token()
+        lst_url = f"{BASE_URL}{LISTINGS_ENDPOINT}/lst-bad"
+        respx.put(lst_url).mock(
+            return_value=Response(422, text="Unprocessable"),
+        )
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="Failed to set listing status",
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                "set_listing_status",
+                {
+                    "listing_id": "lst-bad",
+                    "status": "active",
                 },
                 blocking=True,
                 return_response=True,
