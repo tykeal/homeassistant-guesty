@@ -137,6 +137,29 @@ async def _validate_credentials(
     await api_client.test_connection()
 
 
+def _filter_listings_by_tags(
+    listings: list[GuestyListing],
+    tags: list[str],
+) -> list[GuestyListing]:
+    """Filter listings by tags using OR logic.
+
+    Returns listings whose tags share at least one element with
+    the given tag list.  When *tags* is empty every listing is
+    returned unchanged.
+
+    Args:
+        listings: All available Guesty listings.
+        tags: Tag strings to match against.
+
+    Returns:
+        Filtered list of listings (or all if tags is empty).
+    """
+    if not tags:
+        return listings
+    tag_set = set(tags)
+    return [lst for lst in listings if tag_set.intersection(lst.tags)]
+
+
 class GuestyConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for the Guesty integration.
 
@@ -410,8 +433,29 @@ class GuestyOptionsFlowHandler(OptionsFlow):
                 self._selected_listings = selected
                 return await self.async_step_intervals()
 
+        filtered = _filter_listings_by_tags(
+            self._available_listings,
+            self._tag_filter,
+        )
+
+        if not filtered and user_input is None and self._tag_filter:
+            return self.async_show_form(
+                step_id="init",
+                data_schema=vol.Schema(
+                    {
+                        vol.Optional(
+                            CONF_TAG_FILTER,
+                            default=self._tag_filter,
+                        ): TextSelector(
+                            TextSelectorConfig(multiple=True),
+                        ),
+                    }
+                ),
+                errors={"base": "no_listings_match_tags"},
+            )
+
         options: list[SelectOptionDict] = []
-        for listing in self._available_listings:
+        for listing in filtered:
             addr = listing.address.formatted() if listing.address else None
             label = f"{listing.title} \u2014 {addr or 'No address'}"
             options.append(
@@ -422,10 +466,10 @@ class GuestyOptionsFlowHandler(OptionsFlow):
             CONF_SELECTED_LISTINGS,
         )
         if current is None:
-            default = [listing.id for listing in self._available_listings]
+            default = [listing.id for listing in filtered]
         else:
-            available_ids = {listing.id for listing in self._available_listings}
-            default = [lid for lid in current if lid in available_ids]
+            filtered_ids = {listing.id for listing in filtered}
+            default = [lid for lid in current if lid in filtered_ids]
 
         schema = vol.Schema(
             {

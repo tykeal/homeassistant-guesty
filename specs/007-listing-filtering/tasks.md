@@ -187,27 +187,27 @@ specified tag. Verify empty tags show all listings.
 > **NOTE: Write these tests FIRST, ensure they FAIL before implementation
 > (Constitution I)**
 
-- [ ] T023 [US2] Write test: async_step_select_listings shows only listings
+- [x] T023 [US2] Write test: async_step_select_listings shows only listings
       matching a single tag from init step tag_filter input in
       tests/test_config_flow.py
-- [ ] T024 [US2] Write test: async_step_select_listings shows all listings when
+- [x] T024 [US2] Write test: async_step_select_listings shows all listings when
       tag_filter from init step is empty in tests/test_config_flow.py
-- [ ] T025 [US2] Write test: multiple tags in tag_filter use OR logic — listing
+- [x] T025 [US2] Write test: multiple tags in tag_filter use OR logic — listing
       shown if any of its tags match any filter tag in tests/test_config_flow.py
-- [ ] T026 [US2] Write test: async_step_select_listings returns
+- [x] T026 [US2] Write test: async_step_select_listings returns
       no_listings_match_tags error when tag filter matches zero listings in
       tests/test_config_flow.py
-- [ ] T027 [US2] Write test: default selection in select_listings intersects
+- [x] T027 [US2] Write test: default selection in select_listings intersects
       previous CONF_SELECTED_LISTINGS with tag-filtered available listing IDs in
       tests/test_config_flow.py
 
 ### Implementation for US2
 
-- [ ] T028 [US2] Implement _filter_listings_by_tags helper function: accept
+- [x] T028 [US2] Implement _filter_listings_by_tags helper function: accept
       list[GuestyListing] and list[str] tags, return filtered list using OR
       logic via set intersection on listing.tags, return all listings when tags
       is empty in custom_components/guesty/config_flow.py
-- [ ] T029 [US2] Integrate _filter_listings_by_tags into
+- [x] T029 [US2] Integrate _filter_listings_by_tags into
       async_step_select_listings: apply tag filter from self._tag_filter to
       self._available_listings before building SelectSelector options, show
       no_listings_match_tags error on empty result in
