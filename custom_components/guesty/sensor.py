@@ -396,7 +396,6 @@ class GuestyReservationSensor(
 
     Attributes:
         _listing_id: The Guesty listing ID.
-        _entry: The config entry.
         _listings_coordinator: Reference for device_info.
     """
 
@@ -419,7 +418,6 @@ class GuestyReservationSensor(
         """
         super().__init__(coordinator)
         self._listing_id = listing_id
-        self._entry = entry
         self._listings_coordinator = listings_coordinator
         self._attr_unique_id = f"{entry.unique_id}_{listing_id}_reservation_status"
         self._attr_translation_key = "reservation_status"
