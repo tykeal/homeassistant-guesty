@@ -761,3 +761,106 @@ class GuestyReservationsResponse:
             limit=data.get("limit", 100),
             skip=data.get("skip", 0),
         )
+
+
+# --- Custom Field Models (Feature 004, Phase 1) ---
+
+_GUESTY_TYPE_MAP: dict[str, str] = {"string": "text"}
+
+
+@dataclass(frozen=True)
+class GuestyCustomFieldDefinition:
+    """Immutable custom field definition from the Guesty API.
+
+    Attributes:
+        field_id: Unique identifier for the custom field.
+        name: Human-readable display name.
+        field_type: Normalised value type (text, number, boolean).
+        applicable_to: Set of entity types this field applies to.
+    """
+
+    field_id: str
+    name: str
+    field_type: str
+    applicable_to: frozenset[str]
+
+    @classmethod
+    def from_api_dict(
+        cls,
+        data: dict[str, Any],
+    ) -> GuestyCustomFieldDefinition | None:
+        """Create a definition from a Guesty API response dict.
+
+        Returns ``None`` when required fields (id, name, type)
+        are missing so callers can filter incomplete records.
+
+        Args:
+            data: Single definition dict from GET /custom-fields.
+
+        Returns:
+            A populated instance, or None if required data is
+            missing.
+        """
+        field_id = data.get("id")
+        name = data.get("name")
+        raw_type = data.get("type")
+
+        if field_id is None or name is None or raw_type is None:
+            return None
+
+        field_type = _GUESTY_TYPE_MAP.get(raw_type, raw_type)
+
+        object_type = data.get("objectType")
+        if object_type == "both":
+            applicable_to = frozenset({"listing", "reservation"})
+        elif object_type is not None:
+            applicable_to = frozenset({object_type})
+        else:
+            applicable_to = frozenset()
+
+        return cls(
+            field_id=str(field_id),
+            name=str(name),
+            field_type=str(field_type),
+            applicable_to=applicable_to,
+        )
+
+
+@dataclass(frozen=True)
+class GuestyCustomFieldUpdate:
+    """Single custom field value update payload.
+
+    Attributes:
+        field_id: The custom field identifier.
+        value: The new value (string, int, float, or bool).
+    """
+
+    field_id: str
+    value: str | int | float | bool
+
+    def to_api_dict(self) -> dict[str, str | int | float | bool]:
+        """Serialise to the Guesty API request body format.
+
+        Returns:
+            Dict with fieldId and value keys.
+        """
+        return {"fieldId": self.field_id, "value": self.value}
+
+
+@dataclass(frozen=True)
+class GuestyCustomFieldResult:
+    """Result of a custom field write operation.
+
+    Attributes:
+        success: Whether the write succeeded.
+        target_type: Entity type that was updated.
+        target_id: Entity identifier that was updated.
+        field_id: Custom field that was updated.
+        error_details: Error description when success is False.
+    """
+
+    success: bool
+    target_type: str
+    target_id: str
+    field_id: str
+    error_details: str | None = None

@@ -128,3 +128,22 @@ DEFAULT_PAST_DAYS: int = 30
 
 # Default future days for reservation date range window.
 DEFAULT_FUTURE_DAYS: int = 365
+
+# Custom fields definitions endpoint path.
+CUSTOM_FIELDS_ENDPOINT: str = "/custom-fields"
+
+# Custom fields update path for listings.
+LISTING_CUSTOM_FIELDS_PATH: str = "/listings/{listing_id}/custom-fields"
+
+# Custom fields update path for reservations (v3 API).
+RESERVATION_CUSTOM_FIELDS_PATH: str = "/reservations-v3/{reservation_id}/custom-fields"
+
+# Recognised custom field value types.
+CUSTOM_FIELD_TYPES: frozenset[str] = frozenset(
+    {"text", "number", "boolean"},
+)
+
+# Valid custom field target entity types.
+CUSTOM_FIELD_TARGETS: frozenset[str] = frozenset(
+    {"listing", "reservation"},
+)

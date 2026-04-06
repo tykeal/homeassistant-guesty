@@ -15,6 +15,9 @@ from custom_components.guesty.api.models import (
     CachedToken,
     Conversation,
     GuestyAddress,
+    GuestyCustomFieldDefinition,
+    GuestyCustomFieldResult,
+    GuestyCustomFieldUpdate,
     GuestyGuest,
     GuestyListing,
     GuestyListingsResponse,
@@ -1382,3 +1385,258 @@ class TestGuestyReservationsResponseFrozen:
         )
         with pytest.raises(AttributeError):
             resp.count = 99  # type: ignore[misc]
+
+
+# --- Phase 1 (Feature 004) Custom Field Model Tests ---
+
+
+def _make_custom_field_definition_dict(
+    **overrides: Any,
+) -> dict[str, Any]:
+    """Create a Guesty API custom field definition dict.
+
+    Args:
+        **overrides: Fields to override on the defaults.
+
+    Returns:
+        Dictionary matching the Guesty custom-fields endpoint.
+    """
+    defaults: dict[str, Any] = {
+        "id": "637bad36abcdef123456",
+        "name": "Door Code",
+        "type": "string",
+        "objectType": "reservation",
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+class TestGuestyCustomFieldDefinitionFromApiDict:
+    """Tests for GuestyCustomFieldDefinition.from_api_dict."""
+
+    def test_full_data_returns_populated_instance(self) -> None:
+        """from_api_dict with full data returns populated instance."""
+        data = _make_custom_field_definition_dict()
+        result = GuestyCustomFieldDefinition.from_api_dict(data)
+        assert result is not None
+        assert result.field_id == "637bad36abcdef123456"
+        assert result.name == "Door Code"
+        assert result.field_type == "text"
+        assert result.applicable_to == frozenset({"reservation"})
+
+    def test_maps_string_type_to_text(self) -> None:
+        """from_api_dict maps Guesty type 'string' to 'text'."""
+        data = _make_custom_field_definition_dict(type="string")
+        result = GuestyCustomFieldDefinition.from_api_dict(data)
+        assert result is not None
+        assert result.field_type == "text"
+
+    def test_unknown_type_preserved_as_is(self) -> None:
+        """from_api_dict preserves unknown type values as-is."""
+        data = _make_custom_field_definition_dict(type="multiline")
+        result = GuestyCustomFieldDefinition.from_api_dict(data)
+        assert result is not None
+        assert result.field_type == "multiline"
+
+    def test_number_type_preserved(self) -> None:
+        """from_api_dict preserves 'number' type value."""
+        data = _make_custom_field_definition_dict(type="number")
+        result = GuestyCustomFieldDefinition.from_api_dict(data)
+        assert result is not None
+        assert result.field_type == "number"
+
+    def test_boolean_type_preserved(self) -> None:
+        """from_api_dict preserves 'boolean' type value."""
+        data = _make_custom_field_definition_dict(type="boolean")
+        result = GuestyCustomFieldDefinition.from_api_dict(data)
+        assert result is not None
+        assert result.field_type == "boolean"
+
+    def test_missing_id_returns_none(self) -> None:
+        """from_api_dict returns None when 'id' is missing."""
+        data = _make_custom_field_definition_dict()
+        del data["id"]
+        assert GuestyCustomFieldDefinition.from_api_dict(data) is None
+
+    def test_missing_name_returns_none(self) -> None:
+        """from_api_dict returns None when 'name' is missing."""
+        data = _make_custom_field_definition_dict()
+        del data["name"]
+        assert GuestyCustomFieldDefinition.from_api_dict(data) is None
+
+    def test_missing_type_returns_none(self) -> None:
+        """from_api_dict returns None when 'type' is missing."""
+        data = _make_custom_field_definition_dict()
+        del data["type"]
+        assert GuestyCustomFieldDefinition.from_api_dict(data) is None
+
+    def test_missing_object_type_defaults_empty(self) -> None:
+        """from_api_dict defaults applicable_to to frozenset()."""
+        data = _make_custom_field_definition_dict()
+        del data["objectType"]
+        result = GuestyCustomFieldDefinition.from_api_dict(data)
+        assert result is not None
+        assert result.applicable_to == frozenset()
+
+    def test_object_type_both_produces_listing_reservation(
+        self,
+    ) -> None:
+        """objectType 'both' maps to frozenset of both targets."""
+        data = _make_custom_field_definition_dict(
+            objectType="both",
+        )
+        result = GuestyCustomFieldDefinition.from_api_dict(data)
+        assert result is not None
+        assert result.applicable_to == frozenset(
+            {"listing", "reservation"},
+        )
+
+    def test_object_type_listing_maps_correctly(self) -> None:
+        """objectType 'listing' maps to frozenset({'listing'})."""
+        data = _make_custom_field_definition_dict(
+            objectType="listing",
+        )
+        result = GuestyCustomFieldDefinition.from_api_dict(data)
+        assert result is not None
+        assert result.applicable_to == frozenset({"listing"})
+
+
+class TestGuestyCustomFieldDefinitionFrozen:
+    """Tests for GuestyCustomFieldDefinition immutability."""
+
+    def test_frozen(self) -> None:
+        """GuestyCustomFieldDefinition fields cannot be modified."""
+        data = _make_custom_field_definition_dict()
+        result = GuestyCustomFieldDefinition.from_api_dict(data)
+        assert result is not None
+        with pytest.raises(AttributeError):
+            result.field_id = "new-id"  # type: ignore[misc]
+
+
+class TestGuestyCustomFieldUpdate:
+    """Tests for GuestyCustomFieldUpdate construction and API dict."""
+
+    def test_construction_with_string_value(self) -> None:
+        """GuestyCustomFieldUpdate accepts string value."""
+        update = GuestyCustomFieldUpdate(
+            field_id="field-1",
+            value="hello",
+        )
+        assert update.field_id == "field-1"
+        assert update.value == "hello"
+
+    def test_construction_with_int_value(self) -> None:
+        """GuestyCustomFieldUpdate accepts int value."""
+        update = GuestyCustomFieldUpdate(
+            field_id="field-2",
+            value=42,
+        )
+        assert update.value == 42
+
+    def test_construction_with_float_value(self) -> None:
+        """GuestyCustomFieldUpdate accepts float value."""
+        update = GuestyCustomFieldUpdate(
+            field_id="field-3",
+            value=3.14,
+        )
+        assert update.value == 3.14
+
+    def test_construction_with_bool_value(self) -> None:
+        """GuestyCustomFieldUpdate accepts bool value."""
+        update = GuestyCustomFieldUpdate(
+            field_id="field-4",
+            value=True,
+        )
+        assert update.value is True
+
+    def test_to_api_dict(self) -> None:
+        """to_api_dict returns expected API payload."""
+        update = GuestyCustomFieldUpdate(
+            field_id="cf-abc",
+            value="test-value",
+        )
+        assert update.to_api_dict() == {
+            "fieldId": "cf-abc",
+            "value": "test-value",
+        }
+
+    def test_to_api_dict_with_numeric_value(self) -> None:
+        """to_api_dict includes numeric value correctly."""
+        update = GuestyCustomFieldUpdate(
+            field_id="cf-num",
+            value=99,
+        )
+        assert update.to_api_dict() == {
+            "fieldId": "cf-num",
+            "value": 99,
+        }
+
+
+class TestGuestyCustomFieldUpdateFrozen:
+    """Tests for GuestyCustomFieldUpdate immutability."""
+
+    def test_frozen(self) -> None:
+        """GuestyCustomFieldUpdate fields cannot be modified."""
+        update = GuestyCustomFieldUpdate(
+            field_id="f1",
+            value="v1",
+        )
+        with pytest.raises(AttributeError):
+            update.field_id = "f2"  # type: ignore[misc]
+
+
+class TestGuestyCustomFieldResult:
+    """Tests for GuestyCustomFieldResult construction."""
+
+    def test_success_result_all_fields(self) -> None:
+        """Success result has all fields populated."""
+        result = GuestyCustomFieldResult(
+            success=True,
+            target_type="listing",
+            target_id="lst-123",
+            field_id="cf-abc",
+        )
+        assert result.success is True
+        assert result.target_type == "listing"
+        assert result.target_id == "lst-123"
+        assert result.field_id == "cf-abc"
+        assert result.error_details is None
+
+    def test_failure_result_with_error_details(self) -> None:
+        """Failure result stores error_details."""
+        result = GuestyCustomFieldResult(
+            success=False,
+            target_type="reservation",
+            target_id="res-456",
+            field_id="cf-def",
+            error_details="Field not found",
+        )
+        assert result.success is False
+        assert result.error_details == "Field not found"
+
+    def test_success_false_when_error_present(self) -> None:
+        """success=False when error_details is set."""
+        result = GuestyCustomFieldResult(
+            success=False,
+            target_type="listing",
+            target_id="lst-789",
+            field_id="cf-ghi",
+            error_details="Invalid value",
+        )
+        assert result.success is False
+        assert result.error_details is not None
+
+
+class TestGuestyCustomFieldResultFrozen:
+    """Tests for GuestyCustomFieldResult immutability."""
+
+    def test_frozen(self) -> None:
+        """GuestyCustomFieldResult fields cannot be modified."""
+        result = GuestyCustomFieldResult(
+            success=True,
+            target_type="listing",
+            target_id="lst-1",
+            field_id="cf-1",
+        )
+        with pytest.raises(AttributeError):
+            result.success = False  # type: ignore[misc]

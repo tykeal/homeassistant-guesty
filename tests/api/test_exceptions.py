@@ -12,6 +12,7 @@ from custom_components.guesty.api.exceptions import (
     GuestyApiError,
     GuestyAuthError,
     GuestyConnectionError,
+    GuestyCustomFieldError,
     GuestyMessageError,
     GuestyRateLimitError,
     GuestyResponseError,
@@ -177,3 +178,50 @@ class TestGuestyMessageError:
         """GuestyMessageError can be caught as GuestyApiError."""
         with pytest.raises(GuestyApiError):
             raise GuestyMessageError("test")
+
+
+class TestGuestyCustomFieldError:
+    """Tests for the GuestyCustomFieldError exception."""
+
+    def test_inherits_from_base(self) -> None:
+        """GuestyCustomFieldError is a subclass of GuestyApiError."""
+        assert issubclass(GuestyCustomFieldError, GuestyApiError)
+
+    def test_construction_with_message_only(self) -> None:
+        """GuestyCustomFieldError stores message with None defaults."""
+        error = GuestyCustomFieldError("field update failed")
+        assert error.message == "field update failed"
+        assert error.target_type is None
+        assert error.target_id is None
+        assert error.field_id is None
+
+    def test_construction_with_context_attributes(self) -> None:
+        """GuestyCustomFieldError stores context attributes."""
+        error = GuestyCustomFieldError(
+            "invalid value",
+            target_type="listing",
+            target_id="lst-123",
+            field_id="cf-abc",
+        )
+        assert error.target_type == "listing"
+        assert error.target_id == "lst-123"
+        assert error.field_id == "cf-abc"
+
+    def test_attributes_accessible_after_construction(self) -> None:
+        """All attributes are accessible after construction."""
+        error = GuestyCustomFieldError(
+            "test error",
+            target_type="reservation",
+            target_id="res-456",
+            field_id="cf-def",
+        )
+        assert error.message == "test error"
+        assert error.target_type == "reservation"
+        assert error.target_id == "res-456"
+        assert error.field_id == "cf-def"
+        assert str(error) == "test error"
+
+    def test_caught_as_base(self) -> None:
+        """GuestyCustomFieldError can be caught as GuestyApiError."""
+        with pytest.raises(GuestyApiError):
+            raise GuestyCustomFieldError("test")
