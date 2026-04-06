@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: 2026 Andrew Grimberg <tykeal@bardicgrove.org>
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for GuestyMessagingClient."""
+"""Tests for GuestyMessagingClient (T003-T005, T022-T024)."""
 
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -765,3 +765,355 @@ class TestInputValidation:
                 channel=channel,
             )
             assert result.success is True
+
+
+# ── Phase 4: Rate Limit Retry Integration Tests (T022) ──────────────
+
+
+class TestRateLimitRetryMessaging:
+    """Rate limit retry through messaging client (T022)."""
+
+    @respx.mock
+    async def test_429_then_success_delivers_message(self) -> None:
+        """429 on send-message retried and delivered."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}{CONVERSATIONS_PATH}").mock(
+            return_value=Response(
+                200,
+                json=_conversation_response(),
+            ),
+        )
+        send_path = SEND_MESSAGE_PATH.format(
+            conversation_id="conv-abc123",
+        )
+        send_route = respx.post(f"{BASE_URL}{send_path}")
+        send_route.side_effect = [
+            Response(
+                429,
+                headers={"Retry-After": "0"},
+            ),
+            Response(
+                200,
+                json=_send_message_response(),
+            ),
+        ]
+
+        client = _make_messaging_client()
+        with _patch(
+            "asyncio.sleep",
+            new_callable=AsyncMock,
+        ):
+            result = await client.send_message(
+                "res-xyz789",
+                "After 429",
+            )
+
+        assert result.success is True
+        assert result.message_id == "msg-def456"
+
+    @respx.mock
+    async def test_429_on_conversation_retried(self) -> None:
+        """429 on conversation lookup retried transparently."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        conv_route = respx.get(
+            f"{BASE_URL}{CONVERSATIONS_PATH}",
+        )
+        conv_route.side_effect = [
+            Response(
+                429,
+                headers={"Retry-After": "0"},
+            ),
+            Response(
+                200,
+                json=_conversation_response(),
+            ),
+        ]
+
+        client = _make_messaging_client()
+        with _patch(
+            "asyncio.sleep",
+            new_callable=AsyncMock,
+        ):
+            conv = await client.resolve_conversation(
+                "res-xyz789",
+            )
+
+        assert conv.id == "conv-abc123"
+
+    @respx.mock
+    async def test_429_backoff_uses_retry_after(self) -> None:
+        """429 retry uses Retry-After header for delay."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        conv_route = respx.get(
+            f"{BASE_URL}{CONVERSATIONS_PATH}",
+        )
+        conv_route.side_effect = [
+            Response(
+                429,
+                headers={"Retry-After": "2"},
+            ),
+            Response(
+                200,
+                json=_conversation_response(),
+            ),
+        ]
+
+        mock_sleep = AsyncMock()
+        client = _make_messaging_client()
+        with _patch("asyncio.sleep", mock_sleep):
+            await client.resolve_conversation("res-xyz789")
+
+        mock_sleep.assert_called_once()
+        assert mock_sleep.call_args[0][0] == 2.0
+
+
+# ── Phase 4: Transient Failure Retry Integration (T023) ─────────────
+
+
+class TestTransientRetryMessaging:
+    """Transient failure retry through messaging client (T023)."""
+
+    @respx.mock
+    async def test_connect_error_retried_then_delivers(
+        self,
+    ) -> None:
+        """Transient connect error on send retried and delivered."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}{CONVERSATIONS_PATH}").mock(
+            return_value=Response(
+                200,
+                json=_conversation_response(),
+            ),
+        )
+
+        send_path = SEND_MESSAGE_PATH.format(
+            conversation_id="conv-abc123",
+        )
+        call_count = 0
+
+        async def _send_side_effect(
+            request: httpx.Request,
+        ) -> Response:
+            """Fail first, succeed second."""
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 1:
+                raise httpx.ConnectError("refused")
+            return Response(
+                200,
+                json=_send_message_response(),
+            )
+
+        respx.post(f"{BASE_URL}{send_path}").mock(
+            side_effect=_send_side_effect,
+        )
+
+        client = _make_messaging_client()
+        with _patch(
+            "asyncio.sleep",
+            new_callable=AsyncMock,
+        ):
+            result = await client.send_message(
+                "res-xyz789",
+                "After transient fix",
+            )
+
+        assert result.success is True
+
+    @respx.mock
+    async def test_persistent_failure_raises_after_retries(
+        self,
+    ) -> None:
+        """Persistent failure raises GuestyConnectionError."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}{CONVERSATIONS_PATH}").mock(
+            side_effect=httpx.ConnectError("refused"),
+        )
+
+        client = _make_messaging_client()
+        with (
+            _patch(
+                "asyncio.sleep",
+                new_callable=AsyncMock,
+            ),
+            pytest.raises(GuestyConnectionError, match="retries"),
+        ):
+            await client.send_message(
+                "res-xyz789",
+                "Unreachable",
+            )
+
+    @respx.mock
+    async def test_5xx_retried_and_delivers(self) -> None:
+        """5xx on send retried then delivers."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}{CONVERSATIONS_PATH}").mock(
+            return_value=Response(
+                200,
+                json=_conversation_response(),
+            ),
+        )
+        send_path = SEND_MESSAGE_PATH.format(
+            conversation_id="conv-abc123",
+        )
+        send_route = respx.post(f"{BASE_URL}{send_path}")
+        send_route.side_effect = [
+            Response(502, text="Bad Gateway"),
+            Response(
+                200,
+                json=_send_message_response(),
+            ),
+        ]
+
+        client = _make_messaging_client()
+        with _patch(
+            "asyncio.sleep",
+            new_callable=AsyncMock,
+        ):
+            result = await client.send_message(
+                "res-xyz789",
+                "After 502",
+            )
+
+        assert result.success is True
+
+
+# ── Phase 4: Error Detail Quality (T024) ────────────────────────────
+
+
+class TestErrorDetailMessaging:
+    """Error detail quality at messaging layer (T024)."""
+
+    @respx.mock
+    async def test_not_found_includes_reservation_id(self) -> None:
+        """No-conversation error includes reservation ID."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}{CONVERSATIONS_PATH}").mock(
+            return_value=Response(
+                200,
+                json={"results": [], "count": 0},
+            ),
+        )
+
+        client = _make_messaging_client()
+        with pytest.raises(GuestyMessageError) as exc_info:
+            await client.send_message(
+                "res-not-found",
+                "Hello",
+            )
+
+        assert exc_info.value.reservation_id == "res-not-found"
+        assert "res-not-found" in str(exc_info.value)
+
+    @respx.mock
+    async def test_send_failure_includes_reservation_id(
+        self,
+    ) -> None:
+        """Send failure includes reservation ID in error."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}{CONVERSATIONS_PATH}").mock(
+            return_value=Response(
+                200,
+                json=_conversation_response(),
+            ),
+        )
+        send_path = SEND_MESSAGE_PATH.format(
+            conversation_id="conv-abc123",
+        )
+        respx.post(f"{BASE_URL}{send_path}").mock(
+            return_value=Response(
+                400,
+                json={"error": "Bad Request"},
+            ),
+        )
+
+        client = _make_messaging_client()
+        with pytest.raises(GuestyMessageError) as exc_info:
+            await client.send_message(
+                "res-fail-detail",
+                "Hello",
+            )
+
+        assert "res-fail-detail" in str(exc_info.value)
+
+    @respx.mock
+    async def test_connection_error_after_retries_readable(
+        self,
+    ) -> None:
+        """Connection error after retries is human-readable."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}{CONVERSATIONS_PATH}").mock(
+            side_effect=httpx.ConnectError("connection refused"),
+        )
+
+        client = _make_messaging_client()
+        with (
+            _patch(
+                "asyncio.sleep",
+                new_callable=AsyncMock,
+            ),
+            pytest.raises(GuestyConnectionError) as exc_info,
+        ):
+            await client.resolve_conversation("res-xyz789")
+
+        # The error message mentions retries
+        assert "retries" in str(exc_info.value).lower()

@@ -1,6 +1,9 @@
 # SPDX-FileCopyrightText: 2026 Andrew Grimberg <tykeal@bardicgrove.org>
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for GuestyApiClient including test_connection and listings."""
+"""Tests for GuestyApiClient including test_connection and listings.
+
+Also includes Phase 4 (T025) transient failure retry tests.
+"""
 
 from __future__ import annotations
 
@@ -1230,3 +1233,372 @@ class TestGetReservations:
         )
         status_filter = filters[1]
         assert set(status_filter["value"]) == ACTIONABLE_STATUSES
+# ── Phase 4: Transient Failure Retry Tests (T025) ───────────────────
+
+
+class TestTransientRetry:
+    """Tests for transient failure retry with backoff (T025)."""
+
+    @respx.mock
+    async def test_connect_error_retry_then_success(self) -> None:
+        """ConnectError retried then succeeds on next attempt."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        call_count = 0
+
+        async def _side_effect(
+            request: httpx.Request,
+        ) -> Response:
+            """Fail first, succeed second."""
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 1:
+                raise httpx.ConnectError("connection refused")
+            return Response(200, json={"results": []})
+
+        respx.get(f"{BASE_URL}/listings").mock(
+            side_effect=_side_effect,
+        )
+
+        client, _, _ = _make_client()
+        with _patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await client.test_connection()
+
+        assert result is True
+        assert call_count == 2
+
+    @respx.mock
+    async def test_timeout_retry_then_success(self) -> None:
+        """TimeoutException retried then succeeds."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        call_count = 0
+
+        async def _side_effect(
+            request: httpx.Request,
+        ) -> Response:
+            """Timeout first, succeed second."""
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 1:
+                raise httpx.TimeoutException("timed out")
+            return Response(200, json={"results": []})
+
+        respx.get(f"{BASE_URL}/listings").mock(
+            side_effect=_side_effect,
+        )
+
+        client, _, _ = _make_client()
+        with _patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await client.test_connection()
+
+        assert result is True
+
+    @respx.mock
+    async def test_persistent_connect_error_exhausts_retries(
+        self,
+    ) -> None:
+        """Persistent ConnectError raises after retry exhaustion."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}/listings").mock(
+            side_effect=httpx.ConnectError("refused"),
+        )
+
+        client, _, _ = _make_client()
+        with (
+            _patch("asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(
+                GuestyConnectionError,
+                match="after 3 retries",
+            ),
+        ):
+            await client.test_connection()
+
+    @respx.mock
+    async def test_connect_error_uses_exponential_backoff(
+        self,
+    ) -> None:
+        """Connect error retries use exponential backoff."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        call_count = 0
+
+        async def _side_effect(
+            request: httpx.Request,
+        ) -> Response:
+            """Fail twice, succeed third."""
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                raise httpx.ConnectError("refused")
+            return Response(200, json={"results": []})
+
+        respx.get(f"{BASE_URL}/listings").mock(
+            side_effect=_side_effect,
+        )
+
+        mock_sleep = AsyncMock()
+        client, _, _ = _make_client()
+        with _patch("asyncio.sleep", mock_sleep):
+            await client.test_connection()
+
+        # Two retries means two sleep calls
+        assert mock_sleep.call_count == 2
+        delays = [c[0][0] for c in mock_sleep.call_args_list]
+        # Second delay should be larger (exponential backoff)
+        assert delays[1] > delays[0]
+
+    @respx.mock
+    async def test_connect_error_logged_at_warning(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Transient connect error retries logged at warning."""
+        import logging
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        call_count = 0
+
+        async def _side_effect(
+            request: httpx.Request,
+        ) -> Response:
+            """Fail first, succeed second."""
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 1:
+                raise httpx.ConnectError("connection refused")
+            return Response(200, json={"results": []})
+
+        respx.get(f"{BASE_URL}/listings").mock(
+            side_effect=_side_effect,
+        )
+
+        client, _, _ = _make_client()
+        with (
+            caplog.at_level(logging.WARNING),
+            _patch("asyncio.sleep", new_callable=AsyncMock),
+        ):
+            await client.test_connection()
+
+        assert any(
+            "Transient error" in record.getMessage()
+            and record.levelno == logging.WARNING
+            for record in caplog.records
+        )
+
+    @respx.mock
+    async def test_5xx_retry_then_success(self) -> None:
+        """5xx response retried then succeeds."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        listings_route = respx.get(f"{BASE_URL}/listings")
+        listings_route.side_effect = [
+            Response(502, text="Bad Gateway"),
+            Response(200, json={"results": []}),
+        ]
+
+        client, _, _ = _make_client()
+        with _patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await client.test_connection()
+
+        assert result is True
+
+    @respx.mock
+    async def test_503_retry_then_success(self) -> None:
+        """503 Service Unavailable retried then succeeds."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        listings_route = respx.get(f"{BASE_URL}/listings")
+        listings_route.side_effect = [
+            Response(503, text="Service Unavailable"),
+            Response(200, json={"results": []}),
+        ]
+
+        client, _, _ = _make_client()
+        with _patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await client.test_connection()
+
+        assert result is True
+
+    @respx.mock
+    async def test_504_retry_then_success(self) -> None:
+        """504 Gateway Timeout retried then succeeds."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        listings_route = respx.get(f"{BASE_URL}/listings")
+        listings_route.side_effect = [
+            Response(504, text="Gateway Timeout"),
+            Response(200, json={"results": []}),
+        ]
+
+        client, _, _ = _make_client()
+        with _patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await client.test_connection()
+
+        assert result is True
+
+    @respx.mock
+    async def test_500_exhausts_retries_returns_response(
+        self,
+    ) -> None:
+        """Persistent 500 returns response after retry exhaustion."""
+        from unittest.mock import patch as _patch
+
+        from custom_components.guesty.api.exceptions import (
+            GuestyResponseError,
+        )
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}/listings").mock(
+            return_value=Response(
+                500,
+                text="Internal Server Error",
+            ),
+        )
+
+        client, _, _ = _make_client()
+        with (
+            _patch("asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(
+                GuestyResponseError,
+                match="status 500",
+            ),
+        ):
+            await client.test_connection()
+
+    @respx.mock
+    async def test_5xx_logged_at_warning(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """5xx retry logged at warning with status code."""
+        import logging
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        listings_route = respx.get(f"{BASE_URL}/listings")
+        listings_route.side_effect = [
+            Response(503, text="Service Unavailable"),
+            Response(200, json={"results": []}),
+        ]
+
+        client, _, _ = _make_client()
+        with (
+            caplog.at_level(logging.WARNING),
+            _patch("asyncio.sleep", new_callable=AsyncMock),
+        ):
+            await client.test_connection()
+
+        assert any(
+            "Server error 503" in record.getMessage()
+            and record.levelno == logging.WARNING
+            for record in caplog.records
+        )
+
+    @respx.mock
+    async def test_429_retry_preserves_retry_after(self) -> None:
+        """429 handling preserves Retry-After header."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        mock_sleep = AsyncMock()
+        listings_route = respx.get(f"{BASE_URL}/listings")
+        listings_route.side_effect = [
+            Response(
+                429,
+                headers={"Retry-After": "3"},
+            ),
+            Response(200, json={"results": []}),
+        ]
+
+        client, _, _ = _make_client()
+        with _patch("asyncio.sleep", mock_sleep):
+            await client.test_connection()
+
+        mock_sleep.assert_called_once()
+        assert mock_sleep.call_args[0][0] == 3.0
+
+    @respx.mock
+    async def test_non_retryable_status_not_retried(self) -> None:
+        """Non-transient status (e.g. 422) is not retried."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}/listings").mock(
+            return_value=Response(
+                422,
+                json={"error": "Unprocessable"},
+            ),
+        )
+
+        client, _, _ = _make_client()
+        # 422 is not retried — returned directly
+        response = await client._request("GET", "/listings")
+        assert response.status_code == 422
