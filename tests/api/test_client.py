@@ -459,8 +459,9 @@ def _make_listing_dict(**overrides: Any) -> dict[str, Any]:
         },
         "propertyType": "apartment",
         "roomType": "Entire home/apartment",
-        "numberOfBedrooms": 2,
-        "numberOfBathrooms": 1.5,
+        "bedrooms": 2,
+        "bathrooms": 1.5,
+        "accommodates": 5,
         "timezone": "America/New_York",
         "defaultCheckInTime": "15:00",
         "defaultCheckoutTime": "11:00",
@@ -788,6 +789,40 @@ class TestGetListings:
             match="must be a list",
         ):
             await client.get_listings()
+
+    @respx.mock
+    async def test_debug_logs_sample_keys(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Debug log emits sorted keys of first listing."""
+        import logging
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        listings = [_make_listing_dict()]
+        respx.get(f"{BASE_URL}/listings").mock(
+            return_value=Response(
+                200,
+                json=_make_page_response(
+                    listings,
+                    count=1,
+                ),
+            ),
+        )
+        client, _, _ = _make_client()
+        with caplog.at_level(
+            logging.DEBUG,
+            logger="custom_components.guesty.api.client",
+        ):
+            result = await client.get_listings()
+        assert len(result) == 1
+        expected_keys = sorted(listings[0].keys())
+        assert f"Sample listing API keys: {expected_keys}" in caplog.text
 
 
 # ── get_reservations() Tests (T004) ─────────────────────────────────

@@ -508,8 +508,9 @@ def _make_listing_dict(**overrides: Any) -> dict[str, Any]:
         "address": _make_full_address_dict(),
         "propertyType": "apartment",
         "roomType": "Entire home/apartment",
-        "numberOfBedrooms": 2,
-        "numberOfBathrooms": 1.5,
+        "bedrooms": 2,
+        "bathrooms": 1.5,
+        "accommodates": 5,
         "timezone": "America/New_York",
         "defaultCheckInTime": "15:00",
         "defaultCheckoutTime": "11:00",
@@ -539,6 +540,7 @@ class TestGuestyListingFromApiDict:
         assert listing.room_type == "Entire home/apartment"
         assert listing.bedrooms == 2
         assert listing.bathrooms == 1.5
+        assert listing.accommodates == 5
         assert listing.timezone == "America/New_York"
         assert listing.check_in_time == "15:00"
         assert listing.check_out_time == "11:00"
@@ -705,7 +707,7 @@ class TestGuestyListingDefaults:
     def test_bedrooms_none_when_absent(self) -> None:
         """Bedrooms is None when not in API data."""
         data = _make_listing_dict()
-        del data["numberOfBedrooms"]
+        del data["bedrooms"]
         listing = GuestyListing.from_api_dict(data)
         assert listing is not None
         assert listing.bedrooms is None
@@ -713,10 +715,18 @@ class TestGuestyListingDefaults:
     def test_bathrooms_none_when_absent(self) -> None:
         """Bathrooms is None when not in API data."""
         data = _make_listing_dict()
-        del data["numberOfBathrooms"]
+        del data["bathrooms"]
         listing = GuestyListing.from_api_dict(data)
         assert listing is not None
         assert listing.bathrooms is None
+
+    def test_accommodates_none_when_absent(self) -> None:
+        """Accommodates is None when not in API data."""
+        data = _make_listing_dict()
+        del data["accommodates"]
+        listing = GuestyListing.from_api_dict(data)
+        assert listing is not None
+        assert listing.accommodates is None
 
     def test_no_address(self) -> None:
         """Missing address yields None."""

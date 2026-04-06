@@ -341,6 +341,7 @@ class GuestyListing:
         room_type: E.g., entire home, private room.
         bedrooms: Number of bedrooms, or None.
         bathrooms: Bathroom count (half-baths), or None.
+        accommodates: Maximum guest capacity, or None.
         timezone: IANA timezone string.
         check_in_time: Default check-in time (HH:MM), or None.
         check_out_time: Default check-out time (HH:MM), or None.
@@ -357,6 +358,7 @@ class GuestyListing:
     room_type: str | None
     bedrooms: int | None
     bathrooms: float | None
+    accommodates: int | None
     timezone: str
     check_in_time: str | None
     check_out_time: str | None
@@ -411,8 +413,9 @@ class GuestyListing:
             ),
             property_type=data.get("propertyType"),
             room_type=data.get("roomType"),
-            bedrooms=data.get("numberOfBedrooms"),
-            bathrooms=data.get("numberOfBathrooms"),
+            bedrooms=data.get("bedrooms"),
+            bathrooms=data.get("bathrooms"),
+            accommodates=data.get("accommodates"),
             timezone=data.get("timezone") or "UTC",
             check_in_time=data.get("defaultCheckInTime"),
             check_out_time=data.get("defaultCheckoutTime"),

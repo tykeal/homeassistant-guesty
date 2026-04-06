@@ -163,6 +163,14 @@ class GuestyApiClient:
             page = GuestyListingsResponse.from_api_dict(data)
             all_listings.extend(page.results)
 
+            if skip == 0 and results and _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug(
+                    "Sample listing API keys: %s",
+                    sorted(results[0].keys())
+                    if isinstance(results[0], dict)
+                    else "non-dict",
+                )
+
             if len(results) < LISTINGS_PAGE_SIZE:
                 break
 

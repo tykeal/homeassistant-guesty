@@ -148,6 +148,7 @@ class TestGuestyEntityDeviceInfo:
             room_type=None,
             bedrooms=None,
             bathrooms=None,
+            accommodates=None,
             timezone="UTC",
             check_in_time=None,
             check_out_time=None,
@@ -251,6 +252,7 @@ DETAIL_SENSOR_KEYS = (
     "room_type",
     "bedrooms",
     "bathrooms",
+    "accommodates",
     "timezone",
     "check_in_time",
     "check_out_time",
@@ -258,7 +260,7 @@ DETAIL_SENSOR_KEYS = (
 
 
 class TestPropertyDetailSensors:
-    """Tests for the 10 property detail sensors (T025)."""
+    """Tests for the 11 property detail sensors (T025)."""
 
     @pytest.mark.parametrize("key", DETAIL_SENSOR_KEYS)
     def test_entity_category_diagnostic(self, key: str) -> None:
@@ -331,6 +333,7 @@ class TestPropertyDetailSensors:
             room_type=None,
             bedrooms=None,
             bathrooms=None,
+            accommodates=None,
             timezone="UTC",
             check_in_time=None,
             check_out_time=None,
@@ -411,6 +414,22 @@ class TestPropertyDetailSensors:
         )
         assert sensor.native_value == sample_listing.bathrooms
 
+    def test_accommodates_sensor_native_value(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        mock_coordinator: AsyncMock,
+    ) -> None:
+        """Accommodates sensor returns listing.accommodates."""
+        desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "accommodates")
+        sensor = GuestyListingSensor(
+            coordinator=mock_coordinator,
+            listing_id=sample_listing.id,
+            entry=mock_coordinator.config_entry,
+            description=desc,
+        )
+        assert sensor.native_value == sample_listing.accommodates
+
     def test_timezone_sensor_native_value(
         self,
         hass: HomeAssistant,
@@ -467,6 +486,7 @@ class TestPropertyDetailSensors:
             "room_type",
             "bedrooms",
             "bathrooms",
+            "accommodates",
             "check_in_time",
             "check_out_time",
         ],
@@ -488,6 +508,7 @@ class TestPropertyDetailSensors:
             room_type=None,
             bedrooms=None,
             bathrooms=None,
+            accommodates=None,
             timezone="UTC",
             check_in_time=None,
             check_out_time=None,
@@ -636,6 +657,7 @@ class TestNewListingDiscovery:
             room_type="entire_home",
             bedrooms=3,
             bathrooms=2.0,
+            accommodates=6,
             timezone="America/Denver",
             check_in_time="16:00",
             check_out_time="10:00",
@@ -966,6 +988,7 @@ class TestTagsSensor:
             room_type=None,
             bedrooms=None,
             bathrooms=None,
+            accommodates=None,
             timezone="UTC",
             check_in_time=None,
             check_out_time=None,
@@ -1095,6 +1118,7 @@ class TestCustomFieldSensors:
             room_type=None,
             bedrooms=None,
             bathrooms=None,
+            accommodates=None,
             timezone="UTC",
             check_in_time=None,
             check_out_time=None,
@@ -1211,6 +1235,7 @@ class TestCustomFieldSensors:
             room_type=None,
             bedrooms=None,
             bathrooms=None,
+            accommodates=None,
             timezone="UTC",
             check_in_time=None,
             check_out_time=None,
@@ -1278,6 +1303,7 @@ class TestCustomFieldSensors:
             room_type=None,
             bedrooms=None,
             bathrooms=None,
+            accommodates=None,
             timezone="UTC",
             check_in_time=None,
             check_out_time=None,
@@ -1329,6 +1355,7 @@ class TestCustomFieldSensors:
             room_type=None,
             bedrooms=None,
             bathrooms=None,
+            accommodates=None,
             timezone="UTC",
             check_in_time=None,
             check_out_time=None,
