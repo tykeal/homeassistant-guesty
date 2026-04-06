@@ -44,23 +44,24 @@ use in Guesty workflows.
 **Acceptance Scenarios**:
 
 1. **Given** the Guesty integration is configured and authenticated,
-   **When** the user calls the custom field service with a valid
-   listing identifier, a valid custom field identifier, and a text
-   value, **Then** the custom field is updated on the listing in
-   Guesty and a success confirmation is returned.
+   **When** the user calls the custom field service specifying
+   "listing" as the target type, a valid listing identifier, a
+   valid custom field identifier, and a text value, **Then** the
+   custom field is updated on the listing in Guesty and a success
+   confirmation is returned.
 2. **Given** the integration is configured, **When** the user calls
-   the service with a custom field identifier that does not exist on
-   the target listing, **Then** the service returns a clear error
-   identifying the invalid field.
+   the service targeting a listing with a custom field identifier
+   that does not exist on the target listing, **Then** the service
+   returns a clear error identifying the invalid field.
 3. **Given** the integration is configured, **When** the user calls
-   the service with a value that does not match the custom field's
-   expected type (e.g., text for a numeric field), **Then** the
-   service returns a clear validation error before sending the
-   request to Guesty.
+   the service targeting a listing with a value that does not match
+   the custom field's expected type (e.g., text for a numeric
+   field), **Then** the service returns a clear validation error
+   before sending the request to Guesty.
 4. **Given** the integration is configured, **When** the user calls
-   the service without a required parameter (listing identifier,
-   field identifier, or value), **Then** the service returns a
-   clear error identifying the missing parameter.
+   the service without a required parameter (target type, target
+   identifier, field identifier, or value), **Then** the service
+   returns a clear error identifying the missing parameter.
 
 ---
 
@@ -89,10 +90,10 @@ the reservation in Guesty.
 **Acceptance Scenarios**:
 
 1. **Given** the integration is configured, **When** the user calls
-   the custom field service targeting a reservation with a valid
-   reservation identifier, field identifier, and value, **Then** the
-   custom field is updated on the reservation in Guesty and a
-   success confirmation is returned.
+   the custom field service specifying "reservation" as the target
+   type, a valid reservation identifier, field identifier, and
+   value, **Then** the custom field is updated on the reservation
+   in Guesty and a success confirmation is returned.
 2. **Given** a reservation identifier that does not exist in Guesty,
    **When** the user calls the service targeting that reservation,
    **Then** the service returns a clear error indicating the
@@ -286,8 +287,8 @@ validation errors, retries, and error messages.
   custom field definitions (name, identifier, value type) to
   enable field discovery and local type validation.
 - **FR-009**: Custom field definitions MUST be refreshed
-  periodically using the existing coordinator pattern, with a
-  default refresh interval matching the listing data refresh.
+  periodically, with a default refresh interval matching the
+  listing data refresh.
 - **FR-010**: The integration MUST expose custom field definitions
   (name, identifier, value type) so users can discover available
   fields within Home Assistant.
@@ -305,17 +306,17 @@ validation errors, retries, and error messages.
   (field values that may contain access codes, personal
   information) in log entries.
 - **FR-015**: The service MUST perform all network communication
-  without degrading Home Assistant responsiveness during service
-  calls, automations, or scripts.
+  without degrading the host application's responsiveness during
+  service calls, automations, or scripts.
 - **FR-016**: The custom fields client functionality MUST be
   reusable outside Home Assistant without changing its externally
   observable behavior, maintaining the library-extractable
   architecture.
 - **FR-017**: The service MUST use the existing authenticated API
   client from Feature 001 for all Guesty API communication.
-- **FR-018**: The service MUST use the v3 reservation custom fields
-  endpoints for reservation-level updates, consistent with
-  Guesty's API migration timeline.
+- **FR-018**: The service MUST use the current version of Guesty's
+  reservation custom fields endpoints for reservation-level
+  updates, consistent with Guesty's API migration timeline.
 
 ### Validation Scenarios
 
@@ -334,12 +335,13 @@ directly covered by user story acceptance scenarios.
    isolation (FR-016), **When** examined for dependencies, **Then**
    it has zero dependencies on Home Assistant packages.
 4. **Given** a service call is in progress (FR-015), **When** the
-   network operation executes, **Then** the Home Assistant event
-   loop remains responsive and no blocking calls are made on the
-   main thread.
+   network operation executes, **Then** the host application
+   remains responsive and no blocking calls are made on the main
+   execution path.
 5. **Given** the service updates a reservation custom field
    (FR-018), **When** the API request is constructed, **Then** it
-   targets the v3 reservation custom fields endpoint path.
+   targets the current version of Guesty's reservation custom
+   fields endpoint.
 
 ### Key Entities
 
@@ -383,7 +385,8 @@ directly covered by user story acceptance scenarios.
 - **SC-006**: Custom field definitions are discoverable within
   Home Assistant within two refresh cycles of integration setup.
 - **SC-007**: All custom field operations complete without
-  degrading Home Assistant responsiveness during normal operation.
+  degrading the host application's responsiveness during normal
+  operation.
 - **SC-008**: Sensitive data (access codes, personal information
   stored in custom field values) never appears in log output at
   any log level.
@@ -391,9 +394,10 @@ directly covered by user story acceptance scenarios.
   repeatable non-production test scenarios covering successful
   updates, validation errors, rate limits, and transient failures
   without requiring a live Guesty connection.
-- **SC-010**: Updates to reservation custom fields use the v3
-  endpoint format, ensuring compatibility beyond Guesty's v2
-  deprecation date.
+- **SC-010**: Updates to reservation custom fields use the current
+  version of Guesty's reservation endpoints, ensuring
+  compatibility beyond Guesty's older endpoint deprecation
+  dates.
 
 ## Assumptions
 
@@ -421,9 +425,9 @@ directly covered by user story acceptance scenarios.
 - Rate limit handling leverages the existing rate limit
   infrastructure from Feature 001's API client rather than
   implementing separate rate limit logic.
-- The v3 reservation custom fields endpoints are used for all
-  reservation-level operations, consistent with Guesty's API
-  migration timeline (v2 hard deprecation April 2026).
+- The current version of Guesty's reservation custom fields
+  endpoints are used for all reservation-level operations,
+  consistent with Guesty's API migration timeline.
 - Only outbound writes (Home Assistant to Guesty) are in scope
   for the service call. Reading custom field values is handled
   by Feature 002 (listing custom fields as sensors) and

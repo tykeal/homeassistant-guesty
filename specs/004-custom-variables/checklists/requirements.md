@@ -12,7 +12,7 @@ before proceeding to planning
 
 ## Content Quality
 
-- [x] No implementation details (languages, frameworks, APIs)
+- [x] No unnecessary implementation details
 - [x] Focused on user value and business needs
 - [x] Written for non-technical stakeholders
 - [x] All mandatory sections completed
@@ -33,7 +33,7 @@ before proceeding to planning
 - [x] All functional requirements have clear acceptance criteria
 - [x] User scenarios cover primary flows
 - [x] Feature meets measurable outcomes in Success Criteria
-- [x] No implementation details leak into specification
+- [x] No unnecessary implementation details in specification
 
 ## Notes
 
@@ -42,7 +42,11 @@ before proceeding to planning
 - No [NEEDS CLARIFICATION] markers were needed. All ambiguities
   were resolved using reasonable defaults documented in the
   Assumptions section.
+- Checklist wording uses "no unnecessary implementation details"
+  to allow essential API-level references (e.g., Guesty endpoint
+  versions) that are required for correctness without prescribing
+  specific technologies, languages, or frameworks.
 - Key design decisions documented as assumptions:
   - Only writes are in scope (reads handled by Features 002/003)
-  - v3 reservation endpoints used per Guesty migration timeline
+  - Current Guesty reservation endpoints per migration timeline
   - Field definition management remains in Guesty dashboard
