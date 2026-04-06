@@ -156,5 +156,8 @@ async def async_setup_entry(
         known_ids.update(initial_ids)
         async_add_entities(_create_sensors(initial_ids))
 
-    # Register listener for runtime discovery
-    coordinator.async_add_listener(_on_coordinator_update)
+    # Register listener for runtime discovery and ensure it is removed
+    # when the config entry is unloaded.
+    entry.async_on_unload(
+        coordinator.async_add_listener(_on_coordinator_update),
+    )

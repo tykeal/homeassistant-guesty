@@ -120,6 +120,31 @@ class TestAsyncSetupEntry:
 
         assert entry.state is ConfigEntryState.SETUP_RETRY
 
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        side_effect=GuestyConnectionError("network down"),
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_first_refresh_failure_closes_http(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """First refresh failure closes HTTP client."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        assert entry.state is ConfigEntryState.SETUP_RETRY
+
 
 class TestAsyncUnloadEntry:
     """Tests for async_unload_entry."""
