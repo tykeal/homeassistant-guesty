@@ -216,7 +216,7 @@ displayed with a staleness indicator.
   statuses MUST NOT be excluded solely for being unknown and MUST be
   passed through as-is.
 - **FR-004**: System MUST associate each reservation with its parent listing
-  device from Feature 2, using the listing identifier as the linkage key.
+  device from Feature 002, using the listing identifier as the linkage key.
 - **FR-005**: System MUST expose a reservation status sensor on each listing
   device that reflects the current occupancy or reservation lifecycle
   state: "no_reservation", "awaiting_checkin", "checked_in",
@@ -242,7 +242,7 @@ displayed with a staleness indicator.
 - **FR-011**: System MUST expose a confirmation code attribute on the
   reservation status sensor when available.
 - **FR-012**: System MUST update reservation data periodically using the same
-  polling coordinator pattern established in Feature 2 (Listings), with a
+  polling coordinator pattern established in Feature 002 (Listings), with a
   configurable refresh interval.
 - **FR-013**: The default reservation polling interval MUST be 15 minutes, with
   a configurable minimum of 5 minutes.
@@ -292,7 +292,7 @@ displayed with a staleness indicator.
   reservation. Key attributes: total price, balance due, and currency. This is
   ancillary diagnostic data attached to the reservation, not a standalone
   entity.
-- **Listing Device** (from Feature 2): The parent device representing a Guesty
+- **Listing Device** (from Feature 002): The parent device representing a Guesty
   property. Reservation sensors attach to the listing device using the listing
   identifier as the relationship key.
 
@@ -325,7 +325,7 @@ displayed with a staleness indicator.
 
 ## Assumptions
 
-- Feature 2 (Listings & Properties) is implemented and listing devices are
+- Feature 002 (Listings & Properties) is implemented and listing devices are
   available before reservation sensors are created. Reservations depend on
   listing devices as their parent.
 - The Guesty API provides reservation data via the `/reservations` endpoint

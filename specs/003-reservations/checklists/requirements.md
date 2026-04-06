@@ -42,6 +42,6 @@ to planning
   platform concepts (sensors, entities, coordinator) for clarity.
 - Zero [NEEDS CLARIFICATION] markers — all ambiguities resolved with informed
   defaults documented in Assumptions.
-- Key assumptions documented: Feature 2 dependency, polling-only (webhooks out
+- Key assumptions documented: Feature 002 dependency, polling-only (webhooks out
   of scope), date range defaults, status filtering defaults.
 - Spec ready for `/speckit.clarify` or `/speckit.plan`.
