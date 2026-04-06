@@ -26,6 +26,7 @@ from custom_components.guesty.const import (
     DEFAULT_RESERVATION_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    SERVICE_SET_CUSTOM_FIELD,
 )
 
 
@@ -1025,7 +1026,7 @@ class TestAsyncSetupEntryCustomFields:
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
-        assert hass.services.has_service(DOMAIN, "set_custom_field")
+        assert hass.services.has_service(DOMAIN, SERVICE_SET_CUSTOM_FIELD)
 
     @patch(
         "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
@@ -1062,7 +1063,7 @@ class TestAsyncSetupEntryCustomFields:
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
         assert entry.state is ConfigEntryState.LOADED
-        assert hass.services.has_service(DOMAIN, "set_custom_field")
+        assert hass.services.has_service(DOMAIN, SERVICE_SET_CUSTOM_FIELD)
 
         await hass.config_entries.async_unload(entry.entry_id)
         await hass.async_block_till_done()
@@ -1070,7 +1071,7 @@ class TestAsyncSetupEntryCustomFields:
         assert entry.state is ConfigEntryState.NOT_LOADED
         assert not hass.services.has_service(
             DOMAIN,
-            "set_custom_field",
+            SERVICE_SET_CUSTOM_FIELD,
         )
 
     @patch(
