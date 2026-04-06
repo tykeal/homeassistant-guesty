@@ -249,17 +249,22 @@ infrastructure.
 
 - `actions.py` (integration root) — Service handler module:
   - `async async_setup_actions(hass, entry)` — Registers
-    all five services with `hass.services.async_register()`
+    all five services on the first config entry load;
+    subsequent entries skip registration (services are
+    global per domain)
   - `async async_unload_actions(hass, entry)` — Removes
-    service registrations on unload
+    service registrations only when the last config entry
+    is unloaded
   - Individual handler functions for each service:
     - `async _handle_add_reservation_note(call)`
     - `async _handle_set_listing_status(call)`
     - `async _handle_create_task(call)`
     - `async _handle_set_calendar_availability(call)`
     - `async _handle_update_custom_field(call)`
-  - Each handler extracts parameters from `ServiceCall`,
-    delegates to `GuestyActionsClient`, translates
+  - Each handler resolves the target config entry (via
+    an optional `config_entry_id` parameter or the sole
+    loaded entry) to obtain the correct
+    `GuestyActionsClient`, then delegates and translates
     exceptions to `HomeAssistantError`
   - Returns `ActionResult` as service response data
     (FR-022)

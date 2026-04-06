@@ -209,11 +209,13 @@ operations that do not map to local entities. This matches
 how other HA integrations handle write-back operations to
 external systems.
 
-Services are registered in `async_setup_entry` since they
-depend on the authenticated API client created during entry
-setup. Each config entry registers its own service handlers
-and stores the actions client in its entry-specific data,
-supporting multiple Guesty accounts.
+Services are registered once on the first `async_setup_entry`
+call and removed on the last `async_unload_entry`. Each
+service call includes a `config_entry_id` parameter (or uses
+the sole entry when only one exists) to route to the correct
+`GuestyActionsClient`. Each config entry stores its own
+actions client in its entry-specific data, supporting
+multiple Guesty accounts.
 
 **Alternatives considered**:
 
