@@ -7,11 +7,14 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.guesty.api.models import (
     GuestyGuest,
+    GuestyMoney,
     GuestyReservation,
 )
 from custom_components.guesty.const import (
@@ -934,3 +937,682 @@ class TestReservationSensorEdgeCases:
             entry=entry,
         )
         assert sensor.available is False
+
+
+class TestFinancialDiagnosticSensors:
+    """Tests for financial diagnostic sensors (US4)."""
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_reservation_total_returns_total_paid(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """reservation_total native_value returns money.total_paid."""
+        mock_listings.return_value = [sample_listing]
+        reservation = _make_reservation(
+            res_id="res-fin",
+            status="checked_in",
+            money=GuestyMoney(
+                total_paid=1500.50,
+                balance_due=200.00,
+                currency="USD",
+            ),
+        )
+        mock_reservations.return_value = [reservation]
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        state = hass.states.get(
+            "sensor.beach_house_reservation_total",
+        )
+        assert state is not None
+        assert float(state.state) == 1500.50
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_reservation_balance_returns_balance_due(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """reservation_balance returns money.balance_due."""
+        mock_listings.return_value = [sample_listing]
+        reservation = _make_reservation(
+            res_id="res-fin",
+            status="checked_in",
+            money=GuestyMoney(
+                total_paid=1500.50,
+                balance_due=200.00,
+                currency="USD",
+            ),
+        )
+        mock_reservations.return_value = [reservation]
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        state = hass.states.get(
+            "sensor.beach_house_reservation_balance",
+        )
+        assert state is not None
+        assert float(state.state) == 200.00
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_reservation_currency_returns_currency(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """reservation_currency returns money.currency."""
+        mock_listings.return_value = [sample_listing]
+        reservation = _make_reservation(
+            res_id="res-fin",
+            status="checked_in",
+            money=GuestyMoney(
+                total_paid=1500.50,
+                balance_due=200.00,
+                currency="USD",
+            ),
+        )
+        mock_reservations.return_value = [reservation]
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        state = hass.states.get(
+            "sensor.beach_house_reservation_currency",
+        )
+        assert state is not None
+        assert state.state == "USD"
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_financial_sensors_are_diagnostic(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """All financial sensors have EntityCategory.DIAGNOSTIC."""
+        mock_listings.return_value = [sample_listing]
+        reservation = _make_reservation(
+            res_id="res-fin",
+            status="checked_in",
+            money=GuestyMoney(
+                total_paid=100.0,
+                balance_due=0.0,
+                currency="EUR",
+            ),
+        )
+        mock_reservations.return_value = [reservation]
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        entity_reg = er.async_get(hass)
+        for sensor_key in (
+            "reservation_total",
+            "reservation_balance",
+            "reservation_currency",
+        ):
+            entity_id = f"sensor.beach_house_{sensor_key}"
+            entity_entry = entity_reg.async_get(entity_id)
+            assert entity_entry is not None, f"{entity_id} not found"
+            assert entity_entry.entity_category == (EntityCategory.DIAGNOSTIC), (
+                f"{entity_id} not DIAGNOSTIC"
+            )
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_financial_sensors_unavailable_no_money(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Financial sensors unavailable when no money data."""
+        mock_listings.return_value = [sample_listing]
+        reservation = _make_reservation(
+            res_id="res-no-fin",
+            status="checked_in",
+            money=None,
+        )
+        mock_reservations.return_value = [reservation]
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        for sensor_key in (
+            "reservation_total",
+            "reservation_balance",
+            "reservation_currency",
+        ):
+            state = hass.states.get(
+                f"sensor.beach_house_{sensor_key}",
+            )
+            assert state is not None, f"sensor.beach_house_{sensor_key} missing"
+            assert state.state == "unavailable", f"{sensor_key} should be unavailable"
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_financial_sensors_unavailable_no_reservation(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Financial sensors unavailable when no reservation."""
+        mock_listings.return_value = [sample_listing]
+        mock_reservations.return_value = []
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        for sensor_key in (
+            "reservation_total",
+            "reservation_balance",
+            "reservation_currency",
+        ):
+            state = hass.states.get(
+                f"sensor.beach_house_{sensor_key}",
+            )
+            assert state is not None, f"sensor.beach_house_{sensor_key} missing"
+            assert state.state == "unavailable", f"{sensor_key} should be unavailable"
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_financial_sensors_unavailable_partial_money(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Financial sensors unavailable when field is None."""
+        mock_listings.return_value = [sample_listing]
+        reservation = _make_reservation(
+            res_id="res-partial",
+            status="checked_in",
+            money=GuestyMoney(
+                total_paid=None,
+                balance_due=None,
+                currency=None,
+            ),
+        )
+        mock_reservations.return_value = [reservation]
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        for sensor_key in (
+            "reservation_total",
+            "reservation_balance",
+            "reservation_currency",
+        ):
+            state = hass.states.get(
+                f"sensor.beach_house_{sensor_key}",
+            )
+            assert state is not None, f"sensor.beach_house_{sensor_key} missing"
+            assert state.state == "unavailable", f"{sensor_key} should be unavailable"
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_financial_sensor_unique_id_format(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Financial sensor unique_id includes sensor key."""
+        mock_listings.return_value = [sample_listing]
+        reservation = _make_reservation(
+            res_id="res-fin",
+            status="checked_in",
+            money=GuestyMoney(
+                total_paid=100.0,
+                balance_due=0.0,
+                currency="EUR",
+            ),
+        )
+        mock_reservations.return_value = [reservation]
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        entity_reg = er.async_get(hass)
+        for sensor_key in (
+            "reservation_total",
+            "reservation_balance",
+            "reservation_currency",
+        ):
+            entity_id = f"sensor.beach_house_{sensor_key}"
+            entity_entry = entity_reg.async_get(entity_id)
+            assert entity_entry is not None
+            expected = f"test-client-id_listing-001_{sensor_key}"
+            assert entity_entry.unique_id == expected
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_financial_sensor_device_info(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Financial sensors attach to listing device."""
+        mock_listings.return_value = [sample_listing]
+        reservation = _make_reservation(
+            res_id="res-fin",
+            status="checked_in",
+            money=GuestyMoney(
+                total_paid=100.0,
+                balance_due=0.0,
+                currency="EUR",
+            ),
+        )
+        mock_reservations.return_value = [reservation]
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        from homeassistant.helpers import device_registry as dr
+
+        dev_reg = dr.async_get(hass)
+        device = dev_reg.async_get_device(
+            identifiers={(DOMAIN, "listing-001")},
+        )
+        assert device is not None
+
+        entity_reg = er.async_get(hass)
+        for sensor_key in (
+            "reservation_total",
+            "reservation_balance",
+            "reservation_currency",
+        ):
+            entity_id = f"sensor.beach_house_{sensor_key}"
+            entity_entry = entity_reg.async_get(entity_id)
+            assert entity_entry is not None
+            assert entity_entry.device_id == device.id
+
+    def test_financial_sensor_device_info_none_data_none(
+        self,
+    ) -> None:
+        """Financial sensor device_info None when data None."""
+        from unittest.mock import MagicMock
+
+        from custom_components.guesty.sensor import (
+            RESERVATION_FINANCIAL_DESCRIPTIONS,
+            GuestyFinancialSensor,
+        )
+
+        res_coordinator = MagicMock()
+        res_coordinator.data = {}
+        listings_coordinator = MagicMock()
+        listings_coordinator.data = None
+
+        entry = _make_entry()
+        desc = RESERVATION_FINANCIAL_DESCRIPTIONS[0]
+        sensor = GuestyFinancialSensor(
+            coordinator=res_coordinator,
+            listings_coordinator=listings_coordinator,
+            listing_id="listing-001",
+            entry=entry,
+            description=desc,
+        )
+        assert sensor.device_info is None
+
+    def test_financial_sensor_device_info_none_missing(
+        self,
+    ) -> None:
+        """Financial sensor device_info None when listing gone."""
+        from unittest.mock import MagicMock
+
+        from custom_components.guesty.sensor import (
+            RESERVATION_FINANCIAL_DESCRIPTIONS,
+            GuestyFinancialSensor,
+        )
+
+        res_coordinator = MagicMock()
+        res_coordinator.data = {}
+        listings_coordinator = MagicMock()
+        listings_coordinator.data = {}
+
+        entry = _make_entry()
+        desc = RESERVATION_FINANCIAL_DESCRIPTIONS[0]
+        sensor = GuestyFinancialSensor(
+            coordinator=res_coordinator,
+            listings_coordinator=listings_coordinator,
+            listing_id="listing-001",
+            entry=entry,
+            description=desc,
+        )
+        assert sensor.device_info is None
+
+    def test_financial_sensor_available_false_unhealthy(
+        self,
+    ) -> None:
+        """Financial sensor unavailable when coordinator unhealthy."""
+        from unittest.mock import MagicMock
+
+        from custom_components.guesty.sensor import (
+            RESERVATION_FINANCIAL_DESCRIPTIONS,
+            GuestyFinancialSensor,
+        )
+
+        res_coordinator = MagicMock()
+        res_coordinator.data = {"listing-001": []}
+        res_coordinator.last_update_success = False
+        listings_coordinator = MagicMock()
+
+        entry = _make_entry()
+        desc = RESERVATION_FINANCIAL_DESCRIPTIONS[0]
+        sensor = GuestyFinancialSensor(
+            coordinator=res_coordinator,
+            listings_coordinator=listings_coordinator,
+            listing_id="listing-001",
+            entry=entry,
+            description=desc,
+        )
+        assert sensor.available is False
+
+    def test_financial_sensor_available_false_data_none(
+        self,
+    ) -> None:
+        """Financial sensor unavailable when data is None."""
+        from unittest.mock import MagicMock
+
+        from custom_components.guesty.sensor import (
+            RESERVATION_FINANCIAL_DESCRIPTIONS,
+            GuestyFinancialSensor,
+        )
+
+        res_coordinator = MagicMock()
+        res_coordinator.data = None
+        res_coordinator.last_update_success = True
+        listings_coordinator = MagicMock()
+
+        entry = _make_entry()
+        desc = RESERVATION_FINANCIAL_DESCRIPTIONS[0]
+        sensor = GuestyFinancialSensor(
+            coordinator=res_coordinator,
+            listings_coordinator=listings_coordinator,
+            listing_id="listing-001",
+            entry=entry,
+            description=desc,
+        )
+        assert sensor.available is False
+
+    def test_financial_sensor_available_false_listings_none(
+        self,
+    ) -> None:
+        """Financial sensor unavailable when listings data None."""
+        from unittest.mock import MagicMock
+
+        from custom_components.guesty.sensor import (
+            RESERVATION_FINANCIAL_DESCRIPTIONS,
+            GuestyFinancialSensor,
+        )
+
+        res_coordinator = MagicMock()
+        res_coordinator.data = {"listing-001": []}
+        res_coordinator.last_update_success = True
+        listings_coordinator = MagicMock()
+        listings_coordinator.data = None
+
+        entry = _make_entry()
+        desc = RESERVATION_FINANCIAL_DESCRIPTIONS[0]
+        sensor = GuestyFinancialSensor(
+            coordinator=res_coordinator,
+            listings_coordinator=listings_coordinator,
+            listing_id="listing-001",
+            entry=entry,
+            description=desc,
+        )
+        assert sensor.available is False
+
+    def test_financial_sensor_available_false_listing_gone(
+        self,
+    ) -> None:
+        """Financial sensor unavailable when listing disappeared."""
+        from unittest.mock import MagicMock
+
+        from custom_components.guesty.sensor import (
+            RESERVATION_FINANCIAL_DESCRIPTIONS,
+            GuestyFinancialSensor,
+        )
+
+        res_coordinator = MagicMock()
+        res_coordinator.data = {}
+        res_coordinator.last_update_success = True
+        listings_coordinator = MagicMock()
+        listings_coordinator.data = {"other": MagicMock()}
+
+        entry = _make_entry()
+        desc = RESERVATION_FINANCIAL_DESCRIPTIONS[0]
+        sensor = GuestyFinancialSensor(
+            coordinator=res_coordinator,
+            listings_coordinator=listings_coordinator,
+            listing_id="listing-001",
+            entry=entry,
+            description=desc,
+        )
+        assert sensor.available is False
+
+    def test_native_value_none_when_money_none(
+        self,
+    ) -> None:
+        """native_value returns None when no money data."""
+        from unittest.mock import MagicMock
+
+        from custom_components.guesty.sensor import (
+            RESERVATION_FINANCIAL_DESCRIPTIONS,
+            GuestyFinancialSensor,
+        )
+
+        res_coordinator = MagicMock()
+        res_coordinator.data = {
+            "listing-001": [
+                _make_reservation(
+                    res_id="r1",
+                    status="checked_in",
+                    money=None,
+                ),
+            ],
+        }
+        listings_coordinator = MagicMock()
+
+        entry = _make_entry()
+        desc = RESERVATION_FINANCIAL_DESCRIPTIONS[0]
+        sensor = GuestyFinancialSensor(
+            coordinator=res_coordinator,
+            listings_coordinator=listings_coordinator,
+            listing_id="listing-001",
+            entry=entry,
+            description=desc,
+        )
+        assert sensor.native_value is None
+
+    def test_money_none_when_data_none(
+        self,
+    ) -> None:
+        """_money returns None when coordinator data is None."""
+        from unittest.mock import MagicMock
+
+        from custom_components.guesty.sensor import (
+            RESERVATION_FINANCIAL_DESCRIPTIONS,
+            GuestyFinancialSensor,
+        )
+
+        res_coordinator = MagicMock()
+        res_coordinator.data = None
+        listings_coordinator = MagicMock()
+
+        entry = _make_entry()
+        desc = RESERVATION_FINANCIAL_DESCRIPTIONS[0]
+        sensor = GuestyFinancialSensor(
+            coordinator=res_coordinator,
+            listings_coordinator=listings_coordinator,
+            listing_id="listing-001",
+            entry=entry,
+            description=desc,
+        )
+        assert sensor._money is None

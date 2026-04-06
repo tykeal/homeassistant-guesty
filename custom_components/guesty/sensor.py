@@ -21,6 +21,7 @@ from homeassistant.util import slugify
 
 from custom_components.guesty.api.models import (
     GuestyListing,
+    GuestyMoney,
     GuestyReservation,
 )
 from custom_components.guesty.const import DOMAIN
@@ -132,6 +133,41 @@ LISTING_SENSOR_DESCRIPTIONS: tuple[GuestyListingSensorEntityDescription, ...] = 
         translation_key="listing_tags",
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda listing: ", ".join(listing.tags),
+    ),
+)
+
+
+@dataclass(frozen=True, kw_only=True)
+class GuestyFinancialSensorEntityDescription(SensorEntityDescription):
+    """Describe a financial sensor with a value extraction function.
+
+    Attributes:
+        value_fn: Callable extracting the value from GuestyMoney.
+    """
+
+    value_fn: Callable[[GuestyMoney], StateType]
+
+
+RESERVATION_FINANCIAL_DESCRIPTIONS: tuple[
+    GuestyFinancialSensorEntityDescription, ...
+] = (
+    GuestyFinancialSensorEntityDescription(
+        key="reservation_total",
+        translation_key="reservation_total",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda money: money.total_paid,
+    ),
+    GuestyFinancialSensorEntityDescription(
+        key="reservation_balance",
+        translation_key="reservation_balance",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda money: money.balance_due,
+    ),
+    GuestyFinancialSensorEntityDescription(
+        key="reservation_currency",
+        translation_key="reservation_currency",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda money: money.currency,
     ),
 )
 
@@ -385,6 +421,35 @@ def _build_upcoming(
     return upcoming
 
 
+def _build_listing_device_info(
+    listings_coordinator: ListingsCoordinator,
+    listing_id: str,
+) -> DeviceInfo | None:
+    """Build DeviceInfo linking to the listing device.
+
+    Shared by reservation and financial sensors to keep
+    device attachment logic in a single place.
+
+    Args:
+        listings_coordinator: The listings coordinator.
+        listing_id: The Guesty listing ID.
+
+    Returns:
+        DeviceInfo with listing identifiers, or None.
+    """
+    if listings_coordinator.data is None:
+        return None
+    listing = listings_coordinator.data.get(listing_id)
+    if listing is None:
+        return None
+    return DeviceInfo(
+        identifiers={(DOMAIN, listing.id)},
+        name=listing.title,
+        manufacturer="Guesty",
+        model=listing.property_type or "Listing",
+    )
+
+
 class GuestyReservationSensor(
     CoordinatorEntity["ReservationsCoordinator"],
     SensorEntity,
@@ -451,18 +516,9 @@ class GuestyReservationSensor(
         Returns:
             DeviceInfo with listing identifiers.
         """
-        if self._listings_coordinator.data is None:
-            return None
-        listing = self._listings_coordinator.data.get(
+        return _build_listing_device_info(
+            self._listings_coordinator,
             self._listing_id,
-        )
-        if listing is None:
-            return None
-        return DeviceInfo(
-            identifiers={(DOMAIN, listing.id)},
-            name=listing.title,
-            manufacturer="Guesty",
-            model=listing.property_type or "Listing",
         )
 
     @property
@@ -498,6 +554,120 @@ class GuestyReservationSensor(
         return self.coordinator.data.get(self._listing_id, [])
 
 
+class GuestyFinancialSensor(
+    CoordinatorEntity["ReservationsCoordinator"],
+    SensorEntity,
+):
+    """Diagnostic sensor exposing reservation financial data.
+
+    Uses priority selection to find the current reservation and
+    extracts a single financial field via the description's
+    ``value_fn``. Shows unavailable when no reservation or no
+    financial data exists (FR-019).
+
+    Attributes:
+        _listing_id: The Guesty listing ID.
+        _listings_coordinator: Reference for device_info.
+        entity_description: The financial sensor description.
+    """
+
+    _attr_has_entity_name = True
+
+    entity_description: GuestyFinancialSensorEntityDescription
+
+    def __init__(
+        self,
+        coordinator: ReservationsCoordinator,
+        listings_coordinator: ListingsCoordinator,
+        listing_id: str,
+        entry: ConfigEntry,
+        description: GuestyFinancialSensorEntityDescription,
+    ) -> None:
+        """Initialize the financial sensor.
+
+        Args:
+            coordinator: The reservations coordinator.
+            listings_coordinator: The listings coordinator.
+            listing_id: The Guesty listing ID.
+            entry: The config entry.
+            description: The financial sensor description.
+        """
+        super().__init__(coordinator)
+        self._listing_id = listing_id
+        self._listings_coordinator = listings_coordinator
+        self.entity_description = description
+        self._attr_unique_id = f"{entry.unique_id}_{listing_id}_{description.key}"
+        self._attr_translation_key = description.translation_key
+
+    @property
+    def native_value(self) -> StateType:
+        """Return the financial value from the selected reservation.
+
+        Returns:
+            The financial sensor value, or None.
+        """
+        money = self._money
+        if money is None:
+            return None
+        return self.entity_description.value_fn(money)
+
+    @property
+    def available(self) -> bool:
+        """Return True only when the specific financial field exists.
+
+        Checks coordinator health, data presence, listing
+        existence, reservation presence, money data, and the
+        specific field value so partial payloads show
+        unavailable rather than unknown (FR-019).
+
+        Returns:
+            True when the financial field value is available.
+        """
+        if not super().available:
+            return False
+        if self.coordinator.data is None:
+            return False
+        listings_data = self._listings_coordinator.data
+        if listings_data is None:
+            return False
+        if self._listing_id not in listings_data:
+            return False
+        money = self._money
+        if money is None:
+            return False
+        return self.entity_description.value_fn(money) is not None
+
+    @property
+    def device_info(self) -> DeviceInfo | None:
+        """Return device info linking to the listing device.
+
+        Returns:
+            DeviceInfo with listing identifiers.
+        """
+        return _build_listing_device_info(
+            self._listings_coordinator,
+            self._listing_id,
+        )
+
+    @property
+    def _money(self) -> GuestyMoney | None:
+        """Return the money data from the selected reservation.
+
+        Returns:
+            GuestyMoney from the selected reservation, or None.
+        """
+        if self.coordinator.data is None:
+            return None
+        reservations = self.coordinator.data.get(
+            self._listing_id,
+            [],
+        )
+        selected = _select_reservation(reservations)
+        if selected is None:
+            return None
+        return selected.money
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -522,11 +692,12 @@ async def async_setup_entry(
 
     def _create_sensors(
         listing_ids: set[str],
-    ) -> list[GuestyListingSensor | GuestyReservationSensor]:
+    ) -> list[GuestyListingSensor | GuestyReservationSensor | GuestyFinancialSensor]:
         """Create sensor entities for the given listing IDs.
 
         Creates static description sensors, dynamic custom field
-        sensors, and reservation status sensors for each listing.
+        sensors, reservation status sensors, and financial
+        diagnostic sensors for each listing.
 
         Args:
             listing_ids: Set of listing IDs to create sensors for.
@@ -534,7 +705,9 @@ async def async_setup_entry(
         Returns:
             List of new sensor entities.
         """
-        entities: list[GuestyListingSensor | GuestyReservationSensor] = []
+        entities: list[
+            GuestyListingSensor | GuestyReservationSensor | GuestyFinancialSensor
+        ] = []
         for listing_id in listing_ids:
             for desc in LISTING_SENSOR_DESCRIPTIONS:
                 entities.append(
@@ -571,6 +744,17 @@ async def async_setup_entry(
                     entry=entry,
                 )
             )
+            # Financial diagnostic sensors
+            for fin_desc in RESERVATION_FINANCIAL_DESCRIPTIONS:
+                entities.append(
+                    GuestyFinancialSensor(
+                        coordinator=res_coordinator,
+                        listings_coordinator=coordinator,
+                        listing_id=listing_id,
+                        entry=entry,
+                        description=fin_desc,
+                    )
+                )
         return entities
 
     def _on_coordinator_update() -> None:
