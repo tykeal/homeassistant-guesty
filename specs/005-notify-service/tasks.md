@@ -305,12 +305,12 @@ verification.
 
 <!-- markdownlint-disable MD013 -->
 
-- [ ] T022 [US5] Write rate limit retry integration tests: mock
+- [X] T022 [US5] Write rate limit retry integration tests: mock
   429 response with `Retry-After` header on first send-message
   call followed by 200 success on retry; verify message
   eventually delivered; verify retry used exponential backoff
   via `GuestyApiClient` in `tests/test_notify.py`
-- [ ] T023 [US5] Write transient failure retry integration
+- [X] T023 [US5] Write transient failure retry integration
   tests: mock transient network error (connection refused or
   timeout) on initial send-message call followed by 200 success
   on retry; verify message eventually delivered and retry used
@@ -318,13 +318,13 @@ verification.
   network failure and verify `GuestyConnectionError` is raised
   only after retries are exhausted; verify error includes
   reservation context in `tests/test_notify.py`
-- [ ] T024 [US5] Write error detail quality tests: invalid
+- [X] T024 [US5] Write error detail quality tests: invalid
   reservation ID (not found in Guesty) returns error with
   reservation ID in message; delivery failure after retries
   includes failure reason and targeted `reservation_id`; errors
   logged at appropriate severity (warning for retries, error
   for final failure) in `tests/test_notify.py`
-- [ ] T025 [US5] Implement transient failure retry with backoff
+- [X] T025 [US5] Implement transient failure retry with backoff
   in `GuestyApiClient`: retry connect/timeout errors and
   transient 5xx responses with bounded exponential backoff,
   preserve existing `Retry-After` handling for 429 responses,
@@ -337,18 +337,18 @@ verification.
 
 <!-- markdownlint-disable MD013 -->
 
-- [ ] T026 Write security tests verifying no message body
+- [X] T026 Write security tests verifying no message body
   content, guest PII, or OAuth tokens appear in log output at
   any log level (DEBUG through CRITICAL) during successful
   send, failed send, and retry scenarios using caplog fixture
   in `tests/test_notify.py`
-- [ ] T027 Write success criteria validation tests: SC-005
+- [X] T027 Write success criteria validation tests: SC-005
   invalid service calls (missing `reservation_id`, empty body)
   produce errors synchronously; SC-009 all test scenarios run
   without live Guesty connection (verify respx mock coverage);
   SC-010 template substitution resolves all provided variables
   and rejects missing variables in `tests/test_notify.py`
-- [ ] T028 Run quickstart.md validation: verify all code
+- [X] T028 Run quickstart.md validation: verify all code
   examples in specs/005-notify-service/quickstart.md compile
   and execute correctly against mocked API fixtures; verify
   documented error handling patterns work as described
