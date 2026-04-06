@@ -210,6 +210,9 @@
             "listing_bathrooms": {
                 "name": "Bathrooms"
             },
+            "listing_accommodates": {
+                "name": "Maximum Guests"
+            },
             "listing_timezone": {
                 "name": "Timezone"
             },

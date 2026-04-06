@@ -111,6 +111,12 @@ LISTING_SENSOR_DESCRIPTIONS: tuple[GuestyListingSensorEntityDescription, ...] = 
         value_fn=lambda listing: listing.bathrooms,
     ),
     GuestyListingSensorEntityDescription(
+        key="accommodates",
+        translation_key="listing_accommodates",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda listing: listing.accommodates,
+    ),
+    GuestyListingSensorEntityDescription(
         key="timezone",
         translation_key="listing_timezone",
         entity_category=EntityCategory.DIAGNOSTIC,
