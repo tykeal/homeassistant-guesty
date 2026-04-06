@@ -1019,10 +1019,6 @@ class TestTemplateVariableSubstitution:
             GuestyMessagingClient,
         )
 
-        entry = _make_entry()
-        entity = GuestyNotifyEntity(mock_messaging_client, entry)
-        entity.hass = hass
-
         # Use the real render_template to verify substitution.
         client = GuestyMessagingClient.__new__(GuestyMessagingClient)
         rendered = client.render_template(
@@ -1096,7 +1092,8 @@ class TestMissingTemplateVariable:
 
         # The real client raises KeyError during render_template
         # before any API call. Here we simulate that by having
-        # send_message raise KeyError (the entity propagates it).
+        # send_message raise KeyError, which the entity catches
+        # and converts to HomeAssistantError.
         mock_messaging_client.send_message.side_effect = KeyError("guest_name")
 
         with pytest.raises(
