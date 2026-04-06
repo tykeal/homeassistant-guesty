@@ -125,32 +125,10 @@ class GuestyNotifyEntity(NotifyEntity):
                 "reservation ID as the 'title' parameter"
             )
 
-        if not message:
-            raise HomeAssistantError("message body is required and must not be empty")
-
-        try:
-            await self._messaging_client.send_message(
-                reservation_id=title,
-                body=message,
-            )
-        except GuestyMessageError as exc:
-            _LOGGER.error(
-                "Message delivery failed for reservation '%s': %s",
-                title,
-                exc,
-                exc_info=True,
-            )
-            raise HomeAssistantError(str(exc)) from exc
-        except GuestyApiError as exc:
-            _LOGGER.error(
-                "API error for reservation '%s': %s",
-                title,
-                exc,
-                exc_info=True,
-            )
-            raise HomeAssistantError(str(exc)) from exc
-        except ValueError as exc:
-            raise HomeAssistantError(str(exc)) from exc
+        await self._deliver_message(
+            reservation_id=title,
+            body=message,
+        )
 
     async def async_send_guest_message(
         self,
@@ -180,13 +158,42 @@ class GuestyNotifyEntity(NotifyEntity):
         if not reservation_id:
             raise HomeAssistantError("reservation_id is required and must not be empty")
 
-        if not message:
+        await self._deliver_message(
+            reservation_id=reservation_id,
+            body=message,
+            channel=channel,
+            template_variables=template_variables,
+        )
+
+    async def _deliver_message(
+        self,
+        reservation_id: str,
+        body: str,
+        channel: str | None = None,
+        template_variables: dict[str, str] | None = None,
+    ) -> None:
+        """Validate, send, and translate errors for a message.
+
+        Shared implementation for both ``async_send_message`` and
+        ``async_send_guest_message``.
+
+        Args:
+            reservation_id: Target reservation identifier.
+            body: Message body text (may contain placeholders).
+            channel: Optional delivery channel override.
+            template_variables: Optional placeholder substitutions.
+
+        Raises:
+            HomeAssistantError: On validation failure, delivery
+                error, or missing template variable.
+        """
+        if not body:
             raise HomeAssistantError("message body is required and must not be empty")
 
         try:
             await self._messaging_client.send_message(
                 reservation_id=reservation_id,
-                body=message,
+                body=body,
                 channel=channel,
                 template_variables=template_variables,
             )
@@ -207,6 +214,7 @@ class GuestyNotifyEntity(NotifyEntity):
             )
             raise HomeAssistantError(str(exc)) from exc
         except KeyError as exc:
-            raise HomeAssistantError(f"Missing template variable: {exc}") from exc
+            missing = exc.args[0] if exc.args else str(exc)
+            raise HomeAssistantError(f"Missing template variable: {missing}") from exc
         except ValueError as exc:
             raise HomeAssistantError(str(exc)) from exc

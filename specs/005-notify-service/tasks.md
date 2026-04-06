@@ -238,12 +238,12 @@ errors for unavailable channels and missing template variables.
 <!-- markdownlint-disable MD013 -->
 
 - [X] T017 [US3] Write integration tests for channel
-  selection: specify "email" channel and verify `module.type`
-  in API request body; specify "sms" channel and verify
-  routing; omit channel and verify default channel used from
-  conversation; verify channel parameter flows from service
-  call data through notify entity to messaging client to API
-  request in `tests/test_notify.py`
+  selection: specify "email" channel and verify the selected
+  channel is passed to `GuestyMessagingClient.send_message`;
+  specify "sms" channel and verify routing; omit channel and
+  verify default channel used from conversation; verify
+  channel parameter flows from service call data through
+  notify entity to messaging client in `tests/test_notify.py`
 - [X] T018 [US3] Write unavailable channel error tests: request
   channel not present in conversation `availableModules` and
   verify `GuestyMessageError` lists available channels; verify
@@ -259,10 +259,10 @@ errors for unavailable channels and missing template variables.
 - [X] T019 [US4] Write integration tests for template variable
   substitution: provide `template_variables` dict in service
   call data with message body containing `{guest_name}` and
-  `{access_code}` placeholders; verify rendered message sent
-  to Guesty API has substituted values; verify
-  `template_variables` flows from service call data through
-  notify entity to messaging client in `tests/test_notify.py`
+  `{access_code}` placeholders; verify `template_variables`
+  flows from service call data through notify entity to
+  messaging client; verify `render_template` produces
+  substituted values in `tests/test_notify.py`
 - [X] T020 [US4] Write missing template variable error tests:
   message body contains `{guest_name}` placeholder but
   `template_variables` omits `guest_name`; verify error

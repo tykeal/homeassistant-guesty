@@ -123,6 +123,8 @@ class TestGuestyNotifyEntitySendMessage:
         mock_messaging_client.send_message.assert_called_once_with(
             reservation_id="res-456",
             body="Hello guest",
+            channel=None,
+            template_variables=None,
         )
 
     async def test_missing_reservation_id_raises_error(
@@ -472,6 +474,8 @@ class TestAutomationCompatibility:
         mock_client.send_message.assert_called_once_with(
             reservation_id="res-svc",
             body="Code: 1234",
+            channel=None,
+            template_variables=None,
         )
 
     @patch(
@@ -525,6 +529,8 @@ class TestAutomationCompatibility:
         mock_client.send_message.assert_called_once_with(
             reservation_id="res-tpl",
             body=resolved_msg,
+            channel=None,
+            template_variables=None,
         )
 
     @patch(
@@ -999,6 +1005,34 @@ class TestTemplateVariableSubstitution:
             "guest_name": "Carol",
             "access_code": "9999",
         }
+        assert call_kwargs.kwargs["body"] == (
+            "Welcome {guest_name}, code: {access_code}"
+        )
+
+    async def test_substitution_produces_rendered_body(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """Verify rendered body contains substituted values."""
+        from custom_components.guesty.api.messaging import (
+            GuestyMessagingClient,
+        )
+
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        # Use the real render_template to verify substitution.
+        client = GuestyMessagingClient.__new__(GuestyMessagingClient)
+        rendered = client.render_template(
+            "Welcome {guest_name}, code: {access_code}",
+            {"guest_name": "Carol", "access_code": "9999"},
+        )
+
+        assert rendered == "Welcome Carol, code: 9999"
+        assert "Carol" in rendered
+        assert "9999" in rendered
 
 
 # ── Phase 3: Missing Template Variable Error Tests (T020) ───────────
@@ -1055,25 +1089,29 @@ class TestMissingTemplateVariable:
         hass: HomeAssistant,
         mock_messaging_client: AsyncMock,
     ) -> None:
-        """No partially rendered message is sent on error."""
+        """Error prevents delivery of partially rendered message."""
         entry = _make_entry()
         entity = GuestyNotifyEntity(mock_messaging_client, entry)
         entity.hass = hass
 
-        # The client raises KeyError during render_template which
-        # happens before the actual send_message API call.
+        # The real client raises KeyError during render_template
+        # before any API call. Here we simulate that by having
+        # send_message raise KeyError (the entity propagates it).
         mock_messaging_client.send_message.side_effect = KeyError("guest_name")
 
-        with pytest.raises(HomeAssistantError):
+        with pytest.raises(
+            HomeAssistantError,
+            match=r"Missing template variable.*guest_name",
+        ):
             await entity.async_send_guest_message(
                 message="Hi {guest_name}, code: {access_code}",
                 reservation_id="res-mv3",
                 template_variables={"access_code": "1234"},
             )
 
-        # send_message was called (the mock raises during the call),
-        # but the real client would raise before sending to the API.
-        # Verify the error was raised (already done above).
+        # send_message was called once and raised; the entity
+        # converted the error to HomeAssistantError above.
+        mock_messaging_client.send_message.assert_called_once()
 
     async def test_missing_variable_preserves_cause(
         self,
@@ -1173,7 +1211,7 @@ class TestEdgeCases:
         hass: HomeAssistant,
         mock_messaging_client: AsyncMock,
     ) -> None:
-        """Oversized message body is rejected with ValueError."""
+        """Oversized message body is rejected with HomeAssistantError."""
         entry = _make_entry()
         entity = GuestyNotifyEntity(mock_messaging_client, entry)
         entity.hass = hass
