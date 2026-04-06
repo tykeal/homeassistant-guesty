@@ -5,11 +5,16 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+from types import MappingProxyType
 from unittest.mock import AsyncMock, patch
 
 import pytest
 import respx
-from homeassistant.config_entries import SOURCE_REAUTH, SOURCE_USER
+from homeassistant.config_entries import (
+    SOURCE_REAUTH,
+    SOURCE_USER,
+    ConfigFlowResult,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from httpx import Response
@@ -17,15 +22,19 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.guesty.api.const import BASE_URL, TOKEN_URL
 from custom_components.guesty.api.exceptions import (
+    GuestyApiError,
     GuestyAuthError,
     GuestyConnectionError,
     GuestyRateLimitError,
 )
+from custom_components.guesty.api.models import GuestyAddress, GuestyListing
 from custom_components.guesty.const import (
     CONF_FUTURE_DAYS,
     CONF_PAST_DAYS,
     CONF_RESERVATION_SCAN_INTERVAL,
     CONF_SCAN_INTERVAL,
+    CONF_SELECTED_LISTINGS,
+    CONF_TAG_FILTER,
     DOMAIN,
     MIN_RESERVATION_SCAN_INTERVAL,
     MIN_SCAN_INTERVAL,
@@ -36,6 +45,154 @@ VALID_INPUT = {
     "client_id": "test-client-id",
     "client_secret": "test-client-secret",
 }
+
+# ── Test listings for the 3-step options flow ───────────────────────
+
+_TEST_LISTINGS: list[GuestyListing] = [
+    GuestyListing(
+        id="lst_001",
+        title="Beach House",
+        nickname="beach",
+        status="active",
+        address=GuestyAddress(
+            full="123 Ocean Dr, Miami, FL 33139, US",
+            street="123 Ocean Dr",
+            city="Miami",
+            state="FL",
+            zipcode="33139",
+            country="US",
+        ),
+        property_type="apartment",
+        room_type="entire_home",
+        listing_type="SINGLE",
+        bedrooms=2,
+        bathrooms=1.5,
+        accommodates=5,
+        timezone="America/New_York",
+        check_in_time="15:00",
+        check_out_time="11:00",
+        tags=("premium", "beachfront"),
+        custom_fields=MappingProxyType({}),
+    ),
+    GuestyListing(
+        id="lst_002",
+        title="Mountain Cabin",
+        nickname="cabin",
+        status="active",
+        address=GuestyAddress(
+            full="456 Pine Rd, Asheville, NC 28801, US",
+            street="456 Pine Rd",
+            city="Asheville",
+            state="NC",
+            zipcode="28801",
+            country="US",
+        ),
+        property_type="house",
+        room_type="entire_home",
+        listing_type="SINGLE",
+        bedrooms=3,
+        bathrooms=2.0,
+        accommodates=6,
+        timezone="America/New_York",
+        check_in_time="16:00",
+        check_out_time="10:00",
+        tags=("mountain",),
+        custom_fields=MappingProxyType({}),
+    ),
+    GuestyListing(
+        id="lst_003",
+        title="City Apartment",
+        nickname="city",
+        status="active",
+        address=None,
+        property_type="apartment",
+        room_type="private_room",
+        listing_type="SINGLE",
+        bedrooms=1,
+        bathrooms=1.0,
+        accommodates=2,
+        timezone="America/New_York",
+        check_in_time="14:00",
+        check_out_time="11:00",
+        tags=(),
+        custom_fields=MappingProxyType({}),
+    ),
+]
+
+_DEFAULT_INTERVALS = {
+    CONF_SCAN_INTERVAL: 15,
+    CONF_RESERVATION_SCAN_INTERVAL: 15,
+    CONF_PAST_DAYS: 30,
+    CONF_FUTURE_DAYS: 365,
+}
+
+
+def _setup_api_client(
+    hass: HomeAssistant,
+    entry_id: str,
+    listings: list[GuestyListing] | None = None,
+) -> AsyncMock:
+    """Populate hass.data with a mock API client for options flow.
+
+    Args:
+        hass: Home Assistant instance.
+        entry_id: Config entry ID.
+        listings: Listings to return from get_listings.
+
+    Returns:
+        The mock API client.
+    """
+    if listings is None:
+        listings = list(_TEST_LISTINGS)
+    mock_api = AsyncMock()
+    mock_api.get_listings = AsyncMock(return_value=listings)
+    hass.data.setdefault(DOMAIN, {})
+    hass.data[DOMAIN][entry_id] = {"api_client": mock_api}
+    return mock_api
+
+
+async def _navigate_to_intervals(
+    hass: HomeAssistant,
+    entry_id: str,
+    flow_id: str | None = None,
+    tag_filter: list[str] | None = None,
+    selected_ids: list[str] | None = None,
+) -> ConfigFlowResult:
+    """Navigate options flow through init and select_listings.
+
+    Args:
+        hass: Home Assistant instance.
+        entry_id: Config entry ID.
+        flow_id: Flow ID if already started.
+        tag_filter: Tags for init step.
+        selected_ids: IDs for select_listings step.
+
+    Returns:
+        Flow result at the intervals step.
+    """
+    if tag_filter is None:
+        tag_filter = []
+    if selected_ids is None:
+        selected_ids = [lst.id for lst in _TEST_LISTINGS]
+
+    if flow_id is None:
+        init_result = await hass.config_entries.options.async_init(
+            entry_id,
+        )
+        flow_id = init_result["flow_id"]
+
+    result = await hass.config_entries.options.async_configure(
+        flow_id,
+        user_input={CONF_TAG_FILTER: tag_filter},
+    )
+    assert result["step_id"] == "select_listings"
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={CONF_SELECTED_LISTINGS: selected_ids},
+    )
+    assert result["step_id"] == "intervals"
+    return result
 
 
 class TestStepUser:
@@ -505,13 +662,13 @@ class TestOptionsFlow:
         "custom_components.guesty.config_flow._validate_credentials",
         new_callable=AsyncMock,
     )
-    async def test_options_flow_presents_scan_interval(
+    async def test_options_flow_presents_init_form(
         self,
         mock_validate: AsyncMock,
         mock_setup: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
-        """Options flow shows scan_interval with default."""
+        """Options flow shows init step with tag filter."""
         await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": SOURCE_USER},
@@ -546,13 +703,20 @@ class TestOptionsFlow:
             data=VALID_INPUT,
         )
         entry = hass.config_entries.async_entries(DOMAIN)[0]
+        _setup_api_client(hass, entry.entry_id)
 
-        result = await hass.config_entries.options.async_init(
+        result = await _navigate_to_intervals(
+            hass,
             entry.entry_id,
         )
         result = await hass.config_entries.options.async_configure(
             result["flow_id"],
-            user_input={CONF_SCAN_INTERVAL: 10},
+            user_input={
+                CONF_SCAN_INTERVAL: 10,
+                CONF_RESERVATION_SCAN_INTERVAL: 15,
+                CONF_PAST_DAYS: 30,
+                CONF_FUTURE_DAYS: 365,
+            },
         )
         assert result["type"] is FlowResultType.CREATE_ENTRY
         assert entry.options[CONF_SCAN_INTERVAL] == 10
@@ -580,14 +744,21 @@ class TestOptionsFlow:
             data=VALID_INPUT,
         )
         entry = hass.config_entries.async_entries(DOMAIN)[0]
+        _setup_api_client(hass, entry.entry_id)
 
-        result = await hass.config_entries.options.async_init(
+        result = await _navigate_to_intervals(
+            hass,
             entry.entry_id,
         )
         with pytest.raises(InvalidData):
             await hass.config_entries.options.async_configure(
                 result["flow_id"],
-                user_input={CONF_SCAN_INTERVAL: MIN_SCAN_INTERVAL - 1},
+                user_input={
+                    CONF_SCAN_INTERVAL: MIN_SCAN_INTERVAL - 1,
+                    CONF_RESERVATION_SCAN_INTERVAL: 15,
+                    CONF_PAST_DAYS: 30,
+                    CONF_FUTURE_DAYS: 365,
+                },
             )
 
     @patch(
@@ -645,7 +816,7 @@ class TestReservationOptionsFlow:
         mock_setup: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
-        """Options flow shows reservation scan interval fields."""
+        """Options flow shows init step form."""
         await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": SOURCE_USER},
@@ -680,8 +851,10 @@ class TestReservationOptionsFlow:
             data=VALID_INPUT,
         )
         entry = hass.config_entries.async_entries(DOMAIN)[0]
+        _setup_api_client(hass, entry.entry_id)
 
-        result = await hass.config_entries.options.async_init(
+        result = await _navigate_to_intervals(
+            hass,
             entry.entry_id,
         )
         result = await hass.config_entries.options.async_configure(
@@ -721,8 +894,10 @@ class TestReservationOptionsFlow:
             data=VALID_INPUT,
         )
         entry = hass.config_entries.async_entries(DOMAIN)[0]
+        _setup_api_client(hass, entry.entry_id)
 
-        result = await hass.config_entries.options.async_init(
+        result = await _navigate_to_intervals(
+            hass,
             entry.entry_id,
         )
         with pytest.raises(InvalidData):
@@ -757,8 +932,10 @@ class TestReservationOptionsFlow:
             data=VALID_INPUT,
         )
         entry = hass.config_entries.async_entries(DOMAIN)[0]
+        _setup_api_client(hass, entry.entry_id)
 
-        result = await hass.config_entries.options.async_init(
+        result = await _navigate_to_intervals(
+            hass,
             entry.entry_id,
         )
         result = await hass.config_entries.options.async_configure(
@@ -796,8 +973,10 @@ class TestReservationOptionsFlow:
             data=VALID_INPUT,
         )
         entry = hass.config_entries.async_entries(DOMAIN)[0]
+        _setup_api_client(hass, entry.entry_id)
 
-        result = await hass.config_entries.options.async_init(
+        result = await _navigate_to_intervals(
+            hass,
             entry.entry_id,
         )
         with pytest.raises(InvalidData):
@@ -810,3 +989,489 @@ class TestReservationOptionsFlow:
                     CONF_FUTURE_DAYS: 365,
                 },
             )
+
+
+class TestListingOptionsFlow:
+    """Tests for the 3-step listing selection options flow.
+
+    Covers T010-T017: init, select_listings, and intervals steps.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_init_fetches_listings_and_transitions(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """T010: init fetches listings and shows select_listings."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        mock_api = _setup_api_client(hass, entry.entry_id)
+
+        result = await hass.config_entries.options.async_init(
+            entry.entry_id,
+        )
+        assert result["step_id"] == "init"
+
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={CONF_TAG_FILTER: []},
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "select_listings"
+        mock_api.get_listings.assert_awaited_once()
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_init_returns_cannot_connect_on_api_error(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """T011: init shows cannot_connect on API failure."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        mock_api = _setup_api_client(hass, entry.entry_id)
+        mock_api.get_listings.side_effect = GuestyApiError(
+            "connection failed",
+        )
+
+        result = await hass.config_entries.options.async_init(
+            entry.entry_id,
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={CONF_TAG_FILTER: []},
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "init"
+        assert result["errors"] == {"base": "cannot_connect"}
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_init_returns_invalid_auth_on_auth_error(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Init shows invalid_auth on GuestyAuthError."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        mock_api = _setup_api_client(hass, entry.entry_id)
+        mock_api.get_listings.side_effect = GuestyAuthError(
+            "bad auth",
+        )
+
+        result = await hass.config_entries.options.async_init(
+            entry.entry_id,
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={CONF_TAG_FILTER: []},
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "init"
+        assert result["errors"] == {"base": "invalid_auth"}
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_init_returns_rate_limited_on_rate_error(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Init shows rate_limited on GuestyRateLimitError."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        mock_api = _setup_api_client(hass, entry.entry_id)
+        mock_api.get_listings.side_effect = GuestyRateLimitError(
+            "rate limited",
+        )
+
+        result = await hass.config_entries.options.async_init(
+            entry.entry_id,
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={CONF_TAG_FILTER: []},
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "init"
+        assert result["errors"] == {"base": "rate_limited"}
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_select_listings_respects_prior_selection(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Prior selected_listings used as default selection."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        hass.config_entries.async_update_entry(
+            entry,
+            options={
+                CONF_SELECTED_LISTINGS: ["lst_001", "lst_003"],
+            },
+        )
+        _setup_api_client(hass, entry.entry_id)
+
+        result = await hass.config_entries.options.async_init(
+            entry.entry_id,
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={CONF_TAG_FILTER: []},
+        )
+        assert result["step_id"] == "select_listings"
+
+        schema = result["data_schema"]
+        assert schema is not None
+        schema_dict = schema.schema
+        selector_key = next(iter(schema_dict))
+        default = selector_key.default()
+        assert default == ["lst_001", "lst_003"]
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_select_listings_builds_labeled_options(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """T012: select_listings labels as 'title — address'."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        _setup_api_client(hass, entry.entry_id)
+
+        result = await hass.config_entries.options.async_init(
+            entry.entry_id,
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={CONF_TAG_FILTER: []},
+        )
+        assert result["step_id"] == "select_listings"
+
+        schema = result["data_schema"]
+        assert schema is not None
+        schema_dict = schema.schema
+        selector_key = next(iter(schema_dict))
+        selector = schema_dict[selector_key]
+        options = selector.config["options"]
+
+        labels = {opt["value"]: opt["label"] for opt in options}
+        assert labels["lst_001"] == (
+            "Beach House \u2014 123 Ocean Dr, Miami, FL 33139, US"
+        )
+        assert labels["lst_002"] == (
+            "Mountain Cabin \u2014 456 Pine Rd, Asheville, NC 28801, US"
+        )
+        assert labels["lst_003"] == ("City Apartment \u2014 No address")
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_select_listings_preselects_all_when_absent(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """T013: All listings preselected when no prior config."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        assert CONF_SELECTED_LISTINGS not in entry.options
+        _setup_api_client(hass, entry.entry_id)
+
+        result = await hass.config_entries.options.async_init(
+            entry.entry_id,
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={CONF_TAG_FILTER: []},
+        )
+        assert result["step_id"] == "select_listings"
+
+        schema = result["data_schema"]
+        assert schema is not None
+        schema_dict = schema.schema
+        selector_key = next(iter(schema_dict))
+        default = selector_key.default()
+        assert set(default) == {
+            "lst_001",
+            "lst_002",
+            "lst_003",
+        }
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_select_listings_persists_selected_ids(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """T014: Selected listing IDs saved in entry options."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        _setup_api_client(hass, entry.entry_id)
+
+        result = await _navigate_to_intervals(
+            hass,
+            entry.entry_id,
+            selected_ids=["lst_001", "lst_003"],
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input=_DEFAULT_INTERVALS,
+        )
+        assert result["type"] is FlowResultType.CREATE_ENTRY
+        assert entry.options[CONF_SELECTED_LISTINGS] == [
+            "lst_001",
+            "lst_003",
+        ]
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_select_listings_empty_selection_error(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """T015: Empty selection shows no_listings_selected."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        _setup_api_client(hass, entry.entry_id)
+
+        result = await hass.config_entries.options.async_init(
+            entry.entry_id,
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={CONF_TAG_FILTER: []},
+        )
+        assert result["step_id"] == "select_listings"
+
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={CONF_SELECTED_LISTINGS: []},
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "select_listings"
+        assert result["errors"] == {"base": "no_listings_selected"}
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_intervals_shows_defaults_and_saves(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """T016: Intervals step shows current values and saves."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        _setup_api_client(hass, entry.entry_id)
+
+        result = await _navigate_to_intervals(
+            hass,
+            entry.entry_id,
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "intervals"
+
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={
+                CONF_SCAN_INTERVAL: 20,
+                CONF_RESERVATION_SCAN_INTERVAL: 10,
+                CONF_PAST_DAYS: 14,
+                CONF_FUTURE_DAYS: 180,
+            },
+        )
+        assert result["type"] is FlowResultType.CREATE_ENTRY
+        assert entry.options[CONF_SCAN_INTERVAL] == 20
+        assert entry.options[CONF_RESERVATION_SCAN_INTERVAL] == 10
+        assert entry.options[CONF_PAST_DAYS] == 14
+        assert entry.options[CONF_FUTURE_DAYS] == 180
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_complete_three_step_flow(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """T017: Full 3-step flow produces merged options dict."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        _setup_api_client(hass, entry.entry_id)
+
+        result = await hass.config_entries.options.async_init(
+            entry.entry_id,
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={CONF_TAG_FILTER: ["premium"]},
+        )
+        assert result["step_id"] == "select_listings"
+
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={
+                CONF_SELECTED_LISTINGS: ["lst_001", "lst_002"],
+            },
+        )
+        assert result["step_id"] == "intervals"
+
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={
+                CONF_SCAN_INTERVAL: 10,
+                CONF_RESERVATION_SCAN_INTERVAL: 20,
+                CONF_PAST_DAYS: 7,
+                CONF_FUTURE_DAYS: 90,
+            },
+        )
+        assert result["type"] is FlowResultType.CREATE_ENTRY
+
+        opts = entry.options
+        assert opts[CONF_TAG_FILTER] == ["premium"]
+        assert opts[CONF_SELECTED_LISTINGS] == [
+            "lst_001",
+            "lst_002",
+        ]
+        assert opts[CONF_SCAN_INTERVAL] == 10
+        assert opts[CONF_RESERVATION_SCAN_INTERVAL] == 20
+        assert opts[CONF_PAST_DAYS] == 7
+        assert opts[CONF_FUTURE_DAYS] == 90

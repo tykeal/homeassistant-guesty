@@ -111,56 +111,56 @@ exists.
 > **NOTE: Write these tests FIRST, ensure they FAIL before implementation
 > (Constitution I)**
 
-- [ ] T010 [US1] Write test: async\_step\_init fetches listings
+- [x] T010 [US1] Write test: async\_step\_init fetches listings
       via `hass.data[DOMAIN][entry_id]["api_client"]`
       `.get_listings()` and transitions to select\_listings
       step on submit in tests/test\_config\_flow.py
-- [ ] T011 [US1] Write test: async_step_init returns cannot_connect error and
+- [x] T011 [US1] Write test: async_step_init returns cannot_connect error and
       re-displays form when API client raises GuestyApiError in
       tests/test_config_flow.py
-- [ ] T012 [US1] Write test: async_step_select_listings builds SelectSelector
+- [x] T012 [US1] Write test: async_step_select_listings builds SelectSelector
       options with label format "{title} — {formatted_address}" for each listing
       in tests/test_config_flow.py
-- [ ] T013 [US3] Write test: async_step_select_listings preselects all available
+- [x] T013 [US3] Write test: async_step_select_listings preselects all available
       listing IDs as default when CONF_SELECTED_LISTINGS is absent from
       entry.options in tests/test_config_flow.py
-- [ ] T014 [US1] Write test: async_step_select_listings persists user-selected
+- [x] T014 [US1] Write test: async_step_select_listings persists user-selected
       listing IDs via async_create_entry after completing all steps in
       tests/test_config_flow.py
-- [ ] T015 [US1] Write test: async_step_select_listings returns
+- [x] T015 [US1] Write test: async_step_select_listings returns
       no_listings_selected error when user submits empty selection in
       tests/test_config_flow.py
-- [ ] T016 [US1] Write test: async_step_intervals shows current scan_interval,
+- [x] T016 [US1] Write test: async_step_intervals shows current scan_interval,
       reservation_scan_interval, past_days, future_days defaults from
       entry.options and saves on submit in tests/test_config_flow.py
-- [ ] T017 [US1] Write test: complete 3-step flow (init → select_listings →
+- [x] T017 [US1] Write test: complete 3-step flow (init → select_listings →
       intervals) produces merged options dict containing tag_filter,
       selected_listings, scan_interval, reservation_scan_interval, past_days,
       and future_days in tests/test_config_flow.py
-- [ ] T018 [P] [US3] Write test: async_setup_entry succeeds and all coordinators
+- [x] T018 [P] [US3] Write test: async_setup_entry succeeds and all coordinators
       refresh without error when entry.options contains no
       CONF_SELECTED_LISTINGS or CONF_TAG_FILTER keys in tests/test_init.py
 
 ### Implementation for US1 + US3
 
-- [ ] T019 [US1] Implement async_step_init: show optional tag_filter field using
+- [x] T019 [US1] Implement async_step_init: show optional tag_filter field using
       TextSelector(TextSelectorConfig(multiple=True)), fetch all listings from
       API client on submit, store in self._available_listings instance variable,
       handle GuestyApiError with cannot_connect/invalid_auth/rate_limited errors
       in custom_components/guesty/config_flow.py
-- [ ] T020 [US1] Implement async_step_select_listings: build SelectOptionDict
+- [x] T020 [US1] Implement async_step_select_listings: build SelectOptionDict
       list (value=listing.id, label="{title} — {address.formatted() or 'No
       address'}"), show SelectSelector(SelectSelectorConfig(options=...,
       multiple=True, mode=SelectSelectorMode.LIST)), default to current
       selection or all IDs, validate non-empty selection in
       custom_components/guesty/config_flow.py
-- [ ] T021 [US1] Refactor existing async_step_init interval logic into new
+- [x] T021 [US1] Refactor existing async_step_init interval logic into new
       async_step_intervals: preserve vol.Schema with
       scan_interval/reservation_scan_interval/past_days/future_days fields using
       vol.Range validators, merge all step data (tag_filter + selected_listings
       + intervals) in final async_create_entry call in
       custom_components/guesty/config_flow.py
-- [ ] T022 [US1] Add flow handler instance variables (self._tag_filter,
+- [x] T022 [US1] Add flow handler instance variables (self._tag_filter,
       self._selected_listings, self._available_listings) to carry state between
       steps and add new imports (SelectSelector, SelectSelectorConfig,
       SelectSelectorMode, SelectOptionDict, TextSelector, TextSelectorConfig) in

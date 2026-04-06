@@ -25,6 +25,8 @@ from custom_components.guesty.const import (
     CONF_CLIENT_SECRET,
     CONF_RESERVATION_SCAN_INTERVAL,
     CONF_SCAN_INTERVAL,
+    CONF_SELECTED_LISTINGS,
+    CONF_TAG_FILTER,
     DEFAULT_RESERVATION_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
@@ -1415,3 +1417,42 @@ class TestEntityCleanup:
             if state.entity_id.endswith("_reservation_status")
         ]
         assert reservation_status_entities == [known_entity]
+
+
+class TestSetupEntryNoFilterOptions:
+    """Test async_setup_entry with no filter options (T018)."""
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_setup_entry_no_filter_options(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """T018: Setup succeeds with no filter options set."""
+        entry = _make_entry()
+        assert CONF_SELECTED_LISTINGS not in entry.options
+        assert CONF_TAG_FILTER not in entry.options
+
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        assert entry.state is ConfigEntryState.LOADED
+        assert DOMAIN in hass.data
+        assert entry.entry_id in hass.data[DOMAIN]
