@@ -947,7 +947,6 @@ class TestReservationsCoordinatorSetup:
         assert entry.state is ConfigEntryState.SETUP_RETRY
 
 
-
 class TestAsyncSetupEntryCustomFields:
     """Tests for custom field integration in async_setup_entry (T018)."""
 
