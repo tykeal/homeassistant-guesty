@@ -333,9 +333,9 @@ Task: "Updated exports in api/__init__.py"                T014
 
 1. Phase 1 — Custom fields client ready
    (library-extractable)
-2. Phase 2 — MVP: Set fields from HA (US1 + US2) ✅
-3. Phase 3 — Automation + discovery (US3 + US4) ✅
-4. Phase 4 — Production-grade error handling (US5) ✅
+2. Phase 2 — MVP: Set fields from HA (US1 + US2)
+3. Phase 3 — Automation + discovery (US3 + US4)
+4. Phase 4 — Production-grade error handling (US5)
 5. Each phase adds capability without breaking previous
    phases
 
