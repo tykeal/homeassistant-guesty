@@ -1129,9 +1129,10 @@ class TestEdgeCases:
                 blocking=True,
                 return_response=True,
             )
-        # Error lists available listing fields
+        # Error lists all available listing fields
         msg = str(exc_info.value)
-        assert "cf-text-001" in msg or "cf-bool-003" in msg
+        assert "cf-text-001" in msg
+        assert "cf-bool-003" in msg
 
     @patch(
         "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
