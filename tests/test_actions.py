@@ -1048,3 +1048,581 @@ class TestGetActionsClient:
             match="No Guesty config entries loaded",
         ):
             _get_actions_client(hass, fake_call)
+
+
+# ── Integration / End-to-End Tests (T035) ──────────────────────────
+
+
+class TestIntegrationEndToEnd:
+    """End-to-end tests: HA service → real client → mocked API.
+
+    These tests use the real GuestyActionsClient wired through HA
+    service handlers, with respx intercepting HTTP to Guesty.
+    """
+
+    async def test_add_note_end_to_end(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Full path: service → handler → client → API."""
+        import json as json_mod
+
+        import respx
+        from httpx import Response
+
+        from custom_components.guesty.api.const import (
+            BASE_URL,
+            RESERVATIONS_ENDPOINT,
+            TOKEN_URL,
+        )
+
+        await _setup_entry(hass)
+
+        with respx.mock:
+            respx.post(TOKEN_URL).mock(
+                return_value=Response(
+                    200,
+                    json={
+                        "token_type": "Bearer",
+                        "access_token": "test-jwt",
+                        "expires_in": 86400,
+                        "scope": "open-api",
+                    },
+                ),
+            )
+            res_path = f"{RESERVATIONS_ENDPOINT}/res-e2e"
+            respx.get(f"{BASE_URL}{res_path}").mock(
+                return_value=Response(
+                    200,
+                    json={
+                        "_id": "res-e2e",
+                        "note": "Old note",
+                    },
+                ),
+            )
+            put_route = respx.put(
+                f"{BASE_URL}{res_path}",
+            ).mock(
+                return_value=Response(
+                    200,
+                    json={"_id": "res-e2e"},
+                ),
+            )
+
+            result = await hass.services.async_call(
+                DOMAIN,
+                "add_reservation_note",
+                {
+                    "reservation_id": "res-e2e",
+                    "note_text": "New note",
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+        assert result == {
+            "success": True,
+            "target_id": "res-e2e",
+        }
+        payload = json_mod.loads(
+            put_route.calls[0].request.content,
+        )
+        assert "Old note" in payload["note"]
+        assert "New note" in payload["note"]
+
+    async def test_set_status_end_to_end(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Full path: service → handler → client → API."""
+        import json as json_mod
+
+        import respx
+        from httpx import Response
+
+        from custom_components.guesty.api.const import (
+            BASE_URL,
+            LISTINGS_ENDPOINT,
+            TOKEN_URL,
+        )
+
+        await _setup_entry(hass)
+
+        with respx.mock:
+            respx.post(TOKEN_URL).mock(
+                return_value=Response(
+                    200,
+                    json={
+                        "token_type": "Bearer",
+                        "access_token": "test-jwt",
+                        "expires_in": 86400,
+                        "scope": "open-api",
+                    },
+                ),
+            )
+            path = f"{LISTINGS_ENDPOINT}/lst-e2e"
+            put_route = respx.put(
+                f"{BASE_URL}{path}",
+            ).mock(
+                return_value=Response(
+                    200,
+                    json={
+                        "_id": "lst-e2e",
+                        "active": False,
+                    },
+                ),
+            )
+
+            result = await hass.services.async_call(
+                DOMAIN,
+                "set_listing_status",
+                {
+                    "listing_id": "lst-e2e",
+                    "status": "inactive",
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+        assert result == {
+            "success": True,
+            "target_id": "lst-e2e",
+        }
+        payload = json_mod.loads(
+            put_route.calls[0].request.content,
+        )
+        assert payload == {"active": False}
+
+    async def test_create_task_end_to_end(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Full path: service → handler → client → API."""
+        import json as json_mod
+
+        import respx
+        from httpx import Response
+
+        from custom_components.guesty.api.const import (
+            BASE_URL,
+            TASKS_ENDPOINT,
+            TOKEN_URL,
+        )
+
+        await _setup_entry(hass)
+
+        with respx.mock:
+            respx.post(TOKEN_URL).mock(
+                return_value=Response(
+                    200,
+                    json={
+                        "token_type": "Bearer",
+                        "access_token": "test-jwt",
+                        "expires_in": 86400,
+                        "scope": "open-api",
+                    },
+                ),
+            )
+            post_route = respx.post(
+                f"{BASE_URL}{TASKS_ENDPOINT}",
+            ).mock(
+                return_value=Response(
+                    201,
+                    json={
+                        "_id": "task-e2e",
+                        "listingId": "lst-e2e",
+                        "title": "E2E task",
+                    },
+                ),
+            )
+
+            result = await hass.services.async_call(
+                DOMAIN,
+                "create_task",
+                {
+                    "listing_id": "lst-e2e",
+                    "task_title": "E2E task",
+                    "description": "Full test",
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+        assert result == {
+            "success": True,
+            "target_id": "task-e2e",
+        }
+        payload = json_mod.loads(
+            post_route.calls[0].request.content,
+        )
+        assert payload["listingId"] == "lst-e2e"
+        assert payload["title"] == "E2E task"
+        assert payload["description"] == "Full test"
+
+    async def test_set_calendar_end_to_end(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Full path: service → handler → client → API."""
+        import json as json_mod
+
+        import respx
+        from httpx import Response
+
+        from custom_components.guesty.api.const import (
+            BASE_URL,
+            CALENDAR_ENDPOINT,
+            TOKEN_URL,
+        )
+
+        await _setup_entry(hass)
+
+        with respx.mock:
+            respx.post(TOKEN_URL).mock(
+                return_value=Response(
+                    200,
+                    json={
+                        "token_type": "Bearer",
+                        "access_token": "test-jwt",
+                        "expires_in": 86400,
+                        "scope": "open-api",
+                    },
+                ),
+            )
+            cal_path = CALENDAR_ENDPOINT.format(
+                listing_id="lst-e2e",
+            )
+            put_route = respx.put(
+                f"{BASE_URL}{cal_path}",
+            ).mock(
+                return_value=Response(
+                    200,
+                    json={"data": {"days": []}},
+                ),
+            )
+
+            result = await hass.services.async_call(
+                DOMAIN,
+                "set_calendar_availability",
+                {
+                    "listing_id": "lst-e2e",
+                    "start_date": "2025-08-01",
+                    "end_date": "2025-08-05",
+                    "operation": "block",
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+        assert result == {
+            "success": True,
+            "target_id": "lst-e2e",
+        }
+        payload = json_mod.loads(
+            put_route.calls[0].request.content,
+        )
+        assert payload == {
+            "dateFrom": "2025-08-01",
+            "dateTo": "2025-08-05",
+            "status": "unavailable",
+        }
+
+    async def test_update_field_end_to_end(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Full path: service → handler → client → API."""
+        import json as json_mod
+
+        import respx
+        from httpx import Response
+
+        from custom_components.guesty.api.const import (
+            BASE_URL,
+            RESERVATIONS_ENDPOINT,
+            TOKEN_URL,
+        )
+
+        await _setup_entry(hass)
+
+        with respx.mock:
+            respx.post(TOKEN_URL).mock(
+                return_value=Response(
+                    200,
+                    json={
+                        "token_type": "Bearer",
+                        "access_token": "test-jwt",
+                        "expires_in": 86400,
+                        "scope": "open-api",
+                    },
+                ),
+            )
+            res_path = f"{RESERVATIONS_ENDPOINT}/res-e2e"
+            put_route = respx.put(
+                f"{BASE_URL}{res_path}",
+            ).mock(
+                return_value=Response(
+                    200,
+                    json={"_id": "res-e2e"},
+                ),
+            )
+
+            result = await hass.services.async_call(
+                DOMAIN,
+                "update_reservation_custom_field",
+                {
+                    "reservation_id": "res-e2e",
+                    "field_id": "cf-e2e",
+                    "value": "VIP Guest",
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+        assert result == {
+            "success": True,
+            "target_id": "res-e2e",
+        }
+        payload = json_mod.loads(
+            put_route.calls[0].request.content,
+        )
+        assert payload == {
+            "customFields": {"cf-e2e": "VIP Guest"},
+        }
+
+    async def test_add_note_e2e_api_failure(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """API failure propagates as HomeAssistantError."""
+        import respx
+        from httpx import Response
+
+        from custom_components.guesty.api.const import (
+            BASE_URL,
+            RESERVATIONS_ENDPOINT,
+            TOKEN_URL,
+        )
+
+        await _setup_entry(hass)
+
+        with respx.mock:
+            respx.post(TOKEN_URL).mock(
+                return_value=Response(
+                    200,
+                    json={
+                        "token_type": "Bearer",
+                        "access_token": "test-jwt",
+                        "expires_in": 86400,
+                        "scope": "open-api",
+                    },
+                ),
+            )
+            res_path = f"{RESERVATIONS_ENDPOINT}/res-bad"
+            respx.get(f"{BASE_URL}{res_path}").mock(
+                return_value=Response(
+                    422,
+                    text="Not Found",
+                ),
+            )
+
+            with (
+                patch(
+                    "asyncio.sleep",
+                    new_callable=AsyncMock,
+                ),
+                pytest.raises(
+                    HomeAssistantError,
+                    match="Failed to fetch",
+                ),
+            ):
+                await hass.services.async_call(
+                    DOMAIN,
+                    "add_reservation_note",
+                    {
+                        "reservation_id": "res-bad",
+                        "note_text": "Test",
+                    },
+                    blocking=True,
+                    return_response=True,
+                )
+
+
+# ── Additional handler edge case tests ──────────────────────────────
+
+
+class TestHandlerEdgeCases:
+    """Edge case tests for HA service handlers."""
+
+    async def test_set_status_api_error_translated(
+        self,
+        hass: HomeAssistant,
+        mock_actions_client: AsyncMock,
+    ) -> None:
+        """GuestyApiError from set_status translated correctly."""
+        entry = await _setup_entry(hass)
+        hass.data[DOMAIN][entry.entry_id]["actions_client"] = mock_actions_client
+
+        mock_actions_client.set_listing_status.side_effect = GuestyApiError(
+            "Connection timeout"
+        )
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="Connection timeout",
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                "set_listing_status",
+                {
+                    "listing_id": "lst-001",
+                    "status": "active",
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+    async def test_create_task_value_error_translated(
+        self,
+        hass: HomeAssistant,
+        mock_actions_client: AsyncMock,
+    ) -> None:
+        """ValueError from create_task translated correctly."""
+        entry = await _setup_entry(hass)
+        hass.data[DOMAIN][entry.entry_id]["actions_client"] = mock_actions_client
+
+        mock_actions_client.create_task.side_effect = ValueError(
+            "task_title must be non-empty",
+        )
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="task_title must be non-empty",
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                "create_task",
+                {
+                    "listing_id": "lst-001",
+                    "task_title": "x",
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+    async def test_set_calendar_value_error_translated(
+        self,
+        hass: HomeAssistant,
+        mock_actions_client: AsyncMock,
+    ) -> None:
+        """ValueError from calendar op translated correctly."""
+        entry = await _setup_entry(hass)
+        hass.data[DOMAIN][entry.entry_id]["actions_client"] = mock_actions_client
+
+        mock_actions_client.set_calendar_availability.side_effect = ValueError(
+            "end_date must be >= start_date"
+        )
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="end_date must be >= start_date",
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                "set_calendar_availability",
+                {
+                    "listing_id": "lst-001",
+                    "start_date": "2025-08-05",
+                    "end_date": "2025-08-01",
+                    "operation": "block",
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+    async def test_set_calendar_api_error_translated(
+        self,
+        hass: HomeAssistant,
+        mock_actions_client: AsyncMock,
+    ) -> None:
+        """GuestyApiError from calendar op translated correctly."""
+        entry = await _setup_entry(hass)
+        hass.data[DOMAIN][entry.entry_id]["actions_client"] = mock_actions_client
+
+        mock_actions_client.set_calendar_availability.side_effect = GuestyApiError(
+            "Server error"
+        )
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="Server error",
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                "set_calendar_availability",
+                {
+                    "listing_id": "lst-001",
+                    "start_date": "2025-08-01",
+                    "end_date": "2025-08-05",
+                    "operation": "block",
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+    async def test_create_task_api_error_translated(
+        self,
+        hass: HomeAssistant,
+        mock_actions_client: AsyncMock,
+    ) -> None:
+        """GuestyApiError from create_task translated correctly."""
+        entry = await _setup_entry(hass)
+        hass.data[DOMAIN][entry.entry_id]["actions_client"] = mock_actions_client
+
+        mock_actions_client.create_task.side_effect = GuestyApiError(
+            "Rate limit exceeded"
+        )
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="Rate limit exceeded",
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                "create_task",
+                {
+                    "listing_id": "lst-001",
+                    "task_title": "Test",
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+    async def test_update_field_api_error_translated(
+        self,
+        hass: HomeAssistant,
+        mock_actions_client: AsyncMock,
+    ) -> None:
+        """GuestyApiError from update_field translated."""
+        entry = await _setup_entry(hass)
+        hass.data[DOMAIN][entry.entry_id]["actions_client"] = mock_actions_client
+
+        mock_actions_client.update_reservation_custom_field.side_effect = (
+            GuestyApiError("Network timeout")
+        )
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="Network timeout",
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                "update_reservation_custom_field",
+                {
+                    "reservation_id": "res-001",
+                    "field_id": "cf-001",
+                    "value": "test",
+                },
+                blocking=True,
+                return_response=True,
+            )
