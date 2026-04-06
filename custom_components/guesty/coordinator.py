@@ -42,6 +42,8 @@ class ListingsCoordinator(
     Attributes:
         api_client: The Guesty API client instance.
         config_entry: The integration config entry.
+        disappeared_listing_ids: IDs of listings previously present
+            but absent in the most recent successful fetch.
     """
 
     config_entry: ConfigEntry

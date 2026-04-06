@@ -327,19 +327,19 @@ class TestDisappearedListings:
             api_client=api_client,
         )
 
-        # Successful first fetch
-        data = await coordinator._async_update_data()
-        coordinator.async_set_updated_data(data)
+        # Successful first refresh through the public coordinator flow
+        await coordinator.async_refresh()
+        assert coordinator.last_update_success is True
         assert coordinator.data == {sample_listing.id: sample_listing}
 
-        # Now API fails
+        # Now API fails during a coordinator refresh
         api_client.get_listings = AsyncMock(
             side_effect=GuestyConnectionError("network down"),
         )
-        with pytest.raises(UpdateFailed):
-            await coordinator._async_update_data()
+        await coordinator.async_refresh()
 
         # DataUpdateCoordinator preserves last-known-good data
+        assert coordinator.last_update_success is False
         assert coordinator.data == {sample_listing.id: sample_listing}
 
     async def test_recovery_updates_data_after_error(
@@ -361,16 +361,16 @@ class TestDisappearedListings:
             api_client=api_client,
         )
 
-        # First fetch
-        data = await coordinator._async_update_data()
-        coordinator.async_set_updated_data(data)
+        # First successful refresh
+        await coordinator.async_refresh()
+        assert coordinator.last_update_success is True
 
-        # API error
+        # API error during refresh
         api_client.get_listings = AsyncMock(
             side_effect=GuestyConnectionError("network down"),
         )
-        with pytest.raises(UpdateFailed):
-            await coordinator._async_update_data()
+        await coordinator.async_refresh()
+        assert coordinator.last_update_success is False
 
         # Recovery with new listing
         new_listing = GuestyListing(
@@ -392,9 +392,11 @@ class TestDisappearedListings:
         api_client.get_listings = AsyncMock(
             return_value=[sample_listing, new_listing],
         )
-        data = await coordinator._async_update_data()
-        assert new_listing.id in data
-        assert sample_listing.id in data
+        await coordinator.async_refresh()
+        assert coordinator.last_update_success is True
+        assert coordinator.data is not None
+        assert new_listing.id in coordinator.data
+        assert sample_listing.id in coordinator.data
 
     async def test_disappeared_not_set_on_first_fetch(
         self,
