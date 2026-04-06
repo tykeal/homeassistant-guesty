@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 import pytest
 
 from custom_components.guesty.api.exceptions import (
+    GuestyActionError,
     GuestyApiError,
     GuestyAuthError,
     GuestyConnectionError,
@@ -225,3 +226,45 @@ class TestGuestyCustomFieldError:
         """GuestyCustomFieldError can be caught as GuestyApiError."""
         with pytest.raises(GuestyApiError):
             raise GuestyCustomFieldError("test")
+
+
+class TestGuestyActionError:
+    """Tests for the GuestyActionError exception."""
+
+    def test_inherits_from_base(self) -> None:
+        """GuestyActionError is a subclass of GuestyApiError."""
+        assert issubclass(GuestyActionError, GuestyApiError)
+
+    def test_construction_with_message_only(self) -> None:
+        """GuestyActionError stores message with None defaults."""
+        error = GuestyActionError("action failed")
+        assert error.message == "action failed"
+        assert error.target_id is None
+        assert error.action_type is None
+
+    def test_construction_with_context(self) -> None:
+        """GuestyActionError stores context attributes."""
+        error = GuestyActionError(
+            "not found",
+            target_id="res-123",
+            action_type="add_reservation_note",
+        )
+        assert error.target_id == "res-123"
+        assert error.action_type == "add_reservation_note"
+
+    def test_attributes_accessible_after_construction(self) -> None:
+        """All attributes are accessible after construction."""
+        error = GuestyActionError(
+            "test error",
+            target_id="lst-456",
+            action_type="set_listing_status",
+        )
+        assert error.message == "test error"
+        assert error.target_id == "lst-456"
+        assert error.action_type == "set_listing_status"
+        assert str(error) == "test error"
+
+    def test_caught_as_base(self) -> None:
+        """GuestyActionError can be caught as GuestyApiError."""
+        with pytest.raises(GuestyApiError):
+            raise GuestyActionError("test")

@@ -147,3 +147,36 @@ CUSTOM_FIELD_TYPES: frozenset[str] = frozenset(
 CUSTOM_FIELD_TARGETS: frozenset[str] = frozenset(
     {"listing", "reservation"},
 )
+
+# ── Action Constants ────────────────────────────────────────────────
+
+# Guesty Open API tasks endpoint path.
+TASKS_ENDPOINT: str = "/tasks-open-api/tasks"
+
+# Guesty availability/pricing calendar endpoint path.
+CALENDAR_ENDPOINT: str = "/availability-pricing/api/calendar/listings/{listing_id}"
+
+# Maximum note text length in characters.
+MAX_NOTE_LENGTH: int = 5000
+
+# Maximum task title length in characters.
+MAX_TASK_TITLE_LENGTH: int = 255
+
+# Maximum description length in characters.
+MAX_DESCRIPTION_LENGTH: int = 5000
+
+# Maximum custom field value length in characters.
+MAX_CUSTOM_FIELD_LENGTH: int = 5000
+
+# Valid listing status values for set_listing_status.
+VALID_LISTING_STATUSES: frozenset[str] = frozenset(
+    {"active", "inactive"},
+)
+
+# Valid calendar operations for set_calendar_availability.
+VALID_CALENDAR_OPS: frozenset[str] = frozenset(
+    {"block", "unblock"},
+)
+
+# Separator used when appending notes to reservations.
+NOTE_SEPARATOR: str = "\n---\n"

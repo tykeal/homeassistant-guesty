@@ -12,6 +12,7 @@ import pytest
 
 from custom_components.guesty.api.const import MAX_MESSAGE_LENGTH
 from custom_components.guesty.api.models import (
+    ActionResult,
     CachedToken,
     Conversation,
     GuestyAddress,
@@ -1657,6 +1658,74 @@ class TestGuestyCustomFieldResultFrozen:
             target_type="listing",
             target_id="lst-1",
             field_id="cf-1",
+        )
+        with pytest.raises(AttributeError):
+            result.success = False  # type: ignore[misc]
+
+
+# ── ActionResult ────────────────────────────────────────────────────
+
+
+class TestActionResult:
+    """Tests for ActionResult creation and validation."""
+
+    def test_create_with_valid_data(self) -> None:
+        """ActionResult can be created with valid parameters."""
+        result = ActionResult(
+            success=True,
+            target_id="res-001",
+        )
+        assert result.success is True
+        assert result.target_id == "res-001"
+        assert result.error is None
+
+    def test_create_with_error(self) -> None:
+        """ActionResult stores error details."""
+        result = ActionResult(
+            success=False,
+            target_id="res-001",
+            error="Something went wrong",
+        )
+        assert result.success is False
+        assert result.error == "Something went wrong"
+
+    def test_empty_target_id_raises(self) -> None:
+        """ActionResult raises ValueError for empty target_id."""
+        with pytest.raises(ValueError, match="target_id"):
+            ActionResult(success=True, target_id="")
+
+    def test_false_without_error_raises(self) -> None:
+        """ActionResult raises ValueError when False with no error."""
+        with pytest.raises(ValueError, match="error must be"):
+            ActionResult(success=False, target_id="res-001")
+
+    def test_false_with_empty_error_raises(self) -> None:
+        """ActionResult raises ValueError with empty error string."""
+        with pytest.raises(ValueError, match="error must be"):
+            ActionResult(
+                success=False,
+                target_id="res-001",
+                error="",
+            )
+
+    def test_false_with_whitespace_error_raises(self) -> None:
+        """ActionResult raises ValueError with whitespace error."""
+        with pytest.raises(ValueError, match="error must be"):
+            ActionResult(
+                success=False,
+                target_id="res-001",
+                error="   ",
+            )
+
+
+class TestActionResultFrozen:
+    """Tests for ActionResult immutability."""
+
+    def test_frozen(self) -> None:
+        """ActionResult fields cannot be modified."""
+        result = ActionResult(
+            success=True,
+            target_id="res-001",
         )
         with pytest.raises(AttributeError):
             result.success = False  # type: ignore[misc]

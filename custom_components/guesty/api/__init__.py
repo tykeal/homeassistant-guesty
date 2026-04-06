@@ -6,6 +6,7 @@ Public API surface for the Guesty API client package. All symbols
 exported here are part of the stable public interface.
 """
 
+from custom_components.guesty.api.actions import GuestyActionsClient
 from custom_components.guesty.api.auth import GuestyTokenManager
 from custom_components.guesty.api.client import GuestyApiClient
 from custom_components.guesty.api.const import (
@@ -16,6 +17,7 @@ from custom_components.guesty.api.custom_fields import (
     GuestyCustomFieldsClient,
 )
 from custom_components.guesty.api.exceptions import (
+    GuestyActionError,
     GuestyApiError,
     GuestyAuthError,
     GuestyConnectionError,
@@ -28,6 +30,7 @@ from custom_components.guesty.api.messaging import (
     GuestyMessagingClient,
 )
 from custom_components.guesty.api.models import (
+    ActionResult,
     CachedToken,
     Conversation,
     GuestyAddress,
@@ -48,8 +51,11 @@ from custom_components.guesty.api.models import (
 __all__ = [
     "BASE_URL",
     "TOKEN_URL",
+    "ActionResult",
     "CachedToken",
     "Conversation",
+    "GuestyActionError",
+    "GuestyActionsClient",
     "GuestyAddress",
     "GuestyApiClient",
     "GuestyApiError",
