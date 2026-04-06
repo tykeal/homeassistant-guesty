@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from datetime import UTC, datetime
+from types import MappingProxyType
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -2850,3 +2851,148 @@ class TestStateTransitionEvents:
         assert new_attrs["guest_phone"] == "+15550001111"
         assert new_attrs["guest_email"] == "alice@example.com"
         assert new_attrs["reservation_id"] == "r1"
+
+
+class TestReservationCustomFieldAttributes:
+    """Tests for reservation custom_fields in extra_state_attributes."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_custom_fields_in_attributes(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Reservation custom fields appear in attributes."""
+        mock_listings.return_value = [sample_listing]
+        reservation = _make_reservation(
+            res_id="res-cf",
+            status="checked_in",
+            custom_fields=MappingProxyType(
+                {"door_code": "1234", "wifi_pass": "secret"},
+            ),
+        )
+        mock_reservations.return_value = [reservation]
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        state = hass.states.get(
+            "sensor.beach_house_reservation_status",
+        )
+        assert state is not None
+        attrs = state.attributes
+        assert attrs["custom_fields"] == {
+            "door_code": "1234",
+            "wifi_pass": "secret",
+        }
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_empty_custom_fields_in_attributes(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Empty custom fields show empty dict in attributes."""
+        mock_listings.return_value = [sample_listing]
+        reservation = _make_reservation(
+            res_id="res-no-cf",
+            status="checked_in",
+        )
+        mock_reservations.return_value = [reservation]
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        state = hass.states.get(
+            "sensor.beach_house_reservation_status",
+        )
+        assert state is not None
+        attrs = state.attributes
+        assert attrs["custom_fields"] == {}
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_no_reservation_custom_fields_empty(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """No reservation shows empty custom_fields."""
+        mock_listings.return_value = [sample_listing]
+        mock_reservations.return_value = []
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        state = hass.states.get(
+            "sensor.beach_house_reservation_status",
+        )
+        assert state is not None
+        attrs = state.attributes
+        assert attrs["custom_fields"] == {}

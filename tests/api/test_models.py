@@ -1272,6 +1272,65 @@ class TestGuestyReservationFromApiDict:
         assert res.check_out.tzinfo == UTC
 
 
+class TestReservationCustomFields:
+    """Tests for GuestyReservation custom_fields parsing."""
+
+    def test_custom_fields_parsed(self) -> None:
+        """from_api_dict parses customFields into custom_fields."""
+        res = GuestyReservation.from_api_dict(
+            _make_reservation_dict(
+                customFields={"door_code": "1234", "wifi": "secret"},
+            ),
+        )
+        assert res is not None
+        assert res.custom_fields == {"door_code": "1234", "wifi": "secret"}
+
+    def test_custom_fields_coerced_to_strings(self) -> None:
+        """Custom field values are coerced to strings."""
+        res = GuestyReservation.from_api_dict(
+            _make_reservation_dict(
+                customFields={"count": 42, "ok": True},
+            ),
+        )
+        assert res is not None
+        assert res.custom_fields == {"count": "42", "ok": "True"}
+
+    def test_custom_fields_empty_when_absent(self) -> None:
+        """Missing customFields yields empty mapping."""
+        data = _make_reservation_dict()
+        data.pop("customFields", None)
+        res = GuestyReservation.from_api_dict(data)
+        assert res is not None
+        assert dict(res.custom_fields) == {}
+
+    def test_non_dict_custom_fields_yields_empty(self) -> None:
+        """Non-dict customFields degrades to empty mapping."""
+        res = GuestyReservation.from_api_dict(
+            _make_reservation_dict(customFields="not-a-dict"),
+        )
+        assert res is not None
+        assert dict(res.custom_fields) == {}
+
+    def test_custom_fields_immutable(self) -> None:
+        """custom_fields mapping cannot be mutated."""
+        res = GuestyReservation.from_api_dict(
+            _make_reservation_dict(
+                customFields={"door_code": "1234"},
+            ),
+        )
+        assert res is not None
+        with pytest.raises(TypeError):
+            res.custom_fields["new"] = "val"  # type: ignore[index]
+
+    def test_default_custom_fields_empty(self) -> None:
+        """Default custom_fields is an empty MappingProxyType."""
+        res = GuestyReservation.from_api_dict(
+            _make_reservation_dict(),
+        )
+        assert res is not None
+        assert len(res.custom_fields) == 0
+
+
 class TestGuestyReservationFrozen:
     """Tests for GuestyReservation immutability."""
 

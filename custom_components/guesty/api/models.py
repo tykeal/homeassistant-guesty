@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from typing import Any, Protocol
@@ -607,6 +607,7 @@ class GuestyReservation:
         note: Reservation notes.
         guest: Guest contact information.
         money: Financial summary.
+        custom_fields: Immutable mapping of custom name-value pairs.
     """
 
     id: str
@@ -625,6 +626,9 @@ class GuestyReservation:
     note: str | None = None
     guest: GuestyGuest | None = None
     money: GuestyMoney | None = None
+    custom_fields: MappingProxyType[str, str] = field(
+        default_factory=lambda: MappingProxyType({}),
+    )
 
     @classmethod
     def from_api_dict(
@@ -680,6 +684,11 @@ class GuestyReservation:
             )
             return None
 
+        raw_cf = data.get("customFields", {})
+        custom_fields = MappingProxyType(
+            {k: str(v) for k, v in raw_cf.items()} if isinstance(raw_cf, dict) else {},
+        )
+
         return cls(
             id=reservation_id,
             listing_id=listing_id,
@@ -697,6 +706,7 @@ class GuestyReservation:
             note=data.get("note"),
             guest=GuestyGuest.from_api_dict(data.get("guest")),
             money=GuestyMoney.from_api_dict(data.get("money")),
+            custom_fields=custom_fields,
         )
 
 
