@@ -117,3 +117,29 @@ class GuestyCustomFieldError(GuestyApiError):
         self.target_type = target_type
         self.target_id = target_id
         self.field_id = field_id
+
+
+class GuestyActionError(GuestyApiError):
+    """Action operation failure with debugging context.
+
+    Attributes:
+        target_id: The targeted resource identifier.
+        action_type: The action that failed (e.g. 'add_note').
+    """
+
+    def __init__(
+        self,
+        message: str,
+        target_id: str | None = None,
+        action_type: str | None = None,
+    ) -> None:
+        """Initialize GuestyActionError.
+
+        Args:
+            message: Human-readable error description.
+            target_id: The targeted resource identifier.
+            action_type: The action that failed.
+        """
+        super().__init__(message)
+        self.target_id = target_id
+        self.action_type = action_type

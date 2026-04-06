@@ -878,3 +878,35 @@ class GuestyCustomFieldResult:
     target_id: str
     field_id: str
     error_details: str | None = None
+
+
+# ── Action Data Models ──────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ActionResult:
+    """Outcome of a Guesty action operation.
+
+    Attributes:
+        success: Whether the action was accepted by Guesty.
+        target_id: The resource identifier that was acted upon.
+        error: Error description if the action failed.
+    """
+
+    success: bool
+    target_id: str
+    error: str | None = None
+
+    def __post_init__(self) -> None:
+        """Validate action result fields after initialization.
+
+        Raises:
+            ValueError: If target_id is empty, or if success is
+                False and error is missing or empty.
+        """
+        if not self.target_id:
+            msg = "target_id must be non-empty"
+            raise ValueError(msg)
+        if not self.success and (self.error is None or not self.error.strip()):
+            msg = "error must be provided when success is False"
+            raise ValueError(msg)
