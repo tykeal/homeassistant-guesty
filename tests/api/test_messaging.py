@@ -210,8 +210,8 @@ class TestResolveConversation:
         )
         respx.get(f"{BASE_URL}{CONVERSATIONS_PATH}").mock(
             return_value=Response(
-                500,
-                text="Internal Server Error",
+                422,
+                text="Unprocessable Entity",
             ),
         )
 
@@ -220,7 +220,7 @@ class TestResolveConversation:
             _patch("asyncio.sleep", new_callable=AsyncMock),
             pytest.raises(
                 GuestyMessageError,
-                match="HTTP 500",
+                match="HTTP 422",
             ),
         ):
             await client.resolve_conversation("res-xyz789")

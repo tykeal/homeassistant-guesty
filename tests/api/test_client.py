@@ -356,7 +356,7 @@ class TestConnectionTestFailure:
             return_value=Response(200, json=make_token_response()),
         )
         respx.get(f"{BASE_URL}/listings").mock(
-            return_value=Response(500, text="Internal Server Error"),
+            return_value=Response(422, text="Unprocessable Entity"),
         )
 
         client, _, _ = _make_client()
@@ -364,7 +364,7 @@ class TestConnectionTestFailure:
             _patch("asyncio.sleep", new_callable=AsyncMock),
             pytest.raises(
                 GuestyResponseError,
-                match="Connection test failed",
+                match="Connection test failed: status 422",
             ),
         ):
             await client.test_connection()
@@ -702,14 +702,14 @@ class TestGetListings:
             ),
         )
         respx.get(f"{BASE_URL}/listings").mock(
-            return_value=Response(500, text="Server Error"),
+            return_value=Response(422, text="Unprocessable Entity"),
         )
         client, _, _ = _make_client()
         with (
             _patch("asyncio.sleep", new_callable=AsyncMock),
             pytest.raises(
                 GuestyResponseError,
-                match="Listings fetch failed",
+                match="Listings fetch failed: status 422",
             ),
         ):
             await client.get_listings()
@@ -1227,7 +1227,7 @@ class TestGetReservations:
         """Non-success HTTP status raises GuestyResponseError."""
         _mock_token_endpoint()
         respx.get(f"{BASE_URL}/reservations").mock(
-            return_value=Response(500, text="Server Error"),
+            return_value=Response(422, text="Unprocessable Entity"),
         )
         client, _, _ = _make_client()
         with pytest.raises(
@@ -1288,6 +1288,8 @@ class TestGetReservations:
         )
         status_filter = filters[1]
         assert set(status_filter["value"]) == ACTIONABLE_STATUSES
+
+
 # ── Phase 4: Transient Failure Retry Tests (T025) ───────────────────
 
 
@@ -1545,11 +1547,11 @@ class TestTransientRetry:
     async def test_500_exhausts_retries_raises_error(
         self,
     ) -> None:
-        """Persistent 500 raises GuestyResponseError after retries."""
+        """Persistent 500 raises GuestyConnectionError after retries."""
         from unittest.mock import patch as _patch
 
         from custom_components.guesty.api.exceptions import (
-            GuestyResponseError,
+            GuestyConnectionError,
         )
 
         respx.post(TOKEN_URL).mock(
@@ -1569,8 +1571,8 @@ class TestTransientRetry:
         with (
             _patch("asyncio.sleep", new_callable=AsyncMock),
             pytest.raises(
-                GuestyResponseError,
-                match="status 500",
+                GuestyConnectionError,
+                match="after 3 retries",
             ),
         ):
             await client.test_connection()

@@ -406,7 +406,7 @@ class GuestyApiClient:
                     backoff,
                     response,
                 )
-                _LOGGER.debug(
+                _LOGGER.warning(
                     "Rate limited, retrying in %.1fs (attempt %d/%d)",
                     delay,
                     attempt + 1,
@@ -426,7 +426,10 @@ class GuestyApiClient:
 
             if _is_transient_5xx(response.status_code):
                 if attempt >= MAX_RETRIES:
-                    return response
+                    raise GuestyConnectionError(
+                        f"Server error {response.status_code} "
+                        f"after {MAX_RETRIES} retries",
+                    )
 
                 delay = _calculate_transient_backoff(backoff)
                 _LOGGER.warning(
