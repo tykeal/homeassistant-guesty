@@ -130,7 +130,7 @@ DEFAULT_PAST_DAYS: int = 30
 DEFAULT_FUTURE_DAYS: int = 365
 
 # Custom fields definitions endpoint path.
-CUSTOM_FIELDS_ENDPOINT: str = "/custom-fields"
+CUSTOM_FIELDS_ENDPOINT: str = "/properties-api/custom-fields"
 
 # Custom fields update path for listings.
 LISTING_CUSTOM_FIELDS_PATH: str = "/listings/{listing_id}/custom-fields"

@@ -254,7 +254,7 @@ async def async_setup_entry(
     try:
         await cf_coordinator.async_config_entry_first_refresh()
     except ConfigEntryNotReady as exc:
-        _LOGGER.warning(
+        _LOGGER.debug(
             "Custom field definitions unavailable; "
             "set_custom_field service will not validate "
             "field IDs until definitions load on next "
