@@ -245,6 +245,8 @@ async def async_setup_entry(
     try:
         await cf_coordinator.async_config_entry_first_refresh()
     except ConfigEntryNotReady:
+        await coordinator.async_shutdown()
+        await reservations_coordinator.async_shutdown()
         await http_client.aclose()
         raise
 
