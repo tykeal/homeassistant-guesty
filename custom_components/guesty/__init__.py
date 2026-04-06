@@ -23,6 +23,7 @@ from custom_components.guesty.api.auth import GuestyTokenManager
 from custom_components.guesty.api.client import GuestyApiClient
 from custom_components.guesty.api.const import DEFAULT_TIMEOUT
 from custom_components.guesty.api.exceptions import GuestyApiError
+from custom_components.guesty.api.messaging import GuestyMessagingClient
 from custom_components.guesty.api.models import CachedToken, TokenStorage
 from custom_components.guesty.const import (
     CONF_CLIENT_ID,
@@ -209,12 +210,15 @@ async def async_setup_entry(
         await http_client.aclose()
         raise
 
+    messaging_client = GuestyMessagingClient(api_client)
+
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {
         "http_client": http_client,
         "token_manager": token_manager,
         "api_client": api_client,
         "coordinator": coordinator,
+        "messaging_client": messaging_client,
     }
 
     async def _async_options_updated(

@@ -14,7 +14,7 @@ CONF_CLIENT_ID: str = "client_id"
 CONF_CLIENT_SECRET: str = "client_secret"
 
 # Platforms supported by this integration.
-PLATFORMS: list[Platform] = [Platform.SENSOR]
+PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.NOTIFY]
 
 # Configuration key for the polling scan interval.
 CONF_SCAN_INTERVAL: str = "scan_interval"
