@@ -23,6 +23,7 @@ from homeassistant.core import (
     SupportsResponse,
 )
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.httpx_client import get_async_client
 
 from custom_components.guesty.api.actions import GuestyActionsClient
@@ -425,6 +426,28 @@ async def async_setup_entry(
         new_selected = entry.options.get(CONF_SELECTED_LISTINGS)
         if new_selected != _prev_selected:
             _prev_selected = new_selected
+
+            # Remove devices for deselected listings before reload
+            if new_selected is not None:
+                selected_set = set(new_selected)
+                dev_registry = dr.async_get(hass)
+                devices = dr.async_entries_for_config_entry(
+                    dev_registry,
+                    entry.entry_id,
+                )
+                for device in devices:
+                    for identifier in device.identifiers:
+                        if (
+                            identifier[0] == DOMAIN
+                            and identifier[1] != entry.entry_id
+                            and identifier[1] not in selected_set
+                        ):
+                            dev_registry.async_update_device(
+                                device.id,
+                                remove_config_entry_id=entry.entry_id,
+                            )
+                            break
+
             await hass.config_entries.async_reload(entry.entry_id)
             return
 
