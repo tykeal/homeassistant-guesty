@@ -75,6 +75,9 @@ class TestTokenPersistenceAcrossRestart:
         respx.get(f"{BASE_URL}/listings").mock(
             return_value=Response(200, json={"results": []}),
         )
+        respx.get(f"{BASE_URL}/reservations").mock(
+            return_value=Response(200, json={"results": []}),
+        )
 
         entry = _entry_with_token()
         entry.add_to_hass(hass)
@@ -96,6 +99,9 @@ class TestTokenPersistenceAcrossRestart:
         respx.get(f"{BASE_URL}/listings").mock(
             return_value=Response(200, json={"results": []}),
         )
+        respx.get(f"{BASE_URL}/reservations").mock(
+            return_value=Response(200, json={"results": []}),
+        )
 
         entry = _entry_with_token(expired=True)
         entry.add_to_hass(hass)
@@ -114,6 +120,9 @@ class TestTokenPersistenceAcrossRestart:
             return_value=Response(200, json=make_token_response()),
         )
         respx.get(f"{BASE_URL}/listings").mock(
+            return_value=Response(200, json={"results": []}),
+        )
+        respx.get(f"{BASE_URL}/reservations").mock(
             return_value=Response(200, json={"results": []}),
         )
 
@@ -138,6 +147,9 @@ class TestTenRestartScenario:
             return_value=Response(200, json=make_token_response()),
         )
         respx.get(f"{BASE_URL}/listings").mock(
+            return_value=Response(200, json={"results": []}),
+        )
+        respx.get(f"{BASE_URL}/reservations").mock(
             return_value=Response(200, json={"results": []}),
         )
 

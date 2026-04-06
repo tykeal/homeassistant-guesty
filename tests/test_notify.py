@@ -337,6 +337,11 @@ class TestNotifyPlatformSetup:
     """Tests for async_setup_entry creating the entity (T011)."""
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
         return_value=[],
@@ -350,6 +355,7 @@ class TestNotifyPlatformSetup:
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """async_setup_entry registers a notify entity."""
@@ -366,6 +372,11 @@ class TestNotifyPlatformSetup:
         assert entity_ids[0].startswith("notify.")
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
         return_value=[],
@@ -379,6 +390,7 @@ class TestNotifyPlatformSetup:
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """async_setup_entry stores messaging_client in runtime data."""
@@ -391,6 +403,11 @@ class TestNotifyPlatformSetup:
         data = hass.data[DOMAIN][entry.entry_id]
         assert "messaging_client" in data
 
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
@@ -405,6 +422,7 @@ class TestNotifyPlatformSetup:
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Unloading entry removes runtime data."""
@@ -426,6 +444,11 @@ class TestAutomationCompatibility:
     """Automation dispatch and non-blocking tests (T012)."""
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
         return_value=[],
@@ -439,6 +462,7 @@ class TestAutomationCompatibility:
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """HA service call dispatches message through client."""
@@ -479,6 +503,11 @@ class TestAutomationCompatibility:
         )
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
         return_value=[],
@@ -492,6 +521,7 @@ class TestAutomationCompatibility:
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Pre-resolved HA template message is passed through."""
@@ -534,6 +564,11 @@ class TestAutomationCompatibility:
         )
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
         return_value=[],
@@ -547,6 +582,7 @@ class TestAutomationCompatibility:
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """async_send_message is non-blocking (coroutine)."""
@@ -568,6 +604,11 @@ class TestAutomationCompatibility:
         await coro
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
         return_value=[],
@@ -581,6 +622,7 @@ class TestAutomationCompatibility:
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Messaging failure raises error without crashing HA."""
@@ -708,6 +750,11 @@ class TestChannelSelection:
         )
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
         return_value=[],
@@ -721,6 +768,7 @@ class TestChannelSelection:
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Channel flows from service call through entire stack."""
@@ -891,6 +939,11 @@ class TestTemplateVariableSubstitution:
         )
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
         return_value=[],
@@ -904,6 +957,7 @@ class TestTemplateVariableSubstitution:
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """template_variables flows from service call to client."""
@@ -948,6 +1002,11 @@ class TestTemplateVariableSubstitution:
         )
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
         return_value=[],
@@ -961,6 +1020,7 @@ class TestTemplateVariableSubstitution:
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Service forwards template variables and body to client."""
