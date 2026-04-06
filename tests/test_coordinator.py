@@ -31,6 +31,7 @@ from custom_components.guesty.const import (
     CONF_CLIENT_SECRET,
     CONF_RESERVATION_SCAN_INTERVAL,
     CONF_SCAN_INTERVAL,
+    CONF_SELECTED_LISTINGS,
     DEFAULT_CF_SCAN_INTERVAL,
     DEFAULT_RESERVATION_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
@@ -207,6 +208,195 @@ class TestListingsCoordinator:
 
         data = await coordinator._async_update_data()
         assert data == {}
+
+
+class TestListingsCoordinatorFiltering:
+    """Tests for ListingsCoordinator selected-listings filtering."""
+
+    @staticmethod
+    def _models_from_dicts(
+        dicts: list[dict[str, object]],
+    ) -> list[GuestyListing]:
+        """Convert multi-listing API dicts to GuestyListing models.
+
+        Args:
+            dicts: Raw API listing dictionaries.
+
+        Returns:
+            List of parsed GuestyListing instances.
+        """
+        models: list[GuestyListing] = []
+        for d in dicts:
+            model = GuestyListing.from_api_dict(d)
+            assert model is not None
+            models.append(model)
+        return models
+
+    async def test_returns_only_selected_listings(
+        self,
+        hass: HomeAssistant,
+        multi_listing_dicts: list[dict[str, object]],
+    ) -> None:
+        """Coordinator returns only selected listings (T005).
+
+        When CONF_SELECTED_LISTINGS is set in options, only listings
+        whose IDs appear in that list are included in coordinator
+        data.
+        """
+        models = self._models_from_dicts(multi_listing_dicts)
+        selected = ["lst_miami_beach", "lst_tampa_bay"]
+
+        entry = _make_entry(
+            options={CONF_SELECTED_LISTINGS: selected},
+        )
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_listings = AsyncMock(return_value=models)
+
+        coordinator = ListingsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+        )
+
+        data = await coordinator._async_update_data()
+
+        assert set(data.keys()) == {"lst_miami_beach", "lst_tampa_bay"}
+        assert len(data) == 2
+
+    async def test_returns_all_when_selected_absent(
+        self,
+        hass: HomeAssistant,
+        multi_listing_dicts: list[dict[str, object]],
+    ) -> None:
+        """Coordinator returns all listings when option absent (T006).
+
+        When CONF_SELECTED_LISTINGS is not present in entry options
+        the coordinator must return every listing from the API
+        (backward-compatible default).
+        """
+        models = self._models_from_dicts(multi_listing_dicts)
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_listings = AsyncMock(return_value=models)
+
+        coordinator = ListingsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+        )
+
+        data = await coordinator._async_update_data()
+
+        expected_ids = {m.id for m in models}
+        assert set(data.keys()) == expected_ids
+        assert len(data) == 5
+
+    async def test_ignores_nonexistent_selected_ids(
+        self,
+        hass: HomeAssistant,
+        multi_listing_dicts: list[dict[str, object]],
+    ) -> None:
+        """Coordinator silently ignores unknown selected IDs (T007).
+
+        IDs in CONF_SELECTED_LISTINGS that do not appear in the API
+        response are silently dropped — no error is raised.
+        """
+        models = self._models_from_dicts(multi_listing_dicts)
+        selected = ["lst_miami_beach", "nonexistent_id"]
+
+        entry = _make_entry(
+            options={CONF_SELECTED_LISTINGS: selected},
+        )
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_listings = AsyncMock(return_value=models)
+
+        coordinator = ListingsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+        )
+
+        data = await coordinator._async_update_data()
+
+        assert set(data.keys()) == {"lst_miami_beach"}
+        assert len(data) == 1
+
+    async def test_empty_result_all_selected_missing(
+        self,
+        hass: HomeAssistant,
+        multi_listing_dicts: list[dict[str, object]],
+    ) -> None:
+        """Coordinator returns empty dict when all IDs missing (T008).
+
+        When every ID in CONF_SELECTED_LISTINGS is absent from the
+        API response, coordinator data is an empty dict with no error.
+        """
+        models = self._models_from_dicts(multi_listing_dicts)
+        selected = ["nonexistent1", "nonexistent2"]
+
+        entry = _make_entry(
+            options={CONF_SELECTED_LISTINGS: selected},
+        )
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_listings = AsyncMock(return_value=models)
+
+        coordinator = ListingsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+        )
+
+        data = await coordinator._async_update_data()
+
+        assert data == {}
+
+    async def test_filter_does_not_trigger_disappeared(
+        self,
+        hass: HomeAssistant,
+        multi_listing_dicts: list[dict[str, object]],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Filtering does not mark unselected listings disappeared.
+
+        Listings still present in the API but excluded by the
+        selected-listings filter must not appear in
+        ``disappeared_listing_ids`` or produce warnings.
+        """
+        models = self._models_from_dicts(multi_listing_dicts)
+        selected = ["lst_miami_beach", "lst_tampa_bay"]
+
+        entry = _make_entry(
+            options={CONF_SELECTED_LISTINGS: selected},
+        )
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_listings = AsyncMock(return_value=models)
+
+        coordinator = ListingsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+        )
+
+        # First call sets _previous_listing_ids
+        await coordinator._async_update_data()
+
+        # Second call should not mark unselected as disappeared
+        with caplog.at_level(logging.WARNING):
+            data = await coordinator._async_update_data()
+
+        assert set(data.keys()) == set(selected)
+        assert coordinator.disappeared_listing_ids == set()
+        assert not [
+            r
+            for r in caplog.records
+            if r.levelno >= logging.WARNING and "disappeared" in r.getMessage().lower()
+        ]
 
 
 class TestDisappearedListings:

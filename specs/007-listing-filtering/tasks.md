@@ -66,21 +66,21 @@ constraint).
 > **NOTE: Write these tests FIRST, ensure they FAIL before implementation
 > (Constitution I)**
 
-- [ ] T005 Write test: ListingsCoordinator._async_update_data returns only
+- [x] T005 Write test: ListingsCoordinator._async_update_data returns only
       listings whose IDs are in CONF_SELECTED_LISTINGS when option is set in
       tests/test_coordinator.py
-- [ ] T006 Write test: ListingsCoordinator._async_update_data returns all
+- [x] T006 Write test: ListingsCoordinator._async_update_data returns all
       listings when CONF_SELECTED_LISTINGS is absent from entry.options
       (backward compatible default) in tests/test_coordinator.py
-- [ ] T007 Write test: ListingsCoordinator silently ignores listing IDs in
+- [x] T007 Write test: ListingsCoordinator silently ignores listing IDs in
       CONF_SELECTED_LISTINGS not present in the API response in
       tests/test_coordinator.py
-- [ ] T008 Write test: empty result set returned when CONF_SELECTED_LISTINGS
+- [x] T008 Write test: empty result set returned when CONF_SELECTED_LISTINGS
       contains only IDs not in API response in tests/test_coordinator.py
 
 ### Implementation
 
-- [ ] T009 Implement selected_listings filter in
+- [x] T009 Implement selected_listings filter in
       ListingsCoordinator._async_update_data: read CONF_SELECTED_LISTINGS from
       config_entry.options, when not None filter returned dict to only include
       matching IDs, when None return all listings unchanged in
