@@ -93,6 +93,15 @@
             },
             "reservation_status": {
                 "name": "Reservation status"
+            },
+            "reservation_total": {
+                "name": "Reservation total"
+            },
+            "reservation_balance": {
+                "name": "Reservation balance"
+            },
+            "reservation_currency": {
+                "name": "Reservation currency"
             }
         }
     }
