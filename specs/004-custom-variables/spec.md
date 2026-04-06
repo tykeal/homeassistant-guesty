@@ -47,27 +47,34 @@ and a value, then verifying the field is updated in Guesty.
 Delivers the ability to push Home Assistant data into Guesty for
 use in Guesty workflows.
 
+> **Service behavior**: The custom field service is
+> response-capable. On success, it returns a structured response
+> confirming the update (target, field, and outcome). On failure,
+> the service raises a clear error that automations and scripts
+> can detect through standard error handling mechanisms.
+
 **Acceptance Scenarios**:
 
 1. **Given** the Guesty integration is configured and authenticated,
    **When** the user calls the custom field service specifying
    "listing" as the target type, a valid listing identifier, a
    valid custom field identifier, and a text value, **Then** the
-   custom field is updated on the listing in Guesty and a success
-   confirmation is returned.
+   custom field is updated on the listing in Guesty and the
+   service returns a structured success response confirming the
+   update.
 2. **Given** the integration is configured, **When** the user calls
    the service targeting a listing with a custom field identifier
    that does not exist on the target listing, **Then** the service
-   returns a clear error identifying the invalid field.
+   raises a clear error identifying the invalid field.
 3. **Given** the integration is configured, **When** the user calls
    the service targeting a listing with a value that does not match
    the custom field's expected type (e.g., text for a numeric
-   field), **Then** the service returns a clear validation error
+   field), **Then** the service raises a clear validation error
    before sending the request to Guesty.
 4. **Given** the integration is configured, **When** the user calls
    the service without a required parameter (target type, target
    identifier, field identifier, or value), **Then** the service
-   returns a clear error identifying the missing parameter.
+   raises a clear error identifying the missing parameter.
 
 ---
 
@@ -99,10 +106,10 @@ the reservation in Guesty.
    the custom field service specifying "reservation" as the target
    type, a valid reservation identifier, field identifier, and
    value, **Then** the custom field is updated on the reservation
-   in Guesty and a success confirmation is returned.
+   in Guesty and the service returns a structured success response.
 2. **Given** a reservation identifier that does not exist in Guesty,
    **When** the user calls the service targeting that reservation,
-   **Then** the service returns a clear error indicating the
+   **Then** the service raises a clear error indicating the
    reservation was not found.
 3. **Given** a reservation has already ended (guest checked out),
    **When** the user attempts to update a custom field on that
@@ -272,8 +279,10 @@ validation errors, retries, and error messages.
 ### Functional Requirements
 
 - **FR-001**: The integration MUST register a service that accepts
-  a target type (listing or reservation), a target identifier, a
-  custom field identifier, and a value to set.
+  a target type (listing or reservation), a target identifier
+  (the Guesty-assigned unique identifier for the listing or
+  reservation), a custom field identifier (the Guesty-assigned
+  field ID), and a value to set.
 - **FR-002**: The service MUST support updating custom fields on
   listings using the listing identifier and custom field
   identifier.
@@ -290,6 +299,12 @@ validation errors, retries, and error messages.
 - **FR-006**: The service MUST return a clear, actionable error
   when Guesty rejects the update (invalid field, invalid target,
   type mismatch, permission error).
+- **FR-006a**: On successful update, the service MUST return a
+  structured response containing the target type, target
+  identifier, field identifier, and confirmation of the update.
+- **FR-006b**: On failure, the service MUST raise an error rather
+  than returning a silent failure, enabling automations and
+  scripts to detect and handle errors through standard mechanisms.
 - **FR-007**: The service MUST be compatible with Home Assistant
   automations and scripts, supporting standard service call
   patterns including template rendering for dynamic values.
