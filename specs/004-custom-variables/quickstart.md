@@ -16,7 +16,7 @@ SPDX-License-Identifier: Apache-2.0
 
   ```bash
   cd guesty
-  uv sync
+  uv sync --all-extras --group dev
   ```
 
 - Features 001 (Auth & Config Flow), 002 (Listings), and 003

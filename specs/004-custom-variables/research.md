@@ -102,8 +102,10 @@ maintaining backward compatibility with fire-and-forget calls.
 vol.Schema({
     vol.Required("target_type"): vol.In({"listing",
                                           "reservation"}),
-    vol.Required("target_id"): cv.string,
-    vol.Required("field_id"): cv.string,
+    vol.Required("target_id"): vol.All(cv.string,
+                                        vol.Length(min=1)),
+    vol.Required("field_id"): vol.All(cv.string,
+                                       vol.Length(min=1)),
     vol.Required("value"): vol.Any(str, int, float, bool),
 })
 ```
