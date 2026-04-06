@@ -36,11 +36,13 @@ from custom_components.guesty.api.exceptions import (
 from custom_components.guesty.api.messaging import GuestyMessagingClient
 from custom_components.guesty.api.models import CachedToken, TokenStorage
 from custom_components.guesty.const import (
+    CONF_CF_SCAN_INTERVAL,
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
     CONF_RESERVATION_SCAN_INTERVAL,
     CONF_SCAN_INTERVAL,
     CONF_SELECTED_LISTINGS,
+    DEFAULT_CF_SCAN_INTERVAL,
     DEFAULT_RESERVATION_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
@@ -386,6 +388,20 @@ async def async_setup_entry(
         )
 
     _prev_selected = entry.options.get(CONF_SELECTED_LISTINGS)
+    _prev_intervals: dict[str, int] = {
+        CONF_SCAN_INTERVAL: entry.options.get(
+            CONF_SCAN_INTERVAL,
+            DEFAULT_SCAN_INTERVAL,
+        ),
+        CONF_RESERVATION_SCAN_INTERVAL: entry.options.get(
+            CONF_RESERVATION_SCAN_INTERVAL,
+            DEFAULT_RESERVATION_SCAN_INTERVAL,
+        ),
+        CONF_CF_SCAN_INTERVAL: entry.options.get(
+            CONF_CF_SCAN_INTERVAL,
+            DEFAULT_CF_SCAN_INTERVAL,
+        ),
+    }
 
     async def _async_options_updated(
         hass: HomeAssistant,
@@ -396,13 +412,15 @@ async def async_setup_entry(
         When the selected-listings filter changes, reloads the
         config entry so that all entities and devices are cleanly
         torn down and recreated with the new filter.  When only
-        polling intervals change, updates coordinators in place.
+        polling intervals change, updates coordinators in place
+        and triggers an immediate refresh.  When nothing changes,
+        no action is taken.
 
         Args:
             hass: Home Assistant instance.
             entry: The config entry that was updated.
         """
-        nonlocal _prev_selected
+        nonlocal _prev_selected, _prev_intervals
 
         new_selected = entry.options.get(CONF_SELECTED_LISTINGS)
         if new_selected != _prev_selected:
@@ -412,32 +430,39 @@ async def async_setup_entry(
 
         from datetime import timedelta
 
-        interval = entry.options.get(
-            CONF_SCAN_INTERVAL,
-            DEFAULT_SCAN_INTERVAL,
-        )
-        coordinator.update_interval = timedelta(minutes=interval)
+        new_intervals = {
+            CONF_SCAN_INTERVAL: entry.options.get(
+                CONF_SCAN_INTERVAL,
+                DEFAULT_SCAN_INTERVAL,
+            ),
+            CONF_RESERVATION_SCAN_INTERVAL: entry.options.get(
+                CONF_RESERVATION_SCAN_INTERVAL,
+                DEFAULT_RESERVATION_SCAN_INTERVAL,
+            ),
+            CONF_CF_SCAN_INTERVAL: entry.options.get(
+                CONF_CF_SCAN_INTERVAL,
+                DEFAULT_CF_SCAN_INTERVAL,
+            ),
+        }
 
-        res_interval = entry.options.get(
-            CONF_RESERVATION_SCAN_INTERVAL,
-            DEFAULT_RESERVATION_SCAN_INTERVAL,
+        if new_intervals == _prev_intervals:
+            return
+
+        _prev_intervals = new_intervals
+
+        coordinator.update_interval = timedelta(
+            minutes=new_intervals[CONF_SCAN_INTERVAL],
         )
         reservations_coordinator.update_interval = timedelta(
-            minutes=res_interval,
-        )
-
-        from custom_components.guesty.const import (
-            CONF_CF_SCAN_INTERVAL,
-            DEFAULT_CF_SCAN_INTERVAL,
-        )
-
-        cf_interval = entry.options.get(
-            CONF_CF_SCAN_INTERVAL,
-            DEFAULT_CF_SCAN_INTERVAL,
+            minutes=new_intervals[CONF_RESERVATION_SCAN_INTERVAL],
         )
         cf_coordinator.update_interval = timedelta(
-            minutes=cf_interval,
+            minutes=new_intervals[CONF_CF_SCAN_INTERVAL],
         )
+
+        await coordinator.async_request_refresh()
+        await reservations_coordinator.async_request_refresh()
+        await cf_coordinator.async_request_refresh()
 
     entry.async_on_unload(
         entry.add_update_listener(_async_options_updated),
