@@ -380,7 +380,7 @@ def _build_attributes(
         }
 
     guest = reservation.guest
-    upcoming = _build_upcoming(all_reservations, reservation)
+    upcoming = _build_upcoming(all_reservations)
 
     return {
         "reservation_id": reservation.id,
@@ -404,17 +404,15 @@ def _build_attributes(
 
 def _build_upcoming(
     reservations: list[GuestyReservation],
-    selected: GuestyReservation,
 ) -> list[dict[str, Any]]:
     """Build upcoming reservations list, limited to 10 (FR-009).
 
-    Excludes the currently selected reservation and only includes
-    reservations with ``confirmed`` or ``checked_in`` status
-    (i.e., actually upcoming or active, not past).
+    Includes all reservations with ``confirmed`` or ``checked_in``
+    status (i.e., actually upcoming or active, not past), including
+    the currently selected reservation.
 
     Args:
         reservations: All reservations for this listing.
-        selected: The currently selected reservation.
 
     Returns:
         List of upcoming reservation summary dicts.
@@ -422,8 +420,6 @@ def _build_upcoming(
     _UPCOMING_STATUSES = {"confirmed", "checked_in"}
     upcoming: list[dict[str, Any]] = []
     for res in reservations:
-        if res.id == selected.id:
-            continue
         if res.status not in _UPCOMING_STATUSES:
             continue
         upcoming.append(

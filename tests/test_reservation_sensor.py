@@ -971,9 +971,10 @@ class TestGuestInformation:
         )
         assert state is not None
         upcoming = state.attributes["upcoming_reservations"]
-        assert len(upcoming) == 2
-        assert upcoming[0]["guest_name"] == "Future Guest"
-        assert upcoming[1]["guest_name"] is None
+        assert len(upcoming) == 3
+        assert upcoming[0]["guest_name"] == "Current Guest"
+        assert upcoming[1]["guest_name"] == "Future Guest"
+        assert upcoming[2]["guest_name"] is None
 
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
@@ -2098,7 +2099,7 @@ class TestEdgeCaseSameDayTurnover:
         hass: HomeAssistant,
         sample_listing: object,
     ) -> None:
-        """Same-day turnover puts non-selected in upcoming."""
+        """Same-day turnover includes all confirmed/checked_in."""
         mock_listings.return_value = [sample_listing]
         reservations = [
             _make_reservation(
@@ -2127,9 +2128,11 @@ class TestEdgeCaseSameDayTurnover:
         assert state is not None
         assert state.state == "checked_in"
         upcoming = state.attributes["upcoming_reservations"]
-        assert len(upcoming) == 1
-        assert upcoming[0]["reservation_id"] == "r-next"
-        assert upcoming[0]["status"] == "confirmed"
+        assert len(upcoming) == 2
+        assert upcoming[0]["reservation_id"] == "r-active"
+        assert upcoming[0]["status"] == "checked_in"
+        assert upcoming[1]["reservation_id"] == "r-next"
+        assert upcoming[1]["status"] == "confirmed"
 
 
 class TestEdgeCaseMissingOptionalFields:
@@ -2410,9 +2413,10 @@ class TestEdgeCaseSingleListingReservations:
         # confirmed has higher priority than checked_out
         assert state.state == "awaiting_checkin"
         upcoming = state.attributes["upcoming_reservations"]
-        # Both confirmed reservations; the other is in upcoming
-        assert len(upcoming) == 1
-        assert upcoming[0]["reservation_id"] == "r-future"
+        # Both confirmed reservations now included
+        assert len(upcoming) == 2
+        assert upcoming[0]["reservation_id"] == "r-active"
+        assert upcoming[1]["reservation_id"] == "r-future"
 
 
 class TestStateTransitionEvents:
