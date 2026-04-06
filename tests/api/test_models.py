@@ -434,6 +434,10 @@ class TestGuestyAddressFromApiDict:
         """from_api_dict returns None when input is empty dict."""
         assert GuestyAddress.from_api_dict({}) is None
 
+    def test_non_dict_truthy_returns_none(self) -> None:
+        """from_api_dict returns None for non-dict truthy value."""
+        assert GuestyAddress.from_api_dict("123 Main St") is None  # type: ignore[arg-type]
+
 
 class TestGuestyAddressFormatted:
     """Tests for GuestyAddress.formatted method."""
@@ -640,6 +644,22 @@ class TestGuestyListingDefaults:
         """Missing timezone defaults to UTC."""
         data = _make_listing_dict()
         del data["timezone"]
+        listing = GuestyListing.from_api_dict(data)
+        assert listing is not None
+        assert listing.timezone == "UTC"
+
+    def test_null_timezone_defaults_to_utc(self) -> None:
+        """Null timezone defaults to UTC."""
+        data = _make_listing_dict()
+        data["timezone"] = None
+        listing = GuestyListing.from_api_dict(data)
+        assert listing is not None
+        assert listing.timezone == "UTC"
+
+    def test_empty_string_timezone_defaults_to_utc(self) -> None:
+        """Empty string timezone defaults to UTC."""
+        data = _make_listing_dict()
+        data["timezone"] = ""
         listing = GuestyListing.from_api_dict(data)
         assert listing is not None
         assert listing.timezone == "UTC"

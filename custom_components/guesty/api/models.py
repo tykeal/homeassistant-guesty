@@ -309,10 +309,10 @@ class GuestyAddress:
             data: Address dictionary from the API, or None.
 
         Returns:
-            A GuestyAddress instance, or None if input is None
-            or empty.
+            A GuestyAddress instance, or None if input is None,
+            empty, or not a dict.
         """
-        if not data:
+        if not data or not isinstance(data, dict):
             return None
         return cls(
             full=data.get("full"),
@@ -413,7 +413,7 @@ class GuestyListing:
             room_type=data.get("roomType"),
             bedrooms=data.get("numberOfBedrooms"),
             bathrooms=data.get("numberOfBathrooms"),
-            timezone=data.get("timezone", "UTC"),
+            timezone=data.get("timezone") or "UTC",
             check_in_time=data.get("defaultCheckInTime"),
             check_out_time=data.get("defaultCheckoutTime"),
             tags=tags,
