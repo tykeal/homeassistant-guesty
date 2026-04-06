@@ -122,7 +122,7 @@ class GuestyNotifyEntity(NotifyEntity):
                 "Message delivery failed for reservation '%s': %s",
                 title,
                 exc,
-                exc_info=exc,
+                exc_info=True,
             )
             raise HomeAssistantError(str(exc)) from exc
         except ValueError as exc:
