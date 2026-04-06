@@ -23,6 +23,7 @@ from homeassistant.core import (
     SupportsResponse,
 )
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.httpx_client import get_async_client
 
 from custom_components.guesty.api.actions import GuestyActionsClient
@@ -40,6 +41,7 @@ from custom_components.guesty.const import (
     CONF_CLIENT_SECRET,
     CONF_RESERVATION_SCAN_INTERVAL,
     CONF_SCAN_INTERVAL,
+    CONF_SELECTED_LISTINGS,
     DEFAULT_RESERVATION_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
@@ -175,6 +177,40 @@ class HATokenStorage:
 # Verify protocol compliance at type-check time only
 if TYPE_CHECKING:
     _check: TokenStorage = HATokenStorage.__new__(HATokenStorage)
+
+
+def _remove_deselected_devices(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    selected_ids: set[str],
+) -> None:
+    """Remove devices for listings no longer in the selected set.
+
+    Iterates devices registered to this config entry, extracts
+    listing IDs from device identifiers, and removes any device
+    whose listing ID is not in *selected_ids*.
+
+    Args:
+        hass: Home Assistant instance.
+        entry: The config entry owning the devices.
+        selected_ids: Listing IDs that should remain.
+    """
+    dev_registry = dr.async_get(hass)
+    for device in dr.async_entries_for_config_entry(
+        dev_registry,
+        entry.entry_id,
+    ):
+        for identifier in device.identifiers:
+            if (
+                identifier[0] == DOMAIN
+                and identifier[1] != entry.entry_id
+                and identifier[1] not in selected_ids
+            ):
+                dev_registry.async_update_device(
+                    device.id,
+                    remove_config_entry_id=entry.entry_id,
+                )
+                break
 
 
 async def async_setup_entry(
@@ -390,10 +426,21 @@ async def async_setup_entry(
     ) -> None:
         """Handle options update by reconfiguring coordinators.
 
+        Removes devices for deselected listings and updates
+        coordinator polling intervals.
+
         Args:
             hass: Home Assistant instance.
             entry: The config entry that was updated.
         """
+        selected = entry.options.get(CONF_SELECTED_LISTINGS)
+        if selected is not None:
+            _remove_deselected_devices(
+                hass,
+                entry,
+                set(selected),
+            )
+
         from datetime import timedelta
 
         interval = entry.options.get(

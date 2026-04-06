@@ -1423,3 +1423,109 @@ class TestCustomFieldSensors:
         ]
         assert len(custom_sensors) == 1
         assert custom_sensors[0].entity_description.key == "custom_pool_type"
+
+
+class TestReaddedListingRecreatesEntities:
+    """Test re-added listing recreates device and sensors (T034)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
+    async def test_readded_listing_recreates_sensors(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """T034: Re-selecting listing recreates its sensors."""
+        listing_b = GuestyListing(
+            id="listing-002",
+            title="Mountain Cabin",
+            nickname="cabin",
+            status="active",
+            address=None,
+            property_type="house",
+            room_type="entire_home",
+            listing_type="SINGLE",
+            bedrooms=3,
+            bathrooms=2.0,
+            accommodates=6,
+            timezone="America/Denver",
+            check_in_time="16:00",
+            check_out_time="10:00",
+            tags=(),
+            custom_fields=MappingProxyType({}),
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        # Start with only listing_a (listing_b deselected)
+        coordinator.data = {sample_listing.id: sample_listing}
+        coordinator.async_add_listener = MagicMock(
+            return_value=MagicMock(),
+        )
+
+        res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        res_coordinator.data = {}
+        res_coordinator.last_update_success = True
+        res_coordinator.async_add_listener = MagicMock(
+            return_value=MagicMock(),
+        )
+
+        hass.data.setdefault(DOMAIN, {})
+        hass.data[DOMAIN][entry.entry_id] = {
+            "coordinator": coordinator,
+            "reservations_coordinator": res_coordinator,
+        }
+
+        added_entities: list[Entity] = []
+
+        def mock_add_entities(
+            new_entities: Iterable[Entity],
+            update_before_add: bool = False,
+        ) -> None:
+            """Capture entities added by the platform.
+
+            Args:
+                new_entities: Entities to add.
+                update_before_add: Whether to update first.
+            """
+            added_entities.extend(list(new_entities))
+
+        await async_setup_entry(hass, entry, mock_add_entities)
+        initial_count = len(added_entities)
+
+        # Verify only listing_a sensors exist
+        ids_before = {
+            e.unique_id
+            for e in added_entities
+            if hasattr(e, "unique_id") and e.unique_id
+        }
+        assert any(sample_listing.id in uid for uid in ids_before)
+        assert not any("listing-002" in uid for uid in ids_before)
+
+        # Simulate re-adding listing_b (coordinator refresh)
+        coordinator.data = {
+            sample_listing.id: sample_listing,
+            listing_b.id: listing_b,
+        }
+
+        listener_call = coordinator.async_add_listener.call_args
+        assert listener_call is not None
+        listener_fn = listener_call[0][0]
+        listener_fn()
+
+        new_entities = added_entities[initial_count:]
+        assert len(new_entities) > 0
+        new_ids = {
+            e.unique_id for e in new_entities if hasattr(e, "unique_id") and e.unique_id
+        }
+        assert any("listing-002" in uid for uid in new_ids)
