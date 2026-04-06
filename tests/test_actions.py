@@ -1492,12 +1492,12 @@ class TestHandlerEdgeCases:
         hass.data[DOMAIN][entry.entry_id]["actions_client"] = mock_actions_client
 
         mock_actions_client.create_task.side_effect = ValueError(
-            "task_title must be non-empty",
+            "task_title exceeds maximum length of 255 characters",
         )
 
         with pytest.raises(
             HomeAssistantError,
-            match="task_title must be non-empty",
+            match="task_title exceeds maximum length",
         ):
             await hass.services.async_call(
                 DOMAIN,
