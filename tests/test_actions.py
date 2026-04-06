@@ -1130,7 +1130,7 @@ class TestIntegrationEndToEnd:
         assert "Old note" in payload["note"]
         assert "New note" in payload["note"]
 
-    async def test_set_status_end_to_end(
+    async def test_set_listing_status_end_to_end(
         self,
         hass: HomeAssistant,
     ) -> None:
@@ -1327,7 +1327,7 @@ class TestIntegrationEndToEnd:
             "status": "unavailable",
         }
 
-    async def test_update_field_end_to_end(
+    async def test_update_custom_field_end_to_end(
         self,
         hass: HomeAssistant,
     ) -> None:
@@ -1454,7 +1454,7 @@ class TestIntegrationEndToEnd:
 class TestHandlerEdgeCases:
     """Edge case tests for HA service handlers."""
 
-    async def test_set_status_api_error_translated(
+    async def test_set_listing_status_api_error(
         self,
         hass: HomeAssistant,
         mock_actions_client: AsyncMock,
@@ -1598,7 +1598,7 @@ class TestHandlerEdgeCases:
                 return_response=True,
             )
 
-    async def test_update_field_api_error_translated(
+    async def test_update_custom_field_api_error(
         self,
         hass: HomeAssistant,
         mock_actions_client: AsyncMock,
