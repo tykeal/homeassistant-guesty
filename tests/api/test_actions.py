@@ -5,7 +5,8 @@
 from __future__ import annotations
 
 import asyncio
-import json as json_mod
+import json
+from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock
 
 import httpx
@@ -31,16 +32,21 @@ from custom_components.guesty.api.const import (
 )
 from custom_components.guesty.api.exceptions import (
     GuestyActionError,
+    GuestyAuthError,
+    GuestyRateLimitError,
     GuestyResponseError,
 )
 from custom_components.guesty.api.models import ActionResult
 from tests.conftest import FakeTokenStorage, make_token_response
 
 
-def _make_actions_client() -> GuestyActionsClient:
-    """Create a GuestyActionsClient with test defaults.
+@pytest.fixture
+async def actions_client() -> AsyncGenerator[GuestyActionsClient]:
+    """Yield a GuestyActionsClient with proper HTTP cleanup.
 
-    Returns:
+    Creates a real httpx.AsyncClient and closes it in teardown.
+
+    Yields:
         A GuestyActionsClient backed by test fakes.
     """
     storage = FakeTokenStorage()
@@ -56,7 +62,8 @@ def _make_actions_client() -> GuestyActionsClient:
         token_manager=token_manager,
         http_client=http,
     )
-    return GuestyActionsClient(api_client)
+    yield GuestyActionsClient(api_client)
+    await http.aclose()
 
 
 # ── add_reservation_note tests ──────────────────────────────────────
@@ -66,7 +73,10 @@ class TestAddReservationNote:
     """Tests for add_reservation_note."""
 
     @respx.mock
-    async def test_appends_note_to_existing(self) -> None:
+    async def test_appends_note_to_existing(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Appends new text to existing note with separator."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(
@@ -88,7 +98,7 @@ class TestAddReservationNote:
             ),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         result = await client.add_reservation_note(
             "res-001",
             "New note",
@@ -98,13 +108,15 @@ class TestAddReservationNote:
         assert result.success is True
         assert result.target_id == "res-001"
         body = put_route.calls[0].request.content
-        import json
 
         payload = json.loads(body)
         assert payload["note"] == f"Existing{NOTE_SEPARATOR}New note"
 
     @respx.mock
-    async def test_sets_note_when_empty(self) -> None:
+    async def test_sets_note_when_empty(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Sets note directly when existing note is empty."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(
@@ -126,20 +138,22 @@ class TestAddReservationNote:
             ),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         result = await client.add_reservation_note(
             "res-001",
             "New note",
         )
 
         assert result.success is True
-        import json
 
         payload = json.loads(put_route.calls[0].request.content)
         assert payload["note"] == "New note"
 
     @respx.mock
-    async def test_sets_note_when_null(self) -> None:
+    async def test_sets_note_when_null(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Sets note directly when existing note is null."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(
@@ -161,20 +175,22 @@ class TestAddReservationNote:
             ),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         result = await client.add_reservation_note(
             "res-001",
             "First note",
         )
 
         assert result.success is True
-        import json
 
         payload = json.loads(put_route.calls[0].request.content)
         assert payload["note"] == "First note"
 
     @respx.mock
-    async def test_sets_note_when_key_missing(self) -> None:
+    async def test_sets_note_when_key_missing(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Sets note directly when note key is absent."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(
@@ -196,7 +212,7 @@ class TestAddReservationNote:
             ),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         result = await client.add_reservation_note(
             "res-001",
             "First note",
@@ -204,27 +220,39 @@ class TestAddReservationNote:
 
         assert result.success is True
 
-    async def test_empty_reservation_id_raises(self) -> None:
+    async def test_empty_reservation_id_raises(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Empty reservation_id raises ValueError."""
-        client = _make_actions_client()
+        client = actions_client
         with pytest.raises(ValueError, match="reservation_id"):
             await client.add_reservation_note("", "note text")
 
-    async def test_empty_note_text_raises(self) -> None:
+    async def test_empty_note_text_raises(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Empty note_text raises ValueError."""
-        client = _make_actions_client()
+        client = actions_client
         with pytest.raises(ValueError, match="note_text"):
             await client.add_reservation_note("res-001", "")
 
-    async def test_note_too_long_raises(self) -> None:
+    async def test_note_too_long_raises(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Note exceeding MAX_NOTE_LENGTH raises ValueError."""
-        client = _make_actions_client()
+        client = actions_client
         long_note = "x" * (MAX_NOTE_LENGTH + 1)
         with pytest.raises(ValueError, match="maximum length"):
             await client.add_reservation_note("res-001", long_note)
 
     @respx.mock
-    async def test_get_failure_raises_action_error(self) -> None:
+    async def test_get_failure_raises_action_error(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """GET failure raises GuestyActionError."""
         from unittest.mock import patch as _patch
 
@@ -239,7 +267,7 @@ class TestAddReservationNote:
             return_value=Response(422, text="Not Found"),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         with (
             _patch("asyncio.sleep", new_callable=AsyncMock),
             pytest.raises(
@@ -253,7 +281,10 @@ class TestAddReservationNote:
         assert exc_info.value.action_type == "add_reservation_note"
 
     @respx.mock
-    async def test_get_invalid_json_raises(self) -> None:
+    async def test_get_invalid_json_raises(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Non-JSON GET response raises GuestyResponseError."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(
@@ -266,7 +297,7 @@ class TestAddReservationNote:
             return_value=Response(200, text="not json"),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         with pytest.raises(
             GuestyResponseError,
             match="not valid JSON",
@@ -274,7 +305,10 @@ class TestAddReservationNote:
             await client.add_reservation_note("res-001", "note")
 
     @respx.mock
-    async def test_get_non_dict_json_raises(self) -> None:
+    async def test_get_non_dict_json_raises(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Non-dict JSON response raises GuestyResponseError."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(
@@ -287,7 +321,7 @@ class TestAddReservationNote:
             return_value=Response(200, json=["not", "a", "dict"]),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         with pytest.raises(
             GuestyResponseError,
             match="must be a JSON object",
@@ -295,7 +329,10 @@ class TestAddReservationNote:
             await client.add_reservation_note("res-001", "note")
 
     @respx.mock
-    async def test_put_failure_raises_action_error(self) -> None:
+    async def test_put_failure_raises_action_error(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """PUT failure raises GuestyActionError."""
         from unittest.mock import patch as _patch
 
@@ -316,7 +353,7 @@ class TestAddReservationNote:
             return_value=Response(422, text="Unprocessable"),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         with (
             _patch("asyncio.sleep", new_callable=AsyncMock),
             pytest.raises(
@@ -336,7 +373,10 @@ class TestSetListingStatus:
     """Tests for set_listing_status."""
 
     @respx.mock
-    async def test_activate_listing(self) -> None:
+    async def test_activate_listing(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Activating sends active=True, listed=True."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(
@@ -356,7 +396,7 @@ class TestSetListingStatus:
             ),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         result = await client.set_listing_status(
             "lst-001",
             "active",
@@ -365,13 +405,15 @@ class TestSetListingStatus:
         assert isinstance(result, ActionResult)
         assert result.success is True
         assert result.target_id == "lst-001"
-        import json
 
         payload = json.loads(put_route.calls[0].request.content)
         assert payload == {"active": True, "listed": True}
 
     @respx.mock
-    async def test_deactivate_listing(self) -> None:
+    async def test_deactivate_listing(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Deactivating sends active=False."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(
@@ -387,32 +429,40 @@ class TestSetListingStatus:
             ),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         result = await client.set_listing_status(
             "lst-001",
             "inactive",
         )
 
         assert result.success is True
-        import json
 
         payload = json.loads(put_route.calls[0].request.content)
         assert payload == {"active": False}
 
-    async def test_empty_listing_id_raises(self) -> None:
+    async def test_empty_listing_id_raises(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Empty listing_id raises ValueError."""
-        client = _make_actions_client()
+        client = actions_client
         with pytest.raises(ValueError, match="listing_id"):
             await client.set_listing_status("", "active")
 
-    async def test_invalid_status_raises(self) -> None:
+    async def test_invalid_status_raises(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Invalid status raises ValueError."""
-        client = _make_actions_client()
+        client = actions_client
         with pytest.raises(ValueError, match="invalid status"):
             await client.set_listing_status("lst-001", "archived")
 
     @respx.mock
-    async def test_api_failure_raises_action_error(self) -> None:
+    async def test_api_failure_raises_action_error(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Non-2xx response raises GuestyActionError."""
         from unittest.mock import patch as _patch
 
@@ -427,7 +477,7 @@ class TestSetListingStatus:
             return_value=Response(422, text="Not Found"),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         with (
             _patch("asyncio.sleep", new_callable=AsyncMock),
             pytest.raises(
@@ -448,7 +498,10 @@ class TestCreateTask:
     """Tests for create_task."""
 
     @respx.mock
-    async def test_minimal_task_creation(self) -> None:
+    async def test_minimal_task_creation(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Creates task with required fields only."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(
@@ -467,7 +520,7 @@ class TestCreateTask:
             ),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         result = await client.create_task("lst-001", "Clean up")
 
         assert isinstance(result, ActionResult)
@@ -475,7 +528,10 @@ class TestCreateTask:
         assert result.target_id == "task-001"
 
     @respx.mock
-    async def test_full_task_creation(self) -> None:
+    async def test_full_task_creation(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Creates task with all optional fields."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(
@@ -496,7 +552,7 @@ class TestCreateTask:
             ),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         result = await client.create_task(
             "lst-001",
             "Deep clean",
@@ -506,7 +562,6 @@ class TestCreateTask:
 
         assert result.success is True
         assert result.target_id == "task-002"
-        import json
 
         payload = json.loads(
             post_route.calls[0].request.content,
@@ -517,7 +572,10 @@ class TestCreateTask:
         assert payload["assigneeId"] == "user-abc"
 
     @respx.mock
-    async def test_task_without_id_uses_listing_id(self) -> None:
+    async def test_task_without_id_uses_listing_id(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Falls back to listing_id when response has no _id."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(
@@ -532,33 +590,45 @@ class TestCreateTask:
             ),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         result = await client.create_task("lst-001", "Task")
 
         assert result.target_id == "lst-001"
 
-    async def test_empty_listing_id_raises(self) -> None:
+    async def test_empty_listing_id_raises(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Empty listing_id raises ValueError."""
-        client = _make_actions_client()
+        client = actions_client
         with pytest.raises(ValueError, match="listing_id"):
             await client.create_task("", "Task title")
 
-    async def test_empty_task_title_raises(self) -> None:
+    async def test_empty_task_title_raises(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Empty task_title raises ValueError."""
-        client = _make_actions_client()
+        client = actions_client
         with pytest.raises(ValueError, match="task_title"):
             await client.create_task("lst-001", "")
 
-    async def test_task_title_too_long_raises(self) -> None:
+    async def test_task_title_too_long_raises(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Task title exceeding limit raises ValueError."""
-        client = _make_actions_client()
+        client = actions_client
         long_title = "x" * (MAX_TASK_TITLE_LENGTH + 1)
         with pytest.raises(ValueError, match="maximum length"):
             await client.create_task("lst-001", long_title)
 
-    async def test_empty_description_raises(self) -> None:
+    async def test_empty_description_raises(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Empty description when provided raises ValueError."""
-        client = _make_actions_client()
+        client = actions_client
         with pytest.raises(
             ValueError,
             match="description must be non-empty",
@@ -569,9 +639,12 @@ class TestCreateTask:
                 description="",
             )
 
-    async def test_description_too_long_raises(self) -> None:
+    async def test_description_too_long_raises(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Description exceeding limit raises ValueError."""
-        client = _make_actions_client()
+        client = actions_client
         long_desc = "x" * (MAX_DESCRIPTION_LENGTH + 1)
         with pytest.raises(ValueError, match="maximum length"):
             await client.create_task(
@@ -580,9 +653,12 @@ class TestCreateTask:
                 description=long_desc,
             )
 
-    async def test_empty_assignee_raises(self) -> None:
+    async def test_empty_assignee_raises(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Empty assignee when provided raises ValueError."""
-        client = _make_actions_client()
+        client = actions_client
         with pytest.raises(
             ValueError,
             match="assignee must be non-empty",
@@ -594,7 +670,10 @@ class TestCreateTask:
             )
 
     @respx.mock
-    async def test_api_failure_raises_action_error(self) -> None:
+    async def test_api_failure_raises_action_error(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Non-2xx response raises GuestyActionError."""
         from unittest.mock import patch as _patch
 
@@ -608,7 +687,7 @@ class TestCreateTask:
             return_value=Response(422, text="Bad Request"),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         with (
             _patch("asyncio.sleep", new_callable=AsyncMock),
             pytest.raises(
@@ -622,7 +701,10 @@ class TestCreateTask:
         assert exc_info.value.action_type == "create_task"
 
     @respx.mock
-    async def test_invalid_json_response_raises(self) -> None:
+    async def test_invalid_json_response_raises(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Non-JSON response raises GuestyResponseError."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(
@@ -634,7 +716,7 @@ class TestCreateTask:
             return_value=Response(201, text="not json"),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         with pytest.raises(
             GuestyResponseError,
             match="not valid JSON",
@@ -642,7 +724,10 @@ class TestCreateTask:
             await client.create_task("lst-001", "Task")
 
     @respx.mock
-    async def test_non_dict_json_response_raises(self) -> None:
+    async def test_non_dict_json_response_raises(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Non-dict JSON response raises GuestyResponseError."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(
@@ -657,7 +742,7 @@ class TestCreateTask:
             ),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         with pytest.raises(
             GuestyResponseError,
             match="must be a JSON object",
@@ -672,7 +757,10 @@ class TestSetCalendarAvailability:
     """Tests for set_calendar_availability."""
 
     @respx.mock
-    async def test_block_dates(self) -> None:
+    async def test_block_dates(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Block operation sends status=unavailable."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(
@@ -690,7 +778,7 @@ class TestSetCalendarAvailability:
             ),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         result = await client.set_calendar_availability(
             "lst-001",
             "2025-08-01",
@@ -701,7 +789,6 @@ class TestSetCalendarAvailability:
         assert isinstance(result, ActionResult)
         assert result.success is True
         assert result.target_id == "lst-001"
-        import json
 
         payload = json.loads(put_route.calls[0].request.content)
         assert payload == {
@@ -711,7 +798,10 @@ class TestSetCalendarAvailability:
         }
 
     @respx.mock
-    async def test_unblock_dates(self) -> None:
+    async def test_unblock_dates(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Unblock operation sends status=available."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(
@@ -729,7 +819,7 @@ class TestSetCalendarAvailability:
             ),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         result = await client.set_calendar_availability(
             "lst-001",
             "2025-08-01",
@@ -738,14 +828,16 @@ class TestSetCalendarAvailability:
         )
 
         assert result.success is True
-        import json
 
         payload = json.loads(put_route.calls[0].request.content)
         assert payload["status"] == "available"
 
-    async def test_empty_listing_id_raises(self) -> None:
+    async def test_empty_listing_id_raises(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Empty listing_id raises ValueError."""
-        client = _make_actions_client()
+        client = actions_client
         with pytest.raises(ValueError, match="listing_id"):
             await client.set_calendar_availability(
                 "",
@@ -754,9 +846,12 @@ class TestSetCalendarAvailability:
                 "block",
             )
 
-    async def test_invalid_start_date_raises(self) -> None:
+    async def test_invalid_start_date_raises(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Invalid start_date format raises ValueError."""
-        client = _make_actions_client()
+        client = actions_client
         with pytest.raises(ValueError, match="start_date"):
             await client.set_calendar_availability(
                 "lst-001",
@@ -765,9 +860,12 @@ class TestSetCalendarAvailability:
                 "block",
             )
 
-    async def test_invalid_end_date_raises(self) -> None:
+    async def test_invalid_end_date_raises(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Invalid end_date format raises ValueError."""
-        client = _make_actions_client()
+        client = actions_client
         with pytest.raises(ValueError, match="end_date"):
             await client.set_calendar_availability(
                 "lst-001",
@@ -776,9 +874,12 @@ class TestSetCalendarAvailability:
                 "block",
             )
 
-    async def test_end_before_start_raises(self) -> None:
+    async def test_end_before_start_raises(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """End date before start date raises ValueError."""
-        client = _make_actions_client()
+        client = actions_client
         with pytest.raises(ValueError, match="must be >="):
             await client.set_calendar_availability(
                 "lst-001",
@@ -787,9 +888,12 @@ class TestSetCalendarAvailability:
                 "block",
             )
 
-    async def test_invalid_operation_raises(self) -> None:
+    async def test_invalid_operation_raises(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Invalid operation raises ValueError."""
-        client = _make_actions_client()
+        client = actions_client
         with pytest.raises(
             ValueError,
             match="invalid operation",
@@ -802,7 +906,10 @@ class TestSetCalendarAvailability:
             )
 
     @respx.mock
-    async def test_same_start_and_end_accepted(self) -> None:
+    async def test_same_start_and_end_accepted(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Same start and end date is valid (single day)."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(
@@ -820,7 +927,7 @@ class TestSetCalendarAvailability:
             ),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         result = await client.set_calendar_availability(
             "lst-001",
             "2025-08-01",
@@ -831,7 +938,10 @@ class TestSetCalendarAvailability:
         assert result.success is True
 
     @respx.mock
-    async def test_api_failure_raises_action_error(self) -> None:
+    async def test_api_failure_raises_action_error(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Non-2xx response raises GuestyActionError."""
         from unittest.mock import patch as _patch
 
@@ -848,7 +958,7 @@ class TestSetCalendarAvailability:
             return_value=Response(422, text="Conflict"),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         with (
             _patch("asyncio.sleep", new_callable=AsyncMock),
             pytest.raises(
@@ -874,7 +984,10 @@ class TestUpdateReservationCustomField:
     """Tests for update_reservation_custom_field."""
 
     @respx.mock
-    async def test_successful_update(self) -> None:
+    async def test_successful_update(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Successfully updates custom field on reservation."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(
@@ -893,7 +1006,7 @@ class TestUpdateReservationCustomField:
             ),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         result = await client.update_reservation_custom_field(
             "res-001",
             "cf-001",
@@ -903,16 +1016,18 @@ class TestUpdateReservationCustomField:
         assert isinstance(result, ActionResult)
         assert result.success is True
         assert result.target_id == "res-001"
-        import json
 
         payload = json.loads(put_route.calls[0].request.content)
         assert payload == {
             "customFields": {"cf-001": "new-val"},
         }
 
-    async def test_empty_reservation_id_raises(self) -> None:
+    async def test_empty_reservation_id_raises(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Empty reservation_id raises ValueError."""
-        client = _make_actions_client()
+        client = actions_client
         with pytest.raises(ValueError, match="reservation_id"):
             await client.update_reservation_custom_field(
                 "",
@@ -920,9 +1035,12 @@ class TestUpdateReservationCustomField:
                 "value",
             )
 
-    async def test_empty_custom_field_id_raises(self) -> None:
+    async def test_empty_custom_field_id_raises(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Empty custom_field_id raises ValueError."""
-        client = _make_actions_client()
+        client = actions_client
         with pytest.raises(ValueError, match="custom_field_id"):
             await client.update_reservation_custom_field(
                 "res-001",
@@ -930,9 +1048,12 @@ class TestUpdateReservationCustomField:
                 "value",
             )
 
-    async def test_empty_value_raises(self) -> None:
+    async def test_empty_value_raises(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Empty value raises ValueError."""
-        client = _make_actions_client()
+        client = actions_client
         with pytest.raises(ValueError, match="value"):
             await client.update_reservation_custom_field(
                 "res-001",
@@ -940,9 +1061,12 @@ class TestUpdateReservationCustomField:
                 "",
             )
 
-    async def test_value_too_long_raises(self) -> None:
+    async def test_value_too_long_raises(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Value exceeding max length raises ValueError."""
-        client = _make_actions_client()
+        client = actions_client
         long_value = "x" * (MAX_CUSTOM_FIELD_LENGTH + 1)
         with pytest.raises(ValueError, match="maximum length"):
             await client.update_reservation_custom_field(
@@ -952,7 +1076,10 @@ class TestUpdateReservationCustomField:
             )
 
     @respx.mock
-    async def test_api_failure_raises_action_error(self) -> None:
+    async def test_api_failure_raises_action_error(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Non-2xx response raises GuestyActionError."""
         from unittest.mock import patch as _patch
 
@@ -967,7 +1094,7 @@ class TestUpdateReservationCustomField:
             return_value=Response(422, text="Not Found"),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         with (
             _patch("asyncio.sleep", new_callable=AsyncMock),
             pytest.raises(
@@ -1038,7 +1165,10 @@ class TestEdgeCasesReservationNote:
     """Edge case tests for add_reservation_note."""
 
     @respx.mock
-    async def test_unicode_in_note_text(self) -> None:
+    async def test_unicode_in_note_text(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Unicode chars survive the read-modify-write cycle."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(200, json=make_token_response()),
@@ -1055,15 +1185,19 @@ class TestEdgeCasesReservationNote:
         )
 
         note = "Gäste 🏠 日本語テスト — emoji ✅"
-        client = _make_actions_client()
+        client = actions_client
         result = await client.add_reservation_note("res-001", note)
 
         assert result.success is True
-        payload = json_mod.loads(put_route.calls[0].request.content)
+
+        payload = json.loads(put_route.calls[0].request.content)
         assert note in payload["note"]
 
     @respx.mock
-    async def test_note_at_max_length_succeeds(self) -> None:
+    async def test_note_at_max_length_succeeds(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Note exactly at MAX_NOTE_LENGTH is accepted."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(200, json=make_token_response()),
@@ -1080,21 +1214,25 @@ class TestEdgeCasesReservationNote:
         )
 
         max_note = "x" * MAX_NOTE_LENGTH
-        client = _make_actions_client()
+        client = actions_client
         result = await client.add_reservation_note(
             "res-001",
             max_note,
         )
 
         assert result.success is True
-        payload = json_mod.loads(
+
+        payload = json.loads(
             put_route.calls[0].request.content,
         )
         assert payload["note"] == max_note
         assert len(payload["note"]) == MAX_NOTE_LENGTH
 
     @respx.mock
-    async def test_special_chars_in_note(self) -> None:
+    async def test_special_chars_in_note(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """HTML entities and newlines survive round-trip."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(200, json=make_token_response()),
@@ -1111,15 +1249,19 @@ class TestEdgeCasesReservationNote:
         )
 
         note = '<b>bold</b> & "quoted"\nnewline'
-        client = _make_actions_client()
+        client = actions_client
         result = await client.add_reservation_note("res-001", note)
 
         assert result.success is True
-        payload = json_mod.loads(put_route.calls[0].request.content)
+
+        payload = json.loads(put_route.calls[0].request.content)
         assert payload["note"] == note
 
     @respx.mock
-    async def test_existing_separator_in_note_preserved(self) -> None:
+    async def test_existing_separator_in_note_preserved(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Existing separator in note is not collapsed."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(200, json=make_token_response()),
@@ -1136,15 +1278,18 @@ class TestEdgeCasesReservationNote:
             return_value=Response(200, json={"_id": "res-001"}),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         await client.add_reservation_note("res-001", "Third")
 
-        payload = json_mod.loads(put_route.calls[0].request.content)
+        payload = json.loads(put_route.calls[0].request.content)
         expected = f"{existing}{NOTE_SEPARATOR}Third"
         assert payload["note"] == expected
 
     @respx.mock
-    async def test_concurrent_note_additions(self) -> None:
+    async def test_concurrent_note_additions(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Multiple concurrent note additions all succeed."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(200, json=make_token_response()),
@@ -1164,7 +1309,7 @@ class TestEdgeCasesReservationNote:
                 ),
             )
 
-        client = _make_actions_client()
+        client = actions_client
         results = await asyncio.gather(
             client.add_reservation_note("res-a", "Note A"),
             client.add_reservation_note("res-b", "Note B"),
@@ -1179,7 +1324,10 @@ class TestEdgeCasesReservationNote:
         }
 
     @respx.mock
-    async def test_deleted_reservation_returns_error(self) -> None:
+    async def test_deleted_reservation_returns_error(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """422 for deleted reservation raises GuestyActionError."""
         from unittest.mock import patch as _patch
 
@@ -1194,7 +1342,7 @@ class TestEdgeCasesReservationNote:
             ),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         with (
             _patch("asyncio.sleep", new_callable=AsyncMock),
             pytest.raises(
@@ -1214,7 +1362,10 @@ class TestEdgeCasesListingStatus:
     """Edge case tests for set_listing_status."""
 
     @respx.mock
-    async def test_deleted_listing_returns_error(self) -> None:
+    async def test_deleted_listing_returns_error(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """422 for deleted listing raises GuestyActionError."""
         from unittest.mock import patch as _patch
 
@@ -1226,7 +1377,7 @@ class TestEdgeCasesListingStatus:
             return_value=Response(422, text="Listing not found"),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         with (
             _patch("asyncio.sleep", new_callable=AsyncMock),
             pytest.raises(
@@ -1244,7 +1395,10 @@ class TestEdgeCasesCreateTask:
     """Edge case tests for create_task."""
 
     @respx.mock
-    async def test_unicode_in_task_description(self) -> None:
+    async def test_unicode_in_task_description(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Unicode in description passes through to API."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(200, json=make_token_response()),
@@ -1259,7 +1413,7 @@ class TestEdgeCasesCreateTask:
         )
 
         desc = "Deep cleaning — floor 2 🧹"
-        client = _make_actions_client()
+        client = actions_client
         result = await client.create_task(
             "lst-001",
             "Clean",
@@ -1267,13 +1421,17 @@ class TestEdgeCasesCreateTask:
         )
 
         assert result.success is True
-        payload = json_mod.loads(
+
+        payload = json.loads(
             post_route.calls[0].request.content,
         )
         assert payload["description"] == desc
 
     @respx.mock
-    async def test_title_at_max_length_succeeds(self) -> None:
+    async def test_title_at_max_length_succeeds(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Title exactly at MAX_TASK_TITLE_LENGTH is accepted."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(200, json=make_token_response()),
@@ -1288,18 +1446,22 @@ class TestEdgeCasesCreateTask:
         )
 
         max_title = "x" * MAX_TASK_TITLE_LENGTH
-        client = _make_actions_client()
+        client = actions_client
         result = await client.create_task("lst-001", max_title)
 
         assert result.success is True
-        payload = json_mod.loads(
+
+        payload = json.loads(
             post_route.calls[0].request.content,
         )
         assert payload["title"] == max_title
         assert len(payload["title"]) == MAX_TASK_TITLE_LENGTH
 
     @respx.mock
-    async def test_description_at_max_length_succeeds(self) -> None:
+    async def test_description_at_max_length_succeeds(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Desc exactly at MAX_DESCRIPTION_LENGTH is accepted."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(200, json=make_token_response()),
@@ -1314,7 +1476,7 @@ class TestEdgeCasesCreateTask:
         )
 
         max_desc = "y" * MAX_DESCRIPTION_LENGTH
-        client = _make_actions_client()
+        client = actions_client
         result = await client.create_task(
             "lst-001",
             "Task",
@@ -1322,14 +1484,18 @@ class TestEdgeCasesCreateTask:
         )
 
         assert result.success is True
-        payload = json_mod.loads(
+
+        payload = json.loads(
             post_route.calls[0].request.content,
         )
         assert payload["description"] == max_desc
         assert len(payload["description"]) == MAX_DESCRIPTION_LENGTH
 
     @respx.mock
-    async def test_special_chars_in_title(self) -> None:
+    async def test_special_chars_in_title(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Special characters in task title pass through."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(200, json=make_token_response()),
@@ -1344,10 +1510,10 @@ class TestEdgeCasesCreateTask:
         )
 
         title = 'Fix AC — unit #3 "premium"'
-        client = _make_actions_client()
+        client = actions_client
         await client.create_task("lst-001", title)
 
-        payload = json_mod.loads(
+        payload = json.loads(
             post_route.calls[0].request.content,
         )
         assert payload["title"] == title
@@ -1357,7 +1523,10 @@ class TestEdgeCasesCalendar:
     """Edge case tests for set_calendar_availability."""
 
     @respx.mock
-    async def test_calendar_422_error(self) -> None:
+    async def test_calendar_422_error(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """422 response raises GuestyActionError."""
         from unittest.mock import patch as _patch
 
@@ -1372,7 +1541,7 @@ class TestEdgeCasesCalendar:
             ),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         with (
             _patch("asyncio.sleep", new_callable=AsyncMock),
             pytest.raises(
@@ -1390,7 +1559,10 @@ class TestEdgeCasesCalendar:
         assert exc_info.value.target_id == "lst-001"
 
     @respx.mock
-    async def test_concurrent_calendar_operations(self) -> None:
+    async def test_concurrent_calendar_operations(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Multiple concurrent calendar ops all complete."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(200, json=make_token_response()),
@@ -1404,7 +1576,7 @@ class TestEdgeCasesCalendar:
                 ),
             )
 
-        client = _make_actions_client()
+        client = actions_client
         results = await asyncio.gather(
             client.set_calendar_availability(
                 "lst-a",
@@ -1429,7 +1601,10 @@ class TestEdgeCasesCustomField:
     """Edge case tests for update_reservation_custom_field."""
 
     @respx.mock
-    async def test_value_at_max_length_succeeds(self) -> None:
+    async def test_value_at_max_length_succeeds(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Value exactly at MAX_CUSTOM_FIELD_LENGTH accepted."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(200, json=make_token_response()),
@@ -1440,7 +1615,7 @@ class TestEdgeCasesCustomField:
         )
 
         max_val = "z" * MAX_CUSTOM_FIELD_LENGTH
-        client = _make_actions_client()
+        client = actions_client
         result = await client.update_reservation_custom_field(
             "res-001",
             "cf-001",
@@ -1448,14 +1623,18 @@ class TestEdgeCasesCustomField:
         )
 
         assert result.success is True
-        payload = json_mod.loads(
+
+        payload = json.loads(
             put_route.calls[0].request.content,
         )
         assert payload["customFields"]["cf-001"] == max_val
         assert len(max_val) == MAX_CUSTOM_FIELD_LENGTH
 
     @respx.mock
-    async def test_unicode_in_custom_field_value(self) -> None:
+    async def test_unicode_in_custom_field_value(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """Unicode in custom field value passes through."""
         respx.post(TOKEN_URL).mock(
             return_value=Response(200, json=make_token_response()),
@@ -1466,7 +1645,7 @@ class TestEdgeCasesCustomField:
         )
 
         value = "Ünïcödé 值 🎉"
-        client = _make_actions_client()
+        client = actions_client
         result = await client.update_reservation_custom_field(
             "res-001",
             "cf-001",
@@ -1474,13 +1653,17 @@ class TestEdgeCasesCustomField:
         )
 
         assert result.success is True
-        payload = json_mod.loads(
+
+        payload = json.loads(
             put_route.calls[0].request.content,
         )
         assert payload["customFields"]["cf-001"] == value
 
     @respx.mock
-    async def test_deleted_reservation_custom_field(self) -> None:
+    async def test_deleted_reservation_custom_field(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
         """422 for deleted reservation raises GuestyActionError."""
         from unittest.mock import patch as _patch
 
@@ -1495,7 +1678,7 @@ class TestEdgeCasesCustomField:
             ),
         )
 
-        client = _make_actions_client()
+        client = actions_client
         with (
             _patch("asyncio.sleep", new_callable=AsyncMock),
             pytest.raises(
@@ -1542,3 +1725,258 @@ class TestErrorDetailEdgeCases:
         )
         assert "INVALID" in detail
         assert "400" in detail
+
+
+# ── Edge Case Tests (T036) ─────────────────────────────────────────
+
+
+class TestEdgeCases:
+    """Edge case and boundary value tests (T036)."""
+
+    @respx.mock
+    async def test_special_characters_in_description(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
+        """HTML entities and newlines in task description."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        post_route = respx.post(
+            f"{BASE_URL}{TASKS_ENDPOINT}",
+        ).mock(
+            return_value=Response(
+                201,
+                json={"_id": "task-sp", "title": "clean"},
+            ),
+        )
+
+        client = actions_client
+        desc = '<b>Bold</b> & "quoted"\nnewline'
+        result = await client.create_task(
+            "lst-001",
+            "Clean up",
+            description=desc,
+        )
+
+        assert result.success is True
+
+        payload = json.loads(
+            post_route.calls[0].request.content,
+        )
+        assert payload["description"] == desc
+
+    @respx.mock
+    async def test_deleted_reservation_returns_not_found(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
+        """404 for a deleted reservation raises GuestyActionError."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        res_path = f"{RESERVATIONS_ENDPOINT}/res-gone"
+        respx.get(f"{BASE_URL}{res_path}").mock(
+            return_value=Response(
+                404,
+                text="Not Found",
+            ),
+        )
+
+        client = actions_client
+        with pytest.raises(
+            GuestyActionError,
+            match="Failed to fetch reservation",
+        ) as exc_info:
+            await client.add_reservation_note(
+                "res-gone",
+                "note",
+            )
+
+        assert exc_info.value.target_id == "res-gone"
+
+    @respx.mock
+    async def test_concurrent_action_calls(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
+        """Multiple concurrent actions succeed independently."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.put(
+            f"{BASE_URL}{LISTINGS_ENDPOINT}/lst-a",
+        ).mock(
+            return_value=Response(
+                200,
+                json={"_id": "lst-a", "active": True},
+            ),
+        )
+        respx.put(
+            f"{BASE_URL}{LISTINGS_ENDPOINT}/lst-b",
+        ).mock(
+            return_value=Response(
+                200,
+                json={"_id": "lst-b", "active": False},
+            ),
+        )
+
+        client = actions_client
+        results = await asyncio.gather(
+            client.set_listing_status("lst-a", "active"),
+            client.set_listing_status("lst-b", "inactive"),
+        )
+
+        assert len(results) == 2
+        assert results[0].success is True
+        assert results[0].target_id == "lst-a"
+        assert results[1].success is True
+        assert results[1].target_id == "lst-b"
+
+
+# ── Retry & Recovery Tests (T036) ──────────────────────────────────
+
+
+class TestRetryBehavior:
+    """Tests for retry, rate-limit, and auth recovery paths."""
+
+    @respx.mock
+    async def test_rate_limit_retry_then_success(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
+        """429 triggers backoff retry; eventual 200 succeeds."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        lst_url = f"{BASE_URL}{LISTINGS_ENDPOINT}/lst-rl"
+        respx.put(lst_url).mock(
+            side_effect=[
+                Response(
+                    429,
+                    headers={"Retry-After": "0"},
+                ),
+                Response(
+                    200,
+                    json={
+                        "_id": "lst-rl",
+                        "active": True,
+                    },
+                ),
+            ],
+        )
+
+        client = actions_client
+        with _patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await client.set_listing_status(
+                "lst-rl",
+                "active",
+            )
+
+        assert result.success is True
+        assert result.target_id == "lst-rl"
+
+    @respx.mock
+    async def test_rate_limit_max_retries_exhausted(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
+        """429 beyond MAX_RETRIES raises GuestyRateLimitError."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        lst_url = f"{BASE_URL}{LISTINGS_ENDPOINT}/lst-rl2"
+        respx.put(lst_url).mock(
+            return_value=Response(
+                429,
+                headers={"Retry-After": "0"},
+            ),
+        )
+
+        client = actions_client
+        from unittest.mock import patch as _patch
+
+        with (
+            _patch("asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(GuestyRateLimitError),
+        ):
+            await client.set_listing_status(
+                "lst-rl2",
+                "active",
+            )
+
+    @respx.mock
+    async def test_token_refresh_during_action(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
+        """401 triggers token refresh then retries successfully."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        lst_url = f"{BASE_URL}{LISTINGS_ENDPOINT}/lst-auth"
+        respx.put(lst_url).mock(
+            side_effect=[
+                Response(401, text="Unauthorized"),
+                Response(
+                    200,
+                    json={
+                        "_id": "lst-auth",
+                        "active": True,
+                    },
+                ),
+            ],
+        )
+
+        client = actions_client
+        result = await client.set_listing_status(
+            "lst-auth",
+            "active",
+        )
+
+        assert result.success is True
+        assert result.target_id == "lst-auth"
+
+    @respx.mock
+    async def test_token_refresh_double_401_raises(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
+        """Double 401 after refresh raises GuestyAuthError."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        lst_url = f"{BASE_URL}{LISTINGS_ENDPOINT}/lst-auth2"
+        respx.put(lst_url).mock(
+            return_value=Response(401, text="Unauthorized"),
+        )
+
+        client = actions_client
+        with pytest.raises(GuestyAuthError):
+            await client.set_listing_status(
+                "lst-auth2",
+                "active",
+            )
