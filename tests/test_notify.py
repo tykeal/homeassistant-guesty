@@ -1380,6 +1380,11 @@ class TestRateLimitRetryIntegration:
         )
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
         return_value=[],
@@ -1393,6 +1398,7 @@ class TestRateLimitRetryIntegration:
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """HA service call dispatches guest message successfully."""
