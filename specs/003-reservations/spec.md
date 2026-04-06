@@ -42,9 +42,13 @@ check-in/check-out dates.
    **When** the reservation data refreshes, **Then** the reservation status
    sensor shows "checked_in" with the current guest's name and check-out date
    as attributes.
-3. **Given** a listing has no current or upcoming reservations within the
-   configured lookahead window, **When** the reservation data refreshes,
-   **Then** the reservation status sensor shows "no_reservation".
+3. **Given** a listing has no current, upcoming, or recent reservations
+   within the configured date range, **When** the reservation data
+   refreshes, **Then** the reservation status sensor shows
+   "no_reservation". If past reservations exist (e.g., checked_out or
+   canceled) but no active or upcoming confirmed reservations apply,
+   the sensor falls back to the nearest completed or canceled
+   reservation per FR-006 priority rules.
 4. **Given** a reservation transitions from confirmed to checked in, **When**
    the next data refresh occurs, **Then** the sensor state changes from
    "awaiting_checkin" to "checked_in" and a state-change event fires for use
@@ -336,7 +340,7 @@ displayed with a staleness indicator.
   guest contact details.
 - Financial data availability and structure depends on the Guesty account
   configuration — some accounts may not expose payment details via the API.
-- The integration reuses the existing authenticated API client from Feature 1
+- The integration reuses the existing authenticated API client from Feature 001
   (Auth & Config Flow) — no separate authentication is needed for reservation
   endpoints.
 - Reservation statuses returned by the Guesty API follow the known set
