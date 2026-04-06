@@ -945,3 +945,116 @@ class TestReservationsCoordinatorSetup:
         await hass.async_block_till_done()
 
         assert entry.state is ConfigEntryState.SETUP_RETRY
+
+
+class TestEntityCleanup:
+    """Tests for entity and coordinator cleanup on unload (T031)."""
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_unload_removes_all_reservation_entities(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+        sample_reservation: object,
+    ) -> None:
+        """Unload removes all reservation sensor entities."""
+        mock_listings.return_value = [sample_listing]
+        mock_reservations.return_value = [sample_reservation]
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        entity_id = "sensor.beach_house_reservation_status"
+        assert hass.states.get(entity_id) is not None
+
+        # Verify coordinator resources exist
+        assert entry.entry_id in hass.data.get(DOMAIN, {})
+        data = hass.data[DOMAIN][entry.entry_id]
+        assert "reservations_coordinator" in data
+        assert "coordinator" in data
+        assert "http_client" in data
+
+        # Unload
+        await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+
+        assert entry.state is ConfigEntryState.NOT_LOADED
+        assert entry.entry_id not in hass.data.get(DOMAIN, {})
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_no_orphaned_entities_for_unknown_listings(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Reservations for non-existent listings create no entities."""
+        from datetime import UTC, datetime
+
+        from custom_components.guesty.api.models import (
+            GuestyReservation,
+        )
+
+        mock_listings.return_value = [sample_listing]
+        # Reservation for an unknown listing ID
+        orphan_res = GuestyReservation(
+            id="res-orphan",
+            listing_id="listing-unknown",
+            status="confirmed",
+            check_in=datetime(2025, 8, 1, 15, 0, tzinfo=UTC),
+            check_out=datetime(2025, 8, 5, 11, 0, tzinfo=UTC),
+        )
+        mock_reservations.return_value = [orphan_res]
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        # Known listing has sensor
+        known_entity = "sensor.beach_house_reservation_status"
+        assert hass.states.get(known_entity) is not None
+
+        # Unknown listing does NOT have a reservation sensor
+        all_states = hass.states.async_all("sensor")
+        unknown_entities = [
+            s
+            for s in all_states
+            if "listing_unknown" in s.entity_id and "reservation" in s.entity_id
+        ]
+        assert len(unknown_entities) == 0

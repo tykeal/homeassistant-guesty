@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 from homeassistant.const import EntityCategory
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -1952,3 +1952,664 @@ class TestFinancialDiagnosticSensors:
             description=desc,
         )
         assert sensor._money is None
+
+
+
+
+class TestEdgeCaseSameDayTurnover:
+    """Tests for same-day turnover edge cases (FR-018)."""
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_same_day_turnover_picks_active(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Same-day turnover selects checked_in as primary."""
+        mock_listings.return_value = [sample_listing]
+        reservations = [
+            _make_reservation(
+                res_id="r-outgoing",
+                status="checked_out",
+                check_in=datetime(2025, 7, 28, 15, 0, tzinfo=UTC),
+                check_out=datetime(2025, 8, 1, 11, 0, tzinfo=UTC),
+            ),
+            _make_reservation(
+                res_id="r-incoming",
+                status="checked_in",
+                check_in=datetime(2025, 8, 1, 15, 0, tzinfo=UTC),
+                check_out=datetime(2025, 8, 5, 11, 0, tzinfo=UTC),
+            ),
+        ]
+        mock_reservations.return_value = reservations
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        state = hass.states.get(
+            "sensor.beach_house_reservation_status",
+        )
+        assert state is not None
+        assert state.state == "checked_in"
+        assert state.attributes["reservation_id"] == "r-incoming"
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_same_day_turnover_upcoming_has_others(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Same-day turnover puts non-selected in upcoming."""
+        mock_listings.return_value = [sample_listing]
+        reservations = [
+            _make_reservation(
+                res_id="r-active",
+                status="checked_in",
+                check_in=datetime(2025, 8, 1, 15, 0, tzinfo=UTC),
+                check_out=datetime(2025, 8, 5, 11, 0, tzinfo=UTC),
+            ),
+            _make_reservation(
+                res_id="r-next",
+                status="confirmed",
+                check_in=datetime(2025, 8, 5, 15, 0, tzinfo=UTC),
+                check_out=datetime(2025, 8, 8, 11, 0, tzinfo=UTC),
+            ),
+        ]
+        mock_reservations.return_value = reservations
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        state = hass.states.get(
+            "sensor.beach_house_reservation_status",
+        )
+        assert state is not None
+        assert state.state == "checked_in"
+        upcoming = state.attributes["upcoming_reservations"]
+        assert len(upcoming) == 1
+        assert upcoming[0]["reservation_id"] == "r-next"
+        assert upcoming[0]["status"] == "confirmed"
+
+
+class TestEdgeCaseMissingOptionalFields:
+    """Tests for missing optional fields handled gracefully (FR-019)."""
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_guest_with_partial_fields(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Guest with phone=None and email=None shows None."""
+        mock_listings.return_value = [sample_listing]
+        reservation = _make_reservation(
+            res_id="r1",
+            status="checked_in",
+            guest=GuestyGuest(
+                full_name="Jane Doe",
+                phone=None,
+                email=None,
+            ),
+        )
+        mock_reservations.return_value = [reservation]
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        state = hass.states.get(
+            "sensor.beach_house_reservation_status",
+        )
+        assert state is not None
+        assert state.attributes["guest_name"] == "Jane Doe"
+        assert state.attributes["guest_phone"] is None
+        assert state.attributes["guest_email"] is None
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_missing_financial_data(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Reservation with money=None is handled gracefully."""
+        mock_listings.return_value = [sample_listing]
+        reservation = _make_reservation(
+            res_id="r1",
+            status="checked_in",
+            money=None,
+            note=None,
+            confirmation_code=None,
+        )
+        mock_reservations.return_value = [reservation]
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        state = hass.states.get(
+            "sensor.beach_house_reservation_status",
+        )
+        assert state is not None
+        assert state.state == "checked_in"
+        assert state.attributes["confirmation_code"] is None
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_all_optional_fields_none(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Reservation with all optional fields None is valid."""
+        mock_listings.return_value = [sample_listing]
+        reservation = _make_reservation(
+            res_id="r1",
+            status="confirmed",
+            guest=None,
+            money=None,
+            note=None,
+            confirmation_code=None,
+            check_in_local=None,
+            check_out_local=None,
+            planned_arrival=None,
+            planned_departure=None,
+            nights_count=None,
+            guests_count=None,
+            source=None,
+        )
+        mock_reservations.return_value = [reservation]
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        state = hass.states.get(
+            "sensor.beach_house_reservation_status",
+        )
+        assert state is not None
+        assert state.state == "awaiting_checkin"
+        assert state.attributes["guest_name"] is None
+        assert state.attributes["guest_phone"] is None
+        assert state.attributes["guest_email"] is None
+        assert state.attributes["confirmation_code"] is None
+        assert state.attributes["source"] is None
+
+
+class TestEdgeCaseMultipleListings:
+    """Tests for multiple reservations across listings."""
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_listing_without_reservations_shows_no_res(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Listing with zero reservations shows no_reservation."""
+        mock_listings.return_value = [sample_listing]
+        mock_reservations.return_value = []
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        state = hass.states.get(
+            "sensor.beach_house_reservation_status",
+        )
+        assert state is not None
+        assert state.state == "no_reservation"
+        assert state.attributes["reservation_id"] is None
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_multiple_reservations_per_listing(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Multiple reservations: highest priority selected."""
+        mock_listings.return_value = [sample_listing]
+        reservations = [
+            _make_reservation(
+                res_id="r-past",
+                status="checked_out",
+                check_in=datetime(2025, 7, 20, 15, 0, tzinfo=UTC),
+                check_out=datetime(2025, 7, 25, 11, 0, tzinfo=UTC),
+            ),
+            _make_reservation(
+                res_id="r-active",
+                status="confirmed",
+                check_in=datetime(2025, 8, 1, 15, 0, tzinfo=UTC),
+                check_out=datetime(2025, 8, 5, 11, 0, tzinfo=UTC),
+            ),
+            _make_reservation(
+                res_id="r-future",
+                status="confirmed",
+                check_in=datetime(2025, 9, 1, 15, 0, tzinfo=UTC),
+                check_out=datetime(2025, 9, 5, 11, 0, tzinfo=UTC),
+            ),
+        ]
+        mock_reservations.return_value = reservations
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        state = hass.states.get(
+            "sensor.beach_house_reservation_status",
+        )
+        assert state is not None
+        # confirmed has higher priority than checked_out
+        assert state.state == "awaiting_checkin"
+        upcoming = state.attributes["upcoming_reservations"]
+        # Both confirmed reservations; the other is in upcoming
+        assert len(upcoming) == 1
+        assert upcoming[0]["reservation_id"] == "r-future"
+
+
+class TestStateTransitionEvents:
+    """Integration tests for state change events (FR-015, T030)."""
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_confirmed_to_checked_in_fires_event(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """confirmed→checked_in transition fires state_changed."""
+        mock_listings.return_value = [sample_listing]
+        mock_reservations.return_value = [
+            _make_reservation(
+                res_id="r1",
+                status="confirmed",
+            ),
+        ]
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        entity_id = "sensor.beach_house_reservation_status"
+        state = hass.states.get(entity_id)
+        assert state is not None
+        assert state.state == "awaiting_checkin"
+
+        # Track state change events
+        events: list[Event] = []
+
+        @callback
+        def _capture(event: Event) -> None:
+            """Capture state_changed events for our entity."""
+            if event.data.get("entity_id") == entity_id:
+                events.append(event)
+
+        hass.bus.async_listen("state_changed", _capture)
+
+        # Simulate transition: guest checks in
+        mock_reservations.return_value = [
+            _make_reservation(
+                res_id="r1",
+                status="checked_in",
+            ),
+        ]
+        coord = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        await coord.async_refresh()
+        await hass.async_block_till_done()
+
+        assert len(events) == 1
+        event_data = events[0].data
+        assert event_data["old_state"].state == "awaiting_checkin"
+        assert event_data["new_state"].state == "checked_in"
+        # Verify automation context includes attributes
+        new_attrs = event_data["new_state"].attributes
+        assert new_attrs["reservation_id"] == "r1"
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_checked_in_to_checked_out_fires_event(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """checked_in→checked_out transition fires state_changed."""
+        mock_listings.return_value = [sample_listing]
+        mock_reservations.return_value = [
+            _make_reservation(
+                res_id="r1",
+                status="checked_in",
+            ),
+        ]
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        entity_id = "sensor.beach_house_reservation_status"
+        state = hass.states.get(entity_id)
+        assert state is not None
+        assert state.state == "checked_in"
+
+        events: list[Event] = []
+
+        @callback
+        def _capture(event: Event) -> None:
+            """Capture state_changed events for our entity."""
+            if event.data.get("entity_id") == entity_id:
+                events.append(event)
+
+        hass.bus.async_listen("state_changed", _capture)
+
+        mock_reservations.return_value = [
+            _make_reservation(
+                res_id="r1",
+                status="checked_out",
+            ),
+        ]
+        coord = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        await coord.async_refresh()
+        await hass.async_block_till_done()
+
+        assert len(events) == 1
+        assert events[0].data["old_state"].state == "checked_in"
+        assert events[0].data["new_state"].state == "checked_out"
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_confirmed_to_canceled_fires_event(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """confirmed→canceled transition fires state_changed."""
+        mock_listings.return_value = [sample_listing]
+        mock_reservations.return_value = [
+            _make_reservation(
+                res_id="r1",
+                status="confirmed",
+            ),
+        ]
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        entity_id = "sensor.beach_house_reservation_status"
+        state = hass.states.get(entity_id)
+        assert state is not None
+        assert state.state == "awaiting_checkin"
+
+        events: list[Event] = []
+
+        @callback
+        def _capture(event: Event) -> None:
+            """Capture state_changed events for our entity."""
+            if event.data.get("entity_id") == entity_id:
+                events.append(event)
+
+        hass.bus.async_listen("state_changed", _capture)
+
+        mock_reservations.return_value = [
+            _make_reservation(
+                res_id="r1",
+                status="canceled",
+            ),
+        ]
+        coord = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        await coord.async_refresh()
+        await hass.async_block_till_done()
+
+        assert len(events) == 1
+        assert events[0].data["old_state"].state == "awaiting_checkin"
+        assert events[0].data["new_state"].state == "canceled"
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_event_context_includes_guest_attrs(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """State change event includes guest context attributes."""
+        mock_listings.return_value = [sample_listing]
+        mock_reservations.return_value = [
+            _make_reservation(
+                res_id="r1",
+                status="confirmed",
+                guest=GuestyGuest(
+                    full_name="Alice Smith",
+                    phone="+15550001111",
+                    email="alice@example.com",
+                ),
+            ),
+        ]
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        entity_id = "sensor.beach_house_reservation_status"
+        events: list[Event] = []
+
+        @callback
+        def _capture(event: Event) -> None:
+            """Capture state_changed events for our entity."""
+            if event.data.get("entity_id") == entity_id:
+                events.append(event)
+
+        hass.bus.async_listen("state_changed", _capture)
+
+        mock_reservations.return_value = [
+            _make_reservation(
+                res_id="r1",
+                status="checked_in",
+                guest=GuestyGuest(
+                    full_name="Alice Smith",
+                    phone="+15550001111",
+                    email="alice@example.com",
+                ),
+            ),
+        ]
+        coord = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        await coord.async_refresh()
+        await hass.async_block_till_done()
+
+        assert len(events) == 1
+        new_attrs = events[0].data["new_state"].attributes
+        assert new_attrs["guest_name"] == "Alice Smith"
+        assert new_attrs["guest_phone"] == "+15550001111"
+        assert new_attrs["guest_email"] == "alice@example.com"
+        assert new_attrs["reservation_id"] == "r1"
