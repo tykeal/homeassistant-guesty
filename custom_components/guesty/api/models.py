@@ -810,6 +810,9 @@ class GuestyCustomFieldDefinition:
         if field_id is None or name is None or raw_type is None:
             return None
 
+        if not isinstance(raw_type, str):
+            return None
+
         field_type = _GUESTY_TYPE_MAP.get(raw_type, raw_type)
 
         object_type = data.get("objectType")

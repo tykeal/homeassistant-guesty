@@ -1470,6 +1470,12 @@ class TestGuestyCustomFieldDefinitionFromApiDict:
         del data["type"]
         assert GuestyCustomFieldDefinition.from_api_dict(data) is None
 
+    def test_unhashable_type_returns_none(self) -> None:
+        """from_api_dict returns None when 'type' is not a string."""
+        data = _make_custom_field_definition_dict()
+        data["type"] = ["list", "value"]
+        assert GuestyCustomFieldDefinition.from_api_dict(data) is None
+
     def test_missing_object_type_defaults_empty(self) -> None:
         """from_api_dict defaults applicable_to to frozenset()."""
         data = _make_custom_field_definition_dict()
