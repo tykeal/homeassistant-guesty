@@ -82,3 +82,49 @@ LISTINGS_FIELDS: tuple[str, ...] = (
     "tags",
     "customFields",
 )
+
+# Guesty Open API v1 reservations endpoint path.
+RESERVATIONS_ENDPOINT: str = "/reservations"
+
+# Maximum reservations per page (Guesty API maximum).
+RESERVATIONS_PAGE_SIZE: int = 100
+
+# Fields requested from the reservations endpoint.
+RESERVATIONS_FIELDS: tuple[str, ...] = (
+    "_id",
+    "listingId",
+    "status",
+    "confirmationCode",
+    "checkIn",
+    "checkOut",
+    "checkInDateLocalized",
+    "checkOutDateLocalized",
+    "plannedArrival",
+    "plannedDeparture",
+    "nightsCount",
+    "guestsCount",
+    "guest.fullName",
+    "guest.phone",
+    "guest.email",
+    "money.totalPaid",
+    "money.balanceDue",
+    "money.currency",
+    "source",
+    "note",
+)
+
+# Actionable reservation statuses for filtering.
+ACTIONABLE_STATUSES: frozenset[str] = frozenset(
+    {
+        "confirmed",
+        "checked_in",
+        "checked_out",
+        "canceled",
+    }
+)
+
+# Default past days for reservation date range window.
+DEFAULT_PAST_DAYS: int = 30
+
+# Default future days for reservation date range window.
+DEFAULT_FUTURE_DAYS: int = 365
