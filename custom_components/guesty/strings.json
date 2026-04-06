@@ -78,6 +78,12 @@
             },
             "listing_check_out_time": {
                 "name": "Check-out time"
+            },
+            "listing_tags": {
+                "name": "Tags"
+            },
+            "listing_custom_field": {
+                "name": "Custom field"
             }
         }
     }
