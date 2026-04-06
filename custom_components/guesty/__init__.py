@@ -15,14 +15,19 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import httpx
+import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
+from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 
 from custom_components.guesty.api.auth import GuestyTokenManager
 from custom_components.guesty.api.client import GuestyApiClient
 from custom_components.guesty.api.const import DEFAULT_TIMEOUT
-from custom_components.guesty.api.exceptions import GuestyApiError
+from custom_components.guesty.api.custom_fields import GuestyCustomFieldsClient
+from custom_components.guesty.api.exceptions import (
+    GuestyApiError,
+    GuestyCustomFieldError,
+)
 from custom_components.guesty.api.messaging import GuestyMessagingClient
 from custom_components.guesty.api.models import CachedToken, TokenStorage
 from custom_components.guesty.const import (
@@ -34,8 +39,10 @@ from custom_components.guesty.const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     PLATFORMS,
+    SERVICE_SET_CUSTOM_FIELD,
 )
 from custom_components.guesty.coordinator import (
+    CustomFieldsDefinitionCoordinator,
     ListingsCoordinator,
     ReservationsCoordinator,
 )
@@ -229,6 +236,20 @@ async def async_setup_entry(
 
     messaging_client = GuestyMessagingClient(api_client)
 
+    cf_client = GuestyCustomFieldsClient(api_client)
+    cf_coordinator = CustomFieldsDefinitionCoordinator(
+        hass=hass,
+        entry=entry,
+        cf_client=cf_client,
+    )
+    try:
+        await cf_coordinator.async_config_entry_first_refresh()
+    except ConfigEntryNotReady:
+        await coordinator.async_shutdown()
+        await reservations_coordinator.async_shutdown()
+        await http_client.aclose()
+        raise
+
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {
         "http_client": http_client,
@@ -237,7 +258,119 @@ async def async_setup_entry(
         "coordinator": coordinator,
         "reservations_coordinator": reservations_coordinator,
         "messaging_client": messaging_client,
+        "cf_client": cf_client,
+        "cf_coordinator": cf_coordinator,
     }
+
+    async def _async_handle_set_custom_field(
+        call: ServiceCall,
+    ) -> dict[str, Any]:
+        """Handle the set_custom_field service call.
+
+        Args:
+            call: The service call with target_type, target_id,
+                field_id, and value parameters.
+
+        Returns:
+            Structured response dict with result status.
+
+        Raises:
+            HomeAssistantError: On validation or API errors.
+        """
+        target_type: str = call.data["target_type"]
+        target_id: str = call.data["target_id"]
+        field_id: str = call.data["field_id"]
+        value: str | int | float | bool = call.data["value"]
+
+        # Find a loaded entry for this service
+        entry_data = None
+        for _eid, edata in hass.data.get(DOMAIN, {}).items():
+            if isinstance(edata, dict) and "cf_coordinator" in edata:
+                entry_data = edata
+                break
+
+        if entry_data is None:
+            raise HomeAssistantError(
+                "Guesty integration is not configured or loaded",
+            )
+
+        local_cf_coordinator: CustomFieldsDefinitionCoordinator = entry_data[
+            "cf_coordinator"
+        ]
+        local_cf_client: GuestyCustomFieldsClient = entry_data["cf_client"]
+
+        defn = local_cf_coordinator.get_field(field_id)
+        if defn is None:
+            available = local_cf_coordinator.get_fields_for_target(
+                target_type,
+            )
+            field_list = ", ".join(f.field_id for f in available)
+            raise HomeAssistantError(
+                f"Custom field '{field_id}' not found. "
+                f"Available fields for {target_type}: "
+                f"{field_list or 'none'}",
+            )
+
+        if target_type not in defn.applicable_to:
+            raise HomeAssistantError(
+                f"Custom field '{field_id}' is not applicable "
+                f"to target type '{target_type}'. Applicable "
+                f"types: {', '.join(sorted(defn.applicable_to))}",
+            )
+
+        try:
+            local_cf_client.validate_value(value, defn.field_type)
+        except GuestyCustomFieldError as exc:
+            raise HomeAssistantError(str(exc)) from exc
+
+        try:
+            result = await local_cf_client.set_field(
+                target_type=target_type,
+                target_id=target_id,
+                field_id=field_id,
+                value=value,
+            )
+        except GuestyCustomFieldError as exc:
+            ctx = (
+                f" (target_type={target_type},"
+                f" target_id={target_id},"
+                f" field_id={field_id})"
+            )
+            raise HomeAssistantError(str(exc) + ctx) from exc
+        except GuestyApiError as exc:
+            raise HomeAssistantError(
+                f"Guesty API error: {exc.message}",
+            ) from exc
+
+        return {
+            "target_type": result.target_type,
+            "target_id": result.target_id,
+            "field_id": result.field_id,
+            "result": "success" if result.success else "failure",
+        }
+
+    if not hass.services.has_service(DOMAIN, SERVICE_SET_CUSTOM_FIELD):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_SET_CUSTOM_FIELD,
+            _async_handle_set_custom_field,
+            schema=vol.Schema(
+                {
+                    vol.Required("target_type"): vol.In(
+                        ["listing", "reservation"],
+                    ),
+                    vol.Required("target_id"): str,
+                    vol.Required("field_id"): str,
+                    vol.Required("value"): vol.Any(
+                        str,
+                        int,
+                        float,
+                        bool,
+                    ),
+                },
+            ),
+            supports_response=SupportsResponse.OPTIONAL,
+        )
 
     async def _async_options_updated(
         hass: HomeAssistant,
@@ -263,6 +396,19 @@ async def async_setup_entry(
         )
         reservations_coordinator.update_interval = timedelta(
             minutes=res_interval,
+        )
+
+        from custom_components.guesty.const import (
+            CONF_CF_SCAN_INTERVAL,
+            DEFAULT_CF_SCAN_INTERVAL,
+        )
+
+        cf_interval = entry.options.get(
+            CONF_CF_SCAN_INTERVAL,
+            DEFAULT_CF_SCAN_INTERVAL,
+        )
+        cf_coordinator.update_interval = timedelta(
+            minutes=cf_interval,
         )
 
     entry.async_on_unload(
@@ -300,7 +446,23 @@ async def async_unload_entry(
     if unload_ok:
         data = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
         if data is not None:
+            for key in (
+                "coordinator",
+                "reservations_coordinator",
+                "cf_coordinator",
+            ):
+                coord = data.get(key)
+                if coord is not None:
+                    await coord.async_shutdown()
             http_client: httpx.AsyncClient = data["http_client"]
             await http_client.aclose()
+
+        # Remove service if no entries remain
+        remaining = hass.data.get(DOMAIN, {})
+        if not remaining:
+            hass.services.async_remove(
+                DOMAIN,
+                SERVICE_SET_CUSTOM_FIELD,
+            )
 
     return unload_ok

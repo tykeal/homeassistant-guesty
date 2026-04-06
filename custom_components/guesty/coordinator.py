@@ -20,14 +20,17 @@ from custom_components.guesty.api.const import (
 )
 from custom_components.guesty.api.exceptions import GuestyApiError
 from custom_components.guesty.api.models import (
+    GuestyCustomFieldDefinition,
     GuestyListing,
     GuestyReservation,
 )
 from custom_components.guesty.const import (
+    CONF_CF_SCAN_INTERVAL,
     CONF_FUTURE_DAYS,
     CONF_PAST_DAYS,
     CONF_RESERVATION_SCAN_INTERVAL,
     CONF_SCAN_INTERVAL,
+    DEFAULT_CF_SCAN_INTERVAL,
     DEFAULT_RESERVATION_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
@@ -38,6 +41,9 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
     from custom_components.guesty.api.client import GuestyApiClient
+    from custom_components.guesty.api.custom_fields import (
+        GuestyCustomFieldsClient,
+    )
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -244,3 +250,99 @@ class ReservationsCoordinator(
             )
 
         return result
+
+
+class CustomFieldsDefinitionCoordinator(
+    DataUpdateCoordinator[list[GuestyCustomFieldDefinition]],
+):
+    """Coordinator that fetches Guesty custom field definitions.
+
+    Wraps ``GuestyCustomFieldsClient.get_definitions()`` inside a
+    ``DataUpdateCoordinator`` so field definitions are refreshed
+    periodically for validation and discovery.
+
+    Attributes:
+        cf_client: The Guesty custom fields client instance.
+        config_entry: The integration config entry.
+    """
+
+    config_entry: ConfigEntry
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        cf_client: GuestyCustomFieldsClient,
+    ) -> None:
+        """Initialize the custom fields definition coordinator.
+
+        Args:
+            hass: Home Assistant instance.
+            entry: The config entry for this integration.
+            cf_client: Custom fields client for fetching definitions.
+        """
+        self.cf_client = cf_client
+        interval_minutes = entry.options.get(
+            CONF_CF_SCAN_INTERVAL,
+            DEFAULT_CF_SCAN_INTERVAL,
+        )
+        super().__init__(
+            hass,
+            _LOGGER,
+            config_entry=entry,
+            name=f"{DOMAIN}_custom_fields",
+            update_interval=timedelta(minutes=interval_minutes),
+        )
+
+    async def _async_update_data(
+        self,
+    ) -> list[GuestyCustomFieldDefinition]:
+        """Fetch all custom field definitions.
+
+        Returns:
+            List of custom field definitions.
+
+        Raises:
+            UpdateFailed: On any Guesty API error.
+        """
+        try:
+            return await self.cf_client.get_definitions()
+        except GuestyApiError as exc:
+            raise UpdateFailed(
+                f"Error fetching custom field definitions: {exc.message}",
+            ) from exc
+
+    def get_field(
+        self,
+        field_id: str,
+    ) -> GuestyCustomFieldDefinition | None:
+        """Look up a custom field definition by ID.
+
+        Args:
+            field_id: The custom field identifier.
+
+        Returns:
+            The matching definition, or None if not found.
+        """
+        if self.data is None:
+            return None
+        for defn in self.data:
+            if defn.field_id == field_id:
+                return defn
+        return None
+
+    def get_fields_for_target(
+        self,
+        target_type: str,
+    ) -> list[GuestyCustomFieldDefinition]:
+        """Filter definitions by target type applicability.
+
+        Args:
+            target_type: Entity type ('listing' or 'reservation').
+
+        Returns:
+            List of definitions applicable to the target type.
+        """
+        if self.data is None:
+            return []
+        return [d for d in self.data if target_type in d.applicable_to]
