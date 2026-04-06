@@ -418,7 +418,7 @@ class GuestyListing:
             accommodates=data.get("accommodates"),
             timezone=data.get("timezone") or "UTC",
             check_in_time=data.get("defaultCheckInTime"),
-            check_out_time=data.get("defaultCheckoutTime"),
+            check_out_time=data.get("defaultCheckOutTime"),
             tags=tags,
             custom_fields=custom_fields,
         )
