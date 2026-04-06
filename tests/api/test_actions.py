@@ -1175,7 +1175,7 @@ class TestEdgeCasesReservationNote:
 
     @respx.mock
     async def test_deleted_reservation_returns_error(self) -> None:
-        """404 for deleted reservation raises GuestyActionError."""
+        """422 for deleted reservation raises GuestyActionError."""
         from unittest.mock import patch as _patch
 
         respx.post(TOKEN_URL).mock(
@@ -1338,8 +1338,8 @@ class TestEdgeCasesCalendar:
     """Edge case tests for set_calendar_availability."""
 
     @respx.mock
-    async def test_calendar_409_conflict(self) -> None:
-        """409 Conflict raises GuestyActionError."""
+    async def test_calendar_422_error(self) -> None:
+        """422 response raises GuestyActionError."""
         from unittest.mock import patch as _patch
 
         respx.post(TOKEN_URL).mock(
