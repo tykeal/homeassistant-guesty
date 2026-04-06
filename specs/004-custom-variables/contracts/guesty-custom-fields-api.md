@@ -51,7 +51,7 @@ Authorization: Bearer {token}
 | `id` | string | Unique field identifier |
 | `name` | string | Human-readable display name |
 | `type` | string | Value type (string, number, boolean) |
-| `objectType` | string | Target: listing, reservation |
+| `objectType` | string | Target: `listing`, `reservation`, or `both` |
 
 **Error responses**:
 

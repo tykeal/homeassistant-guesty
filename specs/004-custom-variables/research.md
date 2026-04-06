@@ -68,7 +68,9 @@ should pass values through and surface Guesty rejections.
 **Validation rules**:
 
 - `text`: Value must be a string
-- `number`: Value must be int or float
+- `number`: Value must have exact type `int` or `float`
+  (reject `bool` before numeric check since Python's `bool`
+  is a subclass of `int`; use `type(value) in (int, float)`)
 - `boolean`: Value must be bool
 - Unknown type: Skip local validation, pass to Guesty
 
