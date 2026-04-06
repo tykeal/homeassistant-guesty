@@ -147,6 +147,7 @@ class TestGuestyEntityDeviceInfo:
             address=None,
             property_type=None,
             room_type=None,
+            listing_type=None,
             bedrooms=None,
             bathrooms=None,
             accommodates=None,
@@ -265,6 +266,7 @@ DETAIL_SENSOR_KEYS = (
     "address",
     "property_type",
     "room_type",
+    "listing_type",
     "bedrooms",
     "bathrooms",
     "accommodates",
@@ -346,6 +348,7 @@ class TestPropertyDetailSensors:
             address=None,
             property_type=None,
             room_type=None,
+            listing_type=None,
             bedrooms=None,
             bathrooms=None,
             accommodates=None,
@@ -396,6 +399,22 @@ class TestPropertyDetailSensors:
             description=desc,
         )
         assert sensor.native_value == sample_listing.room_type
+
+    def test_listing_type_sensor_native_value(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        mock_coordinator: AsyncMock,
+    ) -> None:
+        """Listing type sensor returns listing.listing_type."""
+        desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "listing_type")
+        sensor = GuestyListingSensor(
+            coordinator=mock_coordinator,
+            listing_id=sample_listing.id,
+            entry=mock_coordinator.config_entry,
+            description=desc,
+        )
+        assert sensor.native_value == sample_listing.listing_type
 
     def test_bedrooms_sensor_native_value(
         self,
@@ -499,6 +518,7 @@ class TestPropertyDetailSensors:
             "nickname",
             "property_type",
             "room_type",
+            "listing_type",
             "bedrooms",
             "bathrooms",
             "accommodates",
@@ -521,6 +541,7 @@ class TestPropertyDetailSensors:
             address=None,
             property_type=None,
             room_type=None,
+            listing_type=None,
             bedrooms=None,
             bathrooms=None,
             accommodates=None,
@@ -670,6 +691,7 @@ class TestNewListingDiscovery:
             address=None,
             property_type="house",
             room_type="entire_home",
+            listing_type="SINGLE",
             bedrooms=3,
             bathrooms=2.0,
             accommodates=6,
@@ -1001,6 +1023,7 @@ class TestTagsSensor:
             address=None,
             property_type=None,
             room_type=None,
+            listing_type=None,
             bedrooms=None,
             bathrooms=None,
             accommodates=None,
@@ -1131,6 +1154,7 @@ class TestCustomFieldSensors:
             address=None,
             property_type=None,
             room_type=None,
+            listing_type=None,
             bedrooms=None,
             bathrooms=None,
             accommodates=None,
@@ -1248,6 +1272,7 @@ class TestCustomFieldSensors:
             address=None,
             property_type=None,
             room_type=None,
+            listing_type=None,
             bedrooms=None,
             bathrooms=None,
             accommodates=None,
@@ -1316,6 +1341,7 @@ class TestCustomFieldSensors:
             address=None,
             property_type=None,
             room_type=None,
+            listing_type=None,
             bedrooms=None,
             bathrooms=None,
             accommodates=None,
@@ -1368,6 +1394,7 @@ class TestCustomFieldSensors:
             address=None,
             property_type=None,
             room_type=None,
+            listing_type=None,
             bedrooms=None,
             bathrooms=None,
             accommodates=None,

@@ -74,6 +74,7 @@ LISTINGS_FIELDS: tuple[str, ...] = (
     "address",
     "propertyType",
     "roomType",
+    "listingType",
     "bedrooms",
     "bathrooms",
     "accommodates",
