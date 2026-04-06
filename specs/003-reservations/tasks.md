@@ -314,7 +314,7 @@ with appropriate logging.
 
 <!-- markdownlint-disable MD013 -->
 
-- [ ] T023 [US3] Write tests verifying guest information
+- [x] T023 [US3] Write tests verifying guest information
   attributes: `guest_name`, `guest_phone`, `guest_email`
   present on reservation status sensor for active reservation
   with complete guest data; missing guest phone shows `None`;
@@ -331,7 +331,7 @@ with appropriate logging.
 
 <!-- markdownlint-disable MD013 -->
 
-- [ ] T024 [P] [US5] Write tests for coordinator error
+- [x] T024 [P] [US5] Write tests for coordinator error
   handling and stale data retention: `_async_update_data`
   raises `UpdateFailed` on
   `GuestyConnectionError`/`GuestyRateLimitError`/`GuestyResponseError`,
@@ -339,7 +339,7 @@ with appropriate logging.
   `UpdateFailed` (FR-014), recovery updates data on next
   successful fetch, warning logged on API failure with error
   context in `tests/test_coordinator.py`
-- [ ] T025 [P] [US5] Write tests for sensor availability
+- [x] T025 [P] [US5] Write tests for sensor availability
   during API failures: sensor reports previous state when
   coordinator has stale data, entity availability reflects
   coordinator error state so user is aware of the issue
