@@ -843,6 +843,15 @@ class GuestyCustomFieldUpdate:
     field_id: str
     value: str | int | float | bool
 
+    def __post_init__(self) -> None:
+        """Validate required fields after initialization.
+
+        Raises:
+            ValueError: If field_id is empty.
+        """
+        if not self.field_id:
+            raise ValueError("field_id must not be empty")
+
     def to_api_dict(self) -> dict[str, str | int | float | bool]:
         """Serialise to the Guesty API request body format.
 

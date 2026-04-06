@@ -1599,6 +1599,11 @@ class TestGuestyCustomFieldUpdateFrozen:
         with pytest.raises(AttributeError):
             update.field_id = "f2"  # type: ignore[misc]
 
+    def test_empty_field_id_raises_value_error(self) -> None:
+        """GuestyCustomFieldUpdate rejects empty field_id."""
+        with pytest.raises(ValueError, match="field_id must not be empty"):
+            GuestyCustomFieldUpdate(field_id="", value="val")
+
 
 class TestGuestyCustomFieldResult:
     """Tests for GuestyCustomFieldResult construction."""
