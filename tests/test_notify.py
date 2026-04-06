@@ -1285,16 +1285,22 @@ class TestEdgeCases:
 class TestRateLimitRetryIntegration:
     """Rate limit retry integration tests through full stack (T022)."""
 
-    async def test_429_then_success_delivers_message(
+    async def test_retry_transparent_to_ha_layer(
         self,
         hass: HomeAssistant,
         mock_messaging_client: AsyncMock,
     ) -> None:
-        """Message delivered after 429 retry via GuestyApiClient."""
+        """Retry is transparent: HA layer sees successful result.
+
+        The GuestyApiClient handles 429 retry internally;
+        the notify entity only sees the final success result.
+        """
         entry = _make_entry()
         entity = GuestyNotifyEntity(mock_messaging_client, entry)
         entity.hass = hass
 
+        # Simulate that the client handled retries internally
+        # and returned a successful result.
         mock_messaging_client.send_message.return_value = MessageDeliveryResult(
             success=True,
             message_id="msg-retry-ok",
@@ -1553,13 +1559,13 @@ class TestErrorDetailQuality:
         assert "res-fail-detail" in error_msg
         assert "500" in error_msg
 
-    async def test_retry_logged_at_warning(
+    async def test_successful_delivery_has_no_error_logs(
         self,
         hass: HomeAssistant,
         mock_messaging_client: AsyncMock,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Retries are logged at warning level."""
+        """Successful delivery produces no error-level logs."""
         import logging
 
         entry = _make_entry()
@@ -1572,9 +1578,9 @@ class TestErrorDetailQuality:
             reservation_id="res-warn",
         )
 
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.DEBUG):
             await entity.async_send_guest_message(
-                message="OK after warn",
+                message="OK message",
                 reservation_id="res-warn",
             )
 
@@ -1899,8 +1905,8 @@ class TestSuccessCriteriaValidation:
         source = inspect.getsource(msg_tests)
         # Verify respx is used for HTTP mocking
         assert "respx" in source
-        # No real API URLs should be called
-        assert "open-api.guesty.com" not in source or ("BASE_URL" in source)
+        # No hard-coded live API URLs in test source
+        assert "open-api.guesty.com" not in source
 
     async def test_sc010_template_resolves_all_variables(
         self,

@@ -499,7 +499,18 @@ def _calculate_backoff(
     if retry_after is not None:
         return min(retry_after, MAX_BACKOFF)
 
-    # Apply ±25% jitter
+    return _jittered_delay(base_backoff)
+
+
+def _jittered_delay(base_backoff: float) -> float:
+    """Apply ±25% jitter to a base backoff delay.
+
+    Args:
+        base_backoff: Current backoff delay in seconds.
+
+    Returns:
+        Delay in seconds with jitter applied, minimum 0.1s.
+    """
     delay = min(base_backoff, MAX_BACKOFF)
     jitter = delay * 0.25 * (2 * random.random() - 1)
     return max(0.1, delay + jitter)
@@ -514,9 +525,7 @@ def _calculate_transient_backoff(base_backoff: float) -> float:
     Returns:
         Delay in seconds before next retry.
     """
-    delay = min(base_backoff, MAX_BACKOFF)
-    jitter = delay * 0.25 * (2 * random.random() - 1)
-    return max(0.1, delay + jitter)
+    return _jittered_delay(base_backoff)
 
 
 _TRANSIENT_STATUS_CODES: frozenset[int] = frozenset(
