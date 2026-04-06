@@ -79,8 +79,8 @@ reservation data updates.
    **When** a guest checks out and the data refreshes, **Then** the automation
    fires so the user can initiate cleaning workflows or reset smart home
    devices.
-3. **Given** a reservation is cancelled in Guesty, **When** the data refreshes,
-   **Then** the reservation status changes to "cancelled" and any automations
+3. **Given** a reservation is canceled in Guesty, **When** the data refreshes,
+   **Then** the reservation status changes to "canceled" and any automations
    listening for that state transition fire accordingly.
 
 ---
@@ -94,7 +94,7 @@ portal.
 
 **Why this priority**: Guest contact information is the second most valuable
 data point after check-in/out schedules. It enables direct guest communication
-workflows and integrates with notification features (Feature 5). However, the
+workflows and integrates with notification features (Feature 005). However, the
 core reservation status from P1 stories is usable without guest details.
 
 **Independent Test**: Can be fully tested by checking the attributes of the
@@ -121,7 +121,7 @@ and email are present for the current or upcoming reservation.
 ### User Story 4 - Track Reservation Financial Summary (Priority: P3)
 
 As a property manager, I want to see financial summary data (total price,
-currency, payment status) for reservations as diagnostic information on each
+balance due, currency) for reservations as diagnostic information on each
 listing, so I can monitor revenue and payment status alongside property
 operations.
 
@@ -209,18 +209,25 @@ displayed with a staleness indicator.
 - **FR-002**: System MUST fetch reservations filtered to a configurable date
   range window — defaulting to 30 days in the past through 365 days in the
   future from the current date.
-- **FR-003**: System MUST filter fetched reservations to actionable statuses:
-  confirmed, checked_in, checked_out, and canceled. Inquiry and reserved
-  statuses MUST be excluded by default.
+- **FR-003**: System MUST retain and process reservations with known
+  actionable statuses: confirmed, checked_in, checked_out, and canceled.
+  Known non-actionable statuses, specifically inquiry and reserved, MUST
+  be excluded by default. Unrecognized or newly introduced Guesty
+  statuses MUST NOT be excluded solely for being unknown and MUST be
+  passed through as-is.
 - **FR-004**: System MUST associate each reservation with its parent listing
   device from Feature 2, using the listing identifier as the linkage key.
 - **FR-005**: System MUST expose a reservation status sensor on each listing
-  device that reflects the current occupancy state: "no_reservation",
-  "awaiting_checkin", "checked_in", or "checked_out".
-- **FR-006**: The reservation status sensor MUST derive its state from the
-  chronologically nearest relevant reservation — the currently active
-  reservation (checked_in) takes priority, followed by the next upcoming
-  confirmed reservation.
+  device that reflects the current occupancy or reservation lifecycle
+  state: "no_reservation", "awaiting_checkin", "checked_in",
+  "checked_out", or "canceled".
+- **FR-006**: The reservation status sensor MUST derive its state from
+  the chronologically nearest relevant reservation, with the following
+  priority: the currently active reservation (`checked_in`) takes
+  priority, followed by the next upcoming confirmed reservation
+  (`awaiting_checkin`), followed by the nearest completed reservation
+  (`checked_out`) or canceled reservation (`canceled`) when no active
+  or upcoming confirmed reservation applies.
 - **FR-007**: System MUST expose check-in and check-out dates and times as
   attributes on the reservation status sensor for the current or next
   reservation.
