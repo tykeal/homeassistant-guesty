@@ -396,16 +396,15 @@ async def async_unload_actions(
 ) -> None:
     """Remove Guesty action services on last entry unload.
 
-    Only removes services when no other entries remain in
-    hass.data[DOMAIN] besides the one being unloaded.
+    Called after the entry has been removed from hass.data[DOMAIN],
+    so remaining entries are simply len(domain_data).
 
     Args:
         hass: Home Assistant instance.
         entry: The config entry being unloaded.
     """
     domain_data: dict[str, Any] = hass.data.get(DOMAIN, {})
-    remaining = sum(1 for eid in domain_data if eid != entry.entry_id)
-    if remaining > 0:
+    if len(domain_data) > 0:
         return
 
     for name in _ALL_SERVICES:

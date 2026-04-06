@@ -445,10 +445,6 @@ async def async_unload_entry(
     Returns:
         True if unload succeeds.
     """
-    from custom_components.guesty.actions import async_unload_actions
-
-    await async_unload_actions(hass, entry)
-
     unload_ok = await hass.config_entries.async_unload_platforms(
         entry,
         PLATFORMS,
@@ -475,5 +471,11 @@ async def async_unload_entry(
                 DOMAIN,
                 SERVICE_SET_CUSTOM_FIELD,
             )
+
+        from custom_components.guesty.actions import (
+            async_unload_actions,
+        )
+
+        await async_unload_actions(hass, entry)
 
     return unload_ok
