@@ -967,6 +967,15 @@ class TestCustomFieldSensors:
         desc = create_custom_field_description("region")
         assert desc.name == "region"
 
+    def test_custom_field_slug_collision_disambiguated(self) -> None:
+        """Colliding slugs get a numeric suffix."""
+        seen: dict[str, int] = {}
+        d1 = create_custom_field_description("Pool Type", seen)
+        d2 = create_custom_field_description("pool_type", seen)
+        assert d1.key == "custom_pool_type"
+        assert d2.key == "custom_pool_type_1"
+        assert d1.key != d2.key
+
     async def test_no_custom_field_sensors_when_empty(
         self,
         hass: HomeAssistant,

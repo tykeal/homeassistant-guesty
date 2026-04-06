@@ -122,17 +122,24 @@ LISTING_SENSOR_DESCRIPTIONS: tuple[GuestyListingSensorEntityDescription, ...] = 
 
 def create_custom_field_description(
     field_name: str,
+    seen_slugs: dict[str, int] | None = None,
 ) -> GuestyListingSensorEntityDescription:
     """Create a sensor description for a Guesty custom field.
 
     Args:
         field_name: The custom field name from the listing.
+        seen_slugs: Tracks slug usage to disambiguate collisions.
 
     Returns:
         A description whose key is ``custom_{slugified_name}``
         and whose ``value_fn`` extracts the specific field.
     """
     slug = slugify(field_name)
+    if seen_slugs is not None:
+        count = seen_slugs.get(slug, 0)
+        seen_slugs[slug] = count + 1
+        if count > 0:
+            slug = f"{slug}_{count}"
 
     def _value_fn(listing: GuestyListing) -> StateType:
         """Extract the custom field value from the listing."""
@@ -256,8 +263,9 @@ async def async_setup_entry(
             # Dynamic custom field sensors
             listing = coordinator.data.get(listing_id) if coordinator.data else None
             if listing:
+                seen_slugs: dict[str, int] = {}
                 for field_name in listing.custom_fields:
-                    cf_desc = create_custom_field_description(field_name)
+                    cf_desc = create_custom_field_description(field_name, seen_slugs)
                     entities.append(
                         GuestyListingSensor(
                             coordinator=coordinator,
