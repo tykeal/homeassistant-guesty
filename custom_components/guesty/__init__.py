@@ -20,6 +20,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 
+from custom_components.guesty.api.actions import GuestyActionsClient
 from custom_components.guesty.api.auth import GuestyTokenManager
 from custom_components.guesty.api.client import GuestyApiClient
 from custom_components.guesty.api.const import DEFAULT_TIMEOUT
@@ -235,6 +236,7 @@ async def async_setup_entry(
         raise
 
     messaging_client = GuestyMessagingClient(api_client)
+    actions_client = GuestyActionsClient(api_client)
 
     cf_client = GuestyCustomFieldsClient(api_client)
     cf_coordinator = CustomFieldsDefinitionCoordinator(
@@ -260,6 +262,7 @@ async def async_setup_entry(
         "messaging_client": messaging_client,
         "cf_client": cf_client,
         "cf_coordinator": cf_coordinator,
+        "actions_client": actions_client,
     }
 
     async def _async_handle_set_custom_field(
@@ -415,6 +418,10 @@ async def async_setup_entry(
         entry.add_update_listener(_async_options_updated),
     )
 
+    from custom_components.guesty.actions import async_setup_actions
+
+    await async_setup_actions(hass, entry)
+
     await hass.config_entries.async_forward_entry_setups(
         entry,
         PLATFORMS,
@@ -464,5 +471,11 @@ async def async_unload_entry(
                 DOMAIN,
                 SERVICE_SET_CUSTOM_FIELD,
             )
+
+        from custom_components.guesty.actions import (
+            async_unload_actions,
+        )
+
+        await async_unload_actions(hass, entry)
 
     return unload_ok

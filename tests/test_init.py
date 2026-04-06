@@ -90,6 +90,7 @@ class TestAsyncSetupEntry:
         assert "http_client" in data
         assert "token_manager" in data
         assert "api_client" in data
+        assert "actions_client" in data
 
     @patch(
         "custom_components.guesty.GuestyApiClient.test_connection",
