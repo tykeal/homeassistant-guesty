@@ -24,3 +24,18 @@ DEFAULT_SCAN_INTERVAL: int = 15
 
 # Minimum scan interval in minutes for the listings coordinator.
 MIN_SCAN_INTERVAL: int = 5
+
+# Configuration key for the reservation polling scan interval.
+CONF_RESERVATION_SCAN_INTERVAL: str = "reservation_scan_interval"
+
+# Configuration key for the reservation past days window.
+CONF_PAST_DAYS: str = "past_days"
+
+# Configuration key for the reservation future days window.
+CONF_FUTURE_DAYS: str = "future_days"
+
+# Default scan interval in minutes for the reservations coordinator.
+DEFAULT_RESERVATION_SCAN_INTERVAL: int = 15
+
+# Minimum scan interval in minutes for the reservations coordinator.
+MIN_RESERVATION_SCAN_INTERVAL: int = 5

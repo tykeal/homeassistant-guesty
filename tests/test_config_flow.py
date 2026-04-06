@@ -21,8 +21,12 @@ from custom_components.guesty.api.exceptions import (
     GuestyRateLimitError,
 )
 from custom_components.guesty.const import (
+    CONF_FUTURE_DAYS,
+    CONF_PAST_DAYS,
+    CONF_RESERVATION_SCAN_INTERVAL,
     CONF_SCAN_INTERVAL,
     DOMAIN,
+    MIN_RESERVATION_SCAN_INTERVAL,
     MIN_SCAN_INTERVAL,
 )
 from tests.conftest import make_token_response
@@ -578,3 +582,187 @@ class TestOptionsFlow:
 
         handler = GuestyConfigFlow.async_get_options_flow(entry)
         assert handler is not None
+
+
+class TestReservationOptionsFlow:
+    """Tests for reservation-specific options flow fields."""
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_options_flow_presents_reservation_fields(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Options flow shows reservation scan interval fields."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+
+        result = await hass.config_entries.options.async_init(
+            entry.entry_id,
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "init"
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_reservation_interval_saves(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Valid reservation_scan_interval saves to options."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+
+        result = await hass.config_entries.options.async_init(
+            entry.entry_id,
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={
+                CONF_SCAN_INTERVAL: 15,
+                CONF_RESERVATION_SCAN_INTERVAL: 10,
+                CONF_PAST_DAYS: 30,
+                CONF_FUTURE_DAYS: 365,
+            },
+        )
+        assert result["type"] is FlowResultType.CREATE_ENTRY
+        assert entry.options[CONF_RESERVATION_SCAN_INTERVAL] == 10
+        assert entry.options[CONF_PAST_DAYS] == 30
+        assert entry.options[CONF_FUTURE_DAYS] == 365
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_reservation_interval_below_minimum_rejects(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Reservation interval below minimum raises error."""
+        from homeassistant.data_entry_flow import InvalidData
+
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+
+        result = await hass.config_entries.options.async_init(
+            entry.entry_id,
+        )
+        with pytest.raises(InvalidData):
+            await hass.config_entries.options.async_configure(
+                result["flow_id"],
+                user_input={
+                    CONF_SCAN_INTERVAL: 15,
+                    CONF_RESERVATION_SCAN_INTERVAL: (MIN_RESERVATION_SCAN_INTERVAL - 1),
+                    CONF_PAST_DAYS: 30,
+                    CONF_FUTURE_DAYS: 365,
+                },
+            )
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_past_days_accepts_positive_integer(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """past_days accepts positive integers."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+
+        result = await hass.config_entries.options.async_init(
+            entry.entry_id,
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={
+                CONF_SCAN_INTERVAL: 15,
+                CONF_RESERVATION_SCAN_INTERVAL: 15,
+                CONF_PAST_DAYS: 7,
+                CONF_FUTURE_DAYS: 365,
+            },
+        )
+        assert result["type"] is FlowResultType.CREATE_ENTRY
+        assert entry.options[CONF_PAST_DAYS] == 7
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_past_days_zero_rejects(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """past_days of 0 raises validation error."""
+        from homeassistant.data_entry_flow import InvalidData
+
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+
+        result = await hass.config_entries.options.async_init(
+            entry.entry_id,
+        )
+        with pytest.raises(InvalidData):
+            await hass.config_entries.options.async_configure(
+                result["flow_id"],
+                user_input={
+                    CONF_SCAN_INTERVAL: 15,
+                    CONF_RESERVATION_SCAN_INTERVAL: 15,
+                    CONF_PAST_DAYS: 0,
+                    CONF_FUTURE_DAYS: 365,
+                },
+            )

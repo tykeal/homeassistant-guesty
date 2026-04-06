@@ -29,9 +29,14 @@ from custom_components.guesty.api.models import CachedToken
 from custom_components.guesty.const import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
+    CONF_FUTURE_DAYS,
+    CONF_PAST_DAYS,
+    CONF_RESERVATION_SCAN_INTERVAL,
     CONF_SCAN_INTERVAL,
+    DEFAULT_RESERVATION_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    MIN_RESERVATION_SCAN_INTERVAL,
     MIN_SCAN_INTERVAL,
 )
 
@@ -306,8 +311,9 @@ class GuestyOptionsFlowHandler(OptionsFlow):
     ) -> ConfigFlowResult:
         """Handle the initial options step.
 
-        Presents a form for configuring scan_interval. The schema
-        validates the minimum interval requirement.
+        Presents a form for configuring scan_interval, reservation
+        scan interval, past days, and future days. The schema
+        validates minimum interval and positive day requirements.
 
         Args:
             user_input: User-provided form data, or None for
@@ -321,22 +327,65 @@ class GuestyOptionsFlowHandler(OptionsFlow):
                 title="",
                 data={
                     CONF_SCAN_INTERVAL: user_input[CONF_SCAN_INTERVAL],
+                    CONF_RESERVATION_SCAN_INTERVAL: user_input[
+                        CONF_RESERVATION_SCAN_INTERVAL
+                    ],
+                    CONF_PAST_DAYS: user_input[CONF_PAST_DAYS],
+                    CONF_FUTURE_DAYS: user_input[CONF_FUTURE_DAYS],
                 },
             )
 
-        current = self._config_entry.options.get(
+        current_scan = self._config_entry.options.get(
             CONF_SCAN_INTERVAL,
             DEFAULT_SCAN_INTERVAL,
+        )
+        current_res_scan = self._config_entry.options.get(
+            CONF_RESERVATION_SCAN_INTERVAL,
+            DEFAULT_RESERVATION_SCAN_INTERVAL,
+        )
+        from custom_components.guesty.api.const import (
+            DEFAULT_FUTURE_DAYS,
+            DEFAULT_PAST_DAYS,
+        )
+
+        current_past_days = self._config_entry.options.get(
+            CONF_PAST_DAYS,
+            DEFAULT_PAST_DAYS,
+        )
+        current_future_days = self._config_entry.options.get(
+            CONF_FUTURE_DAYS,
+            DEFAULT_FUTURE_DAYS,
         )
 
         schema = vol.Schema(
             {
                 vol.Required(
                     CONF_SCAN_INTERVAL,
-                    default=current,
+                    default=current_scan,
                 ): vol.All(
                     vol.Coerce(int),
                     vol.Range(min=MIN_SCAN_INTERVAL),
+                ),
+                vol.Required(
+                    CONF_RESERVATION_SCAN_INTERVAL,
+                    default=current_res_scan,
+                ): vol.All(
+                    vol.Coerce(int),
+                    vol.Range(min=MIN_RESERVATION_SCAN_INTERVAL),
+                ),
+                vol.Required(
+                    CONF_PAST_DAYS,
+                    default=current_past_days,
+                ): vol.All(
+                    vol.Coerce(int),
+                    vol.Range(min=1),
+                ),
+                vol.Required(
+                    CONF_FUTURE_DAYS,
+                    default=current_future_days,
+                ): vol.All(
+                    vol.Coerce(int),
+                    vol.Range(min=1),
                 ),
             }
         )

@@ -501,9 +501,17 @@ class TestSensorPlatformSetup:
         coordinator.data = {sample_listing.id: sample_listing}
         coordinator.async_add_listener = MagicMock(return_value=MagicMock())
 
+        res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        res_coordinator.data = {}
+        res_coordinator.last_update_success = True
+        res_coordinator.async_add_listener = MagicMock(
+            return_value=MagicMock(),
+        )
+
         hass.data.setdefault(DOMAIN, {})
         hass.data[DOMAIN][entry.entry_id] = {
             "coordinator": coordinator,
+            "reservations_coordinator": res_coordinator,
         }
 
         added_entities: list[Entity] = []
@@ -547,9 +555,17 @@ class TestNewListingDiscovery:
         coordinator.data = {sample_listing.id: sample_listing}
         coordinator.async_add_listener = MagicMock(return_value=MagicMock())
 
+        res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        res_coordinator.data = {}
+        res_coordinator.last_update_success = True
+        res_coordinator.async_add_listener = MagicMock(
+            return_value=MagicMock(),
+        )
+
         hass.data.setdefault(DOMAIN, {})
         hass.data[DOMAIN][entry.entry_id] = {
             "coordinator": coordinator,
+            "reservations_coordinator": res_coordinator,
         }
 
         added_entities: list[Entity] = []
@@ -676,9 +692,17 @@ class TestEdgeCases:
             return_value=MagicMock(),
         )
 
+        res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        res_coordinator.data = {}
+        res_coordinator.last_update_success = True
+        res_coordinator.async_add_listener = MagicMock(
+            return_value=MagicMock(),
+        )
+
         hass.data.setdefault(DOMAIN, {})
         hass.data[DOMAIN][entry.entry_id] = {
             "coordinator": coordinator,
+            "reservations_coordinator": res_coordinator,
         }
 
         added_entities: list[Entity] = []
@@ -1004,9 +1028,17 @@ class TestCustomFieldSensors:
         coordinator.data = {"no-cf": listing}
         coordinator.async_add_listener = MagicMock(return_value=MagicMock())
 
+        res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        res_coordinator.data = {}
+        res_coordinator.last_update_success = True
+        res_coordinator.async_add_listener = MagicMock(
+            return_value=MagicMock(),
+        )
+
         hass.data.setdefault(DOMAIN, {})
         hass.data[DOMAIN][entry.entry_id] = {
             "coordinator": coordinator,
+            "reservations_coordinator": res_coordinator,
         }
 
         added_entities: list[Entity] = []
@@ -1046,9 +1078,17 @@ class TestCustomFieldSensors:
         coordinator.data = {sample_listing.id: sample_listing}
         coordinator.async_add_listener = MagicMock(return_value=MagicMock())
 
+        res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        res_coordinator.data = {}
+        res_coordinator.last_update_success = True
+        res_coordinator.async_add_listener = MagicMock(
+            return_value=MagicMock(),
+        )
+
         hass.data.setdefault(DOMAIN, {})
         hass.data[DOMAIN][entry.entry_id] = {
             "coordinator": coordinator,
+            "reservations_coordinator": res_coordinator,
         }
 
         added_entities: list[Entity] = []
@@ -1104,9 +1144,17 @@ class TestCustomFieldSensors:
         coordinator.data = {"multi-cf": listing}
         coordinator.async_add_listener = MagicMock(return_value=MagicMock())
 
+        res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        res_coordinator.data = {}
+        res_coordinator.last_update_success = True
+        res_coordinator.async_add_listener = MagicMock(
+            return_value=MagicMock(),
+        )
+
         hass.data.setdefault(DOMAIN, {})
         hass.data[DOMAIN][entry.entry_id] = {
             "coordinator": coordinator,
+            "reservations_coordinator": res_coordinator,
         }
 
         added_entities: list[Entity] = []
@@ -1163,9 +1211,17 @@ class TestCustomFieldSensors:
         coordinator.data = {"listing-a": listing1}
         coordinator.async_add_listener = MagicMock(return_value=MagicMock())
 
+        res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        res_coordinator.data = {}
+        res_coordinator.last_update_success = True
+        res_coordinator.async_add_listener = MagicMock(
+            return_value=MagicMock(),
+        )
+
         hass.data.setdefault(DOMAIN, {})
         hass.data[DOMAIN][entry.entry_id] = {
             "coordinator": coordinator,
+            "reservations_coordinator": res_coordinator,
         }
 
         added_entities: list[Entity] = []

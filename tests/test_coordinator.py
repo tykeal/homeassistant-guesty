@@ -19,15 +19,20 @@ from custom_components.guesty.api.exceptions import (
     GuestyConnectionError,
     GuestyResponseError,
 )
-from custom_components.guesty.api.models import GuestyListing
+from custom_components.guesty.api.models import GuestyListing, GuestyReservation
 from custom_components.guesty.const import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
+    CONF_RESERVATION_SCAN_INTERVAL,
     CONF_SCAN_INTERVAL,
+    DEFAULT_RESERVATION_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
 )
-from custom_components.guesty.coordinator import ListingsCoordinator
+from custom_components.guesty.coordinator import (
+    ListingsCoordinator,
+    ReservationsCoordinator,
+)
 
 
 def _make_entry(**overrides: object) -> MockConfigEntry:
@@ -466,3 +471,439 @@ class TestDisappearedListings:
             await coordinator._async_update_data()
 
         assert sample_listing.id in coordinator.disappeared_listing_ids
+
+
+class TestReservationsCoordinator:
+    """Tests for ReservationsCoordinator._async_update_data."""
+
+    async def test_update_data_returns_dict_keyed_by_listing_id(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        sample_reservation: GuestyReservation,
+    ) -> None:
+        """_async_update_data returns dict keyed by listing_id."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_reservations = AsyncMock(
+            return_value=[sample_reservation],
+        )
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = {sample_listing.id: sample_listing}
+
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+
+        data = await coordinator._async_update_data()
+        assert isinstance(data, dict)
+        assert sample_listing.id in data
+        assert data[sample_listing.id] == [sample_reservation]
+        api_client.get_reservations.assert_awaited_once()
+
+    async def test_groups_reservations_by_listing_id(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """Reservations are grouped by listing_id."""
+        from datetime import UTC, datetime
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        res_a = GuestyReservation(
+            id="res-a",
+            listing_id="listing-001",
+            status="confirmed",
+            check_in=datetime(2025, 8, 1, 15, 0, 0, tzinfo=UTC),
+            check_out=datetime(2025, 8, 5, 11, 0, 0, tzinfo=UTC),
+        )
+        listing_b = GuestyListing(
+            id="listing-002",
+            title="Mountain Cabin",
+            nickname="cabin",
+            status="active",
+            address=None,
+            property_type="house",
+            room_type="entire_home",
+            bedrooms=3,
+            bathrooms=2.0,
+            timezone="America/Denver",
+            check_in_time="16:00",
+            check_out_time="10:00",
+            tags=(),
+            custom_fields=MappingProxyType({}),
+        )
+        res_b = GuestyReservation(
+            id="res-b",
+            listing_id="listing-002",
+            status="checked_in",
+            check_in=datetime(2025, 8, 2, 15, 0, 0, tzinfo=UTC),
+            check_out=datetime(2025, 8, 6, 11, 0, 0, tzinfo=UTC),
+        )
+
+        api_client = AsyncMock()
+        api_client.get_reservations = AsyncMock(
+            return_value=[res_a, res_b],
+        )
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = {
+            sample_listing.id: sample_listing,
+            listing_b.id: listing_b,
+        }
+
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+
+        data = await coordinator._async_update_data()
+        assert "listing-001" in data
+        assert "listing-002" in data
+        assert len(data["listing-001"]) == 1
+        assert len(data["listing-002"]) == 1
+
+    async def test_filters_unknown_listing_ids(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Reservations for unknown listings are filtered out."""
+        from datetime import UTC, datetime
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        known_res = GuestyReservation(
+            id="res-known",
+            listing_id="listing-001",
+            status="confirmed",
+            check_in=datetime(2025, 8, 1, 15, 0, 0, tzinfo=UTC),
+            check_out=datetime(2025, 8, 5, 11, 0, 0, tzinfo=UTC),
+        )
+        unknown_res = GuestyReservation(
+            id="res-unknown",
+            listing_id="unknown-listing",
+            status="confirmed",
+            check_in=datetime(2025, 8, 1, 15, 0, 0, tzinfo=UTC),
+            check_out=datetime(2025, 8, 5, 11, 0, 0, tzinfo=UTC),
+        )
+
+        api_client = AsyncMock()
+        api_client.get_reservations = AsyncMock(
+            return_value=[known_res, unknown_res],
+        )
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = {sample_listing.id: sample_listing}
+
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+
+        with caplog.at_level(
+            logging.WARNING,
+            logger="custom_components.guesty.coordinator",
+        ):
+            data = await coordinator._async_update_data()
+
+        assert "listing-001" in data
+        assert "unknown-listing" not in data
+        matching = [
+            r
+            for r in caplog.records
+            if r.name == "custom_components.guesty.coordinator"
+            and r.levelno == logging.WARNING
+            and "unknown-listing" in r.getMessage()
+        ]
+        assert len(matching) == 1
+
+    async def test_sorts_reservations_by_check_in(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """Reservations per listing are sorted by check_in date."""
+        from datetime import UTC, datetime
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        res_late = GuestyReservation(
+            id="res-late",
+            listing_id="listing-001",
+            status="confirmed",
+            check_in=datetime(2025, 9, 1, 15, 0, 0, tzinfo=UTC),
+            check_out=datetime(2025, 9, 5, 11, 0, 0, tzinfo=UTC),
+        )
+        res_early = GuestyReservation(
+            id="res-early",
+            listing_id="listing-001",
+            status="confirmed",
+            check_in=datetime(2025, 8, 1, 15, 0, 0, tzinfo=UTC),
+            check_out=datetime(2025, 8, 5, 11, 0, 0, tzinfo=UTC),
+        )
+
+        api_client = AsyncMock()
+        api_client.get_reservations = AsyncMock(
+            return_value=[res_late, res_early],
+        )
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = {sample_listing.id: sample_listing}
+
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+
+        data = await coordinator._async_update_data()
+        listing_res = data["listing-001"]
+        assert listing_res[0].id == "res-early"
+        assert listing_res[1].id == "res-late"
+
+    async def test_update_interval_from_options(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """update_interval matches reservation_scan_interval option."""
+        entry = _make_entry(
+            options={CONF_RESERVATION_SCAN_INTERVAL: 10},
+        )
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = {}
+
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+
+        assert coordinator.update_interval == timedelta(minutes=10)
+
+    async def test_update_interval_default(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """update_interval uses default when option not set."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = {}
+
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+
+        assert coordinator.update_interval == timedelta(
+            minutes=DEFAULT_RESERVATION_SCAN_INTERVAL,
+        )
+
+    async def test_raises_update_failed_on_connection_error(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """_async_update_data raises UpdateFailed on connection error."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_reservations = AsyncMock(
+            side_effect=GuestyConnectionError("network down"),
+        )
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = {}
+
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+
+        with pytest.raises(UpdateFailed):
+            await coordinator._async_update_data()
+
+    async def test_raises_update_failed_on_auth_error(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """_async_update_data raises UpdateFailed on auth error."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_reservations = AsyncMock(
+            side_effect=GuestyAuthError("auth failed"),
+        )
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = {}
+
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+
+        with pytest.raises(UpdateFailed):
+            await coordinator._async_update_data()
+
+    async def test_raises_update_failed_on_response_error(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """_async_update_data raises UpdateFailed on response error."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_reservations = AsyncMock(
+            side_effect=GuestyResponseError("malformed"),
+        )
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = {}
+
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+
+        with pytest.raises(UpdateFailed):
+            await coordinator._async_update_data()
+
+    async def test_empty_reservation_list_returns_empty_dict(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """_async_update_data returns empty dict for no reservations."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_reservations = AsyncMock(return_value=[])
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = {}
+
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+
+        data = await coordinator._async_update_data()
+        assert data == {}
+
+    async def test_passes_date_range_to_api(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """_async_update_data passes configured date range to API."""
+        from custom_components.guesty.const import (
+            CONF_FUTURE_DAYS,
+            CONF_PAST_DAYS,
+        )
+
+        entry = _make_entry(
+            options={CONF_PAST_DAYS: 7, CONF_FUTURE_DAYS: 30},
+        )
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_reservations = AsyncMock(return_value=[])
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = {}
+
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+
+        await coordinator._async_update_data()
+        api_client.get_reservations.assert_awaited_once_with(
+            past_days=7,
+            future_days=30,
+        )
+
+    async def test_uses_default_date_range(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """_async_update_data uses default date range when not set."""
+        from custom_components.guesty.api.const import (
+            DEFAULT_FUTURE_DAYS,
+            DEFAULT_PAST_DAYS,
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_reservations = AsyncMock(return_value=[])
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = {}
+
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+
+        await coordinator._async_update_data()
+        api_client.get_reservations.assert_awaited_once_with(
+            past_days=DEFAULT_PAST_DAYS,
+            future_days=DEFAULT_FUTURE_DAYS,
+        )
+
+    async def test_empty_listings_skips_all_reservations(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Empty listings data skips all reservations gracefully."""
+        from datetime import UTC, datetime
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        reservation = GuestyReservation(
+            id="res-orphan",
+            listing_id="listing-orphan",
+            status="confirmed",
+            check_in=datetime(2025, 8, 1, 15, 0, 0, tzinfo=UTC),
+            check_out=datetime(2025, 8, 5, 11, 0, 0, tzinfo=UTC),
+        )
+
+        api_client = AsyncMock()
+        api_client.get_reservations = AsyncMock(
+            return_value=[reservation],
+        )
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = None
+
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+
+        data = await coordinator._async_update_data()
+        assert data == {}
