@@ -355,6 +355,49 @@ class TestListingsCoordinatorFiltering:
 
         assert data == {}
 
+    async def test_filter_does_not_trigger_disappeared(
+        self,
+        hass: HomeAssistant,
+        multi_listing_dicts: list[dict[str, object]],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Filtering does not mark unselected listings disappeared.
+
+        Listings still present in the API but excluded by the
+        selected-listings filter must not appear in
+        ``disappeared_listing_ids`` or produce warnings.
+        """
+        models = self._models_from_dicts(multi_listing_dicts)
+        selected = ["lst_miami_beach", "lst_tampa_bay"]
+
+        entry = _make_entry(
+            options={CONF_SELECTED_LISTINGS: selected},
+        )
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_listings = AsyncMock(return_value=models)
+
+        coordinator = ListingsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+        )
+
+        # First call sets _previous_listing_ids
+        await coordinator._async_update_data()
+
+        # Second call should not mark unselected as disappeared
+        with caplog.at_level(logging.WARNING):
+            data = await coordinator._async_update_data()
+
+        assert set(data.keys()) == set(selected)
+        assert coordinator.disappeared_listing_ids == set()
+        assert not [
+            r
+            for r in caplog.records
+            if r.levelno >= logging.WARNING and "disappeared" in r.getMessage().lower()
+        ]
+
 
 class TestDisappearedListings:
     """Tests for disappeared listing tracking (T028)."""
