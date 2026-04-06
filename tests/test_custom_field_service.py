@@ -736,7 +736,7 @@ class TestAutomationCompatibility:
         new_callable=AsyncMock,
         return_value=True,
     )
-    async def test_template_rendered_value_sent(
+    async def test_resolved_value_passed_through(
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
@@ -745,14 +745,15 @@ class TestAutomationCompatibility:
         hass: HomeAssistant,
         mock_cf_definitions: list[GuestyCustomFieldDefinition],
     ) -> None:
-        """Template-rendered value is resolved and sent."""
+        """Pre-resolved value is passed through to the client."""
         mock_get_defs.return_value = mock_cf_definitions
         entry = _make_entry()
         entry.add_to_hass(hass)
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
-        # Simulate a template-resolved string value
+        # HA templates resolve before the service handler; verify
+        # the handler passes the already-resolved value unchanged.
         resolved_value = "resolved-wifi-password-123"
         result_obj = GuestyCustomFieldResult(
             success=True,
@@ -822,24 +823,59 @@ class TestAutomationCompatibility:
             target_id="listing-001",
             field_id="cf-text-001",
         )
+
+        set_field_started = asyncio.Event()
+        allow_finish = asyncio.Event()
+        probe_ran = asyncio.Event()
+
+        async def _blocking_set_field(
+            **_kwargs: object,
+        ) -> GuestyCustomFieldResult:
+            """Block until test allows completion."""
+            set_field_started.set()
+            await allow_finish.wait()
+            return result_obj
+
+        async def _probe_event_loop() -> None:
+            """Prove the loop runs other coroutines."""
+            await asyncio.sleep(0)
+            probe_ran.set()
+
         with patch(
             "custom_components.guesty.GuestyCustomFieldsClient.set_field",
             new_callable=AsyncMock,
-            return_value=result_obj,
+            side_effect=_blocking_set_field,
         ):
-            # Service is async; verify it runs within event loop
-            # by calling with blocking=True without timeout
-            result = await hass.services.async_call(
-                DOMAIN,
-                SERVICE_SET_CUSTOM_FIELD,
-                {
-                    "target_type": "listing",
-                    "target_id": "listing-001",
-                    "field_id": "cf-text-001",
-                    "value": "test",
-                },
-                blocking=True,
-                return_response=True,
+            service_task = asyncio.create_task(
+                hass.services.async_call(
+                    DOMAIN,
+                    SERVICE_SET_CUSTOM_FIELD,
+                    {
+                        "target_type": "listing",
+                        "target_id": "listing-001",
+                        "field_id": "cf-text-001",
+                        "value": "test",
+                    },
+                    blocking=True,
+                    return_response=True,
+                ),
+            )
+
+            await asyncio.wait_for(
+                set_field_started.wait(),
+                timeout=1,
+            )
+            probe_task = asyncio.create_task(_probe_event_loop())
+            await asyncio.wait_for(probe_ran.wait(), timeout=1)
+            await probe_task
+
+            # Service is still running; loop was not blocked
+            assert not service_task.done()
+
+            allow_finish.set()
+            result = await asyncio.wait_for(
+                service_task,
+                timeout=1,
             )
             assert result is not None
             assert result["result"] == "success"
@@ -1257,15 +1293,17 @@ class TestEdgeCases:
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
+        barrier = asyncio.Barrier(2)
         call_order: list[str] = []
 
         async def _track_set_field(
             **kwargs: object,
         ) -> GuestyCustomFieldResult:
-            """Track concurrent call ordering."""
+            """Track concurrent call ordering with barrier."""
             fid = kwargs["field_id"]
             call_order.append(f"start-{fid}")
-            await asyncio.sleep(0)
+            # Both calls must reach barrier before proceeding
+            await asyncio.wait_for(barrier.wait(), timeout=2)
             call_order.append(f"end-{fid}")
             return GuestyCustomFieldResult(
                 success=True,
@@ -1311,11 +1349,11 @@ class TestEdgeCases:
         assert results[1] is not None
         assert results[0]["field_id"] == "cf-text-001"
         assert results[1]["field_id"] == "cf-bool-003"
-        # Both calls were started and finished
-        assert "start-cf-text-001" in call_order
-        assert "end-cf-text-001" in call_order
-        assert "start-cf-bool-003" in call_order
-        assert "end-cf-bool-003" in call_order
+        # Both calls started before either finished (barrier sync)
+        starts = [e for e in call_order if e.startswith("start-")]
+        ends = [e for e in call_order if e.startswith("end-")]
+        assert len(starts) == 2
+        assert len(ends) == 2
 
     @patch(
         "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
