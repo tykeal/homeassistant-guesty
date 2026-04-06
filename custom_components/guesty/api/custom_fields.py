@@ -158,6 +158,8 @@ class GuestyCustomFieldsClient:
                 reservation_id=target_id,
             )
 
+        # list[object] is required here because list is invariant
+        # and _request() accepts list[object].
         body: list[object] = [
             {"fieldId": field_id, "value": value},
         ]
