@@ -18,7 +18,7 @@ All endpoint paths below are relative to the base URL.
 ### 1. Update Reservation (Notes / Custom Fields)
 
 ```text
-PUT /reservations/{reservationId}
+PUT /reservations/{reservation_id}
 Authorization: Bearer {token}
 Content-Type: application/json
 ```
@@ -62,7 +62,7 @@ Content-Type: application/json
 ### 2. Update Listing Status
 
 ```text
-PUT /listings/{listingId}
+PUT /listings/{listing_id}
 Authorization: Bearer {token}
 Content-Type: application/json
 ```
@@ -142,7 +142,7 @@ Content-Type: application/json
 ### 4. Update Calendar Availability
 
 ```text
-PUT /availability-pricing/api/calendar/listings/{listingId}
+PUT /availability-pricing/api/calendar/listings/{listing_id}
 Authorization: Bearer {token}
 Content-Type: application/json
 ```

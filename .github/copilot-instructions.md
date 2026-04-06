@@ -56,6 +56,10 @@ async/await patterns, frozen dataclasses for DTOs
   Home Assistant >=2026.4.0, httpx >=0.28
 - 005-plan-notify: Added Python >=3.14.2 +
   Home Assistant >=2026.4.0, httpx >=0.28
+- 002-plan-listings: Added Python >=3.14.2 +
+  Home Assistant >=2026.4.0, httpx >=0.28
+- 001-auth-config-flow: Added Python >=3.14.2 +
+  Home Assistant >=2026.4.0, httpx >=0.28
 
 <!-- MANUAL ADDITIONS START -->
 <!-- MANUAL ADDITIONS END -->
