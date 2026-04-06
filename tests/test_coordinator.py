@@ -8,7 +8,6 @@ from datetime import timedelta
 from unittest.mock import AsyncMock
 
 import pytest
-from custom_components.guesty.coordinator import ListingsCoordinator
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -26,6 +25,7 @@ from custom_components.guesty.const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
 )
+from custom_components.guesty.coordinator import ListingsCoordinator
 
 
 def _make_entry(**overrides: object) -> MockConfigEntry:
