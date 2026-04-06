@@ -8,7 +8,7 @@ from collections.abc import Generator
 from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.core import HomeAssistant
@@ -585,5 +585,5 @@ def mock_cf_client() -> AsyncMock:
             field_id="cf-text-001",
         ),
     )
-    client.validate_value = AsyncMock()
+    client.validate_value = MagicMock()
     return client
