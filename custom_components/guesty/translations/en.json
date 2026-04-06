@@ -48,6 +48,36 @@
         "sensor": {
             "listing_status": {
                 "name": "Listing status"
+            },
+            "listing_name": {
+                "name": "Listing name"
+            },
+            "listing_nickname": {
+                "name": "Listing nickname"
+            },
+            "listing_address": {
+                "name": "Listing address"
+            },
+            "listing_property_type": {
+                "name": "Property type"
+            },
+            "listing_room_type": {
+                "name": "Room type"
+            },
+            "listing_bedrooms": {
+                "name": "Bedrooms"
+            },
+            "listing_bathrooms": {
+                "name": "Bathrooms"
+            },
+            "listing_timezone": {
+                "name": "Timezone"
+            },
+            "listing_check_in_time": {
+                "name": "Check-in time"
+            },
+            "listing_check_out_time": {
+                "name": "Check-out time"
             }
         }
     }

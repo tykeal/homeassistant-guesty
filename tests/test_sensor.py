@@ -8,6 +8,8 @@ from collections.abc import Iterable
 from types import MappingProxyType
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -216,6 +218,270 @@ class TestGuestyListingSensor:
         """Status sensor entity_category is None."""
         desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "status")
         assert desc.entity_category is None
+
+
+# ── Detail sensor keys for parameterised tests ──────────────────────
+
+DETAIL_SENSOR_KEYS = (
+    "name",
+    "nickname",
+    "address",
+    "property_type",
+    "room_type",
+    "bedrooms",
+    "bathrooms",
+    "timezone",
+    "check_in_time",
+    "check_out_time",
+)
+
+
+class TestPropertyDetailSensors:
+    """Tests for the 10 property detail sensors (T025)."""
+
+    @pytest.mark.parametrize("key", DETAIL_SENSOR_KEYS)
+    def test_entity_category_diagnostic(self, key: str) -> None:
+        """All detail sensors have entity_category=DIAGNOSTIC."""
+        desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == key)
+        assert desc.entity_category == EntityCategory.DIAGNOSTIC
+
+    def test_name_sensor_native_value(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        mock_coordinator: AsyncMock,
+    ) -> None:
+        """Name sensor returns listing.title."""
+        desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "name")
+        sensor = GuestyListingSensor(
+            coordinator=mock_coordinator,
+            listing_id=sample_listing.id,
+            entry=mock_coordinator.config_entry,
+            description=desc,
+        )
+        assert sensor.native_value == sample_listing.title
+
+    def test_nickname_sensor_native_value(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        mock_coordinator: AsyncMock,
+    ) -> None:
+        """Nickname sensor returns listing.nickname."""
+        desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "nickname")
+        sensor = GuestyListingSensor(
+            coordinator=mock_coordinator,
+            listing_id=sample_listing.id,
+            entry=mock_coordinator.config_entry,
+            description=desc,
+        )
+        assert sensor.native_value == sample_listing.nickname
+
+    def test_address_sensor_native_value(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        mock_coordinator: AsyncMock,
+    ) -> None:
+        """Address sensor returns listing.address.formatted()."""
+        desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "address")
+        sensor = GuestyListingSensor(
+            coordinator=mock_coordinator,
+            listing_id=sample_listing.id,
+            entry=mock_coordinator.config_entry,
+            description=desc,
+        )
+        assert sample_listing.address is not None
+        assert sensor.native_value == sample_listing.address.formatted()
+
+    def test_address_sensor_none_when_no_address(
+        self,
+        hass: HomeAssistant,
+        mock_coordinator: AsyncMock,
+    ) -> None:
+        """Address sensor returns None when listing has no address."""
+        listing = GuestyListing(
+            id="no-addr",
+            title="No Address",
+            nickname=None,
+            status="active",
+            address=None,
+            property_type=None,
+            room_type=None,
+            bedrooms=None,
+            bathrooms=None,
+            timezone="UTC",
+            check_in_time=None,
+            check_out_time=None,
+            tags=(),
+            custom_fields=MappingProxyType({}),
+        )
+        mock_coordinator.data = {"no-addr": listing}
+        desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "address")
+        sensor = GuestyListingSensor(
+            coordinator=mock_coordinator,
+            listing_id="no-addr",
+            entry=mock_coordinator.config_entry,
+            description=desc,
+        )
+        assert sensor.native_value is None
+
+    def test_property_type_sensor_native_value(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        mock_coordinator: AsyncMock,
+    ) -> None:
+        """Property type sensor returns listing.property_type."""
+        desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "property_type")
+        sensor = GuestyListingSensor(
+            coordinator=mock_coordinator,
+            listing_id=sample_listing.id,
+            entry=mock_coordinator.config_entry,
+            description=desc,
+        )
+        assert sensor.native_value == sample_listing.property_type
+
+    def test_room_type_sensor_native_value(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        mock_coordinator: AsyncMock,
+    ) -> None:
+        """Room type sensor returns listing.room_type."""
+        desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "room_type")
+        sensor = GuestyListingSensor(
+            coordinator=mock_coordinator,
+            listing_id=sample_listing.id,
+            entry=mock_coordinator.config_entry,
+            description=desc,
+        )
+        assert sensor.native_value == sample_listing.room_type
+
+    def test_bedrooms_sensor_native_value(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        mock_coordinator: AsyncMock,
+    ) -> None:
+        """Bedrooms sensor returns listing.bedrooms."""
+        desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "bedrooms")
+        sensor = GuestyListingSensor(
+            coordinator=mock_coordinator,
+            listing_id=sample_listing.id,
+            entry=mock_coordinator.config_entry,
+            description=desc,
+        )
+        assert sensor.native_value == sample_listing.bedrooms
+
+    def test_bathrooms_sensor_native_value(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        mock_coordinator: AsyncMock,
+    ) -> None:
+        """Bathrooms sensor returns listing.bathrooms."""
+        desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "bathrooms")
+        sensor = GuestyListingSensor(
+            coordinator=mock_coordinator,
+            listing_id=sample_listing.id,
+            entry=mock_coordinator.config_entry,
+            description=desc,
+        )
+        assert sensor.native_value == sample_listing.bathrooms
+
+    def test_timezone_sensor_native_value(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        mock_coordinator: AsyncMock,
+    ) -> None:
+        """Timezone sensor returns listing.timezone."""
+        desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "timezone")
+        sensor = GuestyListingSensor(
+            coordinator=mock_coordinator,
+            listing_id=sample_listing.id,
+            entry=mock_coordinator.config_entry,
+            description=desc,
+        )
+        assert sensor.native_value == sample_listing.timezone
+
+    def test_check_in_time_sensor_native_value(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        mock_coordinator: AsyncMock,
+    ) -> None:
+        """Check-in time sensor returns listing.check_in_time."""
+        desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "check_in_time")
+        sensor = GuestyListingSensor(
+            coordinator=mock_coordinator,
+            listing_id=sample_listing.id,
+            entry=mock_coordinator.config_entry,
+            description=desc,
+        )
+        assert sensor.native_value == sample_listing.check_in_time
+
+    def test_check_out_time_sensor_native_value(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        mock_coordinator: AsyncMock,
+    ) -> None:
+        """Check-out time sensor returns listing.check_out_time."""
+        desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "check_out_time")
+        sensor = GuestyListingSensor(
+            coordinator=mock_coordinator,
+            listing_id=sample_listing.id,
+            entry=mock_coordinator.config_entry,
+            description=desc,
+        )
+        assert sensor.native_value == sample_listing.check_out_time
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "nickname",
+            "property_type",
+            "room_type",
+            "bedrooms",
+            "bathrooms",
+            "check_in_time",
+            "check_out_time",
+        ],
+    )
+    def test_optional_field_none_when_missing(
+        self,
+        hass: HomeAssistant,
+        mock_coordinator: AsyncMock,
+        key: str,
+    ) -> None:
+        """Optional fields return None when absent from listing."""
+        listing = GuestyListing(
+            id="minimal",
+            title="Minimal",
+            nickname=None,
+            status="active",
+            address=None,
+            property_type=None,
+            room_type=None,
+            bedrooms=None,
+            bathrooms=None,
+            timezone="UTC",
+            check_in_time=None,
+            check_out_time=None,
+            tags=(),
+            custom_fields=MappingProxyType({}),
+        )
+        mock_coordinator.data = {"minimal": listing}
+        desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == key)
+        sensor = GuestyListingSensor(
+            coordinator=mock_coordinator,
+            listing_id="minimal",
+            entry=mock_coordinator.config_entry,
+            description=desc,
+        )
+        assert sensor.native_value is None
 
 
 class TestSensorPlatformSetup:
