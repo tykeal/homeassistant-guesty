@@ -141,6 +141,7 @@ def create_custom_field_description(
     return GuestyListingSensorEntityDescription(
         key=f"custom_{slug}",
         translation_key="listing_custom_field",
+        name=field_name,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=_value_fn,
     )

@@ -962,7 +962,12 @@ class TestCustomFieldSensors:
         desc = create_custom_field_description("My Field Name")
         assert desc.key == "custom_my_field_name"
 
-    def test_no_custom_field_sensors_when_empty(
+    def test_custom_field_name_set_to_field_name(self) -> None:
+        """Custom field description name matches field name."""
+        desc = create_custom_field_description("region")
+        assert desc.name == "region"
+
+    async def test_no_custom_field_sensors_when_empty(
         self,
         hass: HomeAssistant,
     ) -> None:
@@ -1009,11 +1014,7 @@ class TestCustomFieldSensors:
             """
             added_entities.extend(list(new_entities))
 
-        import asyncio
-
-        asyncio.get_event_loop().run_until_complete(
-            async_setup_entry(hass, entry, mock_add_entities)
-        )
+        await async_setup_entry(hass, entry, mock_add_entities)
 
         custom_sensors = [
             e
