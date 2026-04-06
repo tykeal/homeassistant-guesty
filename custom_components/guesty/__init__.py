@@ -48,6 +48,7 @@ from custom_components.guesty.const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     PLATFORMS,
+    SERVICE_GET_CUSTOM_FIELDS,
     SERVICE_SET_CUSTOM_FIELD,
 )
 from custom_components.guesty.coordinator import (
@@ -66,6 +67,12 @@ SET_CUSTOM_FIELD_SCHEMA = vol.Schema(
         vol.Required("target_id"): str,
         vol.Required("field_id"): str,
         vol.Required("value"): vol.Any(str, int, float, bool),
+    }
+)
+
+GET_CUSTOM_FIELDS_SCHEMA = vol.Schema(
+    {
+        vol.Optional("config_entry_id"): str,
     }
 )
 
@@ -379,6 +386,63 @@ async def async_setup_entry(
             }
         return None
 
+    async def _async_handle_get_custom_fields(
+        call: ServiceCall,
+    ) -> ServiceResponse:
+        """Handle the guesty.get_custom_fields service call.
+
+        Returns all cached custom field definitions from the
+        coordinator.
+
+        Args:
+            call: The service call with optional config_entry_id.
+
+        Returns:
+            Dict with a ``fields`` list of definition dicts.
+
+        Raises:
+            HomeAssistantError: When entry resolution fails.
+        """
+        domain_data = hass.data.get(DOMAIN, {})
+        if not domain_data:
+            raise HomeAssistantError(
+                "Guesty integration not loaded",
+            )
+
+        config_entry_id = call.data.get("config_entry_id")
+        if config_entry_id:
+            entry_data = domain_data.get(config_entry_id)
+            if entry_data is None:
+                raise HomeAssistantError(
+                    f"Config entry '{config_entry_id}' not found",
+                )
+        else:
+            if len(domain_data) > 1:
+                raise HomeAssistantError(
+                    "Multiple Guesty config entries loaded; specify config_entry_id",
+                )
+            entry_data = next(iter(domain_data.values()))
+
+        local_cf_coordinator: CustomFieldsDefinitionCoordinator = entry_data[
+            "cf_coordinator"
+        ]
+
+        definitions = local_cf_coordinator.data
+        if definitions is None:
+            definitions = []
+
+        fields_list: list[dict[str, Any]] = [
+            {
+                "field_id": f.field_id,
+                "name": f.name,
+                "type": f.field_type,
+                "target_types": sorted(f.applicable_to),
+            }
+            for f in definitions
+        ]
+
+        return {"fields": fields_list}  # type: ignore[dict-item]
+
     if not hass.services.has_service(DOMAIN, SERVICE_SET_CUSTOM_FIELD):
         hass.services.async_register(
             DOMAIN,
@@ -386,6 +450,15 @@ async def async_setup_entry(
             _async_handle_set_custom_field,
             schema=SET_CUSTOM_FIELD_SCHEMA,
             supports_response=SupportsResponse.OPTIONAL,
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_GET_CUSTOM_FIELDS):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_GET_CUSTOM_FIELDS,
+            _async_handle_get_custom_fields,
+            schema=GET_CUSTOM_FIELDS_SCHEMA,
+            supports_response=SupportsResponse.ONLY,
         )
 
     _prev_selected = entry.options.get(CONF_SELECTED_LISTINGS)
@@ -538,6 +611,7 @@ async def async_unload_entry(
         # Unregister service when no entries remain
         if not hass.data.get(DOMAIN):
             hass.services.async_remove(DOMAIN, SERVICE_SET_CUSTOM_FIELD)
+            hass.services.async_remove(DOMAIN, SERVICE_GET_CUSTOM_FIELDS)
 
         from custom_components.guesty.actions import (
             async_unload_actions,
