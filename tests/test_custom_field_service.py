@@ -1581,7 +1581,7 @@ class TestRateLimitRetry:
 
     @respx.mock
     async def test_429_respects_retry_after(self) -> None:
-        """429 retry respects Retry-After header."""
+        """429 retry respects Retry-After header value."""
         async with _make_cf_test_client() as cf_client:
             respx.post(TOKEN_URL).mock(
                 return_value=Response(200, json=make_token_response()),
@@ -1593,24 +1593,26 @@ class TestRateLimitRetry:
             put_route.side_effect = [
                 Response(
                     429,
-                    headers={"Retry-After": "0.01"},
+                    headers={"Retry-After": "0.25"},
                     json={"error": "rate limited"},
                 ),
                 Response(200, json=[{"fieldId": "cf-a", "value": "v"}]),
             ]
 
-            start = time.monotonic()
-            result = await cf_client.set_field(
-                target_type="listing",
-                target_id="lst-ra",
-                field_id="cf-a",
-                value="v",
-            )
-            elapsed = time.monotonic() - start
+            with patch(
+                "asyncio.sleep",
+                new_callable=AsyncMock,
+            ) as sleep_mock:
+                result = await cf_client.set_field(
+                    target_type="listing",
+                    target_id="lst-ra",
+                    field_id="cf-a",
+                    value="v",
+                )
 
             assert result.success is True
-            # Should have waited at least the Retry-After amount
-            assert elapsed >= 0.01
+            assert put_route.call_count == 2
+            sleep_mock.assert_awaited_once_with(0.25)
 
     # ── T032: Transient Failure Retry Tests ──────────────────────────────
 
@@ -2320,12 +2322,21 @@ class TestSuccessCriteria:
             )
             await asyncio.wait_for(coro, timeout=5.0)
 
-    def test_sc009_all_testable_without_live_guesty(self) -> None:
+    @respx.mock
+    async def test_sc009_all_testable_without_live_guesty(
+        self,
+    ) -> None:
         """SC-009: All scenarios testable without live Guesty."""
-        # This test itself proves the point — the entire test
-        # suite runs with mocked API responses, no live Guesty
-        # connection required.
-        assert True
+        # Unmocked outbound HTTP fails during tests, proving no
+        # live Guesty connection is needed.
+        from respx.models import AllMockedAssertionError
+
+        with respx.mock(assert_all_mocked=True):
+            async with httpx.AsyncClient() as client:
+                with pytest.raises(AllMockedAssertionError):
+                    await client.get(
+                        f"{BASE_URL}/__test_unmocked__",
+                    )
 
 
 # ── T037: Quickstart Validation ──────────────────────────────────────

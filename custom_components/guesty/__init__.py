@@ -476,13 +476,9 @@ async def async_unload_entry(
             http_client: httpx.AsyncClient = data["http_client"]
             await http_client.aclose()
 
-        # Remove service if no entries remain
-        remaining = hass.data.get(DOMAIN, {})
-        if not remaining:
-            hass.services.async_remove(
-                DOMAIN,
-                SERVICE_SET_CUSTOM_FIELD,
-            )
+        # Unregister service when no entries remain
+        if not hass.data.get(DOMAIN):
+            hass.services.async_remove(DOMAIN, SERVICE_SET_CUSTOM_FIELD)
 
         from custom_components.guesty.actions import (
             async_unload_actions,
