@@ -274,6 +274,29 @@ class TestGuestyNotifyEntitySendMessage:
             if record.levelno >= logging.ERROR
         )
 
+    async def test_client_validation_error_maps_to_ha_error(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """ValueError from messaging client maps to HomeAssistantError."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        mock_messaging_client.send_message.side_effect = ValueError(
+            "body exceeds maximum length of 10000 characters"
+        )
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="body exceeds maximum length",
+        ):
+            await entity.async_send_message(
+                message="x" * 20000,
+                title="res-val",
+            )
+
 
 class TestNotifyPlatformSetup:
     """Tests for async_setup_entry creating the entity (T011)."""

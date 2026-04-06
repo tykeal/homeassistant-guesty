@@ -125,3 +125,5 @@ class GuestyNotifyEntity(NotifyEntity):
                 exc_info=exc,
             )
             raise HomeAssistantError(str(exc)) from exc
+        except ValueError as exc:
+            raise HomeAssistantError(str(exc)) from exc
