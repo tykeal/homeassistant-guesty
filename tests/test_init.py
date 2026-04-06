@@ -21,6 +21,8 @@ from custom_components.guesty.api.models import CachedToken
 from custom_components.guesty.const import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
+    CONF_SCAN_INTERVAL,
+    DEFAULT_SCAN_INTERVAL,
     DOMAIN,
 )
 
@@ -50,6 +52,11 @@ class TestAsyncSetupEntry:
     """Tests for async_setup_entry."""
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.test_connection",
         new_callable=AsyncMock,
         return_value=True,
@@ -57,6 +64,7 @@ class TestAsyncSetupEntry:
     async def test_setup_creates_runtime_data(
         self,
         mock_test: AsyncMock,
+        mock_listings: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Setup creates http_client, token_manager, api_client."""
@@ -117,6 +125,11 @@ class TestAsyncUnloadEntry:
     """Tests for async_unload_entry."""
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.test_connection",
         new_callable=AsyncMock,
         return_value=True,
@@ -124,6 +137,7 @@ class TestAsyncUnloadEntry:
     async def test_unload_cleans_data(
         self,
         mock_test: AsyncMock,
+        mock_listings: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Unload closes HTTP client and removes hass.data."""
@@ -145,6 +159,11 @@ class TestHATokenStorage:
     """Tests for HATokenStorage persistence."""
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.test_connection",
         new_callable=AsyncMock,
         return_value=True,
@@ -152,6 +171,7 @@ class TestHATokenStorage:
     async def test_save_and_load_token(
         self,
         mock_test: AsyncMock,
+        mock_listings: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """save_token persists to config_entry.data."""
@@ -176,6 +196,11 @@ class TestHATokenStorage:
         assert loaded.access_token == "saved-token"
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.test_connection",
         new_callable=AsyncMock,
         return_value=True,
@@ -183,6 +208,7 @@ class TestHATokenStorage:
     async def test_load_token_returns_none_for_missing(
         self,
         mock_test: AsyncMock,
+        mock_listings: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """load_token returns None when no token stored."""
@@ -196,6 +222,11 @@ class TestHATokenStorage:
         assert result is None
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.test_connection",
         new_callable=AsyncMock,
         return_value=True,
@@ -203,6 +234,7 @@ class TestHATokenStorage:
     async def test_save_and_load_request_count(
         self,
         mock_test: AsyncMock,
+        mock_listings: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """save/load_request_count round-trips correctly."""
@@ -220,6 +252,11 @@ class TestHATokenStorage:
         assert window == now
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.test_connection",
         new_callable=AsyncMock,
         return_value=True,
@@ -227,6 +264,7 @@ class TestHATokenStorage:
     async def test_load_token_handles_corrupted_data(
         self,
         mock_test: AsyncMock,
+        mock_listings: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """load_token returns None for corrupted data."""
@@ -250,6 +288,11 @@ class TestHATokenStorageCorruptedCounters:
     """Tests for HATokenStorage handling corrupted counter data."""
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.test_connection",
         new_callable=AsyncMock,
         return_value=True,
@@ -257,6 +300,7 @@ class TestHATokenStorageCorruptedCounters:
     async def test_invalid_request_count_resets(
         self,
         mock_test: AsyncMock,
+        mock_listings: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Invalid token_request_count resets to zero."""
@@ -278,6 +322,11 @@ class TestHATokenStorageCorruptedCounters:
         assert count == 0
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.test_connection",
         new_callable=AsyncMock,
         return_value=True,
@@ -285,6 +334,7 @@ class TestHATokenStorageCorruptedCounters:
     async def test_invalid_window_start_resets(
         self,
         mock_test: AsyncMock,
+        mock_listings: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Invalid token_window_start resets to None."""
@@ -308,6 +358,11 @@ class TestHATokenStorageCorruptedCounters:
         assert count == 0
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.test_connection",
         new_callable=AsyncMock,
         return_value=True,
@@ -315,6 +370,7 @@ class TestHATokenStorageCorruptedCounters:
     async def test_naive_datetime_treated_as_utc(
         self,
         mock_test: AsyncMock,
+        mock_listings: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Naive datetime from config entry is treated as UTC."""
@@ -339,6 +395,11 @@ class TestHATokenStorageCorruptedCounters:
         assert count == 2
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.test_connection",
         new_callable=AsyncMock,
         return_value=True,
@@ -346,6 +407,7 @@ class TestHATokenStorageCorruptedCounters:
     async def test_count_resets_when_window_none(
         self,
         mock_test: AsyncMock,
+        mock_listings: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Non-zero count with None window_start resets to 0."""
@@ -372,6 +434,11 @@ class TestLogSanitization:
     """Tests ensuring credentials never appear in logs."""
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.GuestyApiClient.test_connection",
         new_callable=AsyncMock,
         return_value=True,
@@ -379,6 +446,7 @@ class TestLogSanitization:
     async def test_no_secrets_in_logs(
         self,
         mock_test: AsyncMock,
+        mock_listings: AsyncMock,
         hass: HomeAssistant,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
@@ -401,6 +469,11 @@ class TestEndToEnd:
     """End-to-end integration tests spanning full lifecycle."""
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
         "custom_components.guesty.config_flow._validate_credentials",
         new_callable=AsyncMock,
     )
@@ -413,6 +486,7 @@ class TestEndToEnd:
         self,
         mock_test: AsyncMock,
         mock_validate: AsyncMock,
+        mock_listings: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
         """Config flow → setup entry → client operational → unload."""
@@ -440,3 +514,128 @@ class TestEndToEnd:
         await hass.config_entries.async_unload(entry.entry_id)
         await hass.async_block_till_done()
         assert entry.state is ConfigEntryState.NOT_LOADED
+
+
+class TestCoordinatorSetup:
+    """Tests for coordinator integration in async_setup_entry."""
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_setup_creates_coordinator(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Setup creates coordinator and stores it in hass.data."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        assert entry.state is ConfigEntryState.LOADED
+        data = hass.data[DOMAIN][entry.entry_id]
+        assert "coordinator" in data
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_setup_calls_first_refresh(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Setup calls async_config_entry_first_refresh."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        # If first refresh was called, get_listings was called
+        mock_listings.assert_awaited_once()
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_unload_removes_coordinator(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Unload removes coordinator from hass.data."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        assert entry.state is ConfigEntryState.LOADED
+
+        await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+
+        assert entry.entry_id not in hass.data.get(DOMAIN, {})
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_options_update_reconfigures_interval(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Options update listener reconfigures coordinator interval."""
+        from datetime import timedelta
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+        assert coordinator.update_interval == timedelta(
+            minutes=DEFAULT_SCAN_INTERVAL,
+        )
+
+        # Update options
+        hass.config_entries.async_update_entry(
+            entry,
+            options={CONF_SCAN_INTERVAL: 10},
+        )
+        await hass.async_block_till_done()
+
+        assert coordinator.update_interval == timedelta(minutes=10)

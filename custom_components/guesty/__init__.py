@@ -27,9 +27,12 @@ from custom_components.guesty.api.models import CachedToken, TokenStorage
 from custom_components.guesty.const import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
+    CONF_SCAN_INTERVAL,
+    DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     PLATFORMS,
 )
+from custom_components.guesty.coordinator import ListingsCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -151,9 +154,10 @@ async def async_setup_entry(
 ) -> bool:
     """Set up the Guesty integration from a config entry.
 
-    Creates the HTTP client, token manager, API client, and stores
-    them in hass.data for use by platforms. Tests the connection
-    and raises ConfigEntryNotReady on failure.
+    Creates the HTTP client, token manager, API client,
+    listings coordinator, and stores them in hass.data for use
+    by platforms. Tests the connection and raises
+    ConfigEntryNotReady on failure.
 
     Args:
         hass: Home Assistant instance.
@@ -194,12 +198,42 @@ async def async_setup_entry(
             f"Failed to connect to Guesty API: {exc.message}",
         ) from exc
 
+    coordinator = ListingsCoordinator(
+        hass=hass,
+        entry=entry,
+        api_client=api_client,
+    )
+    await coordinator.async_config_entry_first_refresh()
+
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {
         "http_client": http_client,
         "token_manager": token_manager,
         "api_client": api_client,
+        "coordinator": coordinator,
     }
+
+    async def _async_options_updated(
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+    ) -> None:
+        """Handle options update by reconfiguring coordinator.
+
+        Args:
+            hass: Home Assistant instance.
+            entry: The config entry that was updated.
+        """
+        from datetime import timedelta
+
+        interval = entry.options.get(
+            CONF_SCAN_INTERVAL,
+            DEFAULT_SCAN_INTERVAL,
+        )
+        coordinator.update_interval = timedelta(minutes=interval)
+
+    entry.async_on_unload(
+        entry.add_update_listener(_async_options_updated),
+    )
 
     await hass.config_entries.async_forward_entry_setups(
         entry,
