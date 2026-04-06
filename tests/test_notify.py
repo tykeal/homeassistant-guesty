@@ -621,7 +621,7 @@ class TestAutomationCompatibility:
 class TestChannelSelection:
     """Integration tests for channel selection (T017)."""
 
-    async def test_email_channel_in_api_request(
+    async def test_email_channel_passed_to_client(
         self,
         hass: HomeAssistant,
         mock_messaging_client: AsyncMock,
@@ -957,18 +957,18 @@ class TestTemplateVariableSubstitution:
         new_callable=AsyncMock,
         return_value=True,
     )
-    async def test_rendered_message_has_substituted_values(
+    async def test_template_vars_and_body_forwarded_to_client(
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
-        """Client renders template and sends substituted message."""
+        """Service forwards template variables and body to client."""
         entry = _make_entry()
         entry.add_to_hass(hass)
 
-        # Use a real-ish mock that records calls but also
-        # simulates template rendering in the client pipeline.
+        # Use a mock client to verify the service forwards the
+        # original template body and template variables unchanged.
         mock_client = AsyncMock()
         mock_client.send_message.return_value = MessageDeliveryResult(
             success=True,
@@ -1206,12 +1206,12 @@ class TestEdgeCases:
                 reservation_id="res-expired",
             )
 
-    async def test_oversized_message_rejected_before_api(
+    async def test_oversized_message_value_error_translated(
         self,
         hass: HomeAssistant,
         mock_messaging_client: AsyncMock,
     ) -> None:
-        """Oversized message body is rejected with HomeAssistantError."""
+        """Oversized-message ValueError maps to HomeAssistantError."""
         entry = _make_entry()
         entity = GuestyNotifyEntity(mock_messaging_client, entry)
         entity.hass = hass
