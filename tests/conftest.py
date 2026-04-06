@@ -215,7 +215,7 @@ def make_listing_dict(**overrides: Any) -> dict[str, Any]:
         "accommodates": 5,
         "timezone": "America/New_York",
         "defaultCheckInTime": "15:00",
-        "defaultCheckoutTime": "11:00",
+        "defaultCheckOutTime": "11:00",
         "tags": ["premium", "beachfront"],
         "customFields": {"region": "southeast"},
     }

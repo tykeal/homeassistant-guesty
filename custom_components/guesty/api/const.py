@@ -79,7 +79,7 @@ LISTINGS_FIELDS: tuple[str, ...] = (
     "accommodates",
     "timezone",
     "defaultCheckInTime",
-    "defaultCheckoutTime",
+    "defaultCheckOutTime",
     "tags",
     "customFields",
 )

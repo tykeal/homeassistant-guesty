@@ -20,7 +20,7 @@ GET /v1/listings
   &fields=_id title nickname listed active address
           propertyType roomType numberOfBedrooms
           numberOfBathrooms timezone defaultCheckInTime
-          defaultCheckoutTime tags customFields
+          defaultCheckOutTime tags customFields
 ```
 
 ### Response (200 OK)
@@ -48,7 +48,7 @@ GET /v1/listings
       "numberOfBathrooms": 1.5,
       "timezone": "America/New_York",
       "defaultCheckInTime": "15:00",
-      "defaultCheckoutTime": "11:00",
+      "defaultCheckOutTime": "11:00",
       "tags": ["pet-friendly", "beachfront"],
       "customFields": {
         "maintenance_status": "good",
@@ -96,7 +96,7 @@ GET /v1/listings
 | `numberOfBathrooms` | No | `None` |
 | `timezone` | Usually | `"UTC"` |
 | `defaultCheckInTime` | No | `None` |
-| `defaultCheckoutTime` | No | `None` |
+| `defaultCheckOutTime` | No | `None` |
 | `tags` | No | `[]` (empty list) |
 | `customFields` | No | `{}` (empty dict) |
 

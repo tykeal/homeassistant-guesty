@@ -83,7 +83,7 @@ implementation against live API responses.
 | `numberOfBathrooms` | Bathrooms | diagnostic |
 | `timezone` | Timezone | diagnostic |
 | `defaultCheckInTime` | Check-in time | diagnostic |
-| `defaultCheckoutTime` | Check-out time | diagnostic |
+| `defaultCheckOutTime` | Check-out time | diagnostic |
 | `tags` | Tags | diagnostic |
 
 **Rationale**: Field names confirmed via Guesty Open API
