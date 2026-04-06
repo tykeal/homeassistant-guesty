@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from collections.abc import Generator
+from collections.abc import AsyncGenerator, Generator
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -63,6 +63,33 @@ def _make_entry(**overrides: object) -> MockConfigEntry:
         unique_id="test-client-id",
         **overrides,  # type: ignore[arg-type]
     )
+
+
+@contextlib.asynccontextmanager
+async def _make_cf_test_client() -> AsyncGenerator[GuestyCustomFieldsClient]:
+    """Create a custom fields client for testing.
+
+    Yields:
+        A GuestyCustomFieldsClient backed by test fakes.
+    """
+    from custom_components.guesty.api.auth import GuestyTokenManager
+    from custom_components.guesty.api.client import GuestyApiClient
+    from tests.conftest import FakeTokenStorage
+
+    storage = FakeTokenStorage()
+    async with httpx.AsyncClient() as http:
+        token_mgr = GuestyTokenManager(
+            client_id="test-id",
+            client_secret="test-secret",
+            http_client=http,
+            storage=storage,
+            refresh_buffer=0,
+        )
+        api_client = GuestyApiClient(
+            token_manager=token_mgr,
+            http_client=http,
+        )
+        yield GuestyCustomFieldsClient(api_client)
 
 
 # ── T017: Service Handler Tests ─────────────────────────────────────
@@ -417,8 +444,8 @@ class TestServiceHandler:
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
-        # Clear hass.data to simulate missing entry
-        hass.data[DOMAIN].pop(entry.entry_id, None)
+        # Clear hass.data to simulate empty domain
+        hass.data[DOMAIN].clear()
 
         with pytest.raises(
             HomeAssistantError,
@@ -489,8 +516,52 @@ class TestServiceHandler:
                 return_response=True,
             )
 
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_multiple_entries_raises_error(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Multiple config entries raises HomeAssistantError."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
 
-# ── T019: Reservation-Specific Tests ────────────────────────────────
+        # Simulate a second config entry in domain data
+        hass.data[DOMAIN]["fake-second-entry"] = {}
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="ambiguous",
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_CUSTOM_FIELD,
+                {
+                    "target_type": "listing",
+                    "target_id": "lst-123",
+                    "field_id": "cf-region",
+                    "value": "test",
+                },
+                blocking=True,
+            )
 
 
 class TestReservationCustomFields:
@@ -739,7 +810,6 @@ class TestAutomationCompatibility:
                 return_response=True,
             )
 
-        assert result is not None
         assert result is not None
         assert result["result"] == "success"
 
@@ -1483,103 +1553,66 @@ class TestRateLimitRetry:
     @respx.mock
     async def test_429_then_success_on_retry(self) -> None:
         """429 on first call, 200 on retry; field updated."""
-        from custom_components.guesty.api.auth import GuestyTokenManager
-        from custom_components.guesty.api.client import GuestyApiClient
-        from tests.conftest import FakeTokenStorage
+        async with _make_cf_test_client() as cf_client:
+            respx.post(TOKEN_URL).mock(
+                return_value=Response(200, json=make_token_response()),
+            )
 
-        storage = FakeTokenStorage()
-        http = httpx.AsyncClient()
-        token_mgr = GuestyTokenManager(
-            client_id="test-id",
-            client_secret="test-secret",
-            http_client=http,
-            storage=storage,
-            refresh_buffer=0,
-        )
-        api_client = GuestyApiClient(
-            token_manager=token_mgr,
-            http_client=http,
-        )
-        cf_client = GuestyCustomFieldsClient(api_client)
+            put_route = respx.put(
+                f"{BASE_URL}/listings/lst-rl/custom-fields",
+            )
+            put_route.side_effect = [
+                Response(
+                    429,
+                    headers={"Retry-After": "0.01"},
+                    json={"error": "rate limited"},
+                ),
+                Response(200, json=[{"fieldId": "cf-a", "value": "v"}]),
+            ]
 
-        respx.post(TOKEN_URL).mock(
-            return_value=Response(200, json=make_token_response()),
-        )
-
-        put_route = respx.put(
-            f"{BASE_URL}/listings/lst-rl/custom-fields",
-        )
-        put_route.side_effect = [
-            Response(
-                429,
-                headers={"Retry-After": "0.01"},
-                json={"error": "rate limited"},
-            ),
-            Response(200, json=[{"fieldId": "cf-a", "value": "v"}]),
-        ]
-
-        result = await cf_client.set_field(
-            target_type="listing",
-            target_id="lst-rl",
-            field_id="cf-a",
-            value="v",
-        )
-        assert result.success is True
-        assert put_route.call_count == 2
+            result = await cf_client.set_field(
+                target_type="listing",
+                target_id="lst-rl",
+                field_id="cf-a",
+                value="v",
+            )
+            assert result.success is True
+            assert put_route.call_count == 2
 
     @respx.mock
     async def test_429_respects_retry_after(self) -> None:
         """429 retry respects Retry-After header."""
-        from custom_components.guesty.api.auth import GuestyTokenManager
-        from custom_components.guesty.api.client import GuestyApiClient
-        from tests.conftest import FakeTokenStorage
+        async with _make_cf_test_client() as cf_client:
+            respx.post(TOKEN_URL).mock(
+                return_value=Response(200, json=make_token_response()),
+            )
 
-        storage = FakeTokenStorage()
-        http = httpx.AsyncClient()
-        token_mgr = GuestyTokenManager(
-            client_id="test-id",
-            client_secret="test-secret",
-            http_client=http,
-            storage=storage,
-            refresh_buffer=0,
-        )
-        api_client = GuestyApiClient(
-            token_manager=token_mgr,
-            http_client=http,
-        )
-        cf_client = GuestyCustomFieldsClient(api_client)
+            put_route = respx.put(
+                f"{BASE_URL}/listings/lst-ra/custom-fields",
+            )
+            put_route.side_effect = [
+                Response(
+                    429,
+                    headers={"Retry-After": "0.01"},
+                    json={"error": "rate limited"},
+                ),
+                Response(200, json=[{"fieldId": "cf-a", "value": "v"}]),
+            ]
 
-        respx.post(TOKEN_URL).mock(
-            return_value=Response(200, json=make_token_response()),
-        )
+            start = time.monotonic()
+            result = await cf_client.set_field(
+                target_type="listing",
+                target_id="lst-ra",
+                field_id="cf-a",
+                value="v",
+            )
+            elapsed = time.monotonic() - start
 
-        put_route = respx.put(
-            f"{BASE_URL}/listings/lst-ra/custom-fields",
-        )
-        put_route.side_effect = [
-            Response(
-                429,
-                headers={"Retry-After": "0.01"},
-                json={"error": "rate limited"},
-            ),
-            Response(200, json=[{"fieldId": "cf-a", "value": "v"}]),
-        ]
+            assert result.success is True
+            # Should have waited at least the Retry-After amount
+            assert elapsed >= 0.01
 
-        start = time.monotonic()
-        result = await cf_client.set_field(
-            target_type="listing",
-            target_id="lst-ra",
-            field_id="cf-a",
-            value="v",
-        )
-        elapsed = time.monotonic() - start
-
-        assert result.success is True
-        # Should have waited at least the Retry-After amount
-        assert elapsed >= 0.01
-
-
-# ── T032: Transient Failure Retry Tests ──────────────────────────────
+    # ── T032: Transient Failure Retry Tests ──────────────────────────────
 
 
 class TestTransientFailureRetry:
@@ -1588,132 +1621,77 @@ class TestTransientFailureRetry:
     @respx.mock
     async def test_network_error_then_success(self) -> None:
         """Transient network error then success on retry."""
-        from custom_components.guesty.api.auth import GuestyTokenManager
-        from custom_components.guesty.api.client import GuestyApiClient
-        from tests.conftest import FakeTokenStorage
+        async with _make_cf_test_client() as cf_client:
+            respx.post(TOKEN_URL).mock(
+                return_value=Response(200, json=make_token_response()),
+            )
 
-        storage = FakeTokenStorage()
-        http = httpx.AsyncClient()
-        token_mgr = GuestyTokenManager(
-            client_id="test-id",
-            client_secret="test-secret",
-            http_client=http,
-            storage=storage,
-            refresh_buffer=0,
-        )
-        api_client = GuestyApiClient(
-            token_manager=token_mgr,
-            http_client=http,
-        )
-        cf_client = GuestyCustomFieldsClient(api_client)
+            put_route = respx.put(
+                f"{BASE_URL}/listings/lst-tn/custom-fields",
+            )
+            put_route.side_effect = [
+                httpx.ConnectError("connection refused"),
+                Response(200, json=[{"fieldId": "cf-a", "value": "v"}]),
+            ]
 
-        respx.post(TOKEN_URL).mock(
-            return_value=Response(200, json=make_token_response()),
-        )
-
-        put_route = respx.put(
-            f"{BASE_URL}/listings/lst-tn/custom-fields",
-        )
-        put_route.side_effect = [
-            httpx.ConnectError("connection refused"),
-            Response(200, json=[{"fieldId": "cf-a", "value": "v"}]),
-        ]
-
-        result = await cf_client.set_field(
-            target_type="listing",
-            target_id="lst-tn",
-            field_id="cf-a",
-            value="v",
-        )
-        assert result.success is True
-        assert put_route.call_count == 2
+            result = await cf_client.set_field(
+                target_type="listing",
+                target_id="lst-tn",
+                field_id="cf-a",
+                value="v",
+            )
+            assert result.success is True
+            assert put_route.call_count == 2
 
     @respx.mock
     async def test_persistent_failure_raises_connection_error(
         self,
     ) -> None:
         """Persistent failure raises GuestyConnectionError."""
-        from custom_components.guesty.api.auth import GuestyTokenManager
-        from custom_components.guesty.api.client import GuestyApiClient
-        from tests.conftest import FakeTokenStorage
-
-        storage = FakeTokenStorage()
-        http = httpx.AsyncClient()
-        token_mgr = GuestyTokenManager(
-            client_id="test-id",
-            client_secret="test-secret",
-            http_client=http,
-            storage=storage,
-            refresh_buffer=0,
-        )
-        api_client = GuestyApiClient(
-            token_manager=token_mgr,
-            http_client=http,
-        )
-        cf_client = GuestyCustomFieldsClient(api_client)
-
-        respx.post(TOKEN_URL).mock(
-            return_value=Response(200, json=make_token_response()),
-        )
-
-        respx.put(
-            f"{BASE_URL}/listings/lst-pf/custom-fields",
-        ).mock(
-            side_effect=httpx.ConnectError("persistent failure"),
-        )
-
-        with pytest.raises(GuestyConnectionError, match="retries"):
-            await cf_client.set_field(
-                target_type="listing",
-                target_id="lst-pf",
-                field_id="cf-a",
-                value="v",
+        async with _make_cf_test_client() as cf_client:
+            respx.post(TOKEN_URL).mock(
+                return_value=Response(200, json=make_token_response()),
             )
+
+            respx.put(
+                f"{BASE_URL}/listings/lst-pf/custom-fields",
+            ).mock(
+                side_effect=httpx.ConnectError("persistent failure"),
+            )
+
+            with pytest.raises(GuestyConnectionError, match="retries"):
+                await cf_client.set_field(
+                    target_type="listing",
+                    target_id="lst-pf",
+                    field_id="cf-a",
+                    value="v",
+                )
 
     @respx.mock
     async def test_5xx_then_success(self) -> None:
         """Transient 5xx error then success on retry."""
-        from custom_components.guesty.api.auth import GuestyTokenManager
-        from custom_components.guesty.api.client import GuestyApiClient
-        from tests.conftest import FakeTokenStorage
+        async with _make_cf_test_client() as cf_client:
+            respx.post(TOKEN_URL).mock(
+                return_value=Response(200, json=make_token_response()),
+            )
 
-        storage = FakeTokenStorage()
-        http = httpx.AsyncClient()
-        token_mgr = GuestyTokenManager(
-            client_id="test-id",
-            client_secret="test-secret",
-            http_client=http,
-            storage=storage,
-            refresh_buffer=0,
-        )
-        api_client = GuestyApiClient(
-            token_manager=token_mgr,
-            http_client=http,
-        )
-        cf_client = GuestyCustomFieldsClient(api_client)
+            put_route = respx.put(
+                f"{BASE_URL}/listings/lst-5x/custom-fields",
+            )
+            put_route.side_effect = [
+                Response(502, json={"error": "bad gateway"}),
+                Response(200, json=[{"fieldId": "cf-a", "value": "v"}]),
+            ]
 
-        respx.post(TOKEN_URL).mock(
-            return_value=Response(200, json=make_token_response()),
-        )
+            result = await cf_client.set_field(
+                target_type="listing",
+                target_id="lst-5x",
+                field_id="cf-a",
+                value="v",
+            )
+            assert result.success is True
 
-        put_route = respx.put(
-            f"{BASE_URL}/listings/lst-5x/custom-fields",
-        )
-        put_route.side_effect = [
-            Response(502, json={"error": "bad gateway"}),
-            Response(200, json=[{"fieldId": "cf-a", "value": "v"}]),
-        ]
-
-        result = await cf_client.set_field(
-            target_type="listing",
-            target_id="lst-5x",
-            field_id="cf-a",
-            value="v",
-        )
-        assert result.success is True
-
-
-# ── T033: Error Detail Quality Tests ─────────────────────────────────
+    # ── T033: Error Detail Quality Tests ─────────────────────────────────
 
 
 class TestErrorDetailQuality:
@@ -1820,43 +1798,25 @@ class TestErrorDetailQuality:
         self,
     ) -> None:
         """404 error includes target type and ID context."""
-        from custom_components.guesty.api.auth import GuestyTokenManager
-        from custom_components.guesty.api.client import GuestyApiClient
-        from tests.conftest import FakeTokenStorage
-
-        storage = FakeTokenStorage()
-        http = httpx.AsyncClient()
-        token_mgr = GuestyTokenManager(
-            client_id="test-id",
-            client_secret="test-secret",
-            http_client=http,
-            storage=storage,
-            refresh_buffer=0,
-        )
-        api_client = GuestyApiClient(
-            token_manager=token_mgr,
-            http_client=http,
-        )
-        cf_client = GuestyCustomFieldsClient(api_client)
-
-        respx.post(TOKEN_URL).mock(
-            return_value=Response(200, json=make_token_response()),
-        )
-        respx.put(
-            f"{BASE_URL}/listings/lst-404/custom-fields",
-        ).mock(
-            return_value=Response(404, json={"error": "Not found"}),
-        )
-
-        with pytest.raises(GuestyCustomFieldError) as exc_info:
-            await cf_client.set_field(
-                target_type="listing",
-                target_id="lst-404",
-                field_id="cf-a",
-                value="v",
+        async with _make_cf_test_client() as cf_client:
+            respx.post(TOKEN_URL).mock(
+                return_value=Response(200, json=make_token_response()),
             )
-        assert exc_info.value.target_type == "listing"
-        assert exc_info.value.target_id == "lst-404"
+            respx.put(
+                f"{BASE_URL}/listings/lst-404/custom-fields",
+            ).mock(
+                return_value=Response(404, json={"error": "Not found"}),
+            )
+
+            with pytest.raises(GuestyCustomFieldError) as exc_info:
+                await cf_client.set_field(
+                    target_type="listing",
+                    target_id="lst-404",
+                    field_id="cf-a",
+                    value="v",
+                )
+            assert exc_info.value.target_type == "listing"
+            assert exc_info.value.target_id == "lst-404"
 
     @respx.mock
     async def test_retry_logs_warning(
@@ -1864,53 +1824,34 @@ class TestErrorDetailQuality:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Retries are logged at warning level."""
-        from custom_components.guesty.api.auth import GuestyTokenManager
-        from custom_components.guesty.api.client import GuestyApiClient
-        from tests.conftest import FakeTokenStorage
-
-        storage = FakeTokenStorage()
-        http = httpx.AsyncClient()
-        token_mgr = GuestyTokenManager(
-            client_id="test-id",
-            client_secret="test-secret",
-            http_client=http,
-            storage=storage,
-            refresh_buffer=0,
-        )
-        api_client = GuestyApiClient(
-            token_manager=token_mgr,
-            http_client=http,
-        )
-        cf_client = GuestyCustomFieldsClient(api_client)
-
-        respx.post(TOKEN_URL).mock(
-            return_value=Response(200, json=make_token_response()),
-        )
-
-        put_route = respx.put(
-            f"{BASE_URL}/listings/lst-log/custom-fields",
-        )
-        put_route.side_effect = [
-            Response(
-                429,
-                headers={"Retry-After": "0.01"},
-                json={"error": "rate limited"},
-            ),
-            Response(200, json=[{"fieldId": "cf-a", "value": "v"}]),
-        ]
-
-        with caplog.at_level("WARNING"):
-            await cf_client.set_field(
-                target_type="listing",
-                target_id="lst-log",
-                field_id="cf-a",
-                value="v",
+        async with _make_cf_test_client() as cf_client:
+            respx.post(TOKEN_URL).mock(
+                return_value=Response(200, json=make_token_response()),
             )
 
-        assert any("Rate limited" in r.message for r in caplog.records)
+            put_route = respx.put(
+                f"{BASE_URL}/listings/lst-log/custom-fields",
+            )
+            put_route.side_effect = [
+                Response(
+                    429,
+                    headers={"Retry-After": "0.01"},
+                    json={"error": "rate limited"},
+                ),
+                Response(200, json=[{"fieldId": "cf-a", "value": "v"}]),
+            ]
 
+            with caplog.at_level("WARNING"):
+                await cf_client.set_field(
+                    target_type="listing",
+                    target_id="lst-log",
+                    field_id="cf-a",
+                    value="v",
+                )
 
-# ── T034: Security Tests ────────────────────────────────────────────
+            assert any("Rate limited" in r.message for r in caplog.records)
+
+    # ── T034: Security Tests ────────────────────────────────────────────
 
 
 class TestSecurityNoSensitiveData:
@@ -1922,57 +1863,41 @@ class TestSecurityNoSensitiveData:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Successful update does not log field values."""
-        from custom_components.guesty.api.auth import GuestyTokenManager
-        from custom_components.guesty.api.client import GuestyApiClient
-        from tests.conftest import FakeTokenStorage
-
-        storage = FakeTokenStorage()
-        http = httpx.AsyncClient()
-        token_mgr = GuestyTokenManager(
-            client_id="test-id",
-            client_secret="test-secret",
-            http_client=http,
-            storage=storage,
-            refresh_buffer=0,
-        )
-        api_client = GuestyApiClient(
-            token_manager=token_mgr,
-            http_client=http,
-        )
-        cf_client = GuestyCustomFieldsClient(api_client)
-
-        respx.post(TOKEN_URL).mock(
-            return_value=Response(200, json=make_token_response()),
-        )
-        respx.put(
-            f"{BASE_URL}/listings/lst-sec/custom-fields",
-        ).mock(
-            return_value=Response(
-                200,
-                json=[{"fieldId": "cf-a", "value": "SECRET-CODE"}],
-            ),
-        )
-
-        sensitive_values = [
-            "SECRET-CODE",
-            "test-access-token-jwt",
-        ]
-
-        with caplog.at_level("DEBUG"):
-            await cf_client.set_field(
-                target_type="listing",
-                target_id="lst-sec",
-                field_id="cf-a",
-                value="SECRET-CODE",
+        async with _make_cf_test_client() as cf_client:
+            respx.post(TOKEN_URL).mock(
+                return_value=Response(200, json=make_token_response()),
+            )
+            respx.put(
+                f"{BASE_URL}/listings/lst-sec/custom-fields",
+            ).mock(
+                return_value=Response(
+                    200,
+                    json=[{"fieldId": "cf-a", "value": "SECRET-CODE"}],
+                ),
             )
 
-        # Only check our own logger, not httpx's
-        our_records = [
-            r for r in caplog.records if r.name.startswith("custom_components.guesty")
-        ]
-        log_text = " ".join(r.message for r in our_records)
-        for sensitive in sensitive_values:
-            assert sensitive not in log_text
+            sensitive_values = [
+                "SECRET-CODE",
+                "test-access-token-jwt",
+            ]
+
+            with caplog.at_level("DEBUG"):
+                await cf_client.set_field(
+                    target_type="listing",
+                    target_id="lst-sec",
+                    field_id="cf-a",
+                    value="SECRET-CODE",
+                )
+
+            # Only check our own logger, not httpx's
+            our_records = [
+                r
+                for r in caplog.records
+                if r.name.startswith("custom_components.guesty")
+            ]
+            log_text = " ".join(r.message for r in our_records)
+            for sensitive in sensitive_values:
+                assert sensitive not in log_text
 
     @respx.mock
     async def test_no_field_values_in_logs_on_retry(
@@ -1980,59 +1905,43 @@ class TestSecurityNoSensitiveData:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Retry scenario does not leak field values in logs."""
-        from custom_components.guesty.api.auth import GuestyTokenManager
-        from custom_components.guesty.api.client import GuestyApiClient
-        from tests.conftest import FakeTokenStorage
-
-        storage = FakeTokenStorage()
-        http = httpx.AsyncClient()
-        token_mgr = GuestyTokenManager(
-            client_id="test-id",
-            client_secret="test-secret",
-            http_client=http,
-            storage=storage,
-            refresh_buffer=0,
-        )
-        api_client = GuestyApiClient(
-            token_manager=token_mgr,
-            http_client=http,
-        )
-        cf_client = GuestyCustomFieldsClient(api_client)
-
-        respx.post(TOKEN_URL).mock(
-            return_value=Response(200, json=make_token_response()),
-        )
-        put_route = respx.put(
-            f"{BASE_URL}/listings/lst-retry-sec/custom-fields",
-        )
-        put_route.side_effect = [
-            Response(
-                429,
-                headers={"Retry-After": "0.01"},
-                json={"error": "rate limited"},
-            ),
-            Response(
-                200,
-                json=[{"fieldId": "cf-a", "value": "PII-DATA"}],
-            ),
-        ]
-
-        sensitive = ["PII-DATA"]
-
-        with caplog.at_level("DEBUG"):
-            await cf_client.set_field(
-                target_type="listing",
-                target_id="lst-retry-sec",
-                field_id="cf-a",
-                value="PII-DATA",
+        async with _make_cf_test_client() as cf_client:
+            respx.post(TOKEN_URL).mock(
+                return_value=Response(200, json=make_token_response()),
             )
+            put_route = respx.put(
+                f"{BASE_URL}/listings/lst-retry-sec/custom-fields",
+            )
+            put_route.side_effect = [
+                Response(
+                    429,
+                    headers={"Retry-After": "0.01"},
+                    json={"error": "rate limited"},
+                ),
+                Response(
+                    200,
+                    json=[{"fieldId": "cf-a", "value": "PII-DATA"}],
+                ),
+            ]
 
-        our_records = [
-            r for r in caplog.records if r.name.startswith("custom_components.guesty")
-        ]
-        log_text = " ".join(r.message for r in our_records)
-        for val in sensitive:
-            assert val not in log_text
+            sensitive = ["PII-DATA"]
+
+            with caplog.at_level("DEBUG"):
+                await cf_client.set_field(
+                    target_type="listing",
+                    target_id="lst-retry-sec",
+                    field_id="cf-a",
+                    value="PII-DATA",
+                )
+
+            our_records = [
+                r
+                for r in caplog.records
+                if r.name.startswith("custom_components.guesty")
+            ]
+            log_text = " ".join(r.message for r in our_records)
+            for val in sensitive:
+                assert val not in log_text
 
     @respx.mock
     async def test_no_field_values_in_logs_on_failure(
@@ -2040,58 +1949,42 @@ class TestSecurityNoSensitiveData:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Failed update does not leak field values in logs."""
-        from custom_components.guesty.api.auth import GuestyTokenManager
-        from custom_components.guesty.api.client import GuestyApiClient
-        from tests.conftest import FakeTokenStorage
-
-        storage = FakeTokenStorage()
-        http = httpx.AsyncClient()
-        token_mgr = GuestyTokenManager(
-            client_id="test-id",
-            client_secret="test-secret",
-            http_client=http,
-            storage=storage,
-            refresh_buffer=0,
-        )
-        api_client = GuestyApiClient(
-            token_manager=token_mgr,
-            http_client=http,
-        )
-        cf_client = GuestyCustomFieldsClient(api_client)
-
-        respx.post(TOKEN_URL).mock(
-            return_value=Response(200, json=make_token_response()),
-        )
-        respx.put(
-            f"{BASE_URL}/listings/lst-fail-sec/custom-fields",
-        ).mock(
-            return_value=Response(
-                422,
-                json={"error": "validation failed"},
-            ),
-        )
-
-        sensitive = ["ACCESS-CODE-9999"]
-
-        with (
-            caplog.at_level("DEBUG"),
-            contextlib.suppress(
-                GuestyCustomFieldError,
-            ),
-        ):
-            await cf_client.set_field(
-                target_type="listing",
-                target_id="lst-fail-sec",
-                field_id="cf-a",
-                value="ACCESS-CODE-9999",
+        async with _make_cf_test_client() as cf_client:
+            respx.post(TOKEN_URL).mock(
+                return_value=Response(200, json=make_token_response()),
+            )
+            respx.put(
+                f"{BASE_URL}/listings/lst-fail-sec/custom-fields",
+            ).mock(
+                return_value=Response(
+                    422,
+                    json={"error": "validation failed"},
+                ),
             )
 
-        our_records = [
-            r for r in caplog.records if r.name.startswith("custom_components.guesty")
-        ]
-        log_text = " ".join(r.message for r in our_records)
-        for val in sensitive:
-            assert val not in log_text
+            sensitive = ["ACCESS-CODE-9999"]
+
+            with (
+                caplog.at_level("DEBUG"),
+                contextlib.suppress(
+                    GuestyCustomFieldError,
+                ),
+            ):
+                await cf_client.set_field(
+                    target_type="listing",
+                    target_id="lst-fail-sec",
+                    field_id="cf-a",
+                    value="ACCESS-CODE-9999",
+                )
+
+            our_records = [
+                r
+                for r in caplog.records
+                if r.name.startswith("custom_components.guesty")
+            ]
+            log_text = " ".join(r.message for r in our_records)
+            for val in sensitive:
+                assert val not in log_text
 
     @respx.mock
     async def test_no_oauth_tokens_in_logs(
@@ -2099,50 +1992,33 @@ class TestSecurityNoSensitiveData:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """OAuth tokens never appear in log output."""
-        from custom_components.guesty.api.auth import GuestyTokenManager
-        from custom_components.guesty.api.client import GuestyApiClient
-        from tests.conftest import FakeTokenStorage
-
-        storage = FakeTokenStorage()
-        http = httpx.AsyncClient()
-        token_mgr = GuestyTokenManager(
-            client_id="test-id",
-            client_secret="test-secret",
-            http_client=http,
-            storage=storage,
-            refresh_buffer=0,
-        )
-        api_client = GuestyApiClient(
-            token_manager=token_mgr,
-            http_client=http,
-        )
-        cf_client = GuestyCustomFieldsClient(api_client)
-
-        respx.post(TOKEN_URL).mock(
-            return_value=Response(200, json=make_token_response()),
-        )
-        respx.put(
-            f"{BASE_URL}/listings/lst-tok/custom-fields",
-        ).mock(
-            return_value=Response(200, json=[]),
-        )
-
-        with caplog.at_level("DEBUG"):
-            await cf_client.set_field(
-                target_type="listing",
-                target_id="lst-tok",
-                field_id="cf-a",
-                value="v",
+        async with _make_cf_test_client() as cf_client:
+            respx.post(TOKEN_URL).mock(
+                return_value=Response(200, json=make_token_response()),
+            )
+            respx.put(
+                f"{BASE_URL}/listings/lst-tok/custom-fields",
+            ).mock(
+                return_value=Response(200, json=[]),
             )
 
-        our_records = [
-            r for r in caplog.records if r.name.startswith("custom_components.guesty")
-        ]
-        log_text = " ".join(r.message for r in our_records)
-        assert "test-access-token-jwt" not in log_text
+            with caplog.at_level("DEBUG"):
+                await cf_client.set_field(
+                    target_type="listing",
+                    target_id="lst-tok",
+                    field_id="cf-a",
+                    value="v",
+                )
 
+            our_records = [
+                r
+                for r in caplog.records
+                if r.name.startswith("custom_components.guesty")
+            ]
+            log_text = " ".join(r.message for r in our_records)
+            assert "test-access-token-jwt" not in log_text
 
-# ── T035: Integration Tests ──────────────────────────────────────────
+    # ── T035: Integration Tests ──────────────────────────────────────────
 
 
 class TestIntegrationDataFlow:

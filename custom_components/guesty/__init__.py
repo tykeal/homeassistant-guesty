@@ -300,11 +300,18 @@ async def async_setup_entry(
         field_id: str = call.data["field_id"]
         value: str | int | float | bool = call.data["value"]
 
-        entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id)
-        if entry_data is None:
+        domain_data = hass.data.get(DOMAIN, {})
+        if not domain_data:
             raise HomeAssistantError(
                 "Guesty integration not loaded",
             )
+
+        if len(domain_data) > 1:
+            raise HomeAssistantError(
+                "guesty.set_custom_field is ambiguous with multiple config entries",
+            )
+
+        entry_data = next(iter(domain_data.values()))
 
         local_cf_coordinator: CustomFieldsDefinitionCoordinator = entry_data[
             "cf_coordinator"
