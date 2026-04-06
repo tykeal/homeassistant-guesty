@@ -64,6 +64,7 @@ _SCHEMA_ADD_NOTE = vol.Schema(
     {
         vol.Required("reservation_id"): str,
         vol.Required("note_text"): str,
+        vol.Optional("config_entry_id"): str,
     },
 )
 
@@ -73,6 +74,7 @@ _SCHEMA_SET_STATUS = vol.Schema(
         vol.Required("status"): vol.In(
             sorted(VALID_LISTING_STATUSES),
         ),
+        vol.Optional("config_entry_id"): str,
     },
 )
 
@@ -82,6 +84,7 @@ _SCHEMA_CREATE_TASK = vol.Schema(
         vol.Required("task_title"): str,
         vol.Optional("description"): str,
         vol.Optional("assignee"): str,
+        vol.Optional("config_entry_id"): str,
     },
 )
 
@@ -93,6 +96,7 @@ _SCHEMA_SET_CALENDAR = vol.Schema(
         vol.Required("operation"): vol.In(
             sorted(VALID_CALENDAR_OPS),
         ),
+        vol.Optional("config_entry_id"): str,
     },
 )
 
@@ -101,6 +105,7 @@ _SCHEMA_UPDATE_FIELD = vol.Schema(
         vol.Required("reservation_id"): str,
         vol.Required("field_id"): str,
         vol.Required("value"): str,
+        vol.Optional("config_entry_id"): str,
     },
 )
 

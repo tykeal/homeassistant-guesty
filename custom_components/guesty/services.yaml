@@ -108,6 +108,15 @@ add_reservation_note:
       example: "Guest requested early check-in."
       selector:
         text:
+    config_entry_id:
+      name: Config entry ID
+      description: >-
+        Target a specific Guesty config entry. Required only
+        when multiple Guesty accounts are configured.
+      required: false
+      selector:
+        config_entry:
+          integration: guesty
 
 set_listing_status:
   name: Set listing status
@@ -133,6 +142,15 @@ set_listing_status:
               value: active
             - label: Inactive
               value: inactive
+    config_entry_id:
+      name: Config entry ID
+      description: >-
+        Target a specific Guesty config entry. Required only
+        when multiple Guesty accounts are configured.
+      required: false
+      selector:
+        config_entry:
+          integration: guesty
 
 create_task:
   name: Create task
@@ -168,6 +186,15 @@ create_task:
       example: "user123"
       selector:
         text:
+    config_entry_id:
+      name: Config entry ID
+      description: >-
+        Target a specific Guesty config entry. Required only
+        when multiple Guesty accounts are configured.
+      required: false
+      selector:
+        config_entry:
+          integration: guesty
 
 set_calendar_availability:
   name: Set calendar availability
@@ -207,6 +234,15 @@ set_calendar_availability:
               value: block
             - label: Unblock
               value: unblock
+    config_entry_id:
+      name: Config entry ID
+      description: >-
+        Target a specific Guesty config entry. Required only
+        when multiple Guesty accounts are configured.
+      required: false
+      selector:
+        config_entry:
+          integration: guesty
 
 update_reservation_custom_field:
   name: Update reservation custom field
@@ -234,3 +270,12 @@ update_reservation_custom_field:
       example: "VIP"
       selector:
         text:
+    config_entry_id:
+      name: Config entry ID
+      description: >-
+        Target a specific Guesty config entry. Required only
+        when multiple Guesty accounts are configured.
+      required: false
+      selector:
+        config_entry:
+          integration: guesty

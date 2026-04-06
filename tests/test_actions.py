@@ -254,6 +254,73 @@ class TestActionServiceRegistration:
             "add_reservation_note",
         )
 
+    async def test_multi_entry_config_entry_id_routes(
+        self,
+        hass: HomeAssistant,
+        mock_actions_client: AsyncMock,
+    ) -> None:
+        """Service call with config_entry_id targets correct entry."""
+        entry1 = await _setup_entry(hass)
+
+        entry2 = MockConfigEntry(
+            domain=DOMAIN,
+            title="Guesty (test2)",
+            data={
+                CONF_CLIENT_ID: "test-client-id-2",
+                CONF_CLIENT_SECRET: "test-client-secret-2",
+            },
+            unique_id="test-client-id-2",
+        )
+        entry2.add_to_hass(hass)
+
+        with (
+            patch(
+                _PATCH_TEST,
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                _PATCH_LISTINGS,
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                _PATCH_RESERVATIONS,
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+        ):
+            await hass.config_entries.async_setup(
+                entry2.entry_id,
+            )
+            await hass.async_block_till_done()
+
+        other_client = AsyncMock()
+        other_client.add_reservation_note = AsyncMock(
+            return_value=ActionResult(
+                success=True,
+                target_id="res-other",
+            ),
+        )
+        hass.data[DOMAIN][entry1.entry_id]["actions_client"] = other_client
+        hass.data[DOMAIN][entry2.entry_id]["actions_client"] = mock_actions_client
+
+        result = await hass.services.async_call(
+            DOMAIN,
+            "add_reservation_note",
+            {
+                "reservation_id": "res-001",
+                "note_text": "Test note",
+                "config_entry_id": entry2.entry_id,
+            },
+            blocking=True,
+            return_response=True,
+        )
+
+        mock_actions_client.add_reservation_note.assert_awaited_once()
+        other_client.add_reservation_note.assert_not_awaited()
+        assert result == _result_dict(target_id="res-001")
+
 
 # ── Add Reservation Note Tests ──────────────────────────────────────
 
