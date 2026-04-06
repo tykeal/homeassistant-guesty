@@ -237,7 +237,7 @@ DETAIL_SENSOR_KEYS = (
 
 
 class TestPropertyDetailSensors:
-    """Tests for the 11 property detail sensors (T025)."""
+    """Tests for the 10 property detail sensors (T025)."""
 
     @pytest.mark.parametrize("key", DETAIL_SENSOR_KEYS)
     def test_entity_category_diagnostic(self, key: str) -> None:
