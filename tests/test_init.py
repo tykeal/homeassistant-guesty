@@ -1113,6 +1113,61 @@ class TestAsyncSetupEntryCustomFields:
 
         assert entry.state is ConfigEntryState.SETUP_RETRY
 
+    @patch(
+        "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_options_update_reconfigures_cf_interval(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        mock_get_defs: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Options update reconfigures cf_coordinator interval."""
+        from datetime import timedelta
+
+        from custom_components.guesty.const import (
+            CONF_CF_SCAN_INTERVAL,
+            DEFAULT_CF_SCAN_INTERVAL,
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        cf_coord = hass.data[DOMAIN][entry.entry_id]["cf_coordinator"]
+        assert cf_coord.update_interval == timedelta(
+            minutes=DEFAULT_CF_SCAN_INTERVAL,
+        )
+
+        hass.config_entries.async_update_entry(
+            entry,
+            options={CONF_CF_SCAN_INTERVAL: 30},
+        )
+        await hass.async_block_till_done()
+
+        assert cf_coord.update_interval == timedelta(minutes=30)
+
 
 class TestEntityCleanup:
     """Tests for entity and coordinator cleanup on unload (T031)."""

@@ -335,6 +335,10 @@ async def async_setup_entry(
                 f" field_id={field_id})"
             )
             raise HomeAssistantError(str(exc) + ctx) from exc
+        except GuestyApiError as exc:
+            raise HomeAssistantError(
+                f"Guesty API error: {exc.message}",
+            ) from exc
 
         return {
             "target_type": result.target_type,
@@ -385,6 +389,19 @@ async def async_setup_entry(
         )
         reservations_coordinator.update_interval = timedelta(
             minutes=res_interval,
+        )
+
+        from custom_components.guesty.const import (
+            CONF_CF_SCAN_INTERVAL,
+            DEFAULT_CF_SCAN_INTERVAL,
+        )
+
+        cf_interval = entry.options.get(
+            CONF_CF_SCAN_INTERVAL,
+            DEFAULT_CF_SCAN_INTERVAL,
+        )
+        cf_coordinator.update_interval = timedelta(
+            minutes=cf_interval,
         )
 
     entry.async_on_unload(

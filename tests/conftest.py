@@ -125,7 +125,9 @@ def auto_enable_custom_integrations(
 
 
 @pytest.fixture(autouse=True)
-def _auto_mock_cf_definitions(request: pytest.FixtureRequest) -> Generator[None]:
+def _auto_mock_cf_definitions(
+    request: pytest.FixtureRequest,
+) -> Generator[None]:
     """Auto-mock custom field definitions for integration tests.
 
     Prevents real API calls during setup. Skipped for tests in the

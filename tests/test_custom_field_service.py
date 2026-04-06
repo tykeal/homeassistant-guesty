@@ -12,6 +12,7 @@ from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.guesty.api.exceptions import (
+    GuestyAuthError,
     GuestyCustomFieldError,
 )
 from custom_components.guesty.api.models import (
@@ -388,6 +389,69 @@ class TestSetCustomFieldServiceListing:
         hass.data[DOMAIN].pop(entry.entry_id)
 
         with pytest.raises(HomeAssistantError, match="not configured"):
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_CUSTOM_FIELD,
+                {
+                    "target_type": "listing",
+                    "target_id": "listing-001",
+                    "field_id": "cf-text-001",
+                    "value": "test",
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+
+class TestSetCustomFieldServiceApiErrors:
+    """Tests for API error handling in the service handler."""
+
+    @patch(
+        "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_auth_error_maps_to_ha_error(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        mock_get_defs: AsyncMock,
+        hass: HomeAssistant,
+        mock_cf_definitions: list[GuestyCustomFieldDefinition],
+    ) -> None:
+        """GuestyAuthError from set_field maps to HomeAssistantError."""
+        mock_get_defs.return_value = mock_cf_definitions
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        with (
+            patch(
+                "custom_components.guesty.GuestyCustomFieldsClient.set_field",
+                new_callable=AsyncMock,
+                side_effect=GuestyAuthError("token expired"),
+            ),
+            pytest.raises(
+                HomeAssistantError,
+                match="API error",
+            ),
+        ):
             await hass.services.async_call(
                 DOMAIN,
                 SERVICE_SET_CUSTOM_FIELD,
