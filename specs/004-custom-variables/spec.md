@@ -29,9 +29,10 @@ A property manager wants to push data from Home Assistant into a
 Guesty custom field on one of their listings. For example, after
 a smart thermostat reports a temperature reading or a door sensor
 detects an event, the manager calls a service in Home Assistant
-specifying the listing, the custom field identifier, and the new
-value. The integration sends the updated value to Guesty, where
-it becomes available for use in Guesty templates, automated
+specifying the target type (listing), the listing identifier,
+the custom field identifier, and the new value. The integration
+sends the updated value to Guesty, where it becomes available
+for use in Guesty templates, automated
 messages, reports, and operational workflows.
 
 **Why this priority**: Writing a custom field value to a listing
@@ -85,8 +86,9 @@ Guesty custom field associated with a specific reservation. For
 example, after an automation generates a door access code for an
 arriving guest, the manager stores the code in a reservation
 custom field so it appears in Guesty guest communications and
-check-in templates. The manager calls a service specifying the
-reservation, the custom field identifier, and the value.
+check-in templates. The manager calls a service specifying
+"reservation" as the target type, the reservation identifier,
+the custom field identifier, and the value.
 
 **Why this priority**: Reservation-level custom fields are
 essential for guest-facing workflows in Guesty. Property managers
@@ -104,9 +106,10 @@ the reservation in Guesty.
 
 1. **Given** the integration is configured, **When** the user calls
    the custom field service specifying "reservation" as the target
-   type, a valid reservation identifier, field identifier, and
-   value, **Then** the custom field is updated on the reservation
-   in Guesty and the service returns a structured success response.
+   type, a valid reservation identifier, custom field identifier,
+   and value, **Then** the custom field is updated on the
+   reservation in Guesty and the service returns a structured
+   success response.
 2. **Given** a reservation identifier that does not exist in Guesty,
    **When** the user calls the service targeting that reservation,
    **Then** the service raises a clear error indicating the
@@ -253,9 +256,11 @@ validation errors, retries, and error messages.
   (e.g., string or number)? The service should accept the value
   as provided and let Guesty validate type compatibility,
   surfacing any rejection clearly.
-- What happens when a listing or reservation has no custom fields
-  configured? The service should return a clear error indicating
-  no custom fields are available on the target entity.
+- What happens when there are no account-level custom field
+  definitions applicable to the requested target entity type
+  (listing or reservation)? The service should return a clear
+  error indicating no custom fields are defined for that entity
+  type.
 - What happens when the same custom field is updated concurrently
   from multiple automations? Each update should be sent
   independently to Guesty; the last write wins as determined by
@@ -455,7 +460,7 @@ directly covered by user story acceptance scenarios.
   infrastructure from Feature 001's API client rather than
   implementing separate rate limit logic.
 - The current version of Guesty's reservation custom fields
-  endpoints are used for all reservation-level operations,
+  endpoints is used for all reservation-level operations,
   consistent with Guesty's API migration timeline.
 - Only outbound writes (Home Assistant to Guesty) are in scope
   for the service call. Reading custom field values is handled
