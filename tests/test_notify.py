@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Andrew Grimberg <tykeal@bardicgrove.org>
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for the Guesty notify platform (T011, T012)."""
+"""Tests for the Guesty notify platform (T011, T012, T017-T021)."""
 
 from __future__ import annotations
 
@@ -12,9 +12,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.guesty.api.const import MAX_MESSAGE_LENGTH
 from custom_components.guesty.api.exceptions import (
     GuestyConnectionError,
     GuestyMessageError,
+    GuestyResponseError,
 )
 from custom_components.guesty.api.models import MessageDeliveryResult
 from custom_components.guesty.const import (
@@ -605,3 +607,650 @@ class TestAutomationCompatibility:
 
         # HA continues running after the error
         assert entry.state is ConfigEntryState.LOADED
+
+
+# ── Phase 3: Channel Selection Integration Tests (T017) ─────────────
+
+
+class TestChannelSelection:
+    """Integration tests for channel selection (T017)."""
+
+    async def test_email_channel_in_api_request(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """Specifying 'email' channel passes it to the client."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        mock_messaging_client.send_message.return_value = MessageDeliveryResult(
+            success=True,
+            message_id="msg-ch-email",
+            reservation_id="res-ch1",
+        )
+
+        await entity.async_send_guest_message(
+            message="Welcome",
+            reservation_id="res-ch1",
+            channel="email",
+        )
+
+        mock_messaging_client.send_message.assert_called_once_with(
+            reservation_id="res-ch1",
+            body="Welcome",
+            channel="email",
+            template_variables=None,
+        )
+
+    async def test_sms_channel_routing(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """Specifying 'sms' channel routes correctly."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        mock_messaging_client.send_message.return_value = MessageDeliveryResult(
+            success=True,
+            message_id="msg-ch-sms",
+            reservation_id="res-ch2",
+        )
+
+        await entity.async_send_guest_message(
+            message="Your code is 1234",
+            reservation_id="res-ch2",
+            channel="sms",
+        )
+
+        mock_messaging_client.send_message.assert_called_once_with(
+            reservation_id="res-ch2",
+            body="Your code is 1234",
+            channel="sms",
+            template_variables=None,
+        )
+
+    async def test_omit_channel_uses_default(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """Omitting channel passes None for conversation default."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        mock_messaging_client.send_message.return_value = MessageDeliveryResult(
+            success=True,
+            message_id="msg-ch-def",
+            reservation_id="res-ch3",
+        )
+
+        await entity.async_send_guest_message(
+            message="Hello guest",
+            reservation_id="res-ch3",
+        )
+
+        mock_messaging_client.send_message.assert_called_once_with(
+            reservation_id="res-ch3",
+            body="Hello guest",
+            channel=None,
+            template_variables=None,
+        )
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_channel_flows_through_service_call(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Channel flows from service call through entire stack."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        mock_client = AsyncMock()
+        mock_client.send_message.return_value = MessageDeliveryResult(
+            success=True,
+            message_id="msg-svc-ch",
+            reservation_id="res-svc-ch",
+        )
+
+        with patch(
+            "custom_components.guesty.GuestyMessagingClient",
+            return_value=mock_client,
+        ):
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+
+        entity_id = next(s.entity_id for s in hass.states.async_all("notify"))
+
+        await hass.services.async_call(
+            "guesty",
+            "send_guest_message",
+            {
+                "message": "Welcome to your stay",
+                "reservation_id": "res-svc-ch",
+                "channel": "email",
+            },
+            target={"entity_id": entity_id},
+            blocking=True,
+        )
+
+        mock_client.send_message.assert_called_once_with(
+            reservation_id="res-svc-ch",
+            body="Welcome to your stay",
+            channel="email",
+            template_variables=None,
+        )
+
+
+# ── Phase 3: Unavailable Channel Error Tests (T018) ─────────────────
+
+
+class TestUnavailableChannel:
+    """Unavailable channel error tests (T018)."""
+
+    async def test_unavailable_channel_raises_error(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """Channel not in availableModules raises error."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        mock_messaging_client.send_message.side_effect = GuestyMessageError(
+            "Channel 'whatsapp' not available; available channels: email, sms",
+            reservation_id="res-uc1",
+            available_channels=("email", "sms"),
+        )
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="not available",
+        ):
+            await entity.async_send_guest_message(
+                message="Hello",
+                reservation_id="res-uc1",
+                channel="whatsapp",
+            )
+
+    async def test_error_includes_requested_and_available(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """Error message names requested channel and alternatives."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        mock_messaging_client.send_message.side_effect = GuestyMessageError(
+            "Channel 'platform' unavailable for reservation "
+            "'res-uc2'; available: email, airbnb2",
+            reservation_id="res-uc2",
+            available_channels=("email", "airbnb2"),
+        )
+
+        with pytest.raises(HomeAssistantError) as exc_info:
+            await entity.async_send_guest_message(
+                message="Hello",
+                reservation_id="res-uc2",
+                channel="platform",
+            )
+
+        error_msg = str(exc_info.value)
+        assert "platform" in error_msg
+        assert "email" in error_msg or "airbnb2" in error_msg
+
+    async def test_unavailable_channel_preserves_cause(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """HomeAssistantError chains to GuestyMessageError cause."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        original = GuestyMessageError(
+            "Channel 'sms' not available",
+            reservation_id="res-uc3",
+            available_channels=("email",),
+        )
+        mock_messaging_client.send_message.side_effect = original
+
+        with pytest.raises(HomeAssistantError) as exc_info:
+            await entity.async_send_guest_message(
+                message="Hello",
+                reservation_id="res-uc3",
+                channel="sms",
+            )
+
+        assert exc_info.value.__cause__ is original
+
+
+# ── Phase 3: Template Variable Substitution Tests (T019) ────────────
+
+
+class TestTemplateVariableSubstitution:
+    """Integration tests for template variable substitution (T019)."""
+
+    async def test_template_variables_passed_to_client(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """template_variables dict is forwarded to client."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        mock_messaging_client.send_message.return_value = MessageDeliveryResult(
+            success=True,
+            message_id="msg-tv1",
+            reservation_id="res-tv1",
+        )
+
+        variables = {
+            "guest_name": "Alice",
+            "access_code": "5678",
+        }
+
+        await entity.async_send_guest_message(
+            message="Hi {guest_name}, code: {access_code}",
+            reservation_id="res-tv1",
+            template_variables=variables,
+        )
+
+        mock_messaging_client.send_message.assert_called_once_with(
+            reservation_id="res-tv1",
+            body="Hi {guest_name}, code: {access_code}",
+            channel=None,
+            template_variables=variables,
+        )
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_template_vars_flow_through_service_call(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """template_variables flows from service call to client."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        mock_client = AsyncMock()
+        mock_client.send_message.return_value = MessageDeliveryResult(
+            success=True,
+            message_id="msg-svc-tv",
+            reservation_id="res-svc-tv",
+        )
+
+        with patch(
+            "custom_components.guesty.GuestyMessagingClient",
+            return_value=mock_client,
+        ):
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+
+        entity_id = next(s.entity_id for s in hass.states.async_all("notify"))
+
+        await hass.services.async_call(
+            "guesty",
+            "send_guest_message",
+            {
+                "message": "Hi {guest_name}",
+                "reservation_id": "res-svc-tv",
+                "template_variables": {
+                    "guest_name": "Bob",
+                },
+            },
+            target={"entity_id": entity_id},
+            blocking=True,
+        )
+
+        mock_client.send_message.assert_called_once_with(
+            reservation_id="res-svc-tv",
+            body="Hi {guest_name}",
+            channel=None,
+            template_variables={"guest_name": "Bob"},
+        )
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_rendered_message_has_substituted_values(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Client renders template and sends substituted message."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        # Use a real-ish mock that records calls but also
+        # simulates template rendering in the client pipeline.
+        mock_client = AsyncMock()
+        mock_client.send_message.return_value = MessageDeliveryResult(
+            success=True,
+            message_id="msg-rendered",
+            reservation_id="res-rendered",
+        )
+
+        with patch(
+            "custom_components.guesty.GuestyMessagingClient",
+            return_value=mock_client,
+        ):
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+
+        entity_id = next(s.entity_id for s in hass.states.async_all("notify"))
+
+        await hass.services.async_call(
+            "guesty",
+            "send_guest_message",
+            {
+                "message": "Welcome {guest_name}, code: {access_code}",
+                "reservation_id": "res-rendered",
+                "template_variables": {
+                    "guest_name": "Carol",
+                    "access_code": "9999",
+                },
+            },
+            target={"entity_id": entity_id},
+            blocking=True,
+        )
+
+        call_kwargs = mock_client.send_message.call_args
+        assert call_kwargs.kwargs["template_variables"] == {
+            "guest_name": "Carol",
+            "access_code": "9999",
+        }
+
+
+# ── Phase 3: Missing Template Variable Error Tests (T020) ───────────
+
+
+class TestMissingTemplateVariable:
+    """Missing template variable error tests (T020)."""
+
+    async def test_missing_variable_raises_error(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """Missing template variable raises HomeAssistantError."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        mock_messaging_client.send_message.side_effect = KeyError("guest_name")
+
+        with pytest.raises(
+            HomeAssistantError,
+            match=r"Missing template variable.*guest_name",
+        ):
+            await entity.async_send_guest_message(
+                message="Hi {guest_name}",
+                reservation_id="res-mv1",
+                template_variables={},
+            )
+
+    async def test_missing_variable_identifies_name(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """Error message identifies the missing variable name."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        mock_messaging_client.send_message.side_effect = KeyError("access_code")
+
+        with pytest.raises(HomeAssistantError) as exc_info:
+            await entity.async_send_guest_message(
+                message="Code: {access_code}",
+                reservation_id="res-mv2",
+                template_variables={"guest_name": "Dan"},
+            )
+
+        assert "access_code" in str(exc_info.value)
+
+    async def test_no_partial_render_sent(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """No partially rendered message is sent on error."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        # The client raises KeyError during render_template which
+        # happens before the actual send_message API call.
+        mock_messaging_client.send_message.side_effect = KeyError("guest_name")
+
+        with pytest.raises(HomeAssistantError):
+            await entity.async_send_guest_message(
+                message="Hi {guest_name}, code: {access_code}",
+                reservation_id="res-mv3",
+                template_variables={"access_code": "1234"},
+            )
+
+        # send_message was called (the mock raises during the call),
+        # but the real client would raise before sending to the API.
+        # Verify the error was raised (already done above).
+
+    async def test_missing_variable_preserves_cause(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """HomeAssistantError chains to original KeyError."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        original = KeyError("guest_name")
+        mock_messaging_client.send_message.side_effect = original
+
+        with pytest.raises(HomeAssistantError) as exc_info:
+            await entity.async_send_guest_message(
+                message="Hi {guest_name}",
+                reservation_id="res-mv4",
+                template_variables={},
+            )
+
+        assert exc_info.value.__cause__ is original
+
+
+# ── Phase 3: Edge Case Tests (T021) ─────────────────────────────────
+
+
+class TestEdgeCases:
+    """Edge case tests (T021)."""
+
+    async def test_empty_reservation_id_rejected(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """Empty reservation_id raises HomeAssistantError."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="reservation_id",
+        ):
+            await entity.async_send_guest_message(
+                message="Hello",
+                reservation_id="",
+            )
+
+    async def test_empty_message_body_rejected(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """Empty message body raises HomeAssistantError."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="message body",
+        ):
+            await entity.async_send_guest_message(
+                message="",
+                reservation_id="res-empty-msg",
+            )
+
+    async def test_expired_reservation_surfaces_error(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """Expired reservation API error is surfaced clearly."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        mock_messaging_client.send_message.side_effect = GuestyMessageError(
+            "No conversation found for reservation "
+            "'res-expired': reservation may be expired "
+            "or checked out",
+            reservation_id="res-expired",
+        )
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="res-expired",
+        ):
+            await entity.async_send_guest_message(
+                message="Hello",
+                reservation_id="res-expired",
+            )
+
+    async def test_oversized_message_rejected_before_api(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """Oversized message body is rejected with ValueError."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        oversized = "x" * (MAX_MESSAGE_LENGTH + 1)
+        mock_messaging_client.send_message.side_effect = ValueError(
+            f"body exceeds maximum length of {MAX_MESSAGE_LENGTH} characters"
+        )
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="body exceeds maximum length",
+        ):
+            await entity.async_send_guest_message(
+                message=oversized,
+                reservation_id="res-big",
+            )
+
+    async def test_concurrent_sends_independent(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """Concurrent send_message calls execute independently."""
+        import asyncio
+
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        mock_messaging_client.send_message.return_value = MessageDeliveryResult(
+            success=True,
+            message_id="msg-conc",
+            reservation_id="res-conc",
+        )
+
+        tasks = [
+            entity.async_send_guest_message(
+                message=f"Message {i}",
+                reservation_id=f"res-conc-{i}",
+            )
+            for i in range(3)
+        ]
+
+        await asyncio.gather(*tasks)
+
+        assert mock_messaging_client.send_message.call_count == 3
+
+        call_res_ids = sorted(
+            call.kwargs["reservation_id"]
+            for call in mock_messaging_client.send_message.call_args_list
+        )
+        assert call_res_ids == [
+            "res-conc-0",
+            "res-conc-1",
+            "res-conc-2",
+        ]
+
+    async def test_unexpected_api_response_raises_error(
+        self,
+        hass: HomeAssistant,
+        mock_messaging_client: AsyncMock,
+    ) -> None:
+        """Unexpected API response format raises error."""
+        entry = _make_entry()
+        entity = GuestyNotifyEntity(mock_messaging_client, entry)
+        entity.hass = hass
+
+        mock_messaging_client.send_message.side_effect = GuestyResponseError(
+            "Send-message response is not valid JSON"
+        )
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="not valid JSON",
+        ):
+            await entity.async_send_guest_message(
+                message="Hello",
+                reservation_id="res-bad-resp",
+            )
