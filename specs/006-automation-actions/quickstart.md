@@ -16,7 +16,7 @@ SPDX-License-Identifier: Apache-2.0
 
 ```bash
 cd /path/to/homeassistant-guesty
-uv sync
+uv sync --group dev --all-extras
 ```
 
 ## Running Tests
@@ -49,8 +49,8 @@ uv run interrogate custom_components/
 ## Pre-Commit
 
 ```bash
-# Run all hooks (use prek alias)
-prek run --all-files
+# Run all hooks
+uv run pre-commit run --all-files
 ```
 
 ## Architecture Overview

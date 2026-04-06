@@ -26,8 +26,9 @@ each action:
 **Calendar endpoint**: The Guesty availability/pricing calendar
 API uses
 `PUT /availability-pricing/api/calendar/listings/{listing_id}`
-with a JSON body containing date entries. Each entry specifies a
-date and availability status (available/unavailable).
+with a JSON body containing a date range, using `dateFrom` and
+`dateTo` together with the availability status
+(available/unavailable) to apply across that range.
 
 **Rationale**: These endpoints are documented in the Guesty
 Open API v1 reference and Postman collection. The reservation
@@ -140,12 +141,11 @@ The `assigneeId` is optional and references a Guesty user.
 `PUT /availability-pricing/api/calendar/listings/{listing_id}`
 to block and unblock date ranges.
 
-**Rationale**: The calendar API accepts an array of date
-entries, each specifying a date (`YYYY-MM-DD`) and status.
-For blocking, set `status: "unavailable"`; for unblocking,
-set `status: "available"`. The API operates on individual
-dates within the range, so the client must expand date ranges
-into individual entries.
+**Rationale**: The calendar API accepts a date range via `dateFrom` and
+`dateTo` fields, plus a `status` field. For blocking, set
+`status: "unavailable"`; for unblocking, set
+`status: "available"`. The client sends the range directly
+without expanding to individual dates.
 
 **Conflict detection**: The spec requires rejecting blocks
 that conflict with confirmed reservations (FR-009). The
@@ -207,8 +207,9 @@ external systems.
 
 Services are registered in `async_setup_entry` since they
 depend on the authenticated API client created during entry
-setup. This is appropriate for a custom component that
-always has exactly one config entry.
+setup. Each config entry registers its own service handlers
+and stores the actions client in its entry-specific data,
+supporting multiple Guesty accounts.
 
 **Alternatives considered**:
 

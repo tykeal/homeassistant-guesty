@@ -8,8 +8,8 @@ SPDX-License-Identifier: Apache-2.0
 Auto-generated from feature plans. Last updated: 2026-04-05
 
 ## Active Technologies
-- N/A — stateless write operations; no persistent (006-actions-plan)
 
+- N/A — stateless write operations; no persistent storage (006-actions-plan)
 - Python >=3.14.2 + Home Assistant >=2026.4.0, httpx >=0.28 (002-plan-listings)
 - HA config entry storage (via `hass.config_entries`) (002-plan-listings)
 - Python >=3.14.2 + httpx (async HTTP), homeassistant (>=2026.4.0) (005-plan-notify)
@@ -47,8 +47,9 @@ Python >=3.14.2: Full type annotations, 100% docstring coverage,
 async/await patterns, frozen dataclasses for DTOs
 
 ## Recent Changes
-- 006-actions-plan: Added Python >=3.14.2 + Home Assistant >=2026.4.0, httpx >=0.28
 
+- 006-actions-plan: Added Python >=3.14.2 +
+  Home Assistant >=2026.4.0, httpx >=0.28
 - 004-custom-variables-plan: Added Python >=3.14.2 +
   Home Assistant >=2026.4.0, httpx >=0.28
 - 003-reservations-plan: Added Python >=3.14.2 +

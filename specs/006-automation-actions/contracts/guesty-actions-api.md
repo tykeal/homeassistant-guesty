@@ -9,12 +9,16 @@ SPDX-License-Identifier: Apache-2.0
 **Date**: 2025-07-26
 **API Version**: Guesty Open API v1
 
+**Base URL**: `https://open-api.guesty.com/v1`
+
+All endpoint paths below are relative to the base URL.
+
 ## Endpoints
 
 ### 1. Update Reservation (Notes / Custom Fields)
 
 ```text
-PUT /v1/reservations/{reservationId}
+PUT /reservations/{reservationId}
 Authorization: Bearer {token}
 Content-Type: application/json
 ```
@@ -58,7 +62,7 @@ Content-Type: application/json
 ### 2. Update Listing Status
 
 ```text
-PUT /v1/listings/{listingId}
+PUT /listings/{listingId}
 Authorization: Bearer {token}
 Content-Type: application/json
 ```
@@ -101,7 +105,7 @@ Content-Type: application/json
 ### 3. Create Task
 
 ```text
-POST /v1/tasks-open-api/tasks
+POST /tasks-open-api/tasks
 Authorization: Bearer {token}
 Content-Type: application/json
 ```
@@ -138,7 +142,7 @@ Content-Type: application/json
 ### 4. Update Calendar Availability
 
 ```text
-PUT /v1/availability-pricing/api/calendar/listings/{listingId}
+PUT /availability-pricing/api/calendar/listings/{listingId}
 Authorization: Bearer {token}
 Content-Type: application/json
 ```
@@ -149,8 +153,7 @@ Content-Type: application/json
 {
   "dateFrom": "2025-08-01",
   "dateTo": "2025-08-05",
-  "status": "unavailable",
-  "note": "Owner stay"
+  "status": "unavailable"
 }
 ```
 

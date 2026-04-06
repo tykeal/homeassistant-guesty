@@ -193,8 +193,7 @@ zero HA dependencies, extending the existing `api/` package.
     `VALID_CALENDAR_OPS = frozenset({"block", "unblock"})`
 - `api/models.py` — Extended with action DTOs:
   - `ActionResult(frozen)`: `success: bool`,
-    `target_id: str`, `error: str | None = None`,
-    `details: MappingProxyType[str, str] | None = None`
+    `target_id: str`, `error: str | None = None`
   - Each with `__post_init__` validation
 - `api/exceptions.py` — Extended with `GuestyActionError`:
   - Inherits `GuestyApiError`; adds `target_id: str | None`,
@@ -228,9 +227,12 @@ zero HA dependencies, extending the existing `api/` package.
   responses, consistent with `MessageDeliveryResult` pattern
 - Calendar availability uses
   `PUT /availability-pricing/api/calendar/listings/{id}`
-  with date objects; reservation notes use
-  `PUT /reservations/{id}`; listing status uses
-  `PUT /listings/{id}`; tasks use `POST /tasks-open-api/tasks`
+  with a range payload containing `dateFrom` and `dateTo`;
+  the client sends the requested range directly and does
+  not expand it into per-day entries
+- Reservation notes use `PUT /reservations/{id}`;
+  listing status uses `PUT /listings/{id}`; tasks use
+  `POST /tasks-open-api/tasks`
 - Custom field updates use
   `PUT /reservations/{id}` with custom fields payload
 - `GuestyActionError` includes `target_id` and
