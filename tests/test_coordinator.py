@@ -17,6 +17,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.guesty.api.exceptions import (
     GuestyAuthError,
     GuestyConnectionError,
+    GuestyRateLimitError,
     GuestyResponseError,
 )
 from custom_components.guesty.api.models import GuestyListing, GuestyReservation
@@ -907,3 +908,170 @@ class TestReservationsCoordinator:
 
         data = await coordinator._async_update_data()
         assert data == {}
+
+
+class TestReservationsCoordinatorErrorResilience:
+    """Tests for US5 — reservations coordinator error resilience (T024)."""
+
+    async def test_raises_update_failed_on_rate_limit_error(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """_async_update_data raises UpdateFailed on GuestyRateLimitError."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_reservations = AsyncMock(
+            side_effect=GuestyRateLimitError("rate limited"),
+        )
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = {}
+
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+
+        with pytest.raises(UpdateFailed, match="rate limited"):
+            await coordinator._async_update_data()
+
+    async def test_retains_last_known_good_data_after_error(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        sample_reservation: GuestyReservation,
+    ) -> None:
+        """Coordinator retains last-known-good data after failure (FR-014)."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_reservations = AsyncMock(
+            return_value=[sample_reservation],
+        )
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = {sample_listing.id: sample_listing}
+
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+
+        # Successful first refresh
+        await coordinator.async_refresh()
+        assert coordinator.last_update_success is True
+        assert coordinator.data is not None
+        assert sample_listing.id in coordinator.data
+
+        # API fails during next refresh
+        api_client.get_reservations = AsyncMock(
+            side_effect=GuestyConnectionError("network down"),
+        )
+        await coordinator.async_refresh()
+
+        # Last-known-good data retained
+        assert coordinator.last_update_success is False
+        assert coordinator.data is not None
+        assert sample_listing.id in coordinator.data
+        assert coordinator.data[sample_listing.id] == [
+            sample_reservation,
+        ]
+
+    async def test_recovery_updates_data_on_successful_fetch(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        sample_reservation: GuestyReservation,
+    ) -> None:
+        """Recovery updates data on next successful fetch."""
+        from datetime import UTC, datetime
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_reservations = AsyncMock(
+            return_value=[sample_reservation],
+        )
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = {sample_listing.id: sample_listing}
+
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+
+        # Successful first refresh
+        await coordinator.async_refresh()
+        assert coordinator.last_update_success is True
+
+        # API error during refresh
+        api_client.get_reservations = AsyncMock(
+            side_effect=GuestyRateLimitError("rate limited"),
+        )
+        await coordinator.async_refresh()
+        assert coordinator.last_update_success is False
+
+        # Recovery with new reservation data
+        new_reservation = GuestyReservation(
+            id="res-new",
+            listing_id="listing-001",
+            status="checked_in",
+            check_in=datetime(2025, 9, 1, 15, 0, 0, tzinfo=UTC),
+            check_out=datetime(2025, 9, 5, 11, 0, 0, tzinfo=UTC),
+        )
+        api_client.get_reservations = AsyncMock(
+            return_value=[new_reservation],
+        )
+        await coordinator.async_refresh()
+        assert coordinator.last_update_success is True
+        assert coordinator.data is not None
+        assert len(coordinator.data[sample_listing.id]) == 1
+        assert coordinator.data[sample_listing.id][0].id == "res-new"
+
+    async def test_error_logged_on_api_failure(
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Error logged on API failure with error context."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_reservations = AsyncMock(return_value=[])
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = {}
+
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+
+        # Successful first refresh
+        await coordinator.async_refresh()
+        assert coordinator.last_update_success is True
+
+        # API failure with specific error context
+        api_client.get_reservations = AsyncMock(
+            side_effect=GuestyResponseError("malformed JSON body"),
+        )
+        caplog.clear()
+        with caplog.at_level(
+            logging.ERROR,
+            logger="custom_components.guesty.coordinator",
+        ):
+            await coordinator.async_refresh()
+
+        assert coordinator.last_update_success is False
+        matching = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.ERROR and "malformed JSON body" in r.getMessage()
+        ]
+        assert len(matching) >= 1
