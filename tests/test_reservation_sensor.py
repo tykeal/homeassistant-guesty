@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.const import EntityCategory
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
@@ -77,6 +78,145 @@ def _make_reservation(
         check_out=check_out or datetime(2025, 8, 5, 11, 0, 0, tzinfo=UTC),
         **kwargs,  # type: ignore[arg-type]
     )
+
+
+class TestReservationSensorEnumConfig:
+    """Tests for reservation sensor ENUM device class config."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_device_class_is_enum(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Reservation sensor has ENUM device class."""
+        mock_listings.return_value = [sample_listing]
+        mock_reservations.return_value = []
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        state = hass.states.get(
+            "sensor.beach_house_reservation_status",
+        )
+        assert state is not None
+        assert state.attributes["device_class"] == SensorDeviceClass.ENUM
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_options_list(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Reservation sensor options match expected statuses."""
+        mock_listings.return_value = [sample_listing]
+        mock_reservations.return_value = []
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        state = hass.states.get(
+            "sensor.beach_house_reservation_status",
+        )
+        assert state is not None
+        expected = [
+            "no_reservation",
+            "awaiting_checkin",
+            "checked_in",
+            "checked_out",
+            "canceled",
+        ]
+        assert state.attributes["options"] == expected
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_options_includes_unknown_status(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Options dynamically include unknown statuses."""
+        mock_listings.return_value = [sample_listing]
+        reservations = [
+            _make_reservation(res_id="r1", status="future_status"),
+        ]
+        mock_reservations.return_value = reservations
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        state = hass.states.get(
+            "sensor.beach_house_reservation_status",
+        )
+        assert state is not None
+        assert state.state == "future_status"
+        assert "future_status" in state.attributes["options"]
 
 
 class TestPrioritySelection:

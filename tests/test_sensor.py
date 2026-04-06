@@ -9,6 +9,7 @@ from types import MappingProxyType
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import Entity
@@ -220,6 +221,20 @@ class TestGuestyListingSensor:
         """Status sensor entity_category is None."""
         desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "status")
         assert desc.entity_category is None
+
+    def test_status_sensor_device_class_enum(
+        self,
+    ) -> None:
+        """Status sensor has ENUM device class."""
+        desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "status")
+        assert desc.device_class == SensorDeviceClass.ENUM
+
+    def test_status_sensor_options(
+        self,
+    ) -> None:
+        """Status sensor options list active/inactive/archived."""
+        desc = next(d for d in LISTING_SENSOR_DESCRIPTIONS if d.key == "status")
+        assert desc.options == ["active", "inactive", "archived"]
 
     def test_extra_state_attributes_listing_id(
         self,
