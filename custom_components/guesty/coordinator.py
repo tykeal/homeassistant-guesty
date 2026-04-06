@@ -30,6 +30,7 @@ from custom_components.guesty.const import (
     CONF_PAST_DAYS,
     CONF_RESERVATION_SCAN_INTERVAL,
     CONF_SCAN_INTERVAL,
+    CONF_SELECTED_LISTINGS,
     DEFAULT_CF_SCAN_INTERVAL,
     DEFAULT_RESERVATION_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
@@ -99,10 +100,11 @@ class ListingsCoordinator(
     ) -> dict[str, GuestyListing]:
         """Fetch all listings and return as a dict keyed by ID.
 
-        Compares fetched listing IDs against previous data to track
-        disappeared listings. IDs present before but absent now are
-        added to ``disappeared_listing_ids``; IDs that reappear are
-        removed from the set. A warning is logged per disappeared ID.
+        Fetches listings from the API, applies the selected-listings
+        filter when ``CONF_SELECTED_LISTINGS`` is present in config
+        entry options, and tracks disappeared listing IDs. When the
+        option is absent (``None``), all listings are returned
+        unchanged for backward compatibility.
 
         Returns:
             Dictionary mapping listing ID to GuestyListing.
@@ -118,6 +120,16 @@ class ListingsCoordinator(
             ) from exc
 
         new_data = {listing.id: listing for listing in listings}
+
+        selected = self.config_entry.options.get(
+            CONF_SELECTED_LISTINGS,
+        )
+        if selected is not None:
+            selected_set = set(selected)
+            new_data = {
+                lid: listing for lid, listing in new_data.items() if lid in selected_set
+            }
+
         current_ids = set(new_data.keys())
 
         if self._previous_listing_ids is not None:
