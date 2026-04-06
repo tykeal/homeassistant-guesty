@@ -169,7 +169,7 @@ blocking.
 
 <!-- markdownlint-disable MD013 -->
 
-- [ ] T011 [US1] Write unit tests for `GuestyNotifyEntity`:
+- [X] T011 [US1] Write unit tests for `GuestyNotifyEntity`:
   `async_send_message` delivers message via
   `GuestyMessagingClient` with correct `reservation_id` and
   body; missing `reservation_id` in service call data raises
@@ -179,7 +179,7 @@ blocking.
   attributes (`unique_id`, name, `device_info`) are set
   correctly; `async_setup_entry` creates entity via
   `async_add_entities` in `tests/test_notify.py`
-- [ ] T012 [US2] Write automation compatibility tests: HA
+- [X] T012 [US2] Write automation compatibility tests: HA
   service call to `notify.send_message` dispatches message
   through messaging client; service call with template-rendered
   message body sends resolved text; `async_send_message` does
@@ -193,13 +193,13 @@ blocking.
 
 <!-- markdownlint-disable MD013 -->
 
-- [ ] T013 [P] [US1] Add `Platform.NOTIFY` to `PLATFORMS` list
+- [X] T013 [P] [US1] Add `Platform.NOTIFY` to `PLATFORMS` list
   in `custom_components/guesty/const.py`
-- [ ] T014 [US1] Update `async_setup_entry` to create
+- [X] T014 [US1] Update `async_setup_entry` to create
   `GuestyMessagingClient(api_client)` and store in runtime
   data; verify `async_unload_entry` cleans up correctly in
   `custom_components/guesty/__init__.py`
-- [ ] T015 [US1] Implement `GuestyNotifyEntity(NotifyEntity)`
+- [X] T015 [US1] Implement `GuestyNotifyEntity(NotifyEntity)`
   with constructor accepting `messaging_client` and entry,
   `async_send_message(message, title)` that extracts
   `reservation_id`/channel/`template_variables` from service
@@ -207,7 +207,7 @@ blocking.
   attributes (`has_entity_name`, `name`, `unique_id`,
   `device_info`), and `async_setup_entry` platform function in
   `custom_components/guesty/notify.py`
-- [ ] T016 [US1] Add messaging client mock fixture and notify
+- [X] T016 [US1] Add messaging client mock fixture and notify
   entity test fixtures (mock `GuestyMessagingClient`, config
   entry setup with notify platform) to `tests/conftest.py`
 
