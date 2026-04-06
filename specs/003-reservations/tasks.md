@@ -170,7 +170,7 @@ HA automations listen to.
 
 ### Phase 2 Fixtures
 
-- [ ] T012 [US1] Add reservation test fixtures to
+- [x] T012 [US1] Add reservation test fixtures to
   `tests/conftest.py`: `make_reservation_dict(**overrides)`
   returning a Guesty API reservation dict with sensible
   defaults, `make_guest_dict(**overrides)`,
@@ -185,7 +185,7 @@ HA automations listen to.
 
 <!-- markdownlint-disable MD013 -->
 
-- [ ] T013 [US1] Write tests for `ReservationsCoordinator`:
+- [x] T013 [US1] Write tests for `ReservationsCoordinator`:
   `_async_update_data` calls
   `api_client.get_reservations()` and returns
   `dict[str, list[GuestyReservation]]` keyed by `listing_id`,
@@ -197,7 +197,7 @@ HA automations listen to.
   raises `UpdateFailed` on `GuestyApiError` subclasses, empty
   reservation list returns empty dict in
   `tests/test_coordinator.py`
-- [ ] T014 [P] [US1] Write tests for
+- [x] T014 [P] [US1] Write tests for
   `GuestyReservationSensor`: priority selection
   (`checked_in` > confirmed/`awaiting_checkin` >
   `checked_out` > `canceled` > `no_reservation` per FR-006),
@@ -214,7 +214,7 @@ HA automations listen to.
   sensor with no reservations shows `"no_reservation"`,
   `async_setup_entry` creates one status sensor per listing
   in `tests/test_reservation_sensor.py`
-- [ ] T015 [P] [US2] Write tests for reservation options flow:
+- [x] T015 [P] [US2] Write tests for reservation options flow:
   `async_step_init` presents
   `reservation_scan_interval`/`past_days`/`future_days`
   fields with correct defaults (15/30/365), valid values save
@@ -222,7 +222,7 @@ HA automations listen to.
   `MIN_RESERVATION_SCAN_INTERVAL` (5) raises validation error,
   `past_days` and `future_days` accept positive integers in
   `tests/test_config_flow.py`
-- [ ] T016 [P] [US1] Write tests for updated
+- [x] T016 [P] [US1] Write tests for updated
   `async_setup_entry`: `ReservationsCoordinator` created after
   `ListingsCoordinator` and stored in `hass.data`,
   `async_config_entry_first_refresh` called for reservation
@@ -237,12 +237,12 @@ HA automations listen to.
 
 <!-- markdownlint-disable MD013 -->
 
-- [ ] T017 [P] [US1] Add `CONF_RESERVATION_SCAN_INTERVAL`,
+- [x] T017 [P] [US1] Add `CONF_RESERVATION_SCAN_INTERVAL`,
   `CONF_PAST_DAYS`, `CONF_FUTURE_DAYS`,
   `DEFAULT_RESERVATION_SCAN_INTERVAL = 15`,
   `MIN_RESERVATION_SCAN_INTERVAL = 5` to
   `custom_components/guesty/const.py`
-- [ ] T018 [US1] Implement
+- [x] T018 [US1] Implement
   `ReservationsCoordinator(DataUpdateCoordinator[dict[str, list[GuestyReservation]]])`
   with `__init__` accepting `hass`, `entry`, `api_client`,
   and `listings_coordinator`; `_async_update_data` fetching
@@ -252,19 +252,19 @@ HA automations listen to.
   FR-017, sorting per-listing by `check_in`, raising
   `UpdateFailed` on `GuestyApiError` subclasses in
   `custom_components/guesty/coordinator.py`
-- [ ] T019 [US2] Extend `GuestyOptionsFlowHandler` with
+- [x] T019 [US2] Extend `GuestyOptionsFlowHandler` with
   `reservation_scan_interval` (default 15, min 5),
   `past_days` (default 30), `future_days` (default 365)
   fields using `vol.Schema` validation in
   `custom_components/guesty/config_flow.py`
-- [ ] T020 [US1] Update `async_setup_entry` to create
+- [x] T020 [US1] Update `async_setup_entry` to create
   `ReservationsCoordinator` after `ListingsCoordinator`,
   call `await coordinator.async_config_entry_first_refresh()`,
   store in `hass.data`; update `async_unload_entry` for
   cleanup; update options listener to reconfigure reservation
   coordinator interval and date range parameters in
   `custom_components/guesty/__init__.py`
-- [ ] T021 [US1] Implement reservation sensor descriptions
+- [x] T021 [US1] Implement reservation sensor descriptions
   and `GuestyReservationSensor` class: define
   `RESERVATION_SENSOR_DESCRIPTIONS` with
   `reservation_status` entry (no category), implement
@@ -277,7 +277,7 @@ HA automations listen to.
   entries (FR-009), `async_setup_entry` creating one status
   sensor per listing tracked by reservations coordinator in
   `custom_components/guesty/sensor.py`
-- [ ] T022 [P] [US1] Add reservation sensor translation
+- [x] T022 [P] [US1] Add reservation sensor translation
   keys (`reservation_status` name) and options flow labels
   (`reservation_scan_interval`, `past_days`, `future_days`
   with descriptions) to
@@ -425,7 +425,7 @@ integration testing, and quality gates across all phases.
 
 <!-- markdownlint-disable MD013 -->
 
-- [ ] T029 Write edge case tests: no reservations for a
+- [x] T029 Write edge case tests: no reservations for a
   listing shows `"no_reservation"` (FR-016), reservation with
   unknown listing ID skipped with warning logged (FR-017),
   same-day turnover uses chronologically nearest reservation
@@ -436,7 +436,7 @@ integration testing, and quality gates across all phases.
   through as-is with info log (FR-025), listing deleted
   while reservations exist (sensors become unavailable,
   FR-023) in `tests/test_reservation_sensor.py`
-- [ ] T030 [P] Write state transition integration tests:
+- [x] T030 [P] Write state transition integration tests:
   verify sensor state changes fire HA state-change events
   for automations (FR-015), confirmed → `checked_in`
   transition fires event with listing ID and guest context,
@@ -444,12 +444,12 @@ integration testing, and quality gates across all phases.
   confirmed → `canceled` transition fires event, verify
   automation trigger context includes expected attributes in
   `tests/test_reservation_sensor.py`
-- [ ] T031 [P] Write entity cleanup tests: verify all
+- [x] T031 [P] Write entity cleanup tests: verify all
   reservation entities and coordinator resources removed when
   integration is unloaded (FR-023), verify no orphaned
   entities when reservations reference non-existent listings
   (SC-009) in `tests/test_init.py`
-- [ ] T032 [P] Verify REUSE compliance on all new and modified
+- [x] T032 [P] Verify REUSE compliance on all new and modified
   files (SPDX headers where applicable, otherwise REUSE.toml
   annotations) for `custom_components/guesty/coordinator.py`,
   `custom_components/guesty/sensor.py`,
@@ -457,7 +457,7 @@ integration testing, and quality gates across all phases.
   `custom_components/guesty/translations/en.json`,
   `tests/test_coordinator.py`, and
   `tests/test_reservation_sensor.py`
-- [ ] T033 [P] Run full linting
+- [x] T033 [P] Run full linting
   (`uv run ruff check custom_components/ tests/`),
   formatting
   (`uv run ruff format --check custom_components/ tests/`),
@@ -465,10 +465,10 @@ integration testing, and quality gates across all phases.
   docstring coverage
   (`uv run interrogate custom_components/ -v`) with zero
   errors
-- [ ] T034 [P] Run complete test suite
+- [x] T034 [P] Run complete test suite
   (`uv run pytest tests/ -x -q --cov=custom_components/guesty --cov-report=term-missing`)
   and verify no regressions from Features 001 and 002 tests
-- [ ] T035 Execute quickstart.md developer workflow validation
+- [x] T035 Execute quickstart.md developer workflow validation
   from `specs/003-reservations/quickstart.md`: verify test
   commands, linting commands, and architecture diagram
   accuracy against implemented code
