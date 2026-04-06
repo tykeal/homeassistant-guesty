@@ -68,6 +68,12 @@ class GuestyCustomFieldsClient:
             CUSTOM_FIELDS_ENDPOINT,
         )
 
+        if not response.is_success:
+            raise GuestyCustomFieldError(
+                "Failed to fetch custom field definitions: "
+                f"HTTP {response.status_code}",
+            )
+
         try:
             data = response.json()
         except Exception as exc:
@@ -151,6 +157,14 @@ class GuestyCustomFieldsClient:
                 detail = response.text
             raise GuestyCustomFieldError(
                 f"Custom field update failed ({response.status_code}): {detail}",
+                target_type=target_type,
+                target_id=target_id,
+                field_id=field_id,
+            )
+
+        if not response.is_success:
+            raise GuestyCustomFieldError(
+                f"Custom field update failed: HTTP {response.status_code}",
                 target_type=target_type,
                 target_id=target_id,
                 field_id=field_id,

@@ -155,6 +155,25 @@ class TestGetDefinitions:
             await client.get_definitions()
 
     @respx.mock
+    async def test_non_success_status_raises_error(self) -> None:
+        """Non-2xx status raises GuestyCustomFieldError."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}/custom-fields").mock(
+            return_value=Response(
+                422,
+                json={"error": "Unprocessable"},
+            ),
+        )
+        client = _make_custom_fields_client()
+        with pytest.raises(GuestyCustomFieldError, match="422"):
+            await client.get_definitions()
+
+    @respx.mock
     async def test_non_list_response_raises_error(self) -> None:
         """Non-list response from API raises GuestyCustomFieldError."""
         respx.post(TOKEN_URL).mock(
@@ -429,6 +448,32 @@ class TestSetField:
                 target_id="x",
                 field_id="y",
                 value="z",
+            )
+
+    @respx.mock
+    async def test_unexpected_non_2xx_raises_error(self) -> None:
+        """Unexpected non-2xx status raises GuestyCustomFieldError."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.put(
+            f"{BASE_URL}/listings/lst-conflict/custom-fields",
+        ).mock(
+            return_value=Response(
+                409,
+                json={"error": "Conflict"},
+            ),
+        )
+        client = _make_custom_fields_client()
+        with pytest.raises(GuestyCustomFieldError, match="409"):
+            await client.set_field(
+                target_type="listing",
+                target_id="lst-conflict",
+                field_id="cf-c",
+                value="v",
             )
 
 
