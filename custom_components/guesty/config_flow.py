@@ -10,7 +10,12 @@ from typing import Any
 
 import httpx
 import voluptuous as vol
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
 
 from custom_components.guesty.api.auth import GuestyTokenManager
 from custom_components.guesty.api.client import GuestyApiClient
@@ -24,7 +29,10 @@ from custom_components.guesty.api.models import CachedToken
 from custom_components.guesty.const import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
+    CONF_SCAN_INTERVAL,
+    DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    MIN_SCAN_INTERVAL,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -114,10 +122,24 @@ async def _validate_credentials(
 class GuestyConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for the Guesty integration.
 
-    Supports initial user setup and re-authentication flows.
+    Supports initial user setup, re-authentication, and options flows.
     """
 
     VERSION = 1
+
+    @staticmethod
+    def async_get_options_flow(
+        config_entry: ConfigEntry,
+    ) -> GuestyOptionsFlowHandler:
+        """Return the options flow handler.
+
+        Args:
+            config_entry: The config entry.
+
+        Returns:
+            The options flow handler instance.
+        """
+        return GuestyOptionsFlowHandler(config_entry)
 
     def __init__(self) -> None:
         """Initialize config flow state."""
@@ -261,4 +283,65 @@ class GuestyConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="reauth_confirm",
             data_schema=schema,
             errors=errors,
+        )
+
+
+class GuestyOptionsFlowHandler(OptionsFlow):
+    """Handle options flow for the Guesty integration.
+
+    Allows configuring the scan interval for listings polling.
+    """
+
+    def __init__(self, config_entry: ConfigEntry) -> None:
+        """Initialize options flow.
+
+        Args:
+            config_entry: The config entry being configured.
+        """
+        self._config_entry = config_entry
+
+    async def async_step_init(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Handle the initial options step.
+
+        Presents a form for configuring scan_interval. The schema
+        validates the minimum interval requirement.
+
+        Args:
+            user_input: User-provided form data, or None for
+                initial display.
+
+        Returns:
+            Config flow result (form or entry creation).
+        """
+        if user_input is not None:
+            return self.async_create_entry(
+                title="",
+                data={
+                    CONF_SCAN_INTERVAL: user_input[CONF_SCAN_INTERVAL],
+                },
+            )
+
+        current = self._config_entry.options.get(
+            CONF_SCAN_INTERVAL,
+            DEFAULT_SCAN_INTERVAL,
+        )
+
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_SCAN_INTERVAL,
+                    default=current,
+                ): vol.All(
+                    vol.Coerce(int),
+                    vol.Range(min=MIN_SCAN_INTERVAL),
+                ),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=schema,
         )
