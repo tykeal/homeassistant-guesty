@@ -28,8 +28,16 @@ GuestyCustomFieldDefinition | None`
 
 **Validation**:
 
-- Returns `None` if `id` or `name` is missing from API response
+- Returns `None` if `id`, `name`, or `type` is missing from
+  API response
 - Logs warning for skipped definitions
+- `field_type` is populated from the API `type` field;
+  Guesty's `string` is mapped to the integration's `text`
+  type on ingest
+- Unknown or newly introduced Guesty `type` values are
+  preserved in `field_type` as-is for forward compatibility;
+  they are not mapped to a default and do not cause the
+  definition to be skipped
 - `applicable_to` derived from API `objectType` field; defaults
   to `frozenset()` if missing
 

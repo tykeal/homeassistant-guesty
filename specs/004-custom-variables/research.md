@@ -26,9 +26,10 @@ path is deprecated.
 - `GET /v1/custom-fields` — Fetch all account-level custom
   field definitions. Returns an array of objects containing
   `id` (field identifier), `name` (display name), `type`
-  (value type: string, number, boolean), and applicability
-  metadata indicating whether the field applies to listings,
-  reservations, or both.
+  (Guesty API value type: string, number, boolean; the
+  integration maps `string` to the internal `text` type),
+  and applicability metadata indicating whether the field
+  applies to listings, reservations, or both.
 - `PUT /v1/listings/{listingId}/custom-fields` — Write custom
   field values on a listing. Request body is an array of
   `{"fieldId": "...", "value": ...}` objects. Supports partial

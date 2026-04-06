@@ -185,13 +185,16 @@ zero HA dependencies, extending the existing `api/` package.
     `/reservations-v3/{reservation_id}/custom-fields`
     (reservation write, v3 per FR-018)
   - `CUSTOM_FIELD_TYPES: frozenset[str]` —
-    `{"text", "number", "boolean"}`
+    `{"text", "number", "boolean"}` (normalized integration
+    field types; Guesty API `type: "string"` maps to `text`
+    on ingest)
   - `CUSTOM_FIELD_TARGETS: frozenset[str]` —
     `{"listing", "reservation"}`
 - `api/models.py` — Extended with custom field DTOs:
   - `GuestyCustomFieldDefinition(frozen=True)` — `field_id`,
-    `name`, `field_type` (text/number/boolean),
-    `applicable_to` (frozenset of target types). Factory:
+    `name`, `field_type` (normalized text/number/boolean
+    value), `applicable_to` (frozenset of target types).
+    Factory:
     `from_api_dict(data) -> GuestyCustomFieldDefinition | None`
   - `GuestyCustomFieldUpdate(frozen=True)` — `field_id`,
     `value` (str | int | float | bool). Represents a single
