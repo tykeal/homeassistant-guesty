@@ -1017,7 +1017,7 @@ class TestAutomationCompatibility:
                     field_id="cf-region",
                 ),
             ),
-            pytest.raises(HomeAssistantError, match="422"),
+            pytest.raises(HomeAssistantError, match="Custom field update failed"),
         ):
             await hass.services.async_call(
                 DOMAIN,
@@ -1395,7 +1395,7 @@ class TestEdgeCases:
                     field_id="cf-region",
                 ),
             ),
-            pytest.raises(HomeAssistantError, match="422"),
+            pytest.raises(HomeAssistantError, match="Custom field update failed"),
         ):
             await hass.services.async_call(
                 DOMAIN,
