@@ -14,6 +14,9 @@ from custom_components.guesty.api.const import (
     BACKOFF_MULTIPLIER,
     BASE_URL,
     INITIAL_BACKOFF,
+    LISTINGS_ENDPOINT,
+    LISTINGS_FIELDS,
+    LISTINGS_PAGE_SIZE,
     MAX_BACKOFF,
     MAX_RETRIES,
 )
@@ -22,6 +25,10 @@ from custom_components.guesty.api.exceptions import (
     GuestyConnectionError,
     GuestyRateLimitError,
     GuestyResponseError,
+)
+from custom_components.guesty.api.models import (
+    GuestyListing,
+    GuestyListingsResponse,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -83,6 +90,65 @@ class GuestyApiClient:
                 f"Connection test failed: status {response.status_code}",
             )
         return True
+
+    async def get_listings(self) -> list[GuestyListing]:
+        """Fetch all listings with automatic pagination.
+
+        Iterates through all pages of the Guesty listings
+        endpoint, requesting ``LISTINGS_PAGE_SIZE`` listings per
+        page. Listings missing a valid ``_id`` field are skipped
+        with a warning log.
+
+        Returns:
+            Complete list of valid GuestyListing objects.
+
+        Raises:
+            GuestyAuthError: On authentication failure.
+            GuestyConnectionError: On network failure.
+            GuestyRateLimitError: On rate limit exhaustion.
+            GuestyResponseError: On malformed API response.
+        """
+        all_listings: list[GuestyListing] = []
+        skip = 0
+        fields = " ".join(LISTINGS_FIELDS)
+
+        while True:
+            response = await self._request(
+                "GET",
+                LISTINGS_ENDPOINT,
+                params={
+                    "limit": LISTINGS_PAGE_SIZE,
+                    "skip": skip,
+                    "fields": fields,
+                },
+            )
+
+            if not response.is_success:
+                raise GuestyResponseError(
+                    f"Listings fetch failed: status {response.status_code}",
+                )
+
+            try:
+                data = response.json()
+            except Exception as exc:
+                raise GuestyResponseError(
+                    "Listings response is not valid JSON",
+                ) from exc
+
+            if "results" not in data:
+                raise GuestyResponseError(
+                    "Listings response missing results",
+                )
+
+            page = GuestyListingsResponse.from_api_dict(data)
+            all_listings.extend(page.results)
+
+            if len(data["results"]) < LISTINGS_PAGE_SIZE:
+                break
+
+            skip += LISTINGS_PAGE_SIZE
+
+        return all_listings
 
     async def _request(
         self,
