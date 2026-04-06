@@ -38,17 +38,17 @@ is designed as a separate PR.
 **Purpose**: Add new constants, test helpers, and translation strings needed by
 all subsequent phases.
 
-- [ ] T001 Add CONF_SELECTED_LISTINGS = "selected_listings" and CONF_TAG_FILTER
+- [x] T001 Add CONF_SELECTED_LISTINGS = "selected_listings" and CONF_TAG_FILTER
       = "tag_filter" constants to custom_components/guesty/const.py
-- [ ] T002 [P] Add multi-listing test data factories (make_listing_dict variants
+- [x] T002 [P] Add multi-listing test data factories (make_listing_dict variants
       with distinct IDs, titles, addresses, and tags) and multi-listing fixtures
       to tests/conftest.py
-- [ ] T003 [P] Add new options flow step strings (init with tag_filter,
+- [x] T003 [P] Add new options flow step strings (init with tag_filter,
       select_listings with selected_listings, intervals with existing fields)
       and error strings (cannot_connect, invalid_auth, rate_limited,
       no_listings_selected, no_listings_match_tags) to
       custom_components/guesty/strings.json
-- [ ] T004 [P] Add matching translation strings for all new options flow steps
+- [x] T004 [P] Add matching translation strings for all new options flow steps
       and errors to custom_components/guesty/translations/en.json
 
 ---

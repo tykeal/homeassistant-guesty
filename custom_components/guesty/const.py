@@ -48,3 +48,9 @@ CONF_CF_SCAN_INTERVAL: str = "cf_scan_interval"
 
 # Default scan interval in minutes for custom fields definitions.
 DEFAULT_CF_SCAN_INTERVAL: int = 15
+
+# Configuration key for the selected listing IDs filter.
+CONF_SELECTED_LISTINGS: str = "selected_listings"
+
+# Configuration key for the tag-based listing pre-filter.
+CONF_TAG_FILTER: str = "tag_filter"

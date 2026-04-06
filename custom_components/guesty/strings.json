@@ -32,6 +32,36 @@
     "options": {
         "step": {
             "init": {
+                "title": "Filter by Tags",
+                "description": "Optionally enter Guesty tags to narrow the listing selector. Leave empty to see all listings.",
+                "data": {
+                    "tag_filter": "Guesty tags",
+                    "scan_interval": "Listing scan interval (minutes)",
+                    "reservation_scan_interval": "Reservation scan interval (minutes)",
+                    "past_days": "Reservation past days",
+                    "future_days": "Reservation future days"
+                },
+                "data_description": {
+                    "tag_filter": "Enter one or more Guesty listing tags. Only listings with matching tags will appear in the selector.",
+                    "scan_interval": "How often to poll the Guesty API for listing updates. Minimum 5 minutes.",
+                    "reservation_scan_interval": "How often to poll the Guesty API for reservation updates. Minimum 5 minutes.",
+                    "past_days": "Number of past days to include in reservation queries.",
+                    "future_days": "Number of future days to include in reservation queries."
+                }
+            },
+            "select_listings": {
+                "title": "Select Listings",
+                "description": "Choose which Guesty listings to track in Home Assistant. At least one listing must be selected.",
+                "data": {
+                    "selected_listings": "Listings to track"
+                },
+                "data_description": {
+                    "selected_listings": "Select the Guesty listings you want to monitor. Deselected listings will have their devices and sensors removed."
+                }
+            },
+            "intervals": {
+                "title": "Polling Configuration",
+                "description": "Configure how often the integration polls the Guesty API.",
                 "data": {
                     "scan_interval": "Listing scan interval (minutes)",
                     "reservation_scan_interval": "Reservation scan interval (minutes)",
@@ -47,7 +77,12 @@
             }
         },
         "error": {
-            "invalid_scan_interval": "Scan interval must be at least 5 minutes."
+            "invalid_scan_interval": "Scan interval must be at least 5 minutes.",
+            "cannot_connect": "Unable to connect to the Guesty API. Please try again later.",
+            "invalid_auth": "Authentication failed. Please re-authenticate the integration.",
+            "rate_limited": "Guesty API rate limit reached. Please try again later.",
+            "no_listings_selected": "At least one listing must be selected.",
+            "no_listings_match_tags": "No listings match the specified tags. Try different tags or clear the tag filter."
         }
     },
     "services": {
