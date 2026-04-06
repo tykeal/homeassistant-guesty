@@ -4,8 +4,8 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-import logging
 
 from custom_components.guesty.api.client import GuestyApiClient
 from custom_components.guesty.api.const import (
@@ -14,14 +14,15 @@ from custom_components.guesty.api.const import (
     MAX_MESSAGE_LENGTH,
     SEND_MESSAGE_PATH,
 )
-from custom_components.guesty.api.exceptions import GuestyMessageError
+from custom_components.guesty.api.exceptions import (
+    GuestyMessageError,
+    GuestyResponseError,
+)
 from custom_components.guesty.api.models import (
     Conversation,
     MessageDeliveryResult,
     MessageRequest,
 )
-
-_LOGGER = logging.getLogger(__name__)
 
 
 class GuestyMessagingClient:
@@ -56,9 +57,15 @@ class GuestyMessagingClient:
             The Conversation associated with the reservation.
 
         Raises:
+            ValueError: If reservation_id is empty.
             GuestyMessageError: If no conversation is found.
+            GuestyResponseError: If the response is malformed.
             GuestyApiError: If the API request fails.
         """
+        if not reservation_id:
+            msg = "reservation_id must be non-empty"
+            raise ValueError(msg)
+
         filters = json.dumps(
             [
                 {
@@ -75,7 +82,21 @@ class GuestyMessagingClient:
             params={"filters": filters},
         )
 
-        data = response.json()
+        if not response.is_success:
+            raise GuestyMessageError(
+                f"Conversation lookup failed for "
+                f"reservation '{reservation_id}': "
+                f"HTTP {response.status_code}",
+                reservation_id=reservation_id,
+            )
+
+        try:
+            data = response.json()
+        except Exception as exc:
+            raise GuestyResponseError(
+                "Conversation response is not valid JSON",
+            ) from exc
+
         results = data.get("results", [])
 
         if not results:
@@ -84,15 +105,23 @@ class GuestyMessagingClient:
                 reservation_id=reservation_id,
             )
 
-        conv = results[0]
-        available_modules = conv.get("availableModules", [])
-        channels = tuple(m["type"] for m in available_modules if "type" in m)
+        try:
+            conv = results[0]
+            available_modules = conv.get(
+                "availableModules",
+                [],
+            )
+            channels = tuple(m["type"] for m in available_modules if "type" in m)
 
-        return Conversation(
-            id=conv["_id"],
-            reservation_id=reservation_id,
-            available_channels=channels,
-        )
+            return Conversation(
+                id=conv["_id"],
+                reservation_id=reservation_id,
+                available_channels=channels,
+            )
+        except (KeyError, ValueError) as exc:
+            raise GuestyResponseError(
+                f"Malformed conversation response: {exc}",
+            ) from exc
 
     async def send_message(
         self,
@@ -121,7 +150,7 @@ class GuestyMessagingClient:
         """
         self._validate_inputs(reservation_id, body, channel)
 
-        if template_variables:
+        if template_variables is not None:
             body = self.render_template(body, template_variables)
 
         conversation = await self.resolve_conversation(
@@ -149,13 +178,29 @@ class GuestyMessagingClient:
             )
         except GuestyMessageError:
             raise
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             raise GuestyMessageError(
                 f"Failed to send message for reservation '{reservation_id}': {exc}",
                 reservation_id=reservation_id,
             ) from exc
 
-        data = response.json()
+        if not response.is_success:
+            raise GuestyMessageError(
+                f"Message send failed for reservation "
+                f"'{reservation_id}': "
+                f"HTTP {response.status_code}",
+                reservation_id=reservation_id,
+            )
+
+        try:
+            data = response.json()
+        except Exception as exc:
+            raise GuestyResponseError(
+                "Send-message response is not valid JSON",
+            ) from exc
+
         return MessageDeliveryResult(
             success=True,
             message_id=data.get("_id"),

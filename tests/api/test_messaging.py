@@ -25,6 +25,7 @@ from custom_components.guesty.api.const import (
 from custom_components.guesty.api.exceptions import (
     GuestyConnectionError,
     GuestyMessageError,
+    GuestyResponseError,
 )
 from custom_components.guesty.api.messaging import (
     GuestyMessagingClient,
@@ -183,6 +184,84 @@ class TestResolveConversation:
 
         client = _make_messaging_client()
         with pytest.raises(GuestyConnectionError):
+            await client.resolve_conversation("res-xyz789")
+
+    async def test_empty_reservation_id_raises(self) -> None:
+        """Empty reservation_id raises ValueError."""
+        client = _make_messaging_client()
+        with pytest.raises(ValueError, match="reservation_id"):
+            await client.resolve_conversation("")
+
+    @respx.mock
+    async def test_non_success_status_raises(self) -> None:
+        """Non-2xx response raises GuestyMessageError."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}{CONVERSATIONS_PATH}").mock(
+            return_value=Response(
+                500,
+                text="Internal Server Error",
+            ),
+        )
+
+        client = _make_messaging_client()
+        with pytest.raises(
+            GuestyMessageError,
+            match="HTTP 500",
+        ):
+            await client.resolve_conversation("res-xyz789")
+
+    @respx.mock
+    async def test_invalid_json_raises(self) -> None:
+        """Non-JSON response raises GuestyResponseError."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}{CONVERSATIONS_PATH}").mock(
+            return_value=Response(
+                200,
+                text="not json",
+            ),
+        )
+
+        client = _make_messaging_client()
+        with pytest.raises(
+            GuestyResponseError,
+            match="not valid JSON",
+        ):
+            await client.resolve_conversation("res-xyz789")
+
+    @respx.mock
+    async def test_malformed_response_raises(self) -> None:
+        """Missing _id in conversation raises GuestyResponseError."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}{CONVERSATIONS_PATH}").mock(
+            return_value=Response(
+                200,
+                json={
+                    "results": [{"no_id_field": True}],
+                    "count": 1,
+                },
+            ),
+        )
+
+        client = _make_messaging_client()
+        with pytest.raises(
+            GuestyResponseError,
+            match="Malformed",
+        ):
             await client.resolve_conversation("res-xyz789")
 
 
@@ -412,6 +491,170 @@ class TestSendMessage:
                 "res-xyz789",
                 "Hello",
             )
+
+    @respx.mock
+    async def test_cancelled_error_propagates(self) -> None:
+        """CancelledError during send is not wrapped."""
+        import asyncio
+        from unittest.mock import patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}{CONVERSATIONS_PATH}").mock(
+            return_value=Response(
+                200,
+                json=_conversation_response(),
+            ),
+        )
+
+        client = _make_messaging_client()
+        original = client._api_client._request
+        call_count = 0
+
+        async def _side_effect(
+            method: str,
+            path: str,
+            **kwargs: object,
+        ) -> Response:
+            """Return real response first, cancel second."""
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                raise asyncio.CancelledError
+            return await original(
+                method,
+                path,
+                **kwargs,  # type: ignore[arg-type]
+            )
+
+        with (
+            patch.object(
+                client._api_client,
+                "_request",
+                side_effect=_side_effect,
+            ),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await client.send_message(
+                "res-xyz789",
+                "Hello",
+            )
+
+    @respx.mock
+    async def test_send_non_success_status_raises(self) -> None:
+        """Non-2xx send response raises GuestyMessageError."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}{CONVERSATIONS_PATH}").mock(
+            return_value=Response(
+                200,
+                json=_conversation_response(),
+            ),
+        )
+        send_path = SEND_MESSAGE_PATH.format(
+            conversation_id="conv-abc123",
+        )
+        respx.post(f"{BASE_URL}{send_path}").mock(
+            return_value=Response(
+                400,
+                json={"error": "Bad Request"},
+            ),
+        )
+
+        client = _make_messaging_client()
+        with pytest.raises(
+            GuestyMessageError,
+            match="HTTP 400",
+        ):
+            await client.send_message(
+                "res-xyz789",
+                "Hello",
+            )
+
+    @respx.mock
+    async def test_send_invalid_json_raises(self) -> None:
+        """Non-JSON send response raises GuestyResponseError."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}{CONVERSATIONS_PATH}").mock(
+            return_value=Response(
+                200,
+                json=_conversation_response(),
+            ),
+        )
+        send_path = SEND_MESSAGE_PATH.format(
+            conversation_id="conv-abc123",
+        )
+        respx.post(f"{BASE_URL}{send_path}").mock(
+            return_value=Response(
+                200,
+                text="not json",
+            ),
+        )
+
+        client = _make_messaging_client()
+        with pytest.raises(
+            GuestyResponseError,
+            match="not valid JSON",
+        ):
+            await client.send_message(
+                "res-xyz789",
+                "Hello",
+            )
+
+    @respx.mock
+    async def test_empty_dict_template_triggers_render(
+        self,
+    ) -> None:
+        """Empty dict template_variables still triggers render."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}{CONVERSATIONS_PATH}").mock(
+            return_value=Response(
+                200,
+                json=_conversation_response(),
+            ),
+        )
+        send_path = SEND_MESSAGE_PATH.format(
+            conversation_id="conv-abc123",
+        )
+        send_route = respx.post(
+            f"{BASE_URL}{send_path}",
+        ).mock(
+            return_value=Response(
+                200,
+                json=_send_message_response(),
+            ),
+        )
+
+        client = _make_messaging_client()
+        # Body has no placeholders, empty dict should work
+        result = await client.send_message(
+            "res-xyz789",
+            "Plain message",
+            template_variables={},
+        )
+        assert result.success is True
+
+        sent_body = send_route.calls[0].request.content
+        sent_json = json.loads(sent_body)
+        assert sent_json["body"] == "Plain message"
 
 
 class TestRenderTemplate:
