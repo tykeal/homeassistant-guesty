@@ -316,6 +316,8 @@ class TestConnectionTestFailure:
     @respx.mock
     async def test_non_success_raises_response_error(self) -> None:
         """test_connection raises on non-success status."""
+        from unittest.mock import patch as _patch
+
         from custom_components.guesty.api.exceptions import (
             GuestyResponseError,
         )
@@ -328,9 +330,12 @@ class TestConnectionTestFailure:
         )
 
         client, _, _ = _make_client()
-        with pytest.raises(
-            GuestyResponseError,
-            match="Connection test failed",
+        with (
+            _patch("asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(
+                GuestyResponseError,
+                match="Connection test failed",
+            ),
         ):
             await client.test_connection()
 
@@ -341,6 +346,8 @@ class TestRequestNetworkError:
     @respx.mock
     async def test_connect_error_in_request(self) -> None:
         """ConnectError during API call raises GuestyConnectionError."""
+        from unittest.mock import patch as _patch
+
         respx.post(TOKEN_URL).mock(
             return_value=Response(200, json=make_token_response()),
         )
@@ -349,12 +356,17 @@ class TestRequestNetworkError:
         )
 
         client, _, _ = _make_client()
-        with pytest.raises(GuestyConnectionError):
+        with (
+            _patch("asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(GuestyConnectionError),
+        ):
             await client.test_connection()
 
     @respx.mock
     async def test_timeout_in_request(self) -> None:
         """TimeoutException during API call raises error."""
+        from unittest.mock import patch as _patch
+
         respx.post(TOKEN_URL).mock(
             return_value=Response(200, json=make_token_response()),
         )
@@ -363,7 +375,10 @@ class TestRequestNetworkError:
         )
 
         client, _, _ = _make_client()
-        with pytest.raises(GuestyConnectionError):
+        with (
+            _patch("asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(GuestyConnectionError),
+        ):
             await client.test_connection()
 
 
@@ -600,6 +615,8 @@ class TestGetListings:
     @respx.mock
     async def test_connection_error_propagation(self) -> None:
         """GuestyConnectionError propagates from get_listings."""
+        from unittest.mock import patch as _patch
+
         respx.post(TOKEN_URL).mock(
             return_value=Response(
                 200,
@@ -610,7 +627,10 @@ class TestGetListings:
             side_effect=httpx.ConnectError("refused"),
         )
         client, _, _ = _make_client()
-        with pytest.raises(GuestyConnectionError):
+        with (
+            _patch("asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(GuestyConnectionError),
+        ):
             await client.get_listings()
 
     @respx.mock
@@ -639,6 +659,8 @@ class TestGetListings:
     @respx.mock
     async def test_non_success_status_raises(self) -> None:
         """Non-success HTTP status raises GuestyResponseError."""
+        from unittest.mock import patch as _patch
+
         from custom_components.guesty.api.exceptions import (
             GuestyResponseError,
         )
@@ -653,9 +675,12 @@ class TestGetListings:
             return_value=Response(500, text="Server Error"),
         )
         client, _, _ = _make_client()
-        with pytest.raises(
-            GuestyResponseError,
-            match="Listings fetch failed",
+        with (
+            _patch("asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(
+                GuestyResponseError,
+                match="Listings fetch failed",
+            ),
         ):
             await client.get_listings()
 

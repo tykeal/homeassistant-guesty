@@ -1329,13 +1329,13 @@ class TestRateLimitRetryIntegration:
         new_callable=AsyncMock,
         return_value=True,
     )
-    async def test_429_retry_through_service_call(
+    async def test_service_call_dispatches_successfully(
         self,
         mock_test: AsyncMock,
         mock_listings: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
-        """429 retry works through HA service call stack."""
+        """HA service call dispatches guest message successfully."""
         entry = _make_entry()
         entry.add_to_hass(hass)
 
@@ -1403,12 +1403,12 @@ class TestRateLimitRetryIntegration:
 class TestTransientFailureRetryIntegration:
     """Transient failure retry integration tests (T023)."""
 
-    async def test_transient_then_success_delivers(
+    async def test_successful_delivery_calls_client_once(
         self,
         hass: HomeAssistant,
         mock_messaging_client: AsyncMock,
     ) -> None:
-        """Message delivered after transient failure retry."""
+        """Successful delivery delegates to the client once."""
         entry = _make_entry()
         entity = GuestyNotifyEntity(mock_messaging_client, entry)
         entity.hass = hass

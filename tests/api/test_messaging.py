@@ -172,6 +172,8 @@ class TestResolveConversation:
     @respx.mock
     async def test_api_error_propagation(self) -> None:
         """API connection error propagates from GuestyApiClient."""
+        from unittest.mock import patch as _patch
+
         respx.post(TOKEN_URL).mock(
             return_value=Response(
                 200,
@@ -183,7 +185,10 @@ class TestResolveConversation:
         )
 
         client = _make_messaging_client()
-        with pytest.raises(GuestyConnectionError):
+        with (
+            _patch("asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(GuestyConnectionError),
+        ):
             await client.resolve_conversation("res-xyz789")
 
     async def test_empty_reservation_id_raises(self) -> None:
@@ -330,6 +335,8 @@ class TestSendMessage:
     @respx.mock
     async def test_send_api_failure(self) -> None:
         """Send API failure raises GuestyMessageError."""
+        from unittest.mock import patch as _patch
+
         respx.post(TOKEN_URL).mock(
             return_value=Response(
                 200,
@@ -350,9 +357,12 @@ class TestSendMessage:
         )
 
         client = _make_messaging_client()
-        with pytest.raises(
-            GuestyMessageError,
-            match="Failed to send",
+        with (
+            _patch("asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(
+                GuestyMessageError,
+                match="Failed to send",
+            ),
         ):
             await client.send_message("res-xyz789", "Hello")
 
