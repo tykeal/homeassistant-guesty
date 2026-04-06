@@ -590,3 +590,37 @@ def mock_cf_client() -> AsyncMock:
     )
     client.validate_value = MagicMock()
     return client
+
+
+# ── Action test helpers ─────────────────────────────────────────────
+
+
+@pytest.fixture
+def mock_actions_client() -> AsyncMock:
+    """Provide a mock GuestyActionsClient for action tests.
+
+    Returns:
+        An AsyncMock configured as a GuestyActionsClient stand-in.
+    """
+    from custom_components.guesty.api.models import ActionResult
+
+    client = AsyncMock()
+    client.add_reservation_note = AsyncMock(
+        return_value=ActionResult(success=True, target_id="res-001"),
+    )
+    client.set_listing_status = AsyncMock(
+        return_value=ActionResult(success=True, target_id="listing-001"),
+    )
+    client.create_task = AsyncMock(
+        return_value=ActionResult(success=True, target_id="task-001"),
+    )
+    client.set_calendar_availability = AsyncMock(
+        return_value=ActionResult(
+            success=True,
+            target_id="listing-001",
+        ),
+    )
+    client.update_reservation_custom_field = AsyncMock(
+        return_value=ActionResult(success=True, target_id="res-001"),
+    )
+    return client

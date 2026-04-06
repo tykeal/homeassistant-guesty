@@ -87,3 +87,150 @@ set_custom_field:
       example: "my-value"
       selector:
         object:
+
+add_reservation_note:
+  name: Add reservation note
+  description: >-
+    Append a note to a Guesty reservation. New text is added
+    after existing notes with a separator.
+  fields:
+    reservation_id:
+      name: Reservation ID
+      description: The Guesty reservation identifier.
+      required: true
+      example: "abc123def456"
+      selector:
+        text:
+    note_text:
+      name: Note text
+      description: The note content to append.
+      required: true
+      example: "Guest requested early check-in."
+      selector:
+        text:
+
+set_listing_status:
+  name: Set listing status
+  description: >-
+    Activate or deactivate a Guesty listing.
+  fields:
+    listing_id:
+      name: Listing ID
+      description: The Guesty listing identifier.
+      required: true
+      example: "abc123def456"
+      selector:
+        text:
+    status:
+      name: Status
+      description: "The target status: active or inactive."
+      required: true
+      example: "active"
+      selector:
+        select:
+          options:
+            - label: Active
+              value: active
+            - label: Inactive
+              value: inactive
+
+create_task:
+  name: Create task
+  description: >-
+    Create an operational task for a Guesty listing (e.g.,
+    cleaning, maintenance).
+  fields:
+    listing_id:
+      name: Listing ID
+      description: The Guesty listing identifier.
+      required: true
+      example: "abc123def456"
+      selector:
+        text:
+    task_title:
+      name: Task title
+      description: Title for the new task.
+      required: true
+      example: "Deep clean unit"
+      selector:
+        text:
+    description:
+      name: Description
+      description: Optional task description with details.
+      required: false
+      example: "Full deep clean including carpets."
+      selector:
+        text:
+    assignee:
+      name: Assignee
+      description: Optional assignee user identifier.
+      required: false
+      example: "user123"
+      selector:
+        text:
+
+set_calendar_availability:
+  name: Set calendar availability
+  description: >-
+    Block or unblock a date range on a Guesty listing calendar.
+  fields:
+    listing_id:
+      name: Listing ID
+      description: The Guesty listing identifier.
+      required: true
+      example: "abc123def456"
+      selector:
+        text:
+    start_date:
+      name: Start date
+      description: Start date in YYYY-MM-DD format.
+      required: true
+      example: "2025-08-01"
+      selector:
+        date:
+    end_date:
+      name: End date
+      description: End date in YYYY-MM-DD format.
+      required: true
+      example: "2025-08-05"
+      selector:
+        date:
+    operation:
+      name: Operation
+      description: "Calendar operation: block or unblock."
+      required: true
+      example: "block"
+      selector:
+        select:
+          options:
+            - label: Block
+              value: block
+            - label: Unblock
+              value: unblock
+
+update_reservation_custom_field:
+  name: Update reservation custom field
+  description: >-
+    Update a custom field value on a Guesty reservation.
+  fields:
+    reservation_id:
+      name: Reservation ID
+      description: The Guesty reservation identifier.
+      required: true
+      example: "abc123def456"
+      selector:
+        text:
+    field_id:
+      name: Field ID
+      description: The custom field identifier.
+      required: true
+      example: "cf_vip_status"
+      selector:
+        text:
+    value:
+      name: Value
+      description: The new value for the custom field.
+      required: true
+      example: "VIP"
+      selector:
+        text:
