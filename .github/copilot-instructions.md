@@ -47,14 +47,12 @@ async/await patterns, frozen dataclasses for DTOs
 
 ## Recent Changes
 
+- 004-custom-variables-plan: Added Python >=3.14.2 +
+  Home Assistant >=2026.4.0, httpx >=0.28
 - 003-reservations-plan: Added Python >=3.14.2 +
   Home Assistant >=2026.4.0, httpx >=0.28
 - 005-plan-notify: Added Python >=3.14.2 +
-  httpx (async HTTP), homeassistant (>=2026.4.0)
-- 002-plan-listings: Added Python >=3.14.2 +
   Home Assistant >=2026.4.0, httpx >=0.28
-- 001-auth-config-flow: Added Python >=3.14.2 +
-  httpx, homeassistant (>=2026.4.0)
 
 <!-- MANUAL ADDITIONS START -->
 <!-- MANUAL ADDITIONS END -->
