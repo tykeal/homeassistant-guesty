@@ -28,18 +28,27 @@ from tests.conftest import (
 
 # Reusable API response building blocks
 
+_FAKE_ACCOUNT_ID: str = "acc-test-123"
+
 _FIELD_DEF_DOOR_CODE: dict[str, Any] = {
-    "id": "637bad36abcdef123456",
-    "name": "Door Code",
-    "type": "string",
-    "objectType": "reservation",
+    "fieldId": "637bad36abcdef123456",
+    "key": "Door Code",
+    "type": "text",
+    "object": "reservation",
+    "displayName": "door_code",
+    "isPublic": False,
+    "options": [],
 }
 
 _FIELD_DEF_ALERT: dict[str, Any] = {
-    "id": "637bad36abcdef789012",
-    "name": "Maintenance Alert",
+    "fieldId": "637bad36abcdef789012",
+    "key": "Maintenance Alert",
     "type": "boolean",
-    "objectType": "listing",
+    "object": "listing",
+    "displayName": "maintenance_alert",
+    "isPublic": True,
+    "isRequired": True,
+    "options": [],
 }
 
 
@@ -62,7 +71,10 @@ def _make_custom_fields_client() -> GuestyCustomFieldsClient:
         token_manager=token_manager,
         http_client=http,
     )
-    return GuestyCustomFieldsClient(api_client)
+    return GuestyCustomFieldsClient(
+        api_client,
+        account_id=_FAKE_ACCOUNT_ID,
+    )
 
 
 class TestGetDefinitions:
@@ -79,7 +91,7 @@ class TestGetDefinitions:
                 json=make_token_response(),
             ),
         )
-        respx.get(f"{BASE_URL}/properties-api/custom-fields").mock(
+        respx.get(f"{BASE_URL}/accounts/{_FAKE_ACCOUNT_ID}/custom-fields").mock(
             return_value=Response(
                 200,
                 json=[_FIELD_DEF_DOOR_CODE, _FIELD_DEF_ALERT],
@@ -103,7 +115,7 @@ class TestGetDefinitions:
                 json=make_token_response(),
             ),
         )
-        respx.get(f"{BASE_URL}/properties-api/custom-fields").mock(
+        respx.get(f"{BASE_URL}/accounts/{_FAKE_ACCOUNT_ID}/custom-fields").mock(
             return_value=Response(200, json=[]),
         )
         client = _make_custom_fields_client()
@@ -120,7 +132,7 @@ class TestGetDefinitions:
                 json=make_token_response(),
             ),
         )
-        respx.get(f"{BASE_URL}/properties-api/custom-fields").mock(
+        respx.get(f"{BASE_URL}/accounts/{_FAKE_ACCOUNT_ID}/custom-fields").mock(
             return_value=Response(
                 200,
                 json=[_FIELD_DEF_DOOR_CODE, incomplete],
@@ -140,7 +152,7 @@ class TestGetDefinitions:
                 json=make_token_response(),
             ),
         )
-        respx.get(f"{BASE_URL}/properties-api/custom-fields").mock(
+        respx.get(f"{BASE_URL}/accounts/{_FAKE_ACCOUNT_ID}/custom-fields").mock(
             return_value=Response(403, json={"error": "forbidden"}),
         )
         client = _make_custom_fields_client()
@@ -156,7 +168,7 @@ class TestGetDefinitions:
                 json=make_token_response(),
             ),
         )
-        respx.get(f"{BASE_URL}/properties-api/custom-fields").mock(
+        respx.get(f"{BASE_URL}/accounts/{_FAKE_ACCOUNT_ID}/custom-fields").mock(
             return_value=Response(
                 422,
                 json={"error": "Unprocessable"},
@@ -175,7 +187,7 @@ class TestGetDefinitions:
                 json=make_token_response(),
             ),
         )
-        respx.get(f"{BASE_URL}/properties-api/custom-fields").mock(
+        respx.get(f"{BASE_URL}/accounts/{_FAKE_ACCOUNT_ID}/custom-fields").mock(
             return_value=Response(
                 200,
                 json={"results": []},
@@ -196,7 +208,7 @@ class TestGetDefinitions:
                 json=make_token_response(),
             ),
         )
-        respx.get(f"{BASE_URL}/properties-api/custom-fields").mock(
+        respx.get(f"{BASE_URL}/accounts/{_FAKE_ACCOUNT_ID}/custom-fields").mock(
             return_value=Response(
                 200,
                 content=b"not json",
@@ -205,6 +217,53 @@ class TestGetDefinitions:
         )
         client = _make_custom_fields_client()
         with pytest.raises(GuestyCustomFieldError, match="JSON"):
+            await client.get_definitions()
+
+    async def test_no_account_id_raises_error(self) -> None:
+        """get_definitions raises when account_id is None."""
+        storage = FakeTokenStorage()
+        http = httpx.AsyncClient()
+        token_manager = GuestyTokenManager(
+            client_id="test-client-id",
+            client_secret="test-client-secret",
+            http_client=http,
+            storage=storage,
+            refresh_buffer=0,
+        )
+        api_client = GuestyApiClient(
+            token_manager=token_manager,
+            http_client=http,
+        )
+        client = GuestyCustomFieldsClient(api_client)
+        with pytest.raises(
+            GuestyCustomFieldError,
+            match="account ID",
+        ):
+            await client.get_definitions()
+
+    async def test_empty_account_id_raises_error(self) -> None:
+        """get_definitions raises when account_id is empty."""
+        storage = FakeTokenStorage()
+        http = httpx.AsyncClient()
+        token_manager = GuestyTokenManager(
+            client_id="test-client-id",
+            client_secret="test-client-secret",
+            http_client=http,
+            storage=storage,
+            refresh_buffer=0,
+        )
+        api_client = GuestyApiClient(
+            token_manager=token_manager,
+            http_client=http,
+        )
+        client = GuestyCustomFieldsClient(
+            api_client,
+            account_id="   ",
+        )
+        with pytest.raises(
+            GuestyCustomFieldError,
+            match="account ID",
+        ):
             await client.get_definitions()
 
 

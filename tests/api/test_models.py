@@ -1474,10 +1474,14 @@ def _make_custom_field_definition_dict(
         Dictionary matching the Guesty custom-fields endpoint.
     """
     defaults: dict[str, Any] = {
-        "id": "637bad36abcdef123456",
-        "name": "Door Code",
-        "type": "string",
-        "objectType": "reservation",
+        "fieldId": "637bad36abcdef123456",
+        "key": "Door Code",
+        "type": "text",
+        "object": "reservation",
+        "displayName": "door_code",
+        "isPublic": False,
+        "isRequired": False,
+        "options": [],
     }
     defaults.update(overrides)
     return defaults
@@ -1495,6 +1499,10 @@ class TestGuestyCustomFieldDefinitionFromApiDict:
         assert result.name == "Door Code"
         assert result.field_type == "text"
         assert result.applicable_to == frozenset({"reservation"})
+        assert result.display_name == "door_code"
+        assert result.is_public is False
+        assert result.is_required is False
+        assert result.options == ()
 
     def test_maps_string_type_to_text(self) -> None:
         """from_api_dict maps Guesty type 'string' to 'text'."""
@@ -1524,16 +1532,16 @@ class TestGuestyCustomFieldDefinitionFromApiDict:
         assert result is not None
         assert result.field_type == "boolean"
 
-    def test_missing_id_returns_none(self) -> None:
-        """from_api_dict returns None when 'id' is missing."""
+    def test_missing_field_id_returns_none(self) -> None:
+        """from_api_dict returns None when 'fieldId' is missing."""
         data = _make_custom_field_definition_dict()
-        del data["id"]
+        del data["fieldId"]
         assert GuestyCustomFieldDefinition.from_api_dict(data) is None
 
-    def test_missing_name_returns_none(self) -> None:
-        """from_api_dict returns None when 'name' is missing."""
+    def test_missing_key_returns_none(self) -> None:
+        """from_api_dict returns None when 'key' is missing."""
         data = _make_custom_field_definition_dict()
-        del data["name"]
+        del data["key"]
         assert GuestyCustomFieldDefinition.from_api_dict(data) is None
 
     def test_missing_type_returns_none(self) -> None:
@@ -1551,7 +1559,7 @@ class TestGuestyCustomFieldDefinitionFromApiDict:
     def test_missing_object_type_defaults_empty(self) -> None:
         """from_api_dict defaults applicable_to to frozenset()."""
         data = _make_custom_field_definition_dict()
-        del data["objectType"]
+        del data["object"]
         result = GuestyCustomFieldDefinition.from_api_dict(data)
         assert result is not None
         assert result.applicable_to == frozenset()
@@ -1559,9 +1567,9 @@ class TestGuestyCustomFieldDefinitionFromApiDict:
     def test_object_type_both_produces_listing_reservation(
         self,
     ) -> None:
-        """objectType 'both' maps to frozenset of both targets."""
+        """object 'both' maps to frozenset of both targets."""
         data = _make_custom_field_definition_dict(
-            objectType="both",
+            object="both",
         )
         result = GuestyCustomFieldDefinition.from_api_dict(data)
         assert result is not None
@@ -1570,22 +1578,94 @@ class TestGuestyCustomFieldDefinitionFromApiDict:
         )
 
     def test_object_type_listing_maps_correctly(self) -> None:
-        """objectType 'listing' maps to frozenset({'listing'})."""
+        """object 'listing' maps to frozenset({'listing'})."""
         data = _make_custom_field_definition_dict(
-            objectType="listing",
+            object="listing",
         )
         result = GuestyCustomFieldDefinition.from_api_dict(data)
         assert result is not None
         assert result.applicable_to == frozenset({"listing"})
 
     def test_non_string_object_type_defaults_empty(self) -> None:
-        """Non-string objectType defaults to frozenset()."""
+        """Non-string object defaults to frozenset()."""
         data = _make_custom_field_definition_dict(
-            objectType=["listing", "reservation"],
+            object=["listing", "reservation"],
         )
         result = GuestyCustomFieldDefinition.from_api_dict(data)
         assert result is not None
         assert result.applicable_to == frozenset()
+
+    def test_is_public_true(self) -> None:
+        """from_api_dict parses isPublic=true correctly."""
+        data = _make_custom_field_definition_dict(isPublic=True)
+        result = GuestyCustomFieldDefinition.from_api_dict(data)
+        assert result is not None
+        assert result.is_public is True
+
+    def test_is_required_true(self) -> None:
+        """from_api_dict parses isRequired=true correctly."""
+        data = _make_custom_field_definition_dict(isRequired=True)
+        result = GuestyCustomFieldDefinition.from_api_dict(data)
+        assert result is not None
+        assert result.is_required is True
+
+    def test_options_parsed_as_tuple(self) -> None:
+        """from_api_dict parses options list as tuple."""
+        data = _make_custom_field_definition_dict(
+            options=["a", "b", "c"],
+        )
+        result = GuestyCustomFieldDefinition.from_api_dict(data)
+        assert result is not None
+        assert result.options == ("a", "b", "c")
+
+    def test_options_non_string_filtered(self) -> None:
+        """from_api_dict filters non-string options."""
+        data = _make_custom_field_definition_dict(
+            options=["valid", 123, "also_valid"],
+        )
+        result = GuestyCustomFieldDefinition.from_api_dict(data)
+        assert result is not None
+        assert result.options == ("valid", "also_valid")
+
+    def test_options_non_list_defaults_empty(self) -> None:
+        """from_api_dict defaults options to () for non-list."""
+        data = _make_custom_field_definition_dict(
+            options="not-a-list",
+        )
+        result = GuestyCustomFieldDefinition.from_api_dict(data)
+        assert result is not None
+        assert result.options == ()
+
+    def test_missing_display_name_defaults_empty(self) -> None:
+        """from_api_dict defaults display_name to empty string."""
+        data = _make_custom_field_definition_dict()
+        del data["displayName"]
+        result = GuestyCustomFieldDefinition.from_api_dict(data)
+        assert result is not None
+        assert result.display_name == ""
+
+    def test_null_display_name_defaults_empty(self) -> None:
+        """from_api_dict defaults display_name for None value."""
+        data = _make_custom_field_definition_dict(
+            displayName=None,
+        )
+        result = GuestyCustomFieldDefinition.from_api_dict(data)
+        assert result is not None
+        assert result.display_name == ""
+
+    def test_non_bool_is_public_defaults_false(self) -> None:
+        """from_api_dict defaults is_public to False for non-bool."""
+        data = _make_custom_field_definition_dict(isPublic="yes")
+        result = GuestyCustomFieldDefinition.from_api_dict(data)
+        assert result is not None
+        assert result.is_public is False
+
+    def test_non_bool_is_required_defaults_false(self) -> None:
+        """from_api_dict defaults is_required to False for non-bool."""
+        data = _make_custom_field_definition_dict(isRequired=1)
+        result = GuestyCustomFieldDefinition.from_api_dict(data)
+        assert result is not None
+        assert result.is_required is False
 
 
 class TestGuestyCustomFieldDefinitionFrozen:

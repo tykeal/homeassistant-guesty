@@ -38,15 +38,25 @@ class GuestyCustomFieldsClient:
 
     Attributes:
         _api_client: Guesty API client for HTTP communication.
+        _account_id: Guesty account ID for endpoint resolution.
     """
 
-    def __init__(self, api_client: GuestyApiClient) -> None:
+    def __init__(
+        self,
+        api_client: GuestyApiClient,
+        *,
+        account_id: str | None = None,
+    ) -> None:
         """Initialize GuestyCustomFieldsClient.
 
         Args:
             api_client: Guesty API client for HTTP requests.
+            account_id: Guesty account ID for the custom
+                fields definitions endpoint. Optional; when
+                None, ``get_definitions()`` will raise.
         """
         self._api_client = api_client
+        self._account_id = account_id
 
     async def get_definitions(
         self,
@@ -58,15 +68,24 @@ class GuestyCustomFieldsClient:
             with missing required fields are silently filtered.
 
         Raises:
-            GuestyCustomFieldError: On non-2xx HTTP status or
-                unexpected response format.
+            GuestyCustomFieldError: On non-2xx HTTP status,
+                unexpected response format, or missing
+                account_id.
             GuestyAuthError: On authentication failure.
             GuestyConnectionError: On network failure.
             GuestyRateLimitError: On rate limit exhaustion.
         """
+        if not self._account_id or not self._account_id.strip():
+            raise GuestyCustomFieldError(
+                "Cannot fetch custom field definitions without an account ID",
+            )
+
+        account_id = self._account_id.strip()
         response = await self._api_client._request(
             "GET",
-            CUSTOM_FIELDS_ENDPOINT,
+            CUSTOM_FIELDS_ENDPOINT.format(
+                account_id=account_id,
+            ),
         )
 
         if not response.is_success:
