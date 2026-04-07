@@ -89,7 +89,10 @@ async def _make_cf_test_client() -> AsyncGenerator[GuestyCustomFieldsClient]:
             token_manager=token_mgr,
             http_client=http,
         )
-        yield GuestyCustomFieldsClient(api_client)
+        yield GuestyCustomFieldsClient(
+            api_client,
+            account_id="acc-test-svc",
+        )
 
 
 # ── T017: Service Handler Tests ─────────────────────────────────────
@@ -2348,16 +2351,20 @@ class TestQuickstartValidation:
 
         # Verify the constructor signature matches quickstart
         mock_api = AsyncMock(spec=GuestyApiClient)
-        client = GuestyCustomFieldsClient(mock_api)
+        client = GuestyCustomFieldsClient(
+            mock_api,
+            account_id="acc-test",
+        )
         assert client._api_client is mock_api
+        assert client._account_id == "acc-test"
 
     def test_frozen_dataclass_pattern(self) -> None:
         """Models use frozen dataclass with from_api_dict factory."""
         data = make_custom_field_definition_dict()
         defn = GuestyCustomFieldDefinition.from_api_dict(data)
         assert defn is not None
-        assert defn.field_id == data["id"]
-        assert defn.name == data["name"]
+        assert defn.field_id == data["fieldId"]
+        assert defn.name == data["key"]
 
     def test_error_handling_pattern(self) -> None:
         """Error handling maps API errors to HA pattern."""
@@ -2373,7 +2380,10 @@ class TestQuickstartValidation:
     def test_validate_value_pattern(self) -> None:
         """validate_value follows documented pattern."""
         mock_api = AsyncMock()
-        client = GuestyCustomFieldsClient(mock_api)
+        client = GuestyCustomFieldsClient(
+            mock_api,
+            account_id="acc-test",
+        )
         # Should not raise for valid
         client.validate_value("hello", "text")
         # Should raise for mismatch

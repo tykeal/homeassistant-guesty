@@ -149,10 +149,17 @@ def _auto_mock_cf_definitions(
             yield
             return
 
-    with patch(
-        "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
-        new_callable=AsyncMock,
-        return_value=[],
+    with (
+        patch(
+            "custom_components.guesty.GuestyApiClient.get_account_id",
+            new_callable=AsyncMock,
+            return_value="acc-test-auto",
+        ),
+        patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
     ):
         yield
 
@@ -635,10 +642,14 @@ def make_custom_field_definition_dict(
         Dictionary matching the Guesty custom field definition format.
     """
     defaults: dict[str, Any] = {
-        "id": "cf-door-code",
-        "name": "Door Code",
-        "type": "string",
-        "objectType": "reservation",
+        "fieldId": "cf-door-code",
+        "key": "Door Code",
+        "type": "text",
+        "object": "reservation",
+        "displayName": "door_code",
+        "isPublic": False,
+        "isRequired": False,
+        "options": [],
     }
     defaults.update(overrides)
     return defaults
@@ -656,18 +667,30 @@ def sample_custom_field_definitions() -> list[GuestyCustomFieldDefinition]:
             name="Region",
             field_type="text",
             applicable_to=frozenset({"listing"}),
+            display_name="region",
+            is_public=False,
+            is_required=False,
+            options=(),
         ),
         GuestyCustomFieldDefinition(
             field_id="cf-door-code",
             name="Door Code",
             field_type="text",
             applicable_to=frozenset({"reservation"}),
+            display_name="door_code",
+            is_public=False,
+            is_required=False,
+            options=(),
         ),
         GuestyCustomFieldDefinition(
             field_id="cf-priority",
             name="Priority",
             field_type="number",
             applicable_to=frozenset({"listing", "reservation"}),
+            display_name="priority",
+            is_public=True,
+            is_required=False,
+            options=(),
         ),
     ]
 

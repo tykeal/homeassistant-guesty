@@ -1718,3 +1718,200 @@ class TestTransientRetry:
         # 422 is not retried — returned directly
         response = await client._request("GET", "/listings")
         assert response.status_code == 422
+
+
+class TestGetAccountId:
+    """Tests for GuestyApiClient.get_account_id()."""
+
+    @respx.mock
+    async def test_successful_account_id(self) -> None:
+        """get_account_id() returns account ID on success."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}/accounts/me").mock(
+            return_value=Response(
+                200,
+                json={"_id": "acc-123-abc"},
+            ),
+        )
+        client, _, _ = _make_client()
+        result = await client.get_account_id()
+        assert result == "acc-123-abc"
+
+    @respx.mock
+    async def test_non_success_raises_error(self) -> None:
+        """get_account_id() raises on non-2xx status."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}/accounts/me").mock(
+            return_value=Response(
+                404,
+                json={"error": "not found"},
+            ),
+        )
+        client, _, _ = _make_client()
+        with pytest.raises(
+            GuestyResponseError,
+            match="Account lookup failed",
+        ):
+            await client.get_account_id()
+
+    @respx.mock
+    async def test_invalid_json_raises_error(self) -> None:
+        """get_account_id() raises on non-JSON response."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}/accounts/me").mock(
+            return_value=Response(
+                200,
+                content=b"not json",
+                headers={"content-type": "text/plain"},
+            ),
+        )
+        client, _, _ = _make_client()
+        with pytest.raises(
+            GuestyResponseError,
+            match="not valid JSON",
+        ):
+            await client.get_account_id()
+
+    @respx.mock
+    async def test_missing_id_field_raises_error(self) -> None:
+        """get_account_id() raises when _id is missing."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}/accounts/me").mock(
+            return_value=Response(
+                200,
+                json={"name": "My Account"},
+            ),
+        )
+        client, _, _ = _make_client()
+        with pytest.raises(
+            GuestyResponseError,
+            match="missing _id",
+        ):
+            await client.get_account_id()
+
+    @respx.mock
+    async def test_empty_id_field_raises_error(self) -> None:
+        """get_account_id() raises when _id is empty."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}/accounts/me").mock(
+            return_value=Response(
+                200,
+                json={"_id": ""},
+            ),
+        )
+        client, _, _ = _make_client()
+        with pytest.raises(
+            GuestyResponseError,
+            match="missing _id",
+        ):
+            await client.get_account_id()
+
+    @respx.mock
+    async def test_whitespace_id_raises_error(self) -> None:
+        """get_account_id() raises when _id is whitespace-only."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}/accounts/me").mock(
+            return_value=Response(
+                200,
+                json={"_id": "   "},
+            ),
+        )
+        client, _, _ = _make_client()
+        with pytest.raises(
+            GuestyResponseError,
+            match="missing _id",
+        ):
+            await client.get_account_id()
+
+    @respx.mock
+    async def test_strips_whitespace_from_id(self) -> None:
+        """get_account_id() strips whitespace from _id."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}/accounts/me").mock(
+            return_value=Response(
+                200,
+                json={"_id": "  acc-trimmed  "},
+            ),
+        )
+        client, _, _ = _make_client()
+        result = await client.get_account_id()
+        assert result == "acc-trimmed"
+
+    @respx.mock
+    async def test_non_dict_response_raises_error(self) -> None:
+        """get_account_id() raises when response is not a dict."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}/accounts/me").mock(
+            return_value=Response(
+                200,
+                json=["not", "a", "dict"],
+            ),
+        )
+        client, _, _ = _make_client()
+        with pytest.raises(
+            GuestyResponseError,
+            match="JSON object",
+        ):
+            await client.get_account_id()
+
+    @respx.mock
+    async def test_non_string_id_raises_error(self) -> None:
+        """get_account_id() raises when _id is not a string."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}/accounts/me").mock(
+            return_value=Response(
+                200,
+                json={"_id": 12345},
+            ),
+        )
+        client, _, _ = _make_client()
+        with pytest.raises(
+            GuestyResponseError,
+            match="missing _id",
+        ):
+            await client.get_account_id()

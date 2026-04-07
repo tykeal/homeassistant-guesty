@@ -130,8 +130,11 @@ DEFAULT_PAST_DAYS: int = 30
 # Default future days for reservation date range window.
 DEFAULT_FUTURE_DAYS: int = 365
 
-# Custom fields definitions endpoint path.
-CUSTOM_FIELDS_ENDPOINT: str = "/properties-api/custom-fields"
+# Account lookup endpoint path.
+ACCOUNTS_ME_ENDPOINT: str = "/accounts/me"
+
+# Custom fields definitions endpoint path (requires account_id).
+CUSTOM_FIELDS_ENDPOINT: str = "/accounts/{account_id}/custom-fields"
 
 # Custom fields update path for listings.
 LISTING_CUSTOM_FIELDS_PATH: str = "/listings/{listing_id}/custom-fields"

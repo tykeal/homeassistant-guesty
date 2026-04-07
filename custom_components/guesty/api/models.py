@@ -790,17 +790,26 @@ class GuestyCustomFieldDefinition:
 
     Attributes:
         field_id: Unique identifier for the custom field.
-        name: Human-readable display name.
+        name: Human-readable display name (from API ``key``).
         field_type: Normalised value type for known Guesty types
             (e.g. "string" becomes "text"), or the raw API type
             string preserved as-is for unrecognised types.
         applicable_to: Set of entity types this field applies to.
+        display_name: Slugified variable name (from API
+            ``displayName``).
+        is_public: Whether the field is publicly visible.
+        is_required: Whether the field is required.
+        options: Available options for the field.
     """
 
     field_id: str
     name: str
     field_type: str
     applicable_to: frozenset[str]
+    display_name: str = ""
+    is_public: bool = False
+    is_required: bool = False
+    options: tuple[str, ...] = ()
 
     @classmethod
     def from_api_dict(
@@ -809,18 +818,19 @@ class GuestyCustomFieldDefinition:
     ) -> GuestyCustomFieldDefinition | None:
         """Create a definition from a Guesty API response dict.
 
-        Returns ``None`` when required fields (id, name, type)
+        Returns ``None`` when required fields (fieldId, key, type)
         are missing so callers can filter incomplete records.
 
         Args:
-            data: Single definition dict from GET /custom-fields.
+            data: Single definition dict from
+                GET /accounts/{id}/custom-fields.
 
         Returns:
             A populated instance, or None if required data is
             missing.
         """
-        field_id = data.get("id")
-        name = data.get("name")
+        field_id = data.get("fieldId")
+        name = data.get("key")
         raw_type = data.get("type")
 
         if field_id is None or name is None or raw_type is None:
@@ -831,7 +841,7 @@ class GuestyCustomFieldDefinition:
 
         field_type = _GUESTY_TYPE_MAP.get(raw_type, raw_type)
 
-        object_type = data.get("objectType")
+        object_type = data.get("object")
         if object_type == "both":
             applicable_to = frozenset({"listing", "reservation"})
         elif isinstance(object_type, str):
@@ -839,11 +849,28 @@ class GuestyCustomFieldDefinition:
         else:
             applicable_to = frozenset()
 
+        raw_display_name = data.get("displayName")
+        display_name = raw_display_name if isinstance(raw_display_name, str) else ""
+        raw_is_public = data.get("isPublic", False)
+        is_public = raw_is_public if isinstance(raw_is_public, bool) else False
+        raw_is_required = data.get("isRequired", False)
+        is_required = raw_is_required if isinstance(raw_is_required, bool) else False
+
+        raw_options = data.get("options", ())
+        if isinstance(raw_options, list):
+            options = tuple(str(o) for o in raw_options if isinstance(o, str))
+        else:
+            options = ()
+
         return cls(
             field_id=str(field_id),
             name=str(name),
             field_type=str(field_type),
             applicable_to=applicable_to,
+            display_name=display_name,
+            is_public=is_public,
+            is_required=is_required,
+            options=options,
         )
 
 

@@ -237,6 +237,17 @@ async def async_setup_entry(
             f"Failed to connect to Guesty API: {exc.message}",
         ) from exc
 
+    account_id: str | None = None
+    try:
+        account_id = await api_client.get_account_id()
+    except GuestyApiError as exc:
+        _LOGGER.warning(
+            "Failed to fetch Guesty account ID: %s; "
+            "custom field definitions will remain unavailable "
+            "until the config entry is reloaded",
+            exc.message,
+        )
+
     coordinator = ListingsCoordinator(
         hass=hass,
         entry=entry,
@@ -254,7 +265,10 @@ async def async_setup_entry(
 
     messaging_client = GuestyMessagingClient(api_client)
     actions_client = GuestyActionsClient(api_client)
-    cf_client = GuestyCustomFieldsClient(api_client)
+    cf_client = GuestyCustomFieldsClient(
+        api_client,
+        account_id=account_id,
+    )
 
     cf_coordinator = CustomFieldsDefinitionCoordinator(
         hass=hass,
@@ -435,8 +449,12 @@ async def async_setup_entry(
             {
                 "field_id": f.field_id,
                 "name": f.name,
+                "display_name": f.display_name,
                 "type": f.field_type,
                 "target_types": sorted(f.applicable_to),
+                "is_public": f.is_public,
+                "is_required": f.is_required,
+                "options": list(f.options),
             }
             for f in definitions
         ]

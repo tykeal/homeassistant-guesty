@@ -147,6 +147,46 @@ class TestAsyncSetupEntry:
         assert entry.state is ConfigEntryState.SETUP_RETRY
 
     @patch(
+        "custom_components.guesty.GuestyApiClient.get_account_id",
+        new_callable=AsyncMock,
+        side_effect=GuestyConnectionError("account lookup failed"),
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_account_id_failure_logs_warning(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        mock_account: AsyncMock,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Account ID failure logs warning but loads."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        with caplog.at_level(logging.WARNING):
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+
+        assert entry.state is ConfigEntryState.LOADED
+        assert "Failed to fetch Guesty account ID" in caplog.text
+
+    @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
         side_effect=GuestyConnectionError("network down"),
@@ -2511,12 +2551,20 @@ class TestGetCustomFieldsService:
                 name="VIP Status",
                 field_type="text",
                 applicable_to=frozenset({"listing", "reservation"}),
+                display_name="vip_status",
+                is_public=True,
+                is_required=False,
+                options=(),
             ),
             GuestyCustomFieldDefinition(
                 field_id="cf-002",
                 name="Rating",
                 field_type="number",
                 applicable_to=frozenset({"listing"}),
+                display_name="rating",
+                is_public=False,
+                is_required=True,
+                options=("good", "bad"),
             ),
         ]
 
@@ -2536,14 +2584,22 @@ class TestGetCustomFieldsService:
         first: Any = fields[0]
         assert first["field_id"] == "cf-001"
         assert first["name"] == "VIP Status"
+        assert first["display_name"] == "vip_status"
         assert first["type"] == "text"
         assert first["target_types"] == ["listing", "reservation"]
+        assert first["is_public"] is True
+        assert first["is_required"] is False
+        assert first["options"] == []
 
         second: Any = fields[1]
         assert second["field_id"] == "cf-002"
         assert second["name"] == "Rating"
+        assert second["display_name"] == "rating"
         assert second["type"] == "number"
         assert second["target_types"] == ["listing"]
+        assert second["is_public"] is False
+        assert second["is_required"] is True
+        assert second["options"] == ["good", "bad"]
 
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",

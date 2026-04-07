@@ -12,6 +12,7 @@ import httpx
 
 from custom_components.guesty.api.auth import GuestyTokenManager
 from custom_components.guesty.api.const import (
+    ACCOUNTS_ME_ENDPOINT,
     ACTIONABLE_STATUSES,
     BACKOFF_MULTIPLIER,
     BASE_URL,
@@ -99,6 +100,50 @@ class GuestyApiClient:
                 f"Connection test failed: status {response.status_code}",
             )
         return True
+
+    async def get_account_id(self) -> str:
+        """Fetch the authenticated account ID from the Guesty API.
+
+        Returns:
+            The account ID string.
+
+        Raises:
+            GuestyResponseError: If the API response is not
+                successful, not valid JSON, or missing _id.
+            GuestyAuthError: On authentication failure.
+            GuestyConnectionError: On network failure.
+            GuestyRateLimitError: On rate limit exhaustion.
+        """
+        response = await self._request(
+            "GET",
+            ACCOUNTS_ME_ENDPOINT,
+        )
+        if not response.is_success:
+            raise GuestyResponseError(
+                f"Account lookup failed: status {response.status_code}",
+            )
+        try:
+            data = response.json()
+        except Exception as exc:
+            raise GuestyResponseError(
+                "Account response is not valid JSON",
+            ) from exc
+        if not isinstance(data, dict):
+            raise GuestyResponseError(
+                "Account response must be a JSON object",
+            )
+        account_id = data.get("_id")
+        if not isinstance(account_id, str):
+            raise GuestyResponseError(
+                "Account response missing _id field",
+            )
+        normalized = account_id.strip()
+        if not normalized:
+            raise GuestyResponseError(
+                "Account response missing _id field",
+            )
+        result: str = normalized
+        return result
 
     async def get_listings(self) -> list[GuestyListing]:
         """Fetch all listings with automatic pagination.
