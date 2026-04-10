@@ -467,7 +467,9 @@ def _make_listing_dict(**overrides: Any) -> dict[str, Any]:
         "defaultCheckInTime": "15:00",
         "defaultCheckOutTime": "11:00",
         "tags": ["pet-friendly"],
-        "customFields": {"region": "southeast"},
+        "customFields": [
+            {"fieldId": "cf_region", "value": "southeast"},
+        ],
     }
     defaults.update(overrides)
     return defaults

@@ -18,6 +18,30 @@ from custom_components.guesty.api.const import (
 _LOGGER = logging.getLogger(__name__)
 
 
+def _parse_custom_fields_array(
+    raw: Any,
+) -> dict[str, str]:
+    """Parse Guesty customFields array into a fieldId→value map.
+
+    Args:
+        raw: The customFields value from the API (expected list).
+
+    Returns:
+        Dict mapping fieldId to string value.
+    """
+    if not isinstance(raw, list):
+        return {}
+    result: dict[str, str] = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        field_id = item.get("fieldId")
+        value = item.get("value")
+        if isinstance(field_id, str) and field_id:
+            result[field_id] = str(value) if value is not None else ""
+    return result
+
+
 @dataclass(frozen=True)
 class CachedToken:
     """Immutable representation of a cached OAuth 2.0 access token.
@@ -347,7 +371,7 @@ class GuestyListing:
         check_in_time: Default check-in time (HH:MM), or None.
         check_out_time: Default check-out time (HH:MM), or None.
         tags: Immutable tuple of listing tags.
-        custom_fields: Immutable mapping of custom name-value pairs.
+        custom_fields: Immutable mapping of field IDs to values.
     """
 
     id: str
@@ -400,9 +424,9 @@ class GuestyListing:
             else ()
         )
 
-        raw_cf = data.get("customFields", {})
+        raw_cf = data.get("customFields", [])
         custom_fields = MappingProxyType(
-            {k: str(v) for k, v in raw_cf.items()} if isinstance(raw_cf, dict) else {},
+            _parse_custom_fields_array(raw_cf),
         )
 
         return cls(
@@ -607,7 +631,7 @@ class GuestyReservation:
         note: Reservation notes.
         guest: Guest contact information.
         money: Financial summary.
-        custom_fields: Immutable mapping of custom name-value pairs.
+        custom_fields: Immutable mapping of field IDs to values.
     """
 
     id: str
@@ -684,9 +708,9 @@ class GuestyReservation:
             )
             return None
 
-        raw_cf = data.get("customFields", {})
+        raw_cf = data.get("customFields", [])
         custom_fields = MappingProxyType(
-            {k: str(v) for k, v in raw_cf.items()} if isinstance(raw_cf, dict) else {},
+            _parse_custom_fields_array(raw_cf),
         )
 
         return cls(

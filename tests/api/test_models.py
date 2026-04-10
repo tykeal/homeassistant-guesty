@@ -28,6 +28,7 @@ from custom_components.guesty.api.models import (
     MessageDeliveryResult,
     MessageRequest,
     TokenStorage,
+    _parse_custom_fields_array,
 )
 
 
@@ -487,6 +488,97 @@ class TestGuestyAddressFrozen:
             addr.full = "new"  # type: ignore[misc]
 
 
+# ── _parse_custom_fields_array Tests ─────────────────────────────────
+
+
+class TestParseCustomFieldsArray:
+    """Tests for _parse_custom_fields_array helper."""
+
+    def test_valid_array(self) -> None:
+        """Parses a valid array of custom field objects."""
+        raw = [
+            {"fieldId": "f1", "value": "val1"},
+            {"fieldId": "f2", "value": "val2"},
+        ]
+        assert _parse_custom_fields_array(raw) == {
+            "f1": "val1",
+            "f2": "val2",
+        }
+
+    def test_empty_list(self) -> None:
+        """Empty list returns empty dict."""
+        assert _parse_custom_fields_array([]) == {}
+
+    def test_non_list_returns_empty(self) -> None:
+        """Non-list input returns empty dict."""
+        assert _parse_custom_fields_array("not-a-list") == {}
+
+    def test_dict_input_returns_empty(self) -> None:
+        """Dict input returns empty dict (old format)."""
+        assert _parse_custom_fields_array({"k": "v"}) == {}
+
+    def test_none_input_returns_empty(self) -> None:
+        """None input returns empty dict."""
+        assert _parse_custom_fields_array(None) == {}
+
+    def test_non_dict_items_skipped(self) -> None:
+        """Non-dict items in the array are skipped."""
+        raw = [
+            {"fieldId": "f1", "value": "v1"},
+            "not-a-dict",
+            42,
+            {"fieldId": "f2", "value": "v2"},
+        ]
+        assert _parse_custom_fields_array(raw) == {
+            "f1": "v1",
+            "f2": "v2",
+        }
+
+    def test_missing_field_id_skipped(self) -> None:
+        """Items without fieldId are skipped."""
+        raw = [
+            {"value": "orphan"},
+            {"fieldId": "f1", "value": "v1"},
+        ]
+        assert _parse_custom_fields_array(raw) == {"f1": "v1"}
+
+    def test_empty_field_id_skipped(self) -> None:
+        """Items with empty fieldId are skipped."""
+        raw = [
+            {"fieldId": "", "value": "v0"},
+            {"fieldId": "f1", "value": "v1"},
+        ]
+        assert _parse_custom_fields_array(raw) == {"f1": "v1"}
+
+    def test_non_string_field_id_skipped(self) -> None:
+        """Items with non-string fieldId are skipped."""
+        raw = [
+            {"fieldId": 123, "value": "v0"},
+            {"fieldId": "f1", "value": "v1"},
+        ]
+        assert _parse_custom_fields_array(raw) == {"f1": "v1"}
+
+    def test_none_value_becomes_empty_string(self) -> None:
+        """None value is converted to empty string."""
+        raw = [{"fieldId": "f1", "value": None}]
+        assert _parse_custom_fields_array(raw) == {"f1": ""}
+
+    def test_missing_value_becomes_empty_string(self) -> None:
+        """Missing value key results in empty string."""
+        raw = [{"fieldId": "f1"}]
+        assert _parse_custom_fields_array(raw) == {"f1": ""}
+
+    def test_numeric_value_coerced(self) -> None:
+        """Numeric values are coerced to strings."""
+        raw = [{"fieldId": "f1", "value": 42}]
+        assert _parse_custom_fields_array(raw) == {"f1": "42"}
+
+    def test_bool_value_coerced(self) -> None:
+        """Boolean values are coerced to strings."""
+        raw = [{"fieldId": "f1", "value": True}]
+        assert _parse_custom_fields_array(raw) == {"f1": "True"}
+
+
 # ── GuestyListing Tests (T004) ──────────────────────────────────────
 
 
@@ -516,10 +608,10 @@ def _make_listing_dict(**overrides: Any) -> dict[str, Any]:
         "defaultCheckInTime": "15:00",
         "defaultCheckOutTime": "11:00",
         "tags": ["pet-friendly", "beachfront"],
-        "customFields": {
-            "maintenance_status": "good",
-            "region": "southeast",
-        },
+        "customFields": [
+            {"fieldId": "cf_maintenance_status", "value": "good"},
+            {"fieldId": "cf_region", "value": "southeast"},
+        ],
     }
     defaults.update(overrides)
     return defaults
@@ -548,8 +640,8 @@ class TestGuestyListingFromApiDict:
         assert listing.check_out_time == "11:00"
         assert listing.tags == ("pet-friendly", "beachfront")
         assert listing.custom_fields == {
-            "maintenance_status": "good",
-            "region": "southeast",
+            "cf_maintenance_status": "good",
+            "cf_region": "southeast",
         }
 
     def test_missing_id_returns_none(self) -> None:
@@ -697,13 +789,16 @@ class TestGuestyListingDefaults:
         """Custom field values are coerced to strings."""
         listing = GuestyListing.from_api_dict(
             _make_listing_dict(
-                customFields={"count": 42, "ok": True},
+                customFields=[
+                    {"fieldId": "cf_count", "value": 42},
+                    {"fieldId": "cf_ok", "value": True},
+                ],
             ),
         )
         assert listing is not None
         assert listing.custom_fields == {
-            "count": "42",
-            "ok": "True",
+            "cf_count": "42",
+            "cf_ok": "True",
         }
 
     def test_bedrooms_none_when_absent(self) -> None:
@@ -760,10 +855,10 @@ class TestGuestyListingFrozen:
 class TestGuestyListingDefensiveValidation:
     """Tests for defensive type validation in from_api_dict."""
 
-    def test_non_dict_custom_fields_yields_empty(self) -> None:
-        """Non-dict customFields degrades to empty mapping."""
+    def test_non_list_custom_fields_yields_empty(self) -> None:
+        """Non-list customFields degrades to empty mapping."""
         listing = GuestyListing.from_api_dict(
-            _make_listing_dict(customFields="not-a-dict"),
+            _make_listing_dict(customFields="not-a-list"),
         )
         assert listing is not None
         assert dict(listing.custom_fields) == {}
@@ -1279,21 +1374,33 @@ class TestReservationCustomFields:
         """from_api_dict parses customFields into custom_fields."""
         res = GuestyReservation.from_api_dict(
             _make_reservation_dict(
-                customFields={"door_code": "1234", "wifi": "secret"},
+                customFields=[
+                    {"fieldId": "cf_door_code", "value": "1234"},
+                    {"fieldId": "cf_wifi", "value": "secret"},
+                ],
             ),
         )
         assert res is not None
-        assert res.custom_fields == {"door_code": "1234", "wifi": "secret"}
+        assert res.custom_fields == {
+            "cf_door_code": "1234",
+            "cf_wifi": "secret",
+        }
 
     def test_custom_fields_coerced_to_strings(self) -> None:
         """Custom field values are coerced to strings."""
         res = GuestyReservation.from_api_dict(
             _make_reservation_dict(
-                customFields={"count": 42, "ok": True},
+                customFields=[
+                    {"fieldId": "cf_count", "value": 42},
+                    {"fieldId": "cf_ok", "value": True},
+                ],
             ),
         )
         assert res is not None
-        assert res.custom_fields == {"count": "42", "ok": "True"}
+        assert res.custom_fields == {
+            "cf_count": "42",
+            "cf_ok": "True",
+        }
 
     def test_custom_fields_empty_when_absent(self) -> None:
         """Missing customFields yields empty mapping."""
@@ -1303,10 +1410,10 @@ class TestReservationCustomFields:
         assert res is not None
         assert dict(res.custom_fields) == {}
 
-    def test_non_dict_custom_fields_yields_empty(self) -> None:
-        """Non-dict customFields degrades to empty mapping."""
+    def test_non_list_custom_fields_yields_empty(self) -> None:
+        """Non-list customFields degrades to empty mapping."""
         res = GuestyReservation.from_api_dict(
-            _make_reservation_dict(customFields="not-a-dict"),
+            _make_reservation_dict(customFields="not-a-list"),
         )
         assert res is not None
         assert dict(res.custom_fields) == {}
@@ -1315,7 +1422,9 @@ class TestReservationCustomFields:
         """custom_fields mapping cannot be mutated."""
         res = GuestyReservation.from_api_dict(
             _make_reservation_dict(
-                customFields={"door_code": "1234"},
+                customFields=[
+                    {"fieldId": "cf_door_code", "value": "1234"},
+                ],
             ),
         )
         assert res is not None

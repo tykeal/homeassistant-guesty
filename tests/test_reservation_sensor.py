@@ -17,6 +17,7 @@ from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.guesty.api.models import (
+    GuestyCustomFieldDefinition,
     GuestyGuest,
     GuestyMoney,
     GuestyReservation,
@@ -2895,7 +2896,7 @@ class TestReservationCustomFieldAttributes:
             res_id="res-cf",
             status="checked_in",
             custom_fields=MappingProxyType(
-                {"door_code": "1234", "wifi_pass": "secret"},
+                {"cf_door_code": "1234", "cf_wifi_pass": "secret"},
             ),
         )
         mock_reservations.return_value = [reservation]
@@ -2911,8 +2912,8 @@ class TestReservationCustomFieldAttributes:
         assert state is not None
         attrs = state.attributes
         assert attrs["custom_fields"] == {
-            "door_code": "1234",
-            "wifi_pass": "secret",
+            "cf_door_code": "1234",
+            "cf_wifi_pass": "secret",
         }
 
     @patch(
@@ -2996,3 +2997,443 @@ class TestReservationCustomFieldAttributes:
         assert state is not None
         attrs = state.attributes
         assert attrs["custom_fields"] == {}
+
+
+class TestReservationCFNameResolution:
+    """Tests for custom field name resolution in attributes."""
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_cf_resolved_to_display_names(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Custom field IDs resolved to display names."""
+        cf_defs = [
+            GuestyCustomFieldDefinition(
+                field_id="cf_door_code",
+                name="Door Code",
+                field_type="text",
+                applicable_to=frozenset({"reservation"}),
+                display_name="door_code",
+                is_public=False,
+                is_required=False,
+                options=(),
+            ),
+        ]
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=cf_defs,
+        ):
+            mock_listings.return_value = [sample_listing]
+            reservation = _make_reservation(
+                res_id="res-cf-resolve",
+                status="checked_in",
+                custom_fields=MappingProxyType(
+                    {"cf_door_code": "1234"},
+                ),
+            )
+            mock_reservations.return_value = [reservation]
+
+            entry = _make_entry()
+            entry.add_to_hass(hass)
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+
+            state = hass.states.get(
+                "sensor.beach_house_reservation_status",
+            )
+            assert state is not None
+            attrs = state.attributes
+            assert attrs["custom_fields"] == {
+                "door_code": "1234",
+            }
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_cf_unknown_field_uses_id_as_key(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Unknown custom field uses fieldId as key."""
+        cf_defs = [
+            GuestyCustomFieldDefinition(
+                field_id="cf_door_code",
+                name="Door Code",
+                field_type="text",
+                applicable_to=frozenset({"reservation"}),
+                display_name="door_code",
+                is_public=False,
+                is_required=False,
+                options=(),
+            ),
+        ]
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=cf_defs,
+        ):
+            mock_listings.return_value = [sample_listing]
+            reservation = _make_reservation(
+                res_id="res-cf-unknown",
+                status="checked_in",
+                custom_fields=MappingProxyType(
+                    {"cf_unknown_field": "mystery"},
+                ),
+            )
+            mock_reservations.return_value = [reservation]
+
+            entry = _make_entry()
+            entry.add_to_hass(hass)
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+
+            state = hass.states.get(
+                "sensor.beach_house_reservation_status",
+            )
+            assert state is not None
+            attrs = state.attributes
+            assert attrs["custom_fields"] == {
+                "cf_unknown_field": "mystery",
+            }
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_cf_falls_back_to_name_when_no_display(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """CF with empty display_name uses name as key."""
+        cf_defs = [
+            GuestyCustomFieldDefinition(
+                field_id="cf_region",
+                name="Region",
+                field_type="text",
+                applicable_to=frozenset({"listing"}),
+                display_name="",
+                is_public=False,
+                is_required=False,
+                options=(),
+            ),
+        ]
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=cf_defs,
+        ):
+            mock_listings.return_value = [sample_listing]
+            reservation = _make_reservation(
+                res_id="res-cf-nodisp",
+                status="checked_in",
+                custom_fields=MappingProxyType(
+                    {"cf_region": "southeast"},
+                ),
+            )
+            mock_reservations.return_value = [reservation]
+
+            entry = _make_entry()
+            entry.add_to_hass(hass)
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+
+            state = hass.states.get(
+                "sensor.beach_house_reservation_status",
+            )
+            assert state is not None
+            attrs = state.attributes
+            assert attrs["custom_fields"] == {
+                "Region": "southeast",
+            }
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_cf_collision_falls_back_to_field_id(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Duplicate display names fall back to fieldId."""
+        cf_defs = [
+            GuestyCustomFieldDefinition(
+                field_id="cf_code_1",
+                name="Code",
+                field_type="text",
+                applicable_to=frozenset({"reservation"}),
+                display_name="code",
+                is_public=False,
+                is_required=False,
+                options=(),
+            ),
+            GuestyCustomFieldDefinition(
+                field_id="cf_code_2",
+                name="Code Alt",
+                field_type="text",
+                applicable_to=frozenset({"reservation"}),
+                display_name="code",
+                is_public=False,
+                is_required=False,
+                options=(),
+            ),
+        ]
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=cf_defs,
+        ):
+            mock_listings.return_value = [sample_listing]
+            reservation = _make_reservation(
+                res_id="res-cf-dup",
+                status="checked_in",
+                custom_fields=MappingProxyType(
+                    {
+                        "cf_code_1": "1234",
+                        "cf_code_2": "5678",
+                    },
+                ),
+            )
+            mock_reservations.return_value = [reservation]
+
+            entry = _make_entry()
+            entry.add_to_hass(hass)
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+
+            state = hass.states.get(
+                "sensor.beach_house_reservation_status",
+            )
+            assert state is not None
+            attrs = state.attributes
+            cf = attrs["custom_fields"]
+            assert cf["code"] == "1234"
+            assert cf["cf_code_2"] == "5678"
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_cf_lookup_returns_none_non_dict_entry(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """CF lookup returns None when entry data is not a dict."""
+        cf_defs = [
+            GuestyCustomFieldDefinition(
+                field_id="cf_door_code",
+                name="Door Code",
+                field_type="text",
+                applicable_to=frozenset({"reservation"}),
+                display_name="door_code",
+                is_public=False,
+                is_required=False,
+                options=(),
+            ),
+        ]
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=cf_defs,
+        ):
+            mock_listings.return_value = [sample_listing]
+            reservation = _make_reservation(
+                res_id="res-cf-nondict",
+                status="checked_in",
+                custom_fields=MappingProxyType(
+                    {"cf_door_code": "9999"},
+                ),
+            )
+            mock_reservations.return_value = [reservation]
+
+            entry = _make_entry()
+            entry.add_to_hass(hass)
+            await hass.config_entries.async_setup(
+                entry.entry_id,
+            )
+            await hass.async_block_till_done()
+
+            # Save refs before corruption
+            original = hass.data[DOMAIN][entry.entry_id]
+            res_coord = original["reservations_coordinator"]
+
+            # Corrupt entry data to non-dict
+            hass.data[DOMAIN][entry.entry_id] = "bad"
+
+            # Trigger state recalculation
+            res_coord.async_set_updated_data(
+                {"listing-001": [reservation]},
+            )
+            await hass.async_block_till_done()
+
+            state = hass.states.get(
+                "sensor.beach_house_reservation_status",
+            )
+            assert state is not None
+            attrs = state.attributes
+            # No resolution → raw field IDs as keys
+            assert attrs["custom_fields"] == {
+                "cf_door_code": "9999",
+            }
+
+            # Restore for clean teardown
+            hass.data[DOMAIN][entry.entry_id] = original
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_cf_collision_field_id_equals_display(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Field ID matching another display name gets suffix."""
+        cf_defs = [
+            GuestyCustomFieldDefinition(
+                field_id="cf_a",
+                name="A",
+                field_type="text",
+                applicable_to=frozenset({"reservation"}),
+                display_name="code",
+                is_public=False,
+                is_required=False,
+                options=(),
+            ),
+            GuestyCustomFieldDefinition(
+                field_id="code",
+                name="Code",
+                field_type="text",
+                applicable_to=frozenset({"reservation"}),
+                display_name="code",
+                is_public=False,
+                is_required=False,
+                options=(),
+            ),
+        ]
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=cf_defs,
+        ):
+            mock_listings.return_value = [sample_listing]
+            reservation = _make_reservation(
+                res_id="res-cf-overlap",
+                status="checked_in",
+                custom_fields=MappingProxyType(
+                    {
+                        "cf_a": "AAA",
+                        "code": "BBB",
+                    },
+                ),
+            )
+            mock_reservations.return_value = [reservation]
+
+            entry = _make_entry()
+            entry.add_to_hass(hass)
+            await hass.config_entries.async_setup(
+                entry.entry_id,
+            )
+            await hass.async_block_till_done()
+
+            state = hass.states.get(
+                "sensor.beach_house_reservation_status",
+            )
+            assert state is not None
+            cf = state.attributes["custom_fields"]
+            assert cf["code"] == "AAA"
+            assert cf["code_1"] == "BBB"

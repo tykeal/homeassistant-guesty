@@ -188,20 +188,28 @@ RESERVATION_FINANCIAL_DESCRIPTIONS: tuple[
 
 
 def create_custom_field_description(
-    field_name: str,
+    field_id: str,
+    display_name: str | None = None,
     seen_slugs: dict[str, int] | None = None,
 ) -> GuestyListingSensorEntityDescription:
     """Create a sensor description for a Guesty custom field.
 
+    Uses ``field_id`` for the stable entity key/unique_id and
+    ``display_name`` only for the human-facing sensor name.
+
     Args:
-        field_name: The custom field name from the listing.
+        field_id: The custom field ID used for value lookup and
+            as stable entity key.
+        display_name: Human-readable name for display. Falls back
+            to field_id when None or empty.
         seen_slugs: Tracks slug usage to disambiguate collisions.
 
     Returns:
-        A description whose key is ``custom_{slugified_name}``
+        A description whose key is ``custom_{slugified_field_id}``
         and whose ``value_fn`` extracts the specific field.
     """
-    slug = slugify(field_name)
+    name = display_name or field_id
+    slug = slugify(field_id)
     if seen_slugs is not None:
         count = seen_slugs.get(slug, 0)
         seen_slugs[slug] = count + 1
@@ -210,12 +218,12 @@ def create_custom_field_description(
 
     def _value_fn(listing: GuestyListing) -> StateType:
         """Extract the custom field value from the listing."""
-        return listing.custom_fields.get(field_name)
+        return listing.custom_fields.get(field_id)
 
     return GuestyListingSensorEntityDescription(
         key=f"custom_{slug}",
         translation_key="listing_custom_field",
-        name=field_name,
+        name=name,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=_value_fn,
     )
@@ -357,6 +365,7 @@ def _build_attributes(
     reservation: GuestyReservation | None,
     all_reservations: list[GuestyReservation],
     listing_id: str,
+    cf_field_lookup: Callable[[str], str] | None = None,
 ) -> dict[str, Any]:
     """Build extra_state_attributes for the reservation sensor.
 
@@ -364,6 +373,8 @@ def _build_attributes(
         reservation: The selected reservation, or None.
         all_reservations: All reservations for upcoming list.
         listing_id: The Guesty listing ID.
+        cf_field_lookup: Optional callable that maps a fieldId to
+            a human-readable display name.
 
     Returns:
         Dictionary of extra state attributes.
@@ -409,8 +420,46 @@ def _build_attributes(
         "source": reservation.source,
         "listing_id": listing_id,
         "upcoming_reservations": upcoming,
-        "custom_fields": dict(reservation.custom_fields),
+        "custom_fields": _resolve_custom_fields(
+            dict(reservation.custom_fields),
+            cf_field_lookup,
+        ),
     }
+
+
+def _resolve_custom_fields(
+    raw_cf: dict[str, str],
+    cf_field_lookup: Callable[[str], str] | None = None,
+) -> dict[str, str]:
+    """Resolve custom field IDs to human-readable names.
+
+    When multiple fieldIds resolve to the same display name,
+    subsequent duplicates fall back to fieldId. If that also
+    collides, a numeric suffix is appended.
+
+    Args:
+        raw_cf: Dict mapping fieldId to value.
+        cf_field_lookup: Optional callable mapping fieldId to name.
+
+    Returns:
+        Dict with resolved names as keys if lookup available.
+    """
+    if not cf_field_lookup or not raw_cf:
+        return raw_cf
+    resolved: dict[str, str] = {}
+    used_keys: set[str] = set()
+    for field_id, value in raw_cf.items():
+        key = cf_field_lookup(field_id)
+        if key in used_keys:
+            key = field_id
+        base_key = key
+        suffix = 1
+        while key in used_keys:
+            key = f"{base_key}_{suffix}"
+            suffix += 1
+        used_keys.add(key)
+        resolved[key] = value
+    return resolved
 
 
 def _build_upcoming(
@@ -519,6 +568,7 @@ class GuestyReservationSensor(
         super().__init__(coordinator)
         self._listing_id = listing_id
         self._listings_coordinator = listings_coordinator
+        self._entry = entry
         self._attr_unique_id = f"{entry.unique_id}_{listing_id}_reservation_status"
         self._attr_translation_key = "reservation_status"
 
@@ -563,7 +613,48 @@ class GuestyReservationSensor(
         """
         reservations = self._reservations
         selected = _select_reservation(reservations)
-        return _build_attributes(selected, reservations, self._listing_id)
+        return _build_attributes(
+            selected,
+            reservations,
+            self._listing_id,
+            self._cf_field_lookup,
+        )
+
+    @property
+    def _cf_field_lookup(
+        self,
+    ) -> Callable[[str], str] | None:
+        """Return a callable that resolves fieldId to display name.
+
+        Uses the CF definitions coordinator from the sensor's own
+        config entry to resolve field IDs to human-readable names.
+
+        Returns:
+            A lookup callable, or None if unavailable.
+        """
+        if self.hass is None:
+            return None
+        domain_data = self.hass.data.get(DOMAIN, {})
+        entry_data = domain_data.get(self._entry.entry_id)
+        if not isinstance(entry_data, dict):
+            return None
+        cf_coordinator = entry_data.get("cf_coordinator")
+        if not cf_coordinator or not cf_coordinator.data:
+            return None
+
+        def _lookup(
+            field_id: str,
+            _coord: Any = cf_coordinator,
+        ) -> str:
+            """Resolve fieldId to display name."""
+            field_def = _coord.get_field(field_id)
+            if field_def:
+                return str(
+                    field_def.display_name or field_def.name,
+                )
+            return field_id
+
+        return _lookup
 
     @property
     def device_info(self) -> DeviceInfo | None:
@@ -752,10 +843,31 @@ async def async_setup_entry(
     res_coordinator: ReservationsCoordinator = hass.data[DOMAIN][entry.entry_id][
         "reservations_coordinator"
     ]
+    entry_data = hass.data[DOMAIN][entry.entry_id]
 
     known_ids: set[str] = set()
     known_cf_keys: dict[str, set[str]] = {}
     seen_slugs_per_listing: dict[str, dict[str, int]] = {}
+
+    def _resolve_cf_display_name(field_id: str) -> str:
+        """Resolve a custom field ID to a display name.
+
+        Uses the CF definitions coordinator when available.
+
+        Args:
+            field_id: The raw custom field ID.
+
+        Returns:
+            Human-readable display name, or field_id as fallback.
+        """
+        cf_coordinator = entry_data.get("cf_coordinator")
+        if cf_coordinator and cf_coordinator.data:
+            field_def = cf_coordinator.get_field(field_id)
+            if field_def:
+                return str(
+                    field_def.display_name or field_def.name,
+                )
+        return field_id
 
     def _create_sensors(
         listing_ids: set[str],
@@ -793,13 +905,14 @@ async def async_setup_entry(
                     {},
                 )
                 cf_keys = known_cf_keys.setdefault(listing_id, set())
-                for field_name in sorted(
+                for field_id in sorted(
                     listing.custom_fields,
                     key=lambda n: (slugify(n), n),
                 ):
-                    cf_keys.add(field_name)
+                    cf_keys.add(field_id)
                     cf_desc = create_custom_field_description(
-                        field_name,
+                        field_id,
+                        _resolve_cf_display_name(field_id),
                         seen_slugs,
                     )
                     entities.append(
@@ -834,13 +947,13 @@ async def async_setup_entry(
 
     def _create_cf_sensors_for_listing(
         listing_id: str,
-        new_field_names: set[str],
+        new_field_ids: set[str],
     ) -> list[GuestyListingSensor]:
         """Create custom field sensors for newly discovered fields.
 
         Args:
             listing_id: The listing gaining new custom fields.
-            new_field_names: Field names not yet tracked.
+            new_field_ids: Field IDs not yet tracked.
 
         Returns:
             List of new custom field sensor entities.
@@ -851,13 +964,14 @@ async def async_setup_entry(
             {},
         )
         cf_keys = known_cf_keys.setdefault(listing_id, set())
-        for field_name in sorted(
-            new_field_names,
+        for field_id in sorted(
+            new_field_ids,
             key=lambda n: (slugify(n), n),
         ):
-            cf_keys.add(field_name)
+            cf_keys.add(field_id)
             cf_desc = create_custom_field_description(
-                field_name,
+                field_id,
+                _resolve_cf_display_name(field_id),
                 seen_slugs,
             )
             entities.append(
