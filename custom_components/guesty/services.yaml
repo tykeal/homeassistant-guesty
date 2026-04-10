@@ -259,39 +259,3 @@ set_calendar_availability:
       selector:
         config_entry:
           integration: guesty
-
-update_reservation_custom_field:
-  name: Update reservation custom field
-  description: >-
-    Update a custom field value on a Guesty reservation.
-  fields:
-    reservation_id:
-      name: Reservation ID
-      description: The Guesty reservation identifier.
-      required: true
-      example: "abc123def456"
-      selector:
-        text:
-    field_id:
-      name: Field ID
-      description: The custom field identifier.
-      required: true
-      example: "cf_vip_status"
-      selector:
-        text:
-    value:
-      name: Value
-      description: The new value for the custom field.
-      required: true
-      example: "VIP"
-      selector:
-        text:
-    config_entry_id:
-      name: Config entry ID
-      description: >-
-        Target a specific Guesty config entry. Required only
-        when multiple Guesty accounts are configured.
-      required: false
-      selector:
-        config_entry:
-          integration: guesty

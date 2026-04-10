@@ -144,7 +144,7 @@ class TestActionServiceRegistration:
         self,
         hass: HomeAssistant,
     ) -> None:
-        """All five action services are registered after setup."""
+        """All four action services are registered after setup."""
         await _setup_entry(hass)
 
         for service_name in (
@@ -152,7 +152,6 @@ class TestActionServiceRegistration:
             "set_listing_status",
             "create_task",
             "set_calendar_availability",
-            "update_reservation_custom_field",
         ):
             assert hass.services.has_service(DOMAIN, service_name), (
                 f"Service {DOMAIN}.{service_name} not registered"
@@ -173,7 +172,6 @@ class TestActionServiceRegistration:
             "set_listing_status",
             "create_task",
             "set_calendar_availability",
-            "update_reservation_custom_field",
         ):
             assert not hass.services.has_service(
                 DOMAIN,
@@ -411,21 +409,6 @@ class TestSchemaValidation:
                 DOMAIN,
                 "create_task",
                 {"task_title": "Test"},
-                blocking=True,
-            )
-
-    async def test_update_field_missing_all_required(
-        self,
-        hass: HomeAssistant,
-    ) -> None:
-        """Missing all required fields is rejected by schema."""
-        await _setup_entry(hass)
-
-        with pytest.raises(vol.Invalid):
-            await hass.services.async_call(
-                DOMAIN,
-                "update_reservation_custom_field",
-                {},
                 blocking=True,
             )
 
@@ -808,98 +791,6 @@ class TestHandleSetCalendarAvailability:
                     "start_date": "2025-08-01",
                     "end_date": "2025-08-05",
                     "operation": "block",
-                },
-                blocking=True,
-                return_response=True,
-            )
-
-
-# ── Update Reservation Custom Field Tests ───────────────────────────
-
-
-class TestHandleUpdateCustomField:
-    """Tests for guesty.update_reservation_custom_field (T032)."""
-
-    async def test_successful_call(
-        self,
-        hass: HomeAssistant,
-        mock_actions_client: AsyncMock,
-    ) -> None:
-        """Successful update returns ActionResult dict."""
-        entry = await _setup_entry(hass)
-        hass.data[DOMAIN][entry.entry_id]["actions_client"] = mock_actions_client
-
-        result = await hass.services.async_call(
-            DOMAIN,
-            "update_reservation_custom_field",
-            {
-                "reservation_id": "res-001",
-                "field_id": "cf-001",
-                "value": "VIP",
-            },
-            blocking=True,
-            return_response=True,
-        )
-
-        mock_actions_client.update_reservation_custom_field.assert_awaited_once_with(
-            reservation_id="res-001",
-            custom_field_id="cf-001",
-            value="VIP",
-        )
-        assert result == _result_dict(target_id="res-001")
-
-    async def test_action_error_translated(
-        self,
-        hass: HomeAssistant,
-        mock_actions_client: AsyncMock,
-    ) -> None:
-        """GuestyActionError is translated to HomeAssistantError."""
-        entry = await _setup_entry(hass)
-        hass.data[DOMAIN][entry.entry_id]["actions_client"] = mock_actions_client
-
-        mock_actions_client.update_reservation_custom_field.side_effect = (
-            GuestyActionError(
-                "Not found",
-            )
-        )
-
-        with pytest.raises(HomeAssistantError, match="Not found"):
-            await hass.services.async_call(
-                DOMAIN,
-                "update_reservation_custom_field",
-                {
-                    "reservation_id": "res-bad",
-                    "field_id": "cf-001",
-                    "value": "VIP",
-                },
-                blocking=True,
-                return_response=True,
-            )
-
-    async def test_value_error_translated(
-        self,
-        hass: HomeAssistant,
-        mock_actions_client: AsyncMock,
-    ) -> None:
-        """ValueError is translated to HomeAssistantError."""
-        entry = await _setup_entry(hass)
-        hass.data[DOMAIN][entry.entry_id]["actions_client"] = mock_actions_client
-
-        mock_actions_client.update_reservation_custom_field.side_effect = ValueError(
-            "value must be non-empty",
-        )
-
-        with pytest.raises(
-            HomeAssistantError,
-            match="value must be non-empty",
-        ):
-            await hass.services.async_call(
-                DOMAIN,
-                "update_reservation_custom_field",
-                {
-                    "reservation_id": "res-001",
-                    "field_id": "cf-001",
-                    "value": "x",
                 },
                 blocking=True,
                 return_response=True,
@@ -1317,62 +1208,6 @@ class TestIntegrationEndToEnd:
             "status": "unavailable",
         }
 
-    async def test_update_custom_field_end_to_end(
-        self,
-        hass: HomeAssistant,
-    ) -> None:
-        """Full path: service → handler → client → API."""
-
-        import respx
-        from httpx import Response
-
-        from custom_components.guesty.api.const import (
-            BASE_URL,
-            TOKEN_URL,
-        )
-
-        await _setup_entry(hass)
-
-        with respx.mock:
-            respx.post(TOKEN_URL).mock(
-                return_value=Response(
-                    200,
-                    json=make_token_response(),
-                ),
-            )
-            res_path = f"{RESERVATIONS_ENDPOINT}/res-e2e"
-            put_route = respx.put(
-                f"{BASE_URL}{res_path}",
-            ).mock(
-                return_value=Response(
-                    200,
-                    json={"_id": "res-e2e"},
-                ),
-            )
-
-            result = await hass.services.async_call(
-                DOMAIN,
-                "update_reservation_custom_field",
-                {
-                    "reservation_id": "res-e2e",
-                    "field_id": "cf-e2e",
-                    "value": "VIP Guest",
-                },
-                blocking=True,
-                return_response=True,
-            )
-
-        assert result == {
-            "success": True,
-            "target_id": "res-e2e",
-        }
-        payload = json.loads(
-            put_route.calls[0].request.content,
-        )
-        assert payload == {
-            "customFields": {"cf-e2e": "VIP Guest"},
-        }
-
     async def test_add_note_e2e_api_failure(
         self,
         hass: HomeAssistant,
@@ -1570,35 +1405,6 @@ class TestHandlerEdgeCases:
                 {
                     "listing_id": "lst-001",
                     "task_title": "Test",
-                },
-                blocking=True,
-                return_response=True,
-            )
-
-    async def test_update_custom_field_api_error(
-        self,
-        hass: HomeAssistant,
-        mock_actions_client: AsyncMock,
-    ) -> None:
-        """GuestyApiError from update_reservation_custom_field."""
-        entry = await _setup_entry(hass)
-        hass.data[DOMAIN][entry.entry_id]["actions_client"] = mock_actions_client
-
-        mock_actions_client.update_reservation_custom_field.side_effect = (
-            GuestyApiError("Network timeout")
-        )
-
-        with pytest.raises(
-            HomeAssistantError,
-            match="Network timeout",
-        ):
-            await hass.services.async_call(
-                DOMAIN,
-                "update_reservation_custom_field",
-                {
-                    "reservation_id": "res-001",
-                    "field_id": "cf-001",
-                    "value": "test",
                 },
                 blocking=True,
                 return_response=True,

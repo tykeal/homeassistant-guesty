@@ -166,28 +166,6 @@
                 }
             }
         },
-        "update_reservation_custom_field": {
-            "name": "Update reservation custom field",
-            "description": "Update a custom field value on a reservation.",
-            "fields": {
-                "reservation_id": {
-                    "name": "Reservation ID",
-                    "description": "The Guesty reservation identifier."
-                },
-                "field_id": {
-                    "name": "Field ID",
-                    "description": "The custom field identifier."
-                },
-                "value": {
-                    "name": "Value",
-                    "description": "The new value for the custom field."
-                },
-                "config_entry_id": {
-                    "name": "Config entry ID",
-                    "description": "Target a specific Guesty config entry."
-                }
-            }
-        },
         "set_custom_field": {
             "name": "Set custom field",
             "description": "Set a custom field value on a Guesty listing or reservation.",
