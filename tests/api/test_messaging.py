@@ -159,6 +159,14 @@ class TestResolveConversation:
                 json={"results": [], "count": 0},
             ),
         )
+        respx.get(
+            f"{BASE_URL}/reservations/res-missing",
+        ).mock(
+            return_value=Response(
+                200,
+                json={"source": "airbnb2"},
+            ),
+        )
 
         client = _make_messaging_client()
         with pytest.raises(
@@ -168,6 +176,153 @@ class TestResolveConversation:
             await client.resolve_conversation("res-missing")
 
         assert exc_info.value.reservation_id == "res-missing"
+
+    @respx.mock
+    async def test_manual_reservation_raises_detailed(
+        self,
+    ) -> None:
+        """Manual reservation raises descriptive error."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}{CONVERSATIONS_PATH}").mock(
+            return_value=Response(
+                200,
+                json={"results": [], "count": 0},
+            ),
+        )
+        respx.get(
+            f"{BASE_URL}/reservations/res-manual",
+        ).mock(
+            return_value=Response(
+                200,
+                json={"source": "manual"},
+            ),
+        )
+
+        client = _make_messaging_client()
+        with pytest.raises(
+            GuestyMessageError,
+            match=r"Messaging is unavailable.*manual reservations",
+        ) as exc_info:
+            await client.resolve_conversation("res-manual")
+
+        assert exc_info.value.reservation_id == "res-manual"
+
+    @respx.mock
+    async def test_manual_via_platform_field(self) -> None:
+        """Manual platform in integration field detected."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}{CONVERSATIONS_PATH}").mock(
+            return_value=Response(
+                200,
+                json={"results": [], "count": 0},
+            ),
+        )
+        respx.get(
+            f"{BASE_URL}/reservations/res-int",
+        ).mock(
+            return_value=Response(
+                200,
+                json={
+                    "integration": {"platform": "manual"},
+                    "source": "other",
+                },
+            ),
+        )
+
+        client = _make_messaging_client()
+        with pytest.raises(
+            GuestyMessageError,
+            match="manual reservations",
+        ):
+            await client.resolve_conversation("res-int")
+
+    @respx.mock
+    async def test_source_lookup_cancelled_propagates(
+        self,
+    ) -> None:
+        """CancelledError in source lookup propagates."""
+        import asyncio
+        from unittest.mock import patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}{CONVERSATIONS_PATH}").mock(
+            return_value=Response(
+                200,
+                json={"results": [], "count": 0},
+            ),
+        )
+
+        client = _make_messaging_client()
+
+        async def _raise_cancelled(
+            *args: object,
+            **kwargs: object,
+        ) -> None:
+            """Raise CancelledError."""
+            raise asyncio.CancelledError
+
+        with (
+            patch.object(
+                client._api_client,
+                "_request",
+                side_effect=_raise_cancelled,
+            ),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await client._get_reservation_source("res-c")
+
+    @respx.mock
+    async def test_source_lookup_failure_falls_through(
+        self,
+    ) -> None:
+        """Source lookup failure gives generic error."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(f"{BASE_URL}{CONVERSATIONS_PATH}").mock(
+            return_value=Response(
+                200,
+                json={"results": [], "count": 0},
+            ),
+        )
+        respx.get(
+            f"{BASE_URL}/reservations/res-err",
+        ).mock(
+            side_effect=httpx.ConnectError("timeout"),
+        )
+
+        client = _make_messaging_client()
+        with (
+            _patch(
+                "asyncio.sleep",
+                new_callable=AsyncMock,
+            ),
+            pytest.raises(
+                GuestyMessageError,
+                match="No conversation found",
+            ),
+        ):
+            await client.resolve_conversation("res-err")
 
     @respx.mock
     async def test_api_error_propagation(self) -> None:
@@ -327,6 +482,14 @@ class TestSendMessage:
             return_value=Response(
                 200,
                 json={"results": [], "count": 0},
+            ),
+        )
+        respx.get(
+            f"{BASE_URL}/reservations/res-missing",
+        ).mock(
+            return_value=Response(
+                200,
+                json={"source": "booking.com"},
             ),
         )
 
@@ -1056,6 +1219,14 @@ class TestErrorDetailMessaging:
                 json={"results": [], "count": 0},
             ),
         )
+        respx.get(
+            f"{BASE_URL}/reservations/res-not-found",
+        ).mock(
+            return_value=Response(
+                200,
+                json={"source": "vrbo"},
+            ),
+        )
 
         client = _make_messaging_client()
         with pytest.raises(GuestyMessageError) as exc_info:
@@ -1132,3 +1303,216 @@ class TestErrorDetailMessaging:
 
         # The error message mentions retries
         assert "retries" in str(exc_info.value).lower()
+
+
+# ── _get_reservation_source Tests ───────────────────────────────────
+
+
+class TestGetReservationSource:
+    """Tests for _get_reservation_source helper."""
+
+    @respx.mock
+    async def test_returns_platform_from_integration(
+        self,
+    ) -> None:
+        """Platform field in integration takes priority."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(
+            f"{BASE_URL}/reservations/res-plat",
+        ).mock(
+            return_value=Response(
+                200,
+                json={
+                    "integration": {"platform": "airbnb2"},
+                    "source": "should-not-use",
+                },
+            ),
+        )
+
+        client = _make_messaging_client()
+        result = await client._get_reservation_source(
+            "res-plat",
+        )
+        assert result == "airbnb2"
+
+    @respx.mock
+    async def test_returns_source_fallback(self) -> None:
+        """Falls back to source when no integration."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(
+            f"{BASE_URL}/reservations/res-src",
+        ).mock(
+            return_value=Response(
+                200,
+                json={"source": "manual"},
+            ),
+        )
+
+        client = _make_messaging_client()
+        result = await client._get_reservation_source(
+            "res-src",
+        )
+        assert result == "manual"
+
+    @respx.mock
+    async def test_returns_none_on_non_success(self) -> None:
+        """Non-success response returns None."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(
+            f"{BASE_URL}/reservations/res-404",
+        ).mock(
+            return_value=Response(404, text="Not Found"),
+        )
+
+        client = _make_messaging_client()
+        result = await client._get_reservation_source(
+            "res-404",
+        )
+        assert result is None
+
+    @respx.mock
+    async def test_returns_none_on_exception(self) -> None:
+        """Exception during lookup returns None."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(
+            f"{BASE_URL}/reservations/res-exc",
+        ).mock(
+            side_effect=httpx.ConnectError("network"),
+        )
+
+        client = _make_messaging_client()
+        with _patch(
+            "asyncio.sleep",
+            new_callable=AsyncMock,
+        ):
+            result = await client._get_reservation_source(
+                "res-exc",
+            )
+        assert result is None
+
+    @respx.mock
+    async def test_non_dict_integration_uses_source(
+        self,
+    ) -> None:
+        """Non-dict integration falls back to source."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(
+            f"{BASE_URL}/reservations/res-bad-int",
+        ).mock(
+            return_value=Response(
+                200,
+                json={
+                    "integration": "not-a-dict",
+                    "source": "manual",
+                },
+            ),
+        )
+
+        client = _make_messaging_client()
+        result = await client._get_reservation_source(
+            "res-bad-int",
+        )
+        assert result == "manual"
+
+    @respx.mock
+    async def test_non_string_platform_uses_source(
+        self,
+    ) -> None:
+        """Non-string platform falls back to source."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(
+            f"{BASE_URL}/reservations/res-bad-plat",
+        ).mock(
+            return_value=Response(
+                200,
+                json={
+                    "integration": {"platform": 123},
+                    "source": "vrbo",
+                },
+            ),
+        )
+
+        client = _make_messaging_client()
+        result = await client._get_reservation_source(
+            "res-bad-plat",
+        )
+        assert result == "vrbo"
+
+    @respx.mock
+    async def test_non_string_source_returns_none(
+        self,
+    ) -> None:
+        """Non-string source returns None."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(
+            f"{BASE_URL}/reservations/res-bad-src",
+        ).mock(
+            return_value=Response(
+                200,
+                json={"source": 42},
+            ),
+        )
+
+        client = _make_messaging_client()
+        result = await client._get_reservation_source(
+            "res-bad-src",
+        )
+        assert result is None
+
+    @respx.mock
+    async def test_empty_response_returns_none(self) -> None:
+        """Empty JSON response returns None."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        respx.get(
+            f"{BASE_URL}/reservations/res-empty",
+        ).mock(
+            return_value=Response(200, json={}),
+        )
+
+        client = _make_messaging_client()
+        result = await client._get_reservation_source(
+            "res-empty",
+        )
+        assert result is None
