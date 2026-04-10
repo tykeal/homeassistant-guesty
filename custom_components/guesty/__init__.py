@@ -376,11 +376,14 @@ async def async_setup_entry(
             )
         except GuestyCustomFieldError as err:
             _LOGGER.error(
-                "Custom field update failed for %s",
-                target_type,
+                "Custom field update failed for %s/%s: %s",
+                err.target_type,
+                err.target_id,
+                err.message,
+                exc_info=err,
             )
             raise HomeAssistantError(
-                f"Custom field update failed for {err.target_type}/{err.field_id}",
+                f"Custom field update failed for {err.target_type}/{err.target_id}",
             ) from None
         except GuestyApiError:
             _LOGGER.error(

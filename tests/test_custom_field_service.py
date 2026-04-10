@@ -350,7 +350,7 @@ class TestServiceHandler:
             ),
             pytest.raises(
                 HomeAssistantError,
-                match="Custom field update failed",
+                match=r"listing/lst-123$",
             ),
         ):
             await hass.services.async_call(
@@ -678,7 +678,10 @@ class TestReservationCustomFields:
                     field_id="cf-door-code",
                 ),
             ),
-            pytest.raises(HomeAssistantError, match="update failed"),
+            pytest.raises(
+                HomeAssistantError,
+                match=r"reservation/res-gone$",
+            ),
         ):
             await hass.services.async_call(
                 DOMAIN,
@@ -1020,7 +1023,10 @@ class TestAutomationCompatibility:
                     field_id="cf-region",
                 ),
             ),
-            pytest.raises(HomeAssistantError, match="Custom field update failed"),
+            pytest.raises(
+                HomeAssistantError,
+                match=r"listing/lst-fail$",
+            ),
         ):
             await hass.services.async_call(
                 DOMAIN,
@@ -1398,7 +1404,10 @@ class TestEdgeCases:
                     field_id="cf-region",
                 ),
             ),
-            pytest.raises(HomeAssistantError, match="Custom field update failed"),
+            pytest.raises(
+                HomeAssistantError,
+                match=r"listing/lst-stale$",
+            ),
         ):
             await hass.services.async_call(
                 DOMAIN,
