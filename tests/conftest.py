@@ -226,7 +226,9 @@ def make_listing_dict(**overrides: Any) -> dict[str, Any]:
         "defaultCheckInTime": "15:00",
         "defaultCheckOutTime": "11:00",
         "tags": ["premium", "beachfront"],
-        "customFields": {"region": "southeast"},
+        "customFields": [
+            {"fieldId": "cf_region", "value": "southeast"},
+        ],
     }
     defaults.update(overrides)
     return defaults
@@ -439,7 +441,7 @@ def sample_listing() -> GuestyListing:
         check_in_time="15:00",
         check_out_time="11:00",
         tags=("premium", "beachfront"),
-        custom_fields=MappingProxyType({"region": "southeast"}),
+        custom_fields=MappingProxyType({"cf_region": "southeast"}),
     )
 
 

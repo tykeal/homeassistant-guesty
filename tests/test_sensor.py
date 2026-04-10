@@ -18,6 +18,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.guesty.api.models import (
+    GuestyCustomFieldDefinition,
     GuestyListing,
 )
 from custom_components.guesty.const import (
@@ -1065,7 +1066,7 @@ class TestCustomFieldSensors:
         mock_coordinator: AsyncMock,
     ) -> None:
         """Custom field sensor unique_id includes custom_{slug}."""
-        desc = create_custom_field_description("region")
+        desc = create_custom_field_description("cf_region", "region")
         sensor = GuestyListingSensor(
             coordinator=mock_coordinator,
             listing_id=sample_listing.id,
@@ -1079,7 +1080,7 @@ class TestCustomFieldSensors:
         self,
     ) -> None:
         """Custom field sensor entity_category is DIAGNOSTIC."""
-        desc = create_custom_field_description("region")
+        desc = create_custom_field_description("cf_region", "region")
         assert desc.entity_category == EntityCategory.DIAGNOSTIC
 
     def test_custom_field_native_value(
@@ -1089,7 +1090,7 @@ class TestCustomFieldSensors:
         mock_coordinator: AsyncMock,
     ) -> None:
         """Custom field sensor returns the field value."""
-        desc = create_custom_field_description("region")
+        desc = create_custom_field_description("cf_region", "region")
         sensor = GuestyListingSensor(
             coordinator=mock_coordinator,
             listing_id=sample_listing.id,
@@ -1105,7 +1106,7 @@ class TestCustomFieldSensors:
         mock_coordinator: AsyncMock,
     ) -> None:
         """Custom field sensor exposes listing_id attribute."""
-        desc = create_custom_field_description("region")
+        desc = create_custom_field_description("cf_region", "region")
         sensor = GuestyListingSensor(
             coordinator=mock_coordinator,
             listing_id=sample_listing.id,
@@ -1117,24 +1118,32 @@ class TestCustomFieldSensors:
 
     def test_custom_field_translation_key(self) -> None:
         """Custom field sensor has listing_custom_field key."""
-        desc = create_custom_field_description("region")
+        desc = create_custom_field_description("cf_region", "region")
         assert desc.translation_key == "listing_custom_field"
 
     def test_custom_field_name_with_spaces(self) -> None:
         """Custom field with spaces gets slugified key."""
-        desc = create_custom_field_description("My Field Name")
+        desc = create_custom_field_description(
+            "cf_123",
+            "My Field Name",
+        )
         assert desc.key == "custom_my_field_name"
 
-    def test_custom_field_name_set_to_field_name(self) -> None:
-        """Custom field description name matches field name."""
-        desc = create_custom_field_description("region")
+    def test_custom_field_name_set_to_display_name(self) -> None:
+        """Custom field description name matches display name."""
+        desc = create_custom_field_description("cf_region", "region")
         assert desc.name == "region"
+
+    def test_custom_field_name_falls_back_to_field_id(self) -> None:
+        """Custom field uses field_id when display_name is None."""
+        desc = create_custom_field_description("cf_region")
+        assert desc.name == "cf_region"
 
     def test_custom_field_slug_collision_disambiguated(self) -> None:
         """Colliding slugs get a numeric suffix."""
         seen: dict[str, int] = {}
-        d1 = create_custom_field_description("Pool Type", seen)
-        d2 = create_custom_field_description("pool_type", seen)
+        d1 = create_custom_field_description("f1", "Pool Type", seen)
+        d2 = create_custom_field_description("f2", "pool_type", seen)
         assert d1.key == "custom_pool_type"
         assert d2.key == "custom_pool_type_1"
         assert d1.key != d2.key
@@ -1255,7 +1264,7 @@ class TestCustomFieldSensors:
             and e.entity_description.key.startswith("custom_")
         ]
         assert len(custom_sensors) == 1
-        assert custom_sensors[0].entity_description.key == "custom_region"
+        assert custom_sensors[0].entity_description.key == "custom_cf_region"
 
     async def test_multiple_custom_fields_create_multiple_sensors(
         self,
@@ -1281,7 +1290,7 @@ class TestCustomFieldSensors:
             check_in_time=None,
             check_out_time=None,
             tags=(),
-            custom_fields=MappingProxyType({"region": "west", "color": "blue"}),
+            custom_fields=MappingProxyType({"cf_region": "west", "cf_color": "blue"}),
         )
         coordinator = AsyncMock(spec=DataUpdateCoordinator)
         coordinator.data = {"multi-cf": listing}
@@ -1324,7 +1333,7 @@ class TestCustomFieldSensors:
         ]
         assert len(custom_sensors) == 2
         keys = {s.entity_description.key for s in custom_sensors}
-        assert keys == {"custom_region", "custom_color"}
+        assert keys == {"custom_cf_region", "custom_cf_color"}
 
     async def test_custom_field_discovery_on_new_listing(
         self,
@@ -1403,7 +1412,7 @@ class TestCustomFieldSensors:
             check_in_time=None,
             check_out_time=None,
             tags=(),
-            custom_fields=MappingProxyType({"pool_type": "heated"}),
+            custom_fields=MappingProxyType({"cf_pool_type": "heated"}),
         )
         coordinator.data = {
             "listing-a": listing1,
@@ -1423,7 +1432,7 @@ class TestCustomFieldSensors:
             and e.entity_description.key.startswith("custom_")
         ]
         assert len(custom_sensors) == 1
-        assert custom_sensors[0].entity_description.key == "custom_pool_type"
+        assert custom_sensors[0].entity_description.key == "custom_cf_pool_type"
 
 
 class TestReaddedListingRecreatesEntities:
@@ -1673,7 +1682,7 @@ class TestDynamicCustomFieldDiscovery:
             check_in_time=None,
             check_out_time=None,
             tags=(),
-            custom_fields=MappingProxyType({"my_field": "value"}),
+            custom_fields=MappingProxyType({"cf_my_field": "value"}),
         )
         coordinator.data = {"listing-cf1": updated_listing}
 
@@ -1688,7 +1697,7 @@ class TestDynamicCustomFieldDiscovery:
             and e.entity_description.key.startswith("custom_")
         ]
         assert len(cf_sensors) == 1
-        assert cf_sensors[0].entity_description.key == "custom_my_field"
+        assert cf_sensors[0].entity_description.key == "custom_cf_my_field"
 
     async def test_existing_cf_not_duplicated_on_new_field(
         self,
@@ -1714,7 +1723,7 @@ class TestDynamicCustomFieldDiscovery:
             check_in_time=None,
             check_out_time=None,
             tags=(),
-            custom_fields=MappingProxyType({"field_a": "alpha"}),
+            custom_fields=MappingProxyType({"cf_field_a": "alpha"}),
         )
         coordinator = AsyncMock(spec=DataUpdateCoordinator)
         coordinator.data = {"listing-cf2": listing}
@@ -1767,7 +1776,9 @@ class TestDynamicCustomFieldDiscovery:
             check_in_time=None,
             check_out_time=None,
             tags=(),
-            custom_fields=MappingProxyType({"field_a": "alpha", "field_b": "beta"}),
+            custom_fields=MappingProxyType(
+                {"cf_field_a": "alpha", "cf_field_b": "beta"}
+            ),
         )
         coordinator.data = {"listing-cf2": updated_listing}
 
@@ -1782,7 +1793,7 @@ class TestDynamicCustomFieldDiscovery:
             and e.entity_description.key.startswith("custom_")
         ]
         assert len(cf_sensors) == 1
-        assert cf_sensors[0].entity_description.key == "custom_field_b"
+        assert cf_sensors[0].entity_description.key == "custom_cf_field_b"
 
     async def test_multiple_listings_gain_fields_simultaneously(
         self,
@@ -1882,7 +1893,7 @@ class TestDynamicCustomFieldDiscovery:
             check_in_time=None,
             check_out_time=None,
             tags=(),
-            custom_fields=MappingProxyType({"wifi_code": "abc123"}),
+            custom_fields=MappingProxyType({"cf_wifi_code": "abc123"}),
         )
         updated_y = GuestyListing(
             id="listing-y",
@@ -1900,7 +1911,7 @@ class TestDynamicCustomFieldDiscovery:
             check_in_time=None,
             check_out_time=None,
             tags=(),
-            custom_fields=MappingProxyType({"pool_temp": "82"}),
+            custom_fields=MappingProxyType({"cf_pool_temp": "82"}),
         )
         coordinator.data = {
             "listing-x": updated_x,
@@ -1919,7 +1930,7 @@ class TestDynamicCustomFieldDiscovery:
         ]
         assert len(cf_sensors) == 2
         keys = {s.entity_description.key for s in cf_sensors}
-        assert keys == {"custom_wifi_code", "custom_pool_temp"}
+        assert keys == {"custom_cf_wifi_code", "custom_cf_pool_temp"}
 
     async def test_cf_disappears_sensor_persists(
         self,
@@ -1945,7 +1956,7 @@ class TestDynamicCustomFieldDiscovery:
             check_in_time=None,
             check_out_time=None,
             tags=(),
-            custom_fields=MappingProxyType({"temp_field": "exists"}),
+            custom_fields=MappingProxyType({"cf_temp_field": "exists"}),
         )
         coordinator = AsyncMock(spec=DataUpdateCoordinator)
         coordinator.data = {"listing-cf3": listing}
@@ -2014,7 +2025,7 @@ class TestDynamicCustomFieldDiscovery:
             e
             for e in added_entities
             if isinstance(e, GuestyListingSensor)
-            and e.entity_description.key == "custom_temp_field"
+            and e.entity_description.key == "custom_cf_temp_field"
         )
         assert cf_sensor.native_value is None
 
@@ -2087,3 +2098,122 @@ class TestDynamicCustomFieldDiscovery:
         # No new entities created
         new_entities = added_entities[initial_count:]
         assert len(new_entities) == 0
+
+
+class TestCFSensorsWithDefinitions:
+    """Tests for listing CF sensors with CF definitions."""
+
+    async def test_cf_sensor_uses_display_name_from_defs(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """CF sensor uses definition display_name for key."""
+        cf_defs = [
+            GuestyCustomFieldDefinition(
+                field_id="cf_region",
+                name="Region",
+                field_type="text",
+                applicable_to=frozenset({"listing"}),
+                display_name="region",
+                is_public=False,
+                is_required=False,
+                options=(),
+            ),
+        ]
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=cf_defs,
+        ):
+            entry = _make_entry()
+            entry.add_to_hass(hass)
+
+            listing = GuestyListing(
+                id="lst-cf-def",
+                title="CF Def Test",
+                nickname=None,
+                status="active",
+                address=None,
+                property_type=None,
+                room_type=None,
+                listing_type=None,
+                bedrooms=None,
+                bathrooms=None,
+                accommodates=None,
+                timezone="UTC",
+                check_in_time=None,
+                check_out_time=None,
+                tags=(),
+                custom_fields=MappingProxyType(
+                    {"cf_region": "west"},
+                ),
+            )
+            coordinator = AsyncMock(
+                spec=DataUpdateCoordinator,
+            )
+            coordinator.data = {"lst-cf-def": listing}
+            coordinator.async_add_listener = MagicMock(
+                return_value=MagicMock(),
+            )
+
+            res_coordinator = AsyncMock(
+                spec=DataUpdateCoordinator,
+            )
+            res_coordinator.data = {}
+            res_coordinator.last_update_success = True
+            res_coordinator.async_add_listener = MagicMock(
+                return_value=MagicMock(),
+            )
+
+            cf_coordinator = AsyncMock()
+            cf_coordinator.data = cf_defs
+
+            def _get_field(
+                field_id: str,
+            ) -> GuestyCustomFieldDefinition | None:
+                """Look up field by ID."""
+                for f in cf_defs:
+                    if f.field_id == field_id:
+                        return f
+                return None
+
+            cf_coordinator.get_field = _get_field
+
+            hass.data.setdefault(DOMAIN, {})
+            hass.data[DOMAIN][entry.entry_id] = {
+                "coordinator": coordinator,
+                "reservations_coordinator": res_coordinator,
+                "cf_coordinator": cf_coordinator,
+            }
+
+            added_entities: list[Entity] = []
+
+            def mock_add_entities(
+                new_entities: Iterable[Entity],
+                update_before_add: bool = False,
+            ) -> None:
+                """Capture entities.
+
+                Args:
+                    new_entities: Entities to add.
+                    update_before_add: Whether to update.
+                """
+                added_entities.extend(list(new_entities))
+
+            await async_setup_entry(
+                hass,
+                entry,
+                mock_add_entities,
+            )
+
+            cf_sensors = [
+                e
+                for e in added_entities
+                if isinstance(e, GuestyListingSensor)
+                and e.entity_description.key.startswith(
+                    "custom_",
+                )
+            ]
+            assert len(cf_sensors) == 1
+            assert cf_sensors[0].entity_description.key == "custom_region"
+            assert cf_sensors[0].entity_description.name == "region"
