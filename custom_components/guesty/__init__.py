@@ -48,6 +48,7 @@ from custom_components.guesty.const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     PLATFORMS,
+    SERVICE_GET_CUSTOM_FIELD_VALUES,
     SERVICE_GET_CUSTOM_FIELDS,
     SERVICE_SET_CUSTOM_FIELD,
 )
@@ -72,6 +73,16 @@ SET_CUSTOM_FIELD_SCHEMA = vol.Schema(
 
 GET_CUSTOM_FIELDS_SCHEMA = vol.Schema(
     {
+        vol.Optional("config_entry_id"): str,
+    }
+)
+
+GET_CUSTOM_FIELD_VALUES_SCHEMA = vol.Schema(
+    {
+        vol.Required("target_type"): vol.In(
+            ["listing", "reservation"],
+        ),
+        vol.Required("target_id"): str,
         vol.Optional("config_entry_id"): str,
     }
 )
@@ -403,6 +414,41 @@ async def async_setup_entry(
             }
         return None
 
+    def _resolve_entry_data(
+        call_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Resolve domain entry data from a service call.
+
+        Args:
+            call_data: The service call data dict.
+
+        Returns:
+            The entry data dict for the resolved config entry.
+
+        Raises:
+            HomeAssistantError: When resolution fails.
+        """
+        domain_data = hass.data.get(DOMAIN, {})
+        if not domain_data:
+            raise HomeAssistantError(
+                "Guesty integration not loaded",
+            )
+
+        config_entry_id = call_data.get("config_entry_id")
+        if config_entry_id:
+            entry_data = domain_data.get(config_entry_id)
+            if entry_data is None:
+                raise HomeAssistantError(
+                    f"Config entry '{config_entry_id}' not found",
+                )
+            return entry_data  # type: ignore[no-any-return]
+
+        if len(domain_data) > 1:
+            raise HomeAssistantError(
+                "Multiple Guesty config entries loaded; specify config_entry_id",
+            )
+        return next(iter(domain_data.values()))  # type: ignore[no-any-return]
+
     async def _async_handle_get_custom_fields(
         call: ServiceCall,
     ) -> ServiceResponse:
@@ -420,25 +466,7 @@ async def async_setup_entry(
         Raises:
             HomeAssistantError: When entry resolution fails.
         """
-        domain_data = hass.data.get(DOMAIN, {})
-        if not domain_data:
-            raise HomeAssistantError(
-                "Guesty integration not loaded",
-            )
-
-        config_entry_id = call.data.get("config_entry_id")
-        if config_entry_id:
-            entry_data = domain_data.get(config_entry_id)
-            if entry_data is None:
-                raise HomeAssistantError(
-                    f"Config entry '{config_entry_id}' not found",
-                )
-        else:
-            if len(domain_data) > 1:
-                raise HomeAssistantError(
-                    "Multiple Guesty config entries loaded; specify config_entry_id",
-                )
-            entry_data = next(iter(domain_data.values()))
+        entry_data = _resolve_entry_data(call.data)
 
         local_cf_coordinator: CustomFieldsDefinitionCoordinator = entry_data[
             "cf_coordinator"
@@ -464,6 +492,85 @@ async def async_setup_entry(
 
         return {"fields": fields_list}  # type: ignore[dict-item]
 
+    async def _async_handle_get_custom_field_values(
+        call: ServiceCall,
+    ) -> ServiceResponse:
+        """Handle the guesty.get_custom_field_values service call.
+
+        Fetches actual custom field values for a listing or
+        reservation, resolving field IDs to human-readable names
+        when definitions are available.
+
+        Args:
+            call: The service call with target_type, target_id,
+                and optional config_entry_id.
+
+        Returns:
+            Dict with target info and a ``fields`` list of value
+            dicts.
+
+        Raises:
+            HomeAssistantError: When entry resolution or API
+                call fails.
+        """
+        entry_data = _resolve_entry_data(call.data)
+
+        target_type: str = call.data["target_type"]
+        target_id: str = call.data["target_id"]
+
+        local_cf_client: GuestyCustomFieldsClient = entry_data["cf_client"]
+        local_cf_coordinator: CustomFieldsDefinitionCoordinator = entry_data[
+            "cf_coordinator"
+        ]
+
+        try:
+            raw_fields = await local_cf_client.get_field_values(
+                target_type=target_type,
+                target_id=target_id,
+            )
+        except GuestyCustomFieldError as err:
+            _LOGGER.error(
+                "Custom field value fetch failed for %s/%s: %s",
+                target_type,
+                target_id,
+                err.message,
+                exc_info=err,
+            )
+            raise HomeAssistantError(
+                f"Failed to fetch custom field values for {target_type}/{target_id}",
+            ) from None
+        except GuestyApiError:
+            _LOGGER.error(
+                "API error fetching custom field values for %s",
+                target_type,
+            )
+            raise HomeAssistantError(
+                f"API error fetching custom field values for {target_type}",
+            ) from None
+
+        # Resolve field IDs to human-readable names
+        fields_list: list[dict[str, Any]] = []
+        for raw in raw_fields:
+            field_id = str(raw["fieldId"])
+            value = raw["value"]
+            name: str | None = None
+            defn = local_cf_coordinator.get_field(field_id)
+            if defn is not None:
+                name = defn.name
+            fields_list.append(
+                {
+                    "field_id": field_id,
+                    "name": name or field_id,
+                    "value": value,
+                }
+            )
+
+        return {
+            "target_type": target_type,
+            "target_id": target_id,
+            "fields": fields_list,  # type: ignore[dict-item]
+        }
+
     if not hass.services.has_service(DOMAIN, SERVICE_SET_CUSTOM_FIELD):
         hass.services.async_register(
             DOMAIN,
@@ -479,6 +586,15 @@ async def async_setup_entry(
             SERVICE_GET_CUSTOM_FIELDS,
             _async_handle_get_custom_fields,
             schema=GET_CUSTOM_FIELDS_SCHEMA,
+            supports_response=SupportsResponse.ONLY,
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_GET_CUSTOM_FIELD_VALUES):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_GET_CUSTOM_FIELD_VALUES,
+            _async_handle_get_custom_field_values,
+            schema=GET_CUSTOM_FIELD_VALUES_SCHEMA,
             supports_response=SupportsResponse.ONLY,
         )
 
@@ -633,6 +749,7 @@ async def async_unload_entry(
         if not hass.data.get(DOMAIN):
             hass.services.async_remove(DOMAIN, SERVICE_SET_CUSTOM_FIELD)
             hass.services.async_remove(DOMAIN, SERVICE_GET_CUSTOM_FIELDS)
+            hass.services.async_remove(DOMAIN, SERVICE_GET_CUSTOM_FIELD_VALUES)
 
         from custom_components.guesty.actions import (
             async_unload_actions,
