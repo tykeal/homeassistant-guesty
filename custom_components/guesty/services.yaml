@@ -104,6 +104,30 @@ get_custom_fields:
         config_entry:
           integration: guesty
 
+get_reservation_custom_fields:
+  name: Get reservation custom fields
+  description: >-
+    Return custom field values for a specific Guesty
+    reservation, with field names resolved from cached
+    definitions.
+  fields:
+    reservation_id:
+      name: Reservation ID
+      description: The Guesty reservation identifier.
+      required: true
+      example: "abc123def456"
+      selector:
+        text:
+    config_entry_id:
+      name: Config entry ID
+      description: >-
+        Target a specific Guesty config entry. Required only
+        when multiple Guesty accounts are configured.
+      required: false
+      selector:
+        config_entry:
+          integration: guesty
+
 add_reservation_note:
   name: Add reservation note
   description: >-

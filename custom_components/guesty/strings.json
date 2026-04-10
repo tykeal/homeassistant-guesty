@@ -219,6 +219,20 @@
                     "description": "Target a specific Guesty config entry."
                 }
             }
+        },
+        "get_reservation_custom_fields": {
+            "name": "Get reservation custom fields",
+            "description": "Return custom field values for a reservation.",
+            "fields": {
+                "reservation_id": {
+                    "name": "Reservation ID",
+                    "description": "The Guesty reservation identifier."
+                },
+                "config_entry_id": {
+                    "name": "Config entry ID",
+                    "description": "Target a specific Guesty config entry."
+                }
+            }
         }
     },
     "entity": {

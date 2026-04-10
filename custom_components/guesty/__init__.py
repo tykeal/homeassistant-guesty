@@ -49,6 +49,7 @@ from custom_components.guesty.const import (
     DOMAIN,
     PLATFORMS,
     SERVICE_GET_CUSTOM_FIELDS,
+    SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
     SERVICE_SET_CUSTOM_FIELD,
 )
 from custom_components.guesty.coordinator import (
@@ -72,6 +73,13 @@ SET_CUSTOM_FIELD_SCHEMA = vol.Schema(
 
 GET_CUSTOM_FIELDS_SCHEMA = vol.Schema(
     {
+        vol.Optional("config_entry_id"): str,
+    }
+)
+
+GET_RESERVATION_CUSTOM_FIELDS_SCHEMA = vol.Schema(
+    {
+        vol.Required("reservation_id"): str,
         vol.Optional("config_entry_id"): str,
     }
 )
@@ -464,6 +472,87 @@ async def async_setup_entry(
 
         return {"fields": fields_list}  # type: ignore[dict-item]
 
+    async def _async_handle_get_reservation_custom_fields(
+        call: ServiceCall,
+    ) -> ServiceResponse:
+        """Handle guesty.get_reservation_custom_fields call.
+
+        Fetches custom field values for a specific reservation
+        and resolves fieldIds to human-readable names when
+        definitions are available.
+
+        Args:
+            call: The service call with reservation_id and
+                optional config_entry_id.
+
+        Returns:
+            Dict with reservation_id and enriched fields list.
+
+        Raises:
+            HomeAssistantError: When entry resolution or API
+                call fails.
+        """
+        domain_data = hass.data.get(DOMAIN, {})
+        if not domain_data:
+            raise HomeAssistantError(
+                "Guesty integration not loaded",
+            )
+
+        config_entry_id = call.data.get("config_entry_id")
+        if config_entry_id:
+            entry_data = domain_data.get(config_entry_id)
+            if entry_data is None:
+                raise HomeAssistantError(
+                    f"Config entry '{config_entry_id}' not found",
+                )
+        else:
+            if len(domain_data) > 1:
+                raise HomeAssistantError(
+                    "Multiple Guesty config entries loaded; specify config_entry_id",
+                )
+            entry_data = next(iter(domain_data.values()))
+
+        local_cf_client: GuestyCustomFieldsClient = entry_data["cf_client"]
+        local_cf_coordinator: CustomFieldsDefinitionCoordinator = entry_data[
+            "cf_coordinator"
+        ]
+
+        reservation_id: str = call.data["reservation_id"]
+
+        try:
+            raw_fields = await local_cf_client.get_reservation_fields(
+                reservation_id,
+            )
+        except GuestyCustomFieldError as err:
+            raise HomeAssistantError(
+                f"Failed to fetch custom fields for "
+                f"reservation {reservation_id}: {err.message}",
+            ) from None
+        except GuestyApiError:
+            raise HomeAssistantError(
+                "API error fetching reservation custom fields",
+            ) from None
+
+        enriched: list[dict[str, Any]] = []
+        for field in raw_fields:
+            field_id: str = field["fieldId"]
+            name = field_id
+            definition = local_cf_coordinator.get_field(field_id)
+            if definition is not None:
+                name = definition.name
+            enriched.append(
+                {
+                    "field_id": field_id,
+                    "name": name,
+                    "value": field.get("value", ""),
+                },
+            )
+
+        return {
+            "reservation_id": reservation_id,
+            "fields": enriched,  # type: ignore[dict-item]
+        }
+
     if not hass.services.has_service(DOMAIN, SERVICE_SET_CUSTOM_FIELD):
         hass.services.async_register(
             DOMAIN,
@@ -479,6 +568,18 @@ async def async_setup_entry(
             SERVICE_GET_CUSTOM_FIELDS,
             _async_handle_get_custom_fields,
             schema=GET_CUSTOM_FIELDS_SCHEMA,
+            supports_response=SupportsResponse.ONLY,
+        )
+
+    if not hass.services.has_service(
+        DOMAIN,
+        SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+    ):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+            _async_handle_get_reservation_custom_fields,
+            schema=GET_RESERVATION_CUSTOM_FIELDS_SCHEMA,
             supports_response=SupportsResponse.ONLY,
         )
 
@@ -633,6 +734,10 @@ async def async_unload_entry(
         if not hass.data.get(DOMAIN):
             hass.services.async_remove(DOMAIN, SERVICE_SET_CUSTOM_FIELD)
             hass.services.async_remove(DOMAIN, SERVICE_GET_CUSTOM_FIELDS)
+            hass.services.async_remove(
+                DOMAIN,
+                SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+            )
 
         from custom_components.guesty.actions import (
             async_unload_actions,

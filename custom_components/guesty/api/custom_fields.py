@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from custom_components.guesty.api.client import GuestyApiClient
 from custom_components.guesty.api.const import (
@@ -116,6 +117,67 @@ class GuestyCustomFieldsClient:
                 )
             )
             is not None
+        ]
+
+    async def get_reservation_fields(
+        self,
+        reservation_id: str,
+    ) -> list[dict[str, Any]]:
+        """Fetch custom field values for a reservation.
+
+        Args:
+            reservation_id: The Guesty reservation identifier.
+
+        Returns:
+            List of custom field value dicts, each containing
+            ``fieldId`` and ``value`` keys.
+
+        Raises:
+            GuestyCustomFieldError: On non-2xx HTTP status or
+                unexpected response format.
+            GuestyAuthError: On authentication failure.
+            GuestyConnectionError: On network failure.
+            GuestyRateLimitError: On rate limit exhaustion.
+        """
+        if not reservation_id or not isinstance(reservation_id, str):
+            raise GuestyCustomFieldError(
+                "reservation_id must be a non-empty string",
+            )
+
+        path = RESERVATION_CUSTOM_FIELDS_PATH.format(
+            reservation_id=reservation_id.strip(),
+        )
+
+        response = await self._api_client._request("GET", path)
+
+        if not response.is_success:
+            raise GuestyCustomFieldError(
+                "Failed to fetch reservation custom fields: "
+                f"HTTP {response.status_code}",
+            )
+
+        try:
+            data: dict[str, Any] = response.json()
+        except Exception as exc:
+            raise GuestyCustomFieldError(
+                "Reservation custom fields response is not valid JSON",
+            ) from exc
+
+        if not isinstance(data, dict):
+            raise GuestyCustomFieldError(
+                "Reservation custom fields response must be a JSON object",
+            )
+
+        custom_fields = data.get("customFields", [])
+        if not isinstance(custom_fields, list):
+            raise GuestyCustomFieldError(
+                "customFields must be a JSON array",
+            )
+
+        return [
+            {"fieldId": item["fieldId"], "value": item.get("value", "")}
+            for item in custom_fields
+            if isinstance(item, dict) and "fieldId" in item
         ]
 
     async def set_field(

@@ -2982,3 +2982,661 @@ class TestGetCustomFieldsService:
             DOMAIN,
             SERVICE_GET_CUSTOM_FIELDS,
         )
+
+
+class TestGetReservationCustomFieldsService:
+    """Tests for guesty.get_reservation_custom_fields service."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_returns_enriched_fields(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Service returns fields with resolved names."""
+        from custom_components.guesty.api.models import (
+            GuestyCustomFieldDefinition,
+        )
+        from custom_components.guesty.const import (
+            SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        cf_coord = hass.data[DOMAIN][entry.entry_id]["cf_coordinator"]
+        cf_coord.data = [
+            GuestyCustomFieldDefinition(
+                field_id="cf-temp",
+                name="Room Temperature",
+                field_type="text",
+                applicable_to=frozenset({"reservation"}),
+            ),
+            GuestyCustomFieldDefinition(
+                field_id="cf-code",
+                name="Door Code",
+                field_type="text",
+                applicable_to=frozenset({"reservation"}),
+            ),
+        ]
+
+        with patch.object(
+            hass.data[DOMAIN][entry.entry_id]["cf_client"],
+            "get_reservation_fields",
+            new_callable=AsyncMock,
+            return_value=[
+                {"fieldId": "cf-temp", "value": "72"},
+                {"fieldId": "cf-code", "value": "0679"},
+            ],
+        ):
+            result = await hass.services.async_call(
+                DOMAIN,
+                SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+                {"reservation_id": "res-abc"},
+                blocking=True,
+                return_response=True,
+            )
+
+        assert result is not None
+        assert result["reservation_id"] == "res-abc"
+        fields: Any = result["fields"]
+        assert len(fields) == 2
+        assert fields[0]["field_id"] == "cf-temp"
+        assert fields[0]["name"] == "Room Temperature"
+        assert fields[0]["value"] == "72"
+        assert fields[1]["field_id"] == "cf-code"
+        assert fields[1]["name"] == "Door Code"
+        assert fields[1]["value"] == "0679"
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_field_name_fallback_to_id(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Unresolvable fieldId falls back to fieldId as name."""
+        from custom_components.guesty.const import (
+            SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        cf_coord = hass.data[DOMAIN][entry.entry_id]["cf_coordinator"]
+        cf_coord.data = []
+
+        with patch.object(
+            hass.data[DOMAIN][entry.entry_id]["cf_client"],
+            "get_reservation_fields",
+            new_callable=AsyncMock,
+            return_value=[
+                {"fieldId": "cf-unknown", "value": "val"},
+            ],
+        ):
+            result = await hass.services.async_call(
+                DOMAIN,
+                SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+                {"reservation_id": "res-abc"},
+                blocking=True,
+                return_response=True,
+            )
+
+        assert result is not None
+        fields: Any = result["fields"]
+        assert len(fields) == 1
+        assert fields[0]["name"] == "cf-unknown"
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_definitions_none_falls_back(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Coordinator with None data falls back to fieldId."""
+        from custom_components.guesty.const import (
+            SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        cf_coord = hass.data[DOMAIN][entry.entry_id]["cf_coordinator"]
+        cf_coord.data = None
+
+        with patch.object(
+            hass.data[DOMAIN][entry.entry_id]["cf_client"],
+            "get_reservation_fields",
+            new_callable=AsyncMock,
+            return_value=[
+                {"fieldId": "cf-x", "value": "hello"},
+            ],
+        ):
+            result = await hass.services.async_call(
+                DOMAIN,
+                SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+                {"reservation_id": "res-abc"},
+                blocking=True,
+                return_response=True,
+            )
+
+        assert result is not None
+        fields: Any = result["fields"]
+        assert fields[0]["name"] == "cf-x"
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_empty_fields_returns_empty(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Service returns empty fields list for no custom fields."""
+        from custom_components.guesty.const import (
+            SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        with patch.object(
+            hass.data[DOMAIN][entry.entry_id]["cf_client"],
+            "get_reservation_fields",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            result = await hass.services.async_call(
+                DOMAIN,
+                SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+                {"reservation_id": "res-abc"},
+                blocking=True,
+                return_response=True,
+            )
+
+        assert result is not None
+        assert result["reservation_id"] == "res-abc"
+        assert result["fields"] == []
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_api_error_raises_ha_error(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """GuestyCustomFieldError is wrapped in HomeAssistantError."""
+        from homeassistant.exceptions import HomeAssistantError
+
+        from custom_components.guesty.api.exceptions import (
+            GuestyCustomFieldError,
+        )
+        from custom_components.guesty.const import (
+            SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        with (
+            patch.object(
+                hass.data[DOMAIN][entry.entry_id]["cf_client"],
+                "get_reservation_fields",
+                new_callable=AsyncMock,
+                side_effect=GuestyCustomFieldError("HTTP 404"),
+            ),
+            pytest.raises(
+                HomeAssistantError,
+                match="Failed to fetch custom fields",
+            ),
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+                {"reservation_id": "res-bad"},
+                blocking=True,
+                return_response=True,
+            )
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_generic_api_error_raises_ha_error(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """GuestyApiError is wrapped in HomeAssistantError."""
+        from homeassistant.exceptions import HomeAssistantError
+
+        from custom_components.guesty.api.exceptions import (
+            GuestyApiError,
+        )
+        from custom_components.guesty.const import (
+            SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        with (
+            patch.object(
+                hass.data[DOMAIN][entry.entry_id]["cf_client"],
+                "get_reservation_fields",
+                new_callable=AsyncMock,
+                side_effect=GuestyApiError("network error"),
+            ),
+            pytest.raises(
+                HomeAssistantError,
+                match="API error",
+            ),
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+                {"reservation_id": "res-bad"},
+                blocking=True,
+                return_response=True,
+            )
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_no_entries_loaded_raises_error(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Service raises when no entries loaded."""
+        from homeassistant.exceptions import HomeAssistantError
+
+        from custom_components.guesty.const import (
+            SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        hass.data[DOMAIN].clear()
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="not loaded",
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+                {"reservation_id": "res-abc"},
+                blocking=True,
+                return_response=True,
+            )
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_multiple_entries_no_id_raises_error(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Service raises with multiple entries and no id."""
+        from homeassistant.exceptions import HomeAssistantError
+
+        from custom_components.guesty.const import (
+            SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        hass.data[DOMAIN]["fake-second"] = {"cf_client": None}
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="config_entry_id",
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+                {"reservation_id": "res-abc"},
+                blocking=True,
+                return_response=True,
+            )
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_invalid_config_entry_id_raises_error(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Service raises for unknown config_entry_id."""
+        from homeassistant.exceptions import HomeAssistantError
+
+        from custom_components.guesty.const import (
+            SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="not found",
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+                {
+                    "reservation_id": "res-abc",
+                    "config_entry_id": "nonexistent-id",
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_with_config_entry_id(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Service resolves correct entry via config_entry_id."""
+        from custom_components.guesty.const import (
+            SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        with patch.object(
+            hass.data[DOMAIN][entry.entry_id]["cf_client"],
+            "get_reservation_fields",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            result = await hass.services.async_call(
+                DOMAIN,
+                SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+                {
+                    "reservation_id": "res-abc",
+                    "config_entry_id": entry.entry_id,
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+        assert result is not None
+        assert result["reservation_id"] == "res-abc"
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_setup_registers_service(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Setup registers the service."""
+        from custom_components.guesty.const import (
+            SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        assert hass.services.has_service(
+            DOMAIN,
+            SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+        )
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_unload_removes_service(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Unload removes the service."""
+        from custom_components.guesty.const import (
+            SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        assert hass.services.has_service(
+            DOMAIN,
+            SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+        )
+
+        await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+
+        assert not hass.services.has_service(
+            DOMAIN,
+            SERVICE_GET_RESERVATION_CUSTOM_FIELDS,
+        )
