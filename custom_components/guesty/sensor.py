@@ -194,18 +194,22 @@ def create_custom_field_description(
 ) -> GuestyListingSensorEntityDescription:
     """Create a sensor description for a Guesty custom field.
 
+    Uses ``field_id`` for the stable entity key/unique_id and
+    ``display_name`` only for the human-facing sensor name.
+
     Args:
-        field_id: The custom field ID used for value lookup.
+        field_id: The custom field ID used for value lookup and
+            as stable entity key.
         display_name: Human-readable name for display. Falls back
-            to field_id when None.
+            to field_id when None or empty.
         seen_slugs: Tracks slug usage to disambiguate collisions.
 
     Returns:
-        A description whose key is ``custom_{slugified_name}``
+        A description whose key is ``custom_{slugified_field_id}``
         and whose ``value_fn`` extracts the specific field.
     """
     name = display_name or field_id
-    slug = slugify(name)
+    slug = slugify(field_id)
     if seen_slugs is not None:
         count = seen_slugs.get(slug, 0)
         seen_slugs[slug] = count + 1
@@ -429,6 +433,10 @@ def _resolve_custom_fields(
 ) -> dict[str, str]:
     """Resolve custom field IDs to human-readable names.
 
+    When multiple fieldIds resolve to the same display name,
+    subsequent duplicates fall back to fieldId. If that also
+    collides, a numeric suffix is appended.
+
     Args:
         raw_cf: Dict mapping fieldId to value.
         cf_field_lookup: Optional callable mapping fieldId to name.
@@ -439,8 +447,17 @@ def _resolve_custom_fields(
     if not cf_field_lookup or not raw_cf:
         return raw_cf
     resolved: dict[str, str] = {}
+    used_keys: set[str] = set()
     for field_id, value in raw_cf.items():
         key = cf_field_lookup(field_id)
+        if key in used_keys:
+            key = field_id
+        base_key = key
+        suffix = 1
+        while key in used_keys:
+            key = f"{base_key}_{suffix}"
+            suffix += 1
+        used_keys.add(key)
         resolved[key] = value
     return resolved
 
@@ -551,6 +568,7 @@ class GuestyReservationSensor(
         super().__init__(coordinator)
         self._listing_id = listing_id
         self._listings_coordinator = listings_coordinator
+        self._entry = entry
         self._attr_unique_id = f"{entry.unique_id}_{listing_id}_reservation_status"
         self._attr_translation_key = "reservation_status"
 
@@ -608,8 +626,8 @@ class GuestyReservationSensor(
     ) -> Callable[[str], str] | None:
         """Return a callable that resolves fieldId to display name.
 
-        Uses the CF definitions coordinator from hass.data to
-        resolve field IDs to human-readable names.
+        Uses the CF definitions coordinator from the sensor's own
+        config entry to resolve field IDs to human-readable names.
 
         Returns:
             A lookup callable, or None if unavailable.
@@ -617,25 +635,26 @@ class GuestyReservationSensor(
         if self.hass is None:
             return None
         domain_data = self.hass.data.get(DOMAIN, {})
-        for entry_data in domain_data.values():
-            if isinstance(entry_data, dict) and "cf_coordinator" in entry_data:
-                cf_coordinator = entry_data["cf_coordinator"]
-                if cf_coordinator and cf_coordinator.data:
+        entry_data = domain_data.get(self._entry.entry_id)
+        if not isinstance(entry_data, dict):
+            return None
+        cf_coordinator = entry_data.get("cf_coordinator")
+        if not cf_coordinator or not cf_coordinator.data:
+            return None
 
-                    def _lookup(
-                        field_id: str,
-                        _coord: Any = cf_coordinator,
-                    ) -> str:
-                        """Resolve fieldId to display name."""
-                        field_def = _coord.get_field(field_id)
-                        if field_def:
-                            return str(
-                                field_def.display_name or field_def.name,
-                            )
-                        return field_id
+        def _lookup(
+            field_id: str,
+            _coord: Any = cf_coordinator,
+        ) -> str:
+            """Resolve fieldId to display name."""
+            field_def = _coord.get_field(field_id)
+            if field_def:
+                return str(
+                    field_def.display_name or field_def.name,
+                )
+            return field_id
 
-                    return _lookup
-        return None
+        return _lookup
 
     @property
     def device_info(self) -> DeviceInfo | None:
@@ -888,7 +907,7 @@ async def async_setup_entry(
                 cf_keys = known_cf_keys.setdefault(listing_id, set())
                 for field_id in sorted(
                     listing.custom_fields,
-                    key=lambda n: (slugify(_resolve_cf_display_name(n)), n),
+                    key=lambda n: (slugify(n), n),
                 ):
                     cf_keys.add(field_id)
                     cf_desc = create_custom_field_description(
@@ -928,13 +947,13 @@ async def async_setup_entry(
 
     def _create_cf_sensors_for_listing(
         listing_id: str,
-        new_field_names: set[str],
+        new_field_ids: set[str],
     ) -> list[GuestyListingSensor]:
         """Create custom field sensors for newly discovered fields.
 
         Args:
             listing_id: The listing gaining new custom fields.
-            new_field_names: Field names not yet tracked.
+            new_field_ids: Field IDs not yet tracked.
 
         Returns:
             List of new custom field sensor entities.
@@ -946,8 +965,8 @@ async def async_setup_entry(
         )
         cf_keys = known_cf_keys.setdefault(listing_id, set())
         for field_id in sorted(
-            new_field_names,
-            key=lambda n: (slugify(_resolve_cf_display_name(n)), n),
+            new_field_ids,
+            key=lambda n: (slugify(n), n),
         ):
             cf_keys.add(field_id)
             cf_desc = create_custom_field_description(

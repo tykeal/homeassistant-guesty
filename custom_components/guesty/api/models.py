@@ -371,7 +371,7 @@ class GuestyListing:
         check_in_time: Default check-in time (HH:MM), or None.
         check_out_time: Default check-out time (HH:MM), or None.
         tags: Immutable tuple of listing tags.
-        custom_fields: Immutable mapping of custom name-value pairs.
+        custom_fields: Immutable mapping of field IDs to values.
     """
 
     id: str
@@ -631,7 +631,7 @@ class GuestyReservation:
         note: Reservation notes.
         guest: Guest contact information.
         money: Financial summary.
-        custom_fields: Immutable mapping of custom name-value pairs.
+        custom_fields: Immutable mapping of field IDs to values.
     """
 
     id: str

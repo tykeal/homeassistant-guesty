@@ -1074,7 +1074,7 @@ class TestCustomFieldSensors:
             description=desc,
         )
         assert sensor.unique_id is not None
-        assert "custom_region" in sensor.unique_id
+        assert "custom_cf_region" in sensor.unique_id
 
     def test_custom_field_description_entity_category(
         self,
@@ -1122,12 +1122,13 @@ class TestCustomFieldSensors:
         assert desc.translation_key == "listing_custom_field"
 
     def test_custom_field_name_with_spaces(self) -> None:
-        """Custom field with spaces gets slugified key."""
+        """Custom field key uses slugified field_id."""
         desc = create_custom_field_description(
             "cf_123",
             "My Field Name",
         )
-        assert desc.key == "custom_my_field_name"
+        assert desc.key == "custom_cf_123"
+        assert desc.name == "My Field Name"
 
     def test_custom_field_name_set_to_display_name(self) -> None:
         """Custom field description name matches display name."""
@@ -1140,10 +1141,18 @@ class TestCustomFieldSensors:
         assert desc.name == "cf_region"
 
     def test_custom_field_slug_collision_disambiguated(self) -> None:
-        """Colliding slugs get a numeric suffix."""
+        """Colliding field_id slugs get a numeric suffix."""
         seen: dict[str, int] = {}
-        d1 = create_custom_field_description("f1", "Pool Type", seen)
-        d2 = create_custom_field_description("f2", "pool_type", seen)
+        d1 = create_custom_field_description(
+            "pool_type",
+            "Pool Type",
+            seen,
+        )
+        d2 = create_custom_field_description(
+            "pool_type",
+            "Pool Type Alt",
+            seen,
+        )
         assert d1.key == "custom_pool_type"
         assert d2.key == "custom_pool_type_1"
         assert d1.key != d2.key
@@ -2107,7 +2116,7 @@ class TestCFSensorsWithDefinitions:
         self,
         hass: HomeAssistant,
     ) -> None:
-        """CF sensor uses definition display_name for key."""
+        """CF sensor uses display_name for entity name."""
         cf_defs = [
             GuestyCustomFieldDefinition(
                 field_id="cf_region",
@@ -2120,100 +2129,95 @@ class TestCFSensorsWithDefinitions:
                 options=(),
             ),
         ]
-        with patch(
-            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
-            new_callable=AsyncMock,
-            return_value=cf_defs,
-        ):
-            entry = _make_entry()
-            entry.add_to_hass(hass)
+        entry = _make_entry()
+        entry.add_to_hass(hass)
 
-            listing = GuestyListing(
-                id="lst-cf-def",
-                title="CF Def Test",
-                nickname=None,
-                status="active",
-                address=None,
-                property_type=None,
-                room_type=None,
-                listing_type=None,
-                bedrooms=None,
-                bathrooms=None,
-                accommodates=None,
-                timezone="UTC",
-                check_in_time=None,
-                check_out_time=None,
-                tags=(),
-                custom_fields=MappingProxyType(
-                    {"cf_region": "west"},
-                ),
+        listing = GuestyListing(
+            id="lst-cf-def",
+            title="CF Def Test",
+            nickname=None,
+            status="active",
+            address=None,
+            property_type=None,
+            room_type=None,
+            listing_type=None,
+            bedrooms=None,
+            bathrooms=None,
+            accommodates=None,
+            timezone="UTC",
+            check_in_time=None,
+            check_out_time=None,
+            tags=(),
+            custom_fields=MappingProxyType(
+                {"cf_region": "west"},
+            ),
+        )
+        coordinator = AsyncMock(
+            spec=DataUpdateCoordinator,
+        )
+        coordinator.data = {"lst-cf-def": listing}
+        coordinator.async_add_listener = MagicMock(
+            return_value=MagicMock(),
+        )
+
+        res_coordinator = AsyncMock(
+            spec=DataUpdateCoordinator,
+        )
+        res_coordinator.data = {}
+        res_coordinator.last_update_success = True
+        res_coordinator.async_add_listener = MagicMock(
+            return_value=MagicMock(),
+        )
+
+        cf_coordinator = AsyncMock()
+        cf_coordinator.data = cf_defs
+
+        def _get_field(
+            field_id: str,
+        ) -> GuestyCustomFieldDefinition | None:
+            """Look up field by ID."""
+            for f in cf_defs:
+                if f.field_id == field_id:
+                    return f
+            return None
+
+        cf_coordinator.get_field = _get_field
+
+        hass.data.setdefault(DOMAIN, {})
+        hass.data[DOMAIN][entry.entry_id] = {
+            "coordinator": coordinator,
+            "reservations_coordinator": res_coordinator,
+            "cf_coordinator": cf_coordinator,
+        }
+
+        added_entities: list[Entity] = []
+
+        def mock_add_entities(
+            new_entities: Iterable[Entity],
+            update_before_add: bool = False,
+        ) -> None:
+            """Capture entities.
+
+            Args:
+                new_entities: Entities to add.
+                update_before_add: Whether to update.
+            """
+            added_entities.extend(list(new_entities))
+
+        await async_setup_entry(
+            hass,
+            entry,
+            mock_add_entities,
+        )
+
+        cf_sensors = [
+            e
+            for e in added_entities
+            if isinstance(e, GuestyListingSensor)
+            and e.entity_description.key.startswith(
+                "custom_",
             )
-            coordinator = AsyncMock(
-                spec=DataUpdateCoordinator,
-            )
-            coordinator.data = {"lst-cf-def": listing}
-            coordinator.async_add_listener = MagicMock(
-                return_value=MagicMock(),
-            )
-
-            res_coordinator = AsyncMock(
-                spec=DataUpdateCoordinator,
-            )
-            res_coordinator.data = {}
-            res_coordinator.last_update_success = True
-            res_coordinator.async_add_listener = MagicMock(
-                return_value=MagicMock(),
-            )
-
-            cf_coordinator = AsyncMock()
-            cf_coordinator.data = cf_defs
-
-            def _get_field(
-                field_id: str,
-            ) -> GuestyCustomFieldDefinition | None:
-                """Look up field by ID."""
-                for f in cf_defs:
-                    if f.field_id == field_id:
-                        return f
-                return None
-
-            cf_coordinator.get_field = _get_field
-
-            hass.data.setdefault(DOMAIN, {})
-            hass.data[DOMAIN][entry.entry_id] = {
-                "coordinator": coordinator,
-                "reservations_coordinator": res_coordinator,
-                "cf_coordinator": cf_coordinator,
-            }
-
-            added_entities: list[Entity] = []
-
-            def mock_add_entities(
-                new_entities: Iterable[Entity],
-                update_before_add: bool = False,
-            ) -> None:
-                """Capture entities.
-
-                Args:
-                    new_entities: Entities to add.
-                    update_before_add: Whether to update.
-                """
-                added_entities.extend(list(new_entities))
-
-            await async_setup_entry(
-                hass,
-                entry,
-                mock_add_entities,
-            )
-
-            cf_sensors = [
-                e
-                for e in added_entities
-                if isinstance(e, GuestyListingSensor)
-                and e.entity_description.key.startswith(
-                    "custom_",
-                )
-            ]
-            assert len(cf_sensors) == 1
-            assert cf_sensors[0].entity_description.key == "custom_region"
-            assert cf_sensors[0].entity_description.name == "region"
+        ]
+        assert len(cf_sensors) == 1
+        assert cf_sensors[0].entity_description.key == "custom_cf_region"
+        assert cf_sensors[0].entity_description.name == "region"
