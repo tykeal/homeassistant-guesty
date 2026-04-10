@@ -13,7 +13,6 @@ from custom_components.guesty.api.client import GuestyApiClient
 from custom_components.guesty.api.const import (
     CALENDAR_ENDPOINT,
     LISTINGS_ENDPOINT,
-    MAX_CUSTOM_FIELD_LENGTH,
     MAX_DESCRIPTION_LENGTH,
     MAX_NOTE_LENGTH,
     MAX_TASK_TITLE_LENGTH,
@@ -337,63 +336,6 @@ class GuestyActionsClient:
             target_id=listing_id,
         )
 
-    async def update_reservation_custom_field(
-        self,
-        reservation_id: str,
-        custom_field_id: str,
-        value: str,
-    ) -> ActionResult:
-        """Update a custom field on a reservation.
-
-        Args:
-            reservation_id: Target reservation identifier.
-            custom_field_id: Custom field identifier.
-            value: New value for the custom field.
-
-        Returns:
-            ActionResult with the reservation identifier.
-
-        Raises:
-            ValueError: If inputs fail validation.
-            GuestyActionError: If the API returns a non-success
-                HTTP response.
-            GuestyAuthError: On authentication failure.
-            GuestyConnectionError: On network failure.
-            GuestyRateLimitError: On rate limit exhaustion.
-        """
-        self._validate_custom_field(
-            reservation_id,
-            custom_field_id,
-            value,
-        )
-
-        path = f"{RESERVATIONS_ENDPOINT}/{reservation_id}"
-        body: dict[str, object] = {
-            "customFields": {custom_field_id: value},
-        }
-
-        response = await self._api_client._request(
-            "PUT",
-            path,
-            json_data=body,
-        )
-
-        if not response.is_success:
-            raise GuestyActionError(
-                self._error_detail(
-                    "Failed to update custom field",
-                    reservation_id,
-                    response,
-                ),
-                target_id=reservation_id,
-                action_type="update_reservation_custom_field",
-            )
-
-        return ActionResult(
-            success=True,
-            target_id=reservation_id,
-        )
-
     # ── Error detail helper ────────────────────────────────────
 
     @staticmethod
@@ -554,36 +496,5 @@ class GuestyActionsClient:
                 f"invalid operation '{operation}'; "
                 f"expected one of "
                 f"{sorted(VALID_CALENDAR_OPS)}"
-            )
-            raise ValueError(msg)
-
-    @staticmethod
-    def _validate_custom_field(
-        reservation_id: str,
-        custom_field_id: str,
-        value: str,
-    ) -> None:
-        """Validate update_reservation_custom_field inputs.
-
-        Args:
-            reservation_id: Reservation identifier to validate.
-            custom_field_id: Custom field identifier to validate.
-            value: Value to validate.
-
-        Raises:
-            ValueError: If any input is invalid.
-        """
-        if not reservation_id:
-            msg = "reservation_id must be non-empty"
-            raise ValueError(msg)
-        if not custom_field_id:
-            msg = "custom_field_id must be non-empty"
-            raise ValueError(msg)
-        if not value:
-            msg = "value must be non-empty"
-            raise ValueError(msg)
-        if len(value) > MAX_CUSTOM_FIELD_LENGTH:
-            msg = (
-                f"value exceeds maximum length of {MAX_CUSTOM_FIELD_LENGTH} characters"
             )
             raise ValueError(msg)

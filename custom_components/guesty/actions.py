@@ -3,7 +3,7 @@
 """Service handlers for Guesty automation actions.
 
 Bridges the HA-independent GuestyActionsClient to Home Assistant's
-service infrastructure. Registers five domain-level services via
+service infrastructure. Registers four domain-level services via
 hass.services.async_register() and translates API exceptions into
 HomeAssistantError for clear automation feedback.
 """
@@ -48,14 +48,11 @@ SERVICE_ADD_NOTE = "add_reservation_note"
 SERVICE_SET_STATUS = "set_listing_status"
 SERVICE_CREATE_TASK = "create_task"
 SERVICE_SET_CALENDAR = "set_calendar_availability"
-SERVICE_UPDATE_FIELD = "update_reservation_custom_field"
-
 _ALL_SERVICES = (
     SERVICE_ADD_NOTE,
     SERVICE_SET_STATUS,
     SERVICE_CREATE_TASK,
     SERVICE_SET_CALENDAR,
-    SERVICE_UPDATE_FIELD,
 )
 
 # ── Voluptuous schemas ──────────────────────────────────────────────
@@ -99,16 +96,6 @@ _SCHEMA_SET_CALENDAR = vol.Schema(
         vol.Optional("config_entry_id"): str,
     },
 )
-
-_SCHEMA_UPDATE_FIELD = vol.Schema(
-    {
-        vol.Required("reservation_id"): str,
-        vol.Required("field_id"): str,
-        vol.Required("value"): str,
-        vol.Optional("config_entry_id"): str,
-    },
-)
-
 
 # ── Helpers ─────────────────────────────────────────────────────────
 
@@ -288,34 +275,6 @@ async def _handle_set_calendar(
     return _result_to_dict(result)
 
 
-async def _handle_update_field(
-    hass: HomeAssistant,
-    call: ServiceCall,
-) -> dict[str, Any]:
-    """Handle guesty.update_reservation_custom_field call.
-
-    Args:
-        hass: Home Assistant instance.
-        call: The incoming service call.
-
-    Returns:
-        ActionResult as a dictionary.
-
-    Raises:
-        HomeAssistantError: On API or validation failure.
-    """
-    client = _get_actions_client(hass, call)
-    try:
-        result = await client.update_reservation_custom_field(
-            reservation_id=call.data["reservation_id"],
-            custom_field_id=call.data["field_id"],
-            value=call.data["value"],
-        )
-    except (GuestyActionError, GuestyApiError, ValueError) as exc:
-        raise HomeAssistantError(str(exc)) from exc
-    return _result_to_dict(result)
-
-
 # ── Lifecycle ───────────────────────────────────────────────────────
 
 _HandlerFn = Callable[
@@ -338,11 +297,6 @@ _SERVICE_DEFS: tuple[
         SERVICE_SET_CALENDAR,
         _SCHEMA_SET_CALENDAR,
         _handle_set_calendar,
-    ),
-    (
-        SERVICE_UPDATE_FIELD,
-        _SCHEMA_UPDATE_FIELD,
-        _handle_update_field,
     ),
 )
 
