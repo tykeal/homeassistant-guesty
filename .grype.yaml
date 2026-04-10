@@ -85,6 +85,21 @@ ignore:
       name: aiohttp
       type: python
 
+  # cryptography transitive dependency via homeassistant —
+  # buffer overflow with non-contiguous Python buffers.
+  - vulnerability: GHSA-p423-j2cm-9vmq
+    package:
+      name: cryptography
+      type: python
+
+  # cryptography transitive dependency via homeassistant —
+  # DNS name constraints not validated against peer
+  # names.
+  - vulnerability: GHSA-m959-cc7f-wv43
+    package:
+      name: cryptography
+      type: python
+
   # requests transitive dependency via homeassistant —
   # CVE in 2.32.5 (fixed in 2.33.0).
   - vulnerability: GHSA-gc5v-m9x4-r6x2
