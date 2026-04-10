@@ -12,6 +12,7 @@ from custom_components.guesty.api.const import (
     CONVERSATIONS_PATH,
     KNOWN_CHANNEL_TYPES,
     MAX_MESSAGE_LENGTH,
+    RESERVATIONS_ENDPOINT,
     SEND_MESSAGE_PATH,
 )
 from custom_components.guesty.api.exceptions import (
@@ -100,6 +101,20 @@ class GuestyMessagingClient:
         results = data.get("results", [])
 
         if not results:
+            source = await self._get_reservation_source(
+                reservation_id,
+            )
+            if source and source.lower() == "manual":
+                raise GuestyMessageError(
+                    f"Messaging is unavailable for reservation "
+                    f"'{reservation_id}': manual reservations "
+                    f"do not have a conversation thread in "
+                    f"Guesty. Messages can only be sent for "
+                    f"reservations created through a booking "
+                    f"platform (Airbnb, VRBO, etc.) or via "
+                    f"Guesty Communication Workflows.",
+                    reservation_id=reservation_id,
+                )
             raise GuestyMessageError(
                 f"No conversation found for reservation '{reservation_id}'",
                 reservation_id=reservation_id,
@@ -122,6 +137,44 @@ class GuestyMessagingClient:
             raise GuestyResponseError(
                 f"Malformed conversation response: {exc}",
             ) from exc
+
+    async def _get_reservation_source(
+        self,
+        reservation_id: str,
+    ) -> str | None:
+        """Fetch the source/platform of a reservation.
+
+        Args:
+            reservation_id: The reservation identifier.
+
+        Returns:
+            The reservation source string, or None if
+            unavailable.
+        """
+        try:
+            path = f"{RESERVATIONS_ENDPOINT}/{reservation_id}"
+            response = await self._api_client._request(
+                "GET",
+                path,
+                params={
+                    "fields": "source integration.platform",
+                },
+            )
+            if response.is_success:
+                data = response.json()
+                integration = data.get("integration", {})
+                if isinstance(integration, dict):
+                    platform = integration.get("platform")
+                    if isinstance(platform, str):
+                        return platform
+                source = data.get("source")
+                if isinstance(source, str):
+                    return source
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return None
+        return None
 
     async def send_message(
         self,
