@@ -667,3 +667,304 @@ class TestValidateValue:
             match="text",
         ):
             client.validate_value(42, "text")
+
+
+class TestGetFieldValues:
+    """Tests for GuestyCustomFieldsClient.get_field_values."""
+
+    @respx.mock
+    async def test_listing_returns_bare_array(self) -> None:
+        """Listing target returns normalised list from bare array."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        respx.get(
+            f"{BASE_URL}/listings/lst-001/custom-fields",
+        ).mock(
+            return_value=Response(
+                200,
+                json=[
+                    {"fieldId": "cf-a", "value": "72"},
+                    {"fieldId": "cf-b", "value": "1234"},
+                ],
+            ),
+        )
+        client = _make_custom_fields_client()
+        result = await client.get_field_values("listing", "lst-001")
+        assert len(result) == 2
+        assert result[0] == {"fieldId": "cf-a", "value": "72"}
+        assert result[1] == {"fieldId": "cf-b", "value": "1234"}
+
+    @respx.mock
+    async def test_reservation_extracts_custom_fields(
+        self,
+    ) -> None:
+        """Reservation target extracts customFields from wrapper."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        respx.get(
+            f"{BASE_URL}/reservations-v3/res-001/custom-fields",
+        ).mock(
+            return_value=Response(
+                200,
+                json={
+                    "reservationId": "res-001",
+                    "customFields": [
+                        {
+                            "_id": "abc",
+                            "fieldId": "cf-x",
+                            "value": "72",
+                        },
+                        {
+                            "_id": "def",
+                            "fieldId": "cf-y",
+                            "value": "0679",
+                        },
+                    ],
+                },
+            ),
+        )
+        client = _make_custom_fields_client()
+        result = await client.get_field_values("reservation", "res-001")
+        assert len(result) == 2
+        assert result[0] == {"fieldId": "cf-x", "value": "72"}
+        assert result[1] == {"fieldId": "cf-y", "value": "0679"}
+
+    @respx.mock
+    async def test_listing_empty_array(self) -> None:
+        """Listing with no custom fields returns empty list."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        respx.get(
+            f"{BASE_URL}/listings/lst-empty/custom-fields",
+        ).mock(
+            return_value=Response(200, json=[]),
+        )
+        client = _make_custom_fields_client()
+        result = await client.get_field_values("listing", "lst-empty")
+        assert result == []
+
+    @respx.mock
+    async def test_reservation_empty_custom_fields(self) -> None:
+        """Reservation with no custom fields returns empty list."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        respx.get(
+            f"{BASE_URL}/reservations-v3/res-empty/custom-fields",
+        ).mock(
+            return_value=Response(
+                200,
+                json={
+                    "reservationId": "res-empty",
+                    "customFields": [],
+                },
+            ),
+        )
+        client = _make_custom_fields_client()
+        result = await client.get_field_values("reservation", "res-empty")
+        assert result == []
+
+    async def test_invalid_target_type_raises_error(
+        self,
+    ) -> None:
+        """Invalid target_type raises GuestyCustomFieldError."""
+        client = _make_custom_fields_client()
+        with pytest.raises(GuestyCustomFieldError, match="target"):
+            await client.get_field_values("unknown", "x")
+
+    async def test_empty_target_id_raises_error(self) -> None:
+        """Empty target_id raises GuestyCustomFieldError."""
+        client = _make_custom_fields_client()
+        with pytest.raises(GuestyCustomFieldError, match="target_id"):
+            await client.get_field_values("listing", "")
+
+    @respx.mock
+    async def test_api_error_raises_custom_field_error(
+        self,
+    ) -> None:
+        """Non-2xx status raises GuestyCustomFieldError."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        respx.get(
+            f"{BASE_URL}/listings/lst-err/custom-fields",
+        ).mock(
+            return_value=Response(422, json={"error": "Unprocessable"}),
+        )
+        client = _make_custom_fields_client()
+        with pytest.raises(GuestyCustomFieldError, match="422"):
+            await client.get_field_values("listing", "lst-err")
+
+    @respx.mock
+    async def test_auth_error_propagation(self) -> None:
+        """403 response propagates as GuestyAuthError."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        respx.get(
+            f"{BASE_URL}/listings/lst-auth/custom-fields",
+        ).mock(
+            return_value=Response(403, json={"error": "Forbidden"}),
+        )
+        client = _make_custom_fields_client()
+        with pytest.raises(GuestyAuthError):
+            await client.get_field_values("listing", "lst-auth")
+
+    @respx.mock
+    async def test_listing_non_list_response_raises_error(
+        self,
+    ) -> None:
+        """Non-list listing response raises GuestyCustomFieldError."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        respx.get(
+            f"{BASE_URL}/listings/lst-bad/custom-fields",
+        ).mock(
+            return_value=Response(200, json={"results": []}),
+        )
+        client = _make_custom_fields_client()
+        with pytest.raises(GuestyCustomFieldError, match="JSON array"):
+            await client.get_field_values("listing", "lst-bad")
+
+    @respx.mock
+    async def test_reservation_non_dict_response_raises_error(
+        self,
+    ) -> None:
+        """Non-dict reservation response raises error."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        respx.get(
+            f"{BASE_URL}/reservations-v3/res-bad/custom-fields",
+        ).mock(
+            return_value=Response(200, json=[]),
+        )
+        client = _make_custom_fields_client()
+        with pytest.raises(GuestyCustomFieldError, match="JSON object"):
+            await client.get_field_values("reservation", "res-bad")
+
+    @respx.mock
+    async def test_reservation_non_list_custom_fields(
+        self,
+    ) -> None:
+        """Non-list customFields in reservation raises error."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        respx.get(
+            f"{BASE_URL}/reservations-v3/res-nl/custom-fields",
+        ).mock(
+            return_value=Response(
+                200,
+                json={
+                    "reservationId": "res-nl",
+                    "customFields": "bad",
+                },
+            ),
+        )
+        client = _make_custom_fields_client()
+        with pytest.raises(GuestyCustomFieldError, match="JSON array"):
+            await client.get_field_values("reservation", "res-nl")
+
+    @respx.mock
+    async def test_invalid_json_response_raises_error(
+        self,
+    ) -> None:
+        """Non-JSON response raises GuestyCustomFieldError."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        respx.get(
+            f"{BASE_URL}/listings/lst-nj/custom-fields",
+        ).mock(
+            return_value=Response(
+                200,
+                content=b"not json",
+                headers={"content-type": "text/plain"},
+            ),
+        )
+        client = _make_custom_fields_client()
+        with pytest.raises(GuestyCustomFieldError, match="JSON"):
+            await client.get_field_values("listing", "lst-nj")
+
+    @respx.mock
+    async def test_listing_skips_malformed_entries(self) -> None:
+        """Listing response skips entries without fieldId/value."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        respx.get(
+            f"{BASE_URL}/listings/lst-skip/custom-fields",
+        ).mock(
+            return_value=Response(
+                200,
+                json=[
+                    {"fieldId": "cf-a", "value": "v1"},
+                    {"fieldId": "cf-b"},
+                    {"value": "orphan"},
+                    "not-a-dict",
+                    {"fieldId": "cf-c", "value": "v2"},
+                ],
+            ),
+        )
+        client = _make_custom_fields_client()
+        result = await client.get_field_values("listing", "lst-skip")
+        assert len(result) == 2
+        assert result[0]["fieldId"] == "cf-a"
+        assert result[1]["fieldId"] == "cf-c"
+
+    @respx.mock
+    async def test_reservation_skips_malformed_entries(
+        self,
+    ) -> None:
+        """Reservation response skips entries without fieldId/value."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        respx.get(
+            f"{BASE_URL}/reservations-v3/res-skip/custom-fields",
+        ).mock(
+            return_value=Response(
+                200,
+                json={
+                    "reservationId": "res-skip",
+                    "customFields": [
+                        {
+                            "_id": "a",
+                            "fieldId": "cf-x",
+                            "value": "v1",
+                        },
+                        {"_id": "b", "fieldId": "cf-y"},
+                        42,
+                    ],
+                },
+            ),
+        )
+        client = _make_custom_fields_client()
+        result = await client.get_field_values("reservation", "res-skip")
+        assert len(result) == 1
+        assert result[0]["fieldId"] == "cf-x"
+
+    @respx.mock
+    async def test_reservation_missing_custom_fields_key(
+        self,
+    ) -> None:
+        """Reservation response without customFields returns empty."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        respx.get(
+            f"{BASE_URL}/reservations-v3/res-no-cf/custom-fields",
+        ).mock(
+            return_value=Response(
+                200,
+                json={"reservationId": "res-no-cf"},
+            ),
+        )
+        client = _make_custom_fields_client()
+        result = await client.get_field_values("reservation", "res-no-cf")
+        assert result == []

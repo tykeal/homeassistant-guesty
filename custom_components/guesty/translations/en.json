@@ -209,6 +209,34 @@
                     "description": "The value to set. Type must match the field definition."
                 }
             }
+        },
+        "get_custom_fields": {
+            "name": "Get custom fields",
+            "description": "Return all cached custom field definitions.",
+            "fields": {
+                "config_entry_id": {
+                    "name": "Config entry ID",
+                    "description": "Target a specific Guesty config entry."
+                }
+            }
+        },
+        "get_custom_field_values": {
+            "name": "Get custom field values",
+            "description": "Return current custom field values for a listing or reservation.",
+            "fields": {
+                "target_type": {
+                    "name": "Target type",
+                    "description": "Entity type to read (listing or reservation)."
+                },
+                "target_id": {
+                    "name": "Target ID",
+                    "description": "The Guesty listing or reservation ID to read."
+                },
+                "config_entry_id": {
+                    "name": "Config entry ID",
+                    "description": "Target a specific Guesty config entry."
+                }
+            }
         }
     },
     "entity": {

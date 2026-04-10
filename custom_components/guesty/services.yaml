@@ -104,6 +104,41 @@ get_custom_fields:
         config_entry:
           integration: guesty
 
+get_custom_field_values:
+  name: Get custom field values
+  description: >-
+    Return the current custom field values for a Guesty
+    listing or reservation.
+  fields:
+    target_type:
+      name: Target type
+      description: >-
+        Entity type to read (listing or reservation).
+      required: true
+      example: "listing"
+      selector:
+        select:
+          options:
+            - listing
+            - reservation
+    target_id:
+      name: Target ID
+      description: >-
+        The Guesty listing or reservation ID to read.
+      required: true
+      example: "637bad36abcdef123456"
+      selector:
+        text:
+    config_entry_id:
+      name: Config entry ID
+      description: >-
+        Target a specific Guesty config entry. Required only
+        when multiple Guesty accounts are configured.
+      required: false
+      selector:
+        config_entry:
+          integration: guesty
+
 add_reservation_note:
   name: Add reservation note
   description: >-

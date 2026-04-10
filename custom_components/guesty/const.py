@@ -46,6 +46,9 @@ SERVICE_SET_CUSTOM_FIELD: str = "set_custom_field"
 # Service name for retrieving custom field definitions.
 SERVICE_GET_CUSTOM_FIELDS: str = "get_custom_fields"
 
+# Service name for retrieving custom field values.
+SERVICE_GET_CUSTOM_FIELD_VALUES: str = "get_custom_field_values"
+
 # Configuration key for the custom fields definition scan interval.
 CONF_CF_SCAN_INTERVAL: str = "cf_scan_interval"
 
