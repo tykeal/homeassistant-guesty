@@ -309,9 +309,9 @@ class TestSetField:
         request = listing_route.calls.last.request
         import json as _json
 
-        assert _json.loads(request.content) == [
-            {"fieldId": "cf-abc", "value": "new-code"},
-        ]
+        assert _json.loads(request.content) == {
+            "customFields": [{"fieldId": "cf-abc", "value": "new-code"}],
+        }
 
     @respx.mock
     async def test_reservation_target_builds_v3_put(
