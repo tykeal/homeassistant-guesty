@@ -139,13 +139,19 @@ class GuestyCustomFieldsClient:
             GuestyConnectionError: On network failure.
             GuestyRateLimitError: On rate limit exhaustion.
         """
-        if not reservation_id or not isinstance(reservation_id, str):
+        if not isinstance(reservation_id, str):
+            raise GuestyCustomFieldError(
+                "reservation_id must be a non-empty string",
+            )
+
+        normalized_id = reservation_id.strip()
+        if not normalized_id:
             raise GuestyCustomFieldError(
                 "reservation_id must be a non-empty string",
             )
 
         path = RESERVATION_CUSTOM_FIELDS_PATH.format(
-            reservation_id=reservation_id.strip(),
+            reservation_id=normalized_id,
         )
 
         response = await self._api_client._request("GET", path)
@@ -175,9 +181,11 @@ class GuestyCustomFieldsClient:
             )
 
         return [
-            {"fieldId": item["fieldId"], "value": item.get("value", "")}
+            {"fieldId": fid, "value": item.get("value", "")}
             for item in custom_fields
-            if isinstance(item, dict) and "fieldId" in item
+            if isinstance(item, dict)
+            and isinstance(item.get("fieldId"), str)
+            and (fid := item["fieldId"].strip())
         ]
 
     async def set_field(

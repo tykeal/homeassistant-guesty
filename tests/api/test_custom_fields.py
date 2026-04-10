@@ -466,6 +466,28 @@ class TestGetReservationFields:
         ):
             await client.get_reservation_fields("")
 
+    async def test_whitespace_only_reservation_id_raises_error(
+        self,
+    ) -> None:
+        """Whitespace-only reservation_id raises error."""
+        client = _make_custom_fields_client()
+        with pytest.raises(
+            GuestyCustomFieldError,
+            match="non-empty string",
+        ):
+            await client.get_reservation_fields("   ")
+
+    async def test_non_string_reservation_id_raises_error(
+        self,
+    ) -> None:
+        """Non-string reservation_id raises error."""
+        client = _make_custom_fields_client()
+        with pytest.raises(
+            GuestyCustomFieldError,
+            match="non-empty string",
+        ):
+            await client.get_reservation_fields(123)  # type: ignore[arg-type]
+
     @respx.mock
     async def test_malformed_items_filtered(self) -> None:
         """Items without fieldId are silently filtered."""
@@ -486,6 +508,9 @@ class TestGetReservationFields:
                         {"value": "no-field-id"},
                         "not-a-dict",
                         {"fieldId": "cf-2"},
+                        {"fieldId": None, "value": "null-id"},
+                        {"fieldId": 123, "value": "int-id"},
+                        {"fieldId": "  ", "value": "blank-id"},
                     ],
                 },
             ),

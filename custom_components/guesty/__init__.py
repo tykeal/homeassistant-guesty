@@ -528,18 +528,24 @@ async def async_setup_entry(
                 f"Failed to fetch custom fields for "
                 f"reservation {reservation_id}: {err.message}",
             ) from None
-        except GuestyApiError:
+        except GuestyApiError as err:
+            _LOGGER.error(
+                "API error fetching reservation custom fields for %s: %s",
+                reservation_id,
+                err.message,
+            )
             raise HomeAssistantError(
-                "API error fetching reservation custom fields",
+                f"API error fetching reservation custom fields "
+                f"for reservation {reservation_id}: {err.message}",
             ) from None
+
+        definitions = local_cf_coordinator.data or []
+        field_names: dict[str, str] = {d.field_id: d.name for d in definitions}
 
         enriched: list[dict[str, Any]] = []
         for field in raw_fields:
             field_id: str = field["fieldId"]
-            name = field_id
-            definition = local_cf_coordinator.get_field(field_id)
-            if definition is not None:
-                name = definition.name
+            name = field_names.get(field_id, field_id)
             enriched.append(
                 {
                     "field_id": field_id,
