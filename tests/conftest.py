@@ -474,20 +474,6 @@ def mock_coordinator(
     return coordinator
 
 
-@pytest.fixture
-def mock_messaging_client() -> AsyncMock:
-    """Provide a mock GuestyMessagingClient for notify tests.
-
-    Returns:
-        An AsyncMock configured as a GuestyMessagingClient stand-in.
-    """
-    client = AsyncMock()
-    client.send_message = AsyncMock()
-    client.resolve_conversation = AsyncMock()
-    client.render_template = AsyncMock()
-    return client
-
-
 # ── Reservation test helpers ────────────────────────────────────────
 
 
