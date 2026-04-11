@@ -78,6 +78,32 @@
         }
     },
     "services": {
+        "send_guest_message": {
+            "name": "Send guest message",
+            "description": "Send a message to a guest via their Guesty reservation conversation.",
+            "fields": {
+                "message": {
+                    "name": "Message",
+                    "description": "The message body to send."
+                },
+                "reservation_id": {
+                    "name": "Reservation ID",
+                    "description": "The Guesty reservation ID for the guest."
+                },
+                "channel": {
+                    "name": "Channel",
+                    "description": "Messaging channel to use (e.g., email, sms, airbnb2)."
+                },
+                "template_variables": {
+                    "name": "Template variables",
+                    "description": "Key-value pairs for template variable substitution."
+                },
+                "config_entry_id": {
+                    "name": "Config entry ID",
+                    "description": "Target a specific Guesty config entry."
+                }
+            }
+        },
         "add_reservation_note": {
             "name": "Add reservation note",
             "description": "Append a note to a Guesty reservation.",

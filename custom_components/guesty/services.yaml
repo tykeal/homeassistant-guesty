@@ -5,10 +5,6 @@ send_guest_message:
   description: >-
     Send a message to a guest via their Guesty reservation
     conversation.
-  target:
-    entity:
-      integration: guesty
-      domain: notify
   fields:
     message:
       name: Message
@@ -44,6 +40,15 @@ send_guest_message:
         check_in: "2025-01-15"
       selector:
         object:
+    config_entry_id:
+      name: Config entry ID
+      description: >-
+        Target a specific Guesty config entry. Required only
+        when multiple Guesty accounts are configured.
+      required: false
+      selector:
+        config_entry:
+          integration: guesty
 
 set_custom_field:
   name: Set custom field

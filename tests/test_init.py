@@ -1951,104 +1951,6 @@ class TestDeselectedDeviceRemoval:
         new_callable=AsyncMock,
         return_value=True,
     )
-    async def test_notify_device_not_removed_on_filter(
-        self,
-        mock_test: AsyncMock,
-        mock_listings: AsyncMock,
-        mock_reservations: AsyncMock,
-        hass: HomeAssistant,
-        sample_listing: object,
-    ) -> None:
-        """Notify device (entry_id identifier) not removed."""
-        from homeassistant.helpers import device_registry as dr
-
-        from custom_components.guesty.api.models import (
-            GuestyListing,
-        )
-
-        listing_a = sample_listing
-        assert isinstance(listing_a, GuestyListing)
-
-        mock_listings.return_value = [listing_a]
-
-        entry = _make_entry(
-            options={
-                CONF_SELECTED_LISTINGS: [
-                    listing_a.id,
-                    "listing-002",
-                ],
-            },
-        )
-        entry.add_to_hass(hass)
-        await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
-
-        dev_reg = dr.async_get(hass)
-        dev_reg.async_get_or_create(
-            config_entry_id=entry.entry_id,
-            identifiers={(DOMAIN, entry.entry_id)},
-            name="Guesty Notify",
-        )
-        dev_reg.async_get_or_create(
-            config_entry_id=entry.entry_id,
-            identifiers={(DOMAIN, "listing-002")},
-            name="Second Listing",
-        )
-
-        with patch.object(
-            hass.config_entries,
-            "async_reload",
-            new_callable=AsyncMock,
-        ):
-            hass.config_entries.async_update_entry(
-                entry,
-                options={
-                    CONF_SELECTED_LISTINGS: [listing_a.id],
-                },
-            )
-            await hass.async_block_till_done()
-
-        devices_after = dr.async_entries_for_config_entry(
-            dev_reg,
-            entry.entry_id,
-        )
-        ids_after = {
-            ident[1]
-            for d in devices_after
-            for ident in d.identifiers
-            if ident[0] == DOMAIN
-        }
-        assert entry.entry_id in ids_after
-        assert "listing-002" not in ids_after
-        # Verify listing-002 fully removed from registry
-        assert (
-            dev_reg.async_get_device(
-                identifiers={(DOMAIN, "listing-002")},
-            )
-            is None
-        )
-        # Verify notify device still exists in registry
-        assert (
-            dev_reg.async_get_device(
-                identifiers={(DOMAIN, entry.entry_id)},
-            )
-            is not None
-        )
-
-    @patch(
-        "custom_components.guesty.GuestyApiClient.get_reservations",
-        new_callable=AsyncMock,
-        return_value=[],
-    )
-    @patch(
-        "custom_components.guesty.GuestyApiClient.get_listings",
-        new_callable=AsyncMock,
-    )
-    @patch(
-        "custom_components.guesty.GuestyApiClient.test_connection",
-        new_callable=AsyncMock,
-        return_value=True,
-    )
     async def test_selected_devices_not_removed(
         self,
         mock_test: AsyncMock,
@@ -3593,3 +3495,689 @@ class TestGetCustomFieldValues:
         await hass.async_block_till_done()
 
         assert not hass.services.has_service(DOMAIN, SERVICE_GET_CUSTOM_FIELD_VALUES)
+
+
+class TestSendGuestMessageService:
+    """Tests for guesty.send_guest_message standalone service."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_send_guest_message_happy_path(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Service sends message via messaging client."""
+        from custom_components.guesty.api.messaging import (
+            GuestyMessagingClient,
+        )
+        from custom_components.guesty.api.models import (
+            MessageDeliveryResult,
+        )
+        from custom_components.guesty.const import (
+            SERVICE_SEND_GUEST_MESSAGE,
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        result = MessageDeliveryResult(
+            success=True,
+            message_id="msg-001",
+            reservation_id="res-001",
+        )
+
+        with patch.object(
+            GuestyMessagingClient,
+            "send_message",
+            new_callable=AsyncMock,
+            return_value=result,
+        ) as mock_send:
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SEND_GUEST_MESSAGE,
+                {
+                    "reservation_id": "res-001",
+                    "message": "Welcome!",
+                },
+                blocking=True,
+            )
+            mock_send.assert_awaited_once_with(
+                reservation_id="res-001",
+                body="Welcome!",
+                channel=None,
+                template_variables=None,
+            )
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_send_with_channel_and_vars(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Service passes channel and template variables."""
+        from custom_components.guesty.api.messaging import (
+            GuestyMessagingClient,
+        )
+        from custom_components.guesty.api.models import (
+            MessageDeliveryResult,
+        )
+        from custom_components.guesty.const import (
+            SERVICE_SEND_GUEST_MESSAGE,
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        result = MessageDeliveryResult(
+            success=True,
+            message_id="msg-002",
+            reservation_id="res-002",
+        )
+
+        with patch.object(
+            GuestyMessagingClient,
+            "send_message",
+            new_callable=AsyncMock,
+            return_value=result,
+        ) as mock_send:
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SEND_GUEST_MESSAGE,
+                {
+                    "reservation_id": "res-002",
+                    "message": "Hello {name}!",
+                    "channel": "email",
+                    "template_variables": {"name": "John"},
+                },
+                blocking=True,
+            )
+            mock_send.assert_awaited_once_with(
+                reservation_id="res-002",
+                body="Hello {name}!",
+                channel="email",
+                template_variables={"name": "John"},
+            )
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_empty_message_raises(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Empty message body raises HomeAssistantError."""
+        from homeassistant.exceptions import HomeAssistantError
+
+        from custom_components.guesty.const import (
+            SERVICE_SEND_GUEST_MESSAGE,
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="message body is required",
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SEND_GUEST_MESSAGE,
+                {
+                    "reservation_id": "res-001",
+                    "message": "",
+                },
+                blocking=True,
+            )
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_empty_reservation_id_raises(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Empty reservation_id raises HomeAssistantError."""
+        from homeassistant.exceptions import HomeAssistantError
+
+        from custom_components.guesty.const import (
+            SERVICE_SEND_GUEST_MESSAGE,
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="reservation_id is required",
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SEND_GUEST_MESSAGE,
+                {
+                    "reservation_id": "",
+                    "message": "Hello!",
+                },
+                blocking=True,
+            )
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_message_error_maps_to_ha_error(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """GuestyMessageError maps to HomeAssistantError."""
+        from homeassistant.exceptions import HomeAssistantError
+
+        from custom_components.guesty.api.exceptions import (
+            GuestyMessageError,
+        )
+        from custom_components.guesty.api.messaging import (
+            GuestyMessagingClient,
+        )
+        from custom_components.guesty.const import (
+            SERVICE_SEND_GUEST_MESSAGE,
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        with (
+            patch.object(
+                GuestyMessagingClient,
+                "send_message",
+                new_callable=AsyncMock,
+                side_effect=GuestyMessageError(
+                    "delivery failed",
+                    reservation_id="res-001",
+                ),
+            ),
+            pytest.raises(
+                HomeAssistantError,
+                match="delivery failed",
+            ),
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SEND_GUEST_MESSAGE,
+                {
+                    "reservation_id": "res-001",
+                    "message": "Hello!",
+                },
+                blocking=True,
+            )
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_api_error_maps_to_ha_error(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """GuestyApiError maps to HomeAssistantError."""
+        from homeassistant.exceptions import HomeAssistantError
+
+        from custom_components.guesty.api.exceptions import (
+            GuestyConnectionError as ConnErr,
+        )
+        from custom_components.guesty.api.messaging import (
+            GuestyMessagingClient,
+        )
+        from custom_components.guesty.const import (
+            SERVICE_SEND_GUEST_MESSAGE,
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        with (
+            patch.object(
+                GuestyMessagingClient,
+                "send_message",
+                new_callable=AsyncMock,
+                side_effect=ConnErr("network failure"),
+            ),
+            pytest.raises(
+                HomeAssistantError,
+                match="network failure",
+            ),
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SEND_GUEST_MESSAGE,
+                {
+                    "reservation_id": "res-001",
+                    "message": "Hello!",
+                },
+                blocking=True,
+            )
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_missing_template_variable_raises(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Missing template variable raises HomeAssistantError."""
+        from homeassistant.exceptions import HomeAssistantError
+
+        from custom_components.guesty.api.messaging import (
+            GuestyMessagingClient,
+        )
+        from custom_components.guesty.const import (
+            SERVICE_SEND_GUEST_MESSAGE,
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        with (
+            patch.object(
+                GuestyMessagingClient,
+                "send_message",
+                new_callable=AsyncMock,
+                side_effect=KeyError("guest_name"),
+            ),
+            pytest.raises(
+                HomeAssistantError,
+                match="Missing template variable: guest_name",
+            ),
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SEND_GUEST_MESSAGE,
+                {
+                    "reservation_id": "res-001",
+                    "message": "Hello {guest_name}!",
+                },
+                blocking=True,
+            )
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_value_error_maps_to_ha_error(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """ValueError maps to HomeAssistantError."""
+        from homeassistant.exceptions import HomeAssistantError
+
+        from custom_components.guesty.api.messaging import (
+            GuestyMessagingClient,
+        )
+        from custom_components.guesty.const import (
+            SERVICE_SEND_GUEST_MESSAGE,
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        with (
+            patch.object(
+                GuestyMessagingClient,
+                "send_message",
+                new_callable=AsyncMock,
+                side_effect=ValueError("bad channel"),
+            ),
+            pytest.raises(
+                HomeAssistantError,
+                match="bad channel",
+            ),
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SEND_GUEST_MESSAGE,
+                {
+                    "reservation_id": "res-001",
+                    "message": "Hello!",
+                },
+                blocking=True,
+            )
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_multi_entry_requires_config_entry_id(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Multiple entries without config_entry_id raises."""
+        from homeassistant.exceptions import HomeAssistantError
+
+        from custom_components.guesty.const import (
+            SERVICE_SEND_GUEST_MESSAGE,
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        # Add a second fake entry to domain data
+        hass.data[DOMAIN]["fake-second-entry"] = {
+            "messaging_client": AsyncMock(),
+        }
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="Multiple Guesty config entries",
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SEND_GUEST_MESSAGE,
+                {
+                    "reservation_id": "res-001",
+                    "message": "Hello!",
+                },
+                blocking=True,
+            )
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_multi_entry_with_config_entry_id(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Explicit config_entry_id resolves correct entry."""
+        from custom_components.guesty.api.messaging import (
+            GuestyMessagingClient,
+        )
+        from custom_components.guesty.api.models import (
+            MessageDeliveryResult,
+        )
+        from custom_components.guesty.const import (
+            SERVICE_SEND_GUEST_MESSAGE,
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        result = MessageDeliveryResult(
+            success=True,
+            message_id="msg-003",
+            reservation_id="res-001",
+        )
+
+        with patch.object(
+            GuestyMessagingClient,
+            "send_message",
+            new_callable=AsyncMock,
+            return_value=result,
+        ) as mock_send:
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SEND_GUEST_MESSAGE,
+                {
+                    "reservation_id": "res-001",
+                    "message": "Hello!",
+                    "config_entry_id": entry.entry_id,
+                },
+                blocking=True,
+            )
+            mock_send.assert_awaited_once()
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_setup_registers_service(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Setup registers guesty.send_guest_message service."""
+        from custom_components.guesty.const import (
+            SERVICE_SEND_GUEST_MESSAGE,
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        assert hass.services.has_service(
+            DOMAIN,
+            SERVICE_SEND_GUEST_MESSAGE,
+        )
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_unload_removes_service(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Unload removes guesty.send_guest_message service."""
+        from custom_components.guesty.const import (
+            SERVICE_SEND_GUEST_MESSAGE,
+        )
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        assert hass.services.has_service(
+            DOMAIN,
+            SERVICE_SEND_GUEST_MESSAGE,
+        )
+
+        await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+
+        assert not hass.services.has_service(
+            DOMAIN,
+            SERVICE_SEND_GUEST_MESSAGE,
+        )

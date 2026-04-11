@@ -33,6 +33,7 @@ from custom_components.guesty.api.custom_fields import GuestyCustomFieldsClient
 from custom_components.guesty.api.exceptions import (
     GuestyApiError,
     GuestyCustomFieldError,
+    GuestyMessageError,
 )
 from custom_components.guesty.api.messaging import GuestyMessagingClient
 from custom_components.guesty.api.models import CachedToken, TokenStorage
@@ -50,6 +51,7 @@ from custom_components.guesty.const import (
     PLATFORMS,
     SERVICE_GET_CUSTOM_FIELD_VALUES,
     SERVICE_GET_CUSTOM_FIELDS,
+    SERVICE_SEND_GUEST_MESSAGE,
     SERVICE_SET_CUSTOM_FIELD,
 )
 from custom_components.guesty.coordinator import (
@@ -83,6 +85,18 @@ GET_CUSTOM_FIELD_VALUES_SCHEMA = vol.Schema(
             ["listing", "reservation"],
         ),
         vol.Required("target_id"): str,
+        vol.Optional("config_entry_id"): str,
+    }
+)
+
+SEND_GUEST_MESSAGE_SCHEMA = vol.Schema(
+    {
+        vol.Required("reservation_id"): str,
+        vol.Required("message"): str,
+        vol.Optional("channel"): str,
+        vol.Optional("template_variables"): vol.Schema(
+            {str: vol.Coerce(str)},
+        ),
         vol.Optional("config_entry_id"): str,
     }
 )
@@ -571,6 +585,71 @@ async def async_setup_entry(
             "fields": fields_list,  # type: ignore[dict-item]
         }
 
+    async def _async_handle_send_guest_message(
+        call: ServiceCall,
+    ) -> None:
+        """Handle the guesty.send_guest_message service call.
+
+        Sends a message to a guest via the messaging client
+        resolved from the appropriate config entry.
+
+        Args:
+            call: The service call with message data.
+
+        Raises:
+            HomeAssistantError: On validation or delivery failure.
+        """
+        entry_data = _resolve_entry_data(call.data)
+
+        local_messaging_client: GuestyMessagingClient = entry_data["messaging_client"]
+
+        reservation_id: str = call.data["reservation_id"]
+        body: str = call.data["message"]
+        channel: str | None = call.data.get("channel")
+        template_variables: dict[str, str] | None = call.data.get(
+            "template_variables",
+        )
+
+        if not reservation_id:
+            raise HomeAssistantError(
+                "reservation_id is required and must not be empty",
+            )
+        if not body:
+            raise HomeAssistantError(
+                "message body is required and must not be empty",
+            )
+
+        try:
+            await local_messaging_client.send_message(
+                reservation_id=reservation_id,
+                body=body,
+                channel=channel,
+                template_variables=template_variables,
+            )
+        except GuestyMessageError as exc:
+            _LOGGER.error(
+                "Message delivery failed for reservation '%s': %s",
+                reservation_id,
+                exc,
+                exc_info=True,
+            )
+            raise HomeAssistantError(str(exc)) from exc
+        except GuestyApiError as exc:
+            _LOGGER.error(
+                "API error for reservation '%s': %s",
+                reservation_id,
+                exc,
+                exc_info=True,
+            )
+            raise HomeAssistantError(str(exc)) from exc
+        except KeyError as exc:
+            missing = exc.args[0] if exc.args else str(exc)
+            raise HomeAssistantError(
+                f"Missing template variable: {missing}",
+            ) from exc
+        except ValueError as exc:
+            raise HomeAssistantError(str(exc)) from exc
+
     if not hass.services.has_service(DOMAIN, SERVICE_SET_CUSTOM_FIELD):
         hass.services.async_register(
             DOMAIN,
@@ -596,6 +675,14 @@ async def async_setup_entry(
             _async_handle_get_custom_field_values,
             schema=GET_CUSTOM_FIELD_VALUES_SCHEMA,
             supports_response=SupportsResponse.ONLY,
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_SEND_GUEST_MESSAGE):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_SEND_GUEST_MESSAGE,
+            _async_handle_send_guest_message,
+            schema=SEND_GUEST_MESSAGE_SCHEMA,
         )
 
     _prev_selected = entry.options.get(CONF_SELECTED_LISTINGS)
@@ -750,6 +837,7 @@ async def async_unload_entry(
             hass.services.async_remove(DOMAIN, SERVICE_SET_CUSTOM_FIELD)
             hass.services.async_remove(DOMAIN, SERVICE_GET_CUSTOM_FIELDS)
             hass.services.async_remove(DOMAIN, SERVICE_GET_CUSTOM_FIELD_VALUES)
+            hass.services.async_remove(DOMAIN, SERVICE_SEND_GUEST_MESSAGE)
 
         from custom_components.guesty.actions import (
             async_unload_actions,

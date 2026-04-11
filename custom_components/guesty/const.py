@@ -14,7 +14,7 @@ CONF_CLIENT_ID: str = "client_id"
 CONF_CLIENT_SECRET: str = "client_secret"
 
 # Platforms supported by this integration.
-PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.NOTIFY]
+PLATFORMS: list[Platform] = [Platform.SENSOR]
 
 # Configuration key for the polling scan interval.
 CONF_SCAN_INTERVAL: str = "scan_interval"
@@ -48,6 +48,9 @@ SERVICE_GET_CUSTOM_FIELDS: str = "get_custom_fields"
 
 # Service name for retrieving custom field values.
 SERVICE_GET_CUSTOM_FIELD_VALUES: str = "get_custom_field_values"
+
+# Service name for sending guest messages.
+SERVICE_SEND_GUEST_MESSAGE: str = "send_guest_message"
 
 # Configuration key for the custom fields definition scan interval.
 CONF_CF_SCAN_INTERVAL: str = "cf_scan_interval"
