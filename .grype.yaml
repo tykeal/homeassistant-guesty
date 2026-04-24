@@ -121,6 +121,12 @@ ignore:
       name: pytest
       type: python
 
+  # pip build tool — tar/ZIP concatenation handling
+  - vulnerability: CVE-2026-3219
+    package:
+      name: pip
+      type: python
+
   # uv build tool — transitive in lock file;
   # wheel RECORD path traversal file deletion.
   - vulnerability: GHSA-pjjw-68hj-v9mw

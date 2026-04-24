@@ -143,6 +143,7 @@ jobs:
             CVE-2026-27448
             CVE-2026-27459
             CVE-2025-67221
+            CVE-2026-3219
 
   sbom:
     name: 'Generate SBOM'
