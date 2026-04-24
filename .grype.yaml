@@ -106,3 +106,30 @@ ignore:
     package:
       name: requests
       type: python
+
+  # pillow transitive dependency via homeassistant —
+  # FITS GZIP decompression bomb (CVE-2026-40192).
+  - vulnerability: GHSA-whj4-6x5x-4v2j
+    package:
+      name: pillow
+      type: python
+
+  # pytest pinned by pytest-homeassistant-custom-
+  # component — path traversal in cache (medium).
+  - vulnerability: GHSA-6w46-j5rx-g56g
+    package:
+      name: pytest
+      type: python
+
+  # pip build tool — tar/ZIP concatenation handling
+  - vulnerability: CVE-2026-3219
+    package:
+      name: pip
+      type: python
+
+  # uv build tool — transitive in lock file;
+  # wheel RECORD path traversal file deletion.
+  - vulnerability: GHSA-pjjw-68hj-v9mw
+    package:
+      name: uv
+      type: python
