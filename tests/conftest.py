@@ -785,4 +785,10 @@ def mock_actions_client() -> AsyncMock:
             target_id="listing-001",
         ),
     )
+    client.set_reservation_status = AsyncMock(
+        return_value=ActionResult(
+            success=True,
+            target_id="res-001",
+        ),
+    )
     return client

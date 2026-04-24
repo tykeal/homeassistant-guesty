@@ -182,5 +182,10 @@ VALID_CALENDAR_OPS: frozenset[str] = frozenset(
     {"block", "unblock"},
 )
 
+# Valid reservation statuses for set_reservation_status.
+VALID_RESERVATION_STATUSES: frozenset[str] = frozenset(
+    {"checked_in", "checked_out"},
+)
+
 # Separator used when appending notes to reservations.
 NOTE_SEPARATOR: str = "\n---\n"

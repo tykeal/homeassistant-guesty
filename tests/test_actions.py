@@ -144,7 +144,7 @@ class TestActionServiceRegistration:
         self,
         hass: HomeAssistant,
     ) -> None:
-        """All four action services are registered after setup."""
+        """All five action services are registered after setup."""
         await _setup_entry(hass)
 
         for service_name in (
@@ -152,6 +152,7 @@ class TestActionServiceRegistration:
             "set_listing_status",
             "create_task",
             "set_calendar_availability",
+            "set_reservation_status",
         ):
             assert hass.services.has_service(DOMAIN, service_name), (
                 f"Service {DOMAIN}.{service_name} not registered"
@@ -172,6 +173,7 @@ class TestActionServiceRegistration:
             "set_listing_status",
             "create_task",
             "set_calendar_availability",
+            "set_reservation_status",
         ):
             assert not hass.services.has_service(
                 DOMAIN,
@@ -1520,3 +1522,219 @@ class TestEndToEndIntegration:
                 blocking=True,
                 return_response=True,
             )
+
+
+# ── Set Reservation Status Tests ────────────────────────────────────
+
+
+class TestHandleSetReservationStatus:
+    """Tests for guesty.set_reservation_status handler."""
+
+    async def test_checked_in_success(
+        self,
+        hass: HomeAssistant,
+        mock_actions_client: AsyncMock,
+    ) -> None:
+        """Successful checked_in returns ActionResult dict."""
+        entry = await _setup_entry(hass)
+        hass.data[DOMAIN][entry.entry_id]["actions_client"] = mock_actions_client
+
+        result = await hass.services.async_call(
+            DOMAIN,
+            "set_reservation_status",
+            {
+                "reservation_id": "res-001",
+                "status": "checked_in",
+            },
+            blocking=True,
+            return_response=True,
+        )
+
+        mock_actions_client.set_reservation_status.assert_awaited_once_with(
+            reservation_id="res-001",
+            status="checked_in",
+        )
+        assert result == _result_dict(target_id="res-001")
+
+    async def test_checked_out_success(
+        self,
+        hass: HomeAssistant,
+        mock_actions_client: AsyncMock,
+    ) -> None:
+        """Successful checked_out returns ActionResult dict."""
+        entry = await _setup_entry(hass)
+        hass.data[DOMAIN][entry.entry_id]["actions_client"] = mock_actions_client
+
+        result = await hass.services.async_call(
+            DOMAIN,
+            "set_reservation_status",
+            {
+                "reservation_id": "res-001",
+                "status": "checked_out",
+            },
+            blocking=True,
+            return_response=True,
+        )
+
+        mock_actions_client.set_reservation_status.assert_awaited_once_with(
+            reservation_id="res-001",
+            status="checked_out",
+        )
+        assert result == _result_dict(target_id="res-001")
+
+    async def test_action_error_translated(
+        self,
+        hass: HomeAssistant,
+        mock_actions_client: AsyncMock,
+    ) -> None:
+        """GuestyActionError is translated to HomeAssistantError."""
+        entry = await _setup_entry(hass)
+        hass.data[DOMAIN][entry.entry_id]["actions_client"] = mock_actions_client
+
+        mock_actions_client.set_reservation_status.side_effect = GuestyActionError(
+            "Not found",
+            target_id="res-bad",
+            action_type="set_reservation_status",
+        )
+
+        with pytest.raises(HomeAssistantError, match="Not found"):
+            await hass.services.async_call(
+                DOMAIN,
+                "set_reservation_status",
+                {
+                    "reservation_id": "res-bad",
+                    "status": "checked_in",
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+    async def test_api_error_translated(
+        self,
+        hass: HomeAssistant,
+        mock_actions_client: AsyncMock,
+    ) -> None:
+        """GuestyApiError is translated to HomeAssistantError."""
+        entry = await _setup_entry(hass)
+        hass.data[DOMAIN][entry.entry_id]["actions_client"] = mock_actions_client
+
+        mock_actions_client.set_reservation_status.side_effect = GuestyApiError(
+            "Connection lost"
+        )
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="Connection lost",
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                "set_reservation_status",
+                {
+                    "reservation_id": "res-001",
+                    "status": "checked_in",
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+    async def test_value_error_translated(
+        self,
+        hass: HomeAssistant,
+        mock_actions_client: AsyncMock,
+    ) -> None:
+        """ValueError is translated to HomeAssistantError."""
+        entry = await _setup_entry(hass)
+        hass.data[DOMAIN][entry.entry_id]["actions_client"] = mock_actions_client
+
+        mock_actions_client.set_reservation_status.side_effect = ValueError(
+            "reservation_id must be non-empty"
+        )
+
+        with pytest.raises(
+            HomeAssistantError,
+            match="reservation_id must be non-empty",
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                "set_reservation_status",
+                {
+                    "reservation_id": "x",
+                    "status": "checked_in",
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+    async def test_invalid_status_rejected_by_schema(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Invalid status value is rejected by schema."""
+        await _setup_entry(hass)
+
+        with pytest.raises(vol.Invalid):
+            await hass.services.async_call(
+                DOMAIN,
+                "set_reservation_status",
+                {
+                    "reservation_id": "res-001",
+                    "status": "confirmed",
+                },
+                blocking=True,
+            )
+
+    async def test_multi_entry_config_entry_id(
+        self,
+        hass: HomeAssistant,
+        mock_actions_client: AsyncMock,
+    ) -> None:
+        """Service call with config_entry_id targets correct entry."""
+        await _setup_entry(hass)
+
+        entry2 = MockConfigEntry(
+            domain=DOMAIN,
+            title="Guesty (test2)",
+            data={
+                CONF_CLIENT_ID: "test-client-id-2",
+                CONF_CLIENT_SECRET: "test-client-secret-2",
+            },
+            unique_id="test-client-id-2",
+        )
+        entry2.add_to_hass(hass)
+
+        with (
+            patch(
+                _PATCH_TEST,
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                _PATCH_LISTINGS,
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                _PATCH_RESERVATIONS,
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+        ):
+            await hass.config_entries.async_setup(entry2.entry_id)
+            await hass.async_block_till_done()
+
+        hass.data[DOMAIN][entry2.entry_id]["actions_client"] = mock_actions_client
+
+        result = await hass.services.async_call(
+            DOMAIN,
+            "set_reservation_status",
+            {
+                "reservation_id": "res-001",
+                "status": "checked_in",
+                "config_entry_id": entry2.entry_id,
+            },
+            blocking=True,
+            return_response=True,
+        )
+
+        mock_actions_client.set_reservation_status.assert_awaited_once()
+        assert result == _result_dict(target_id="res-001")

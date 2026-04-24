@@ -1745,3 +1745,164 @@ class TestRetryBehavior:
                 "lst-auth2",
                 "active",
             )
+
+
+# ── set_reservation_status tests ────────────────────────────────────
+
+
+class TestSetReservationStatus:
+    """Tests for set_reservation_status."""
+
+    @respx.mock
+    async def test_checked_in_success(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
+        """Setting checked_in sends correct PUT body."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        res_path = f"{RESERVATIONS_ENDPOINT}/res-001"
+        put_route = respx.put(f"{BASE_URL}{res_path}").mock(
+            return_value=Response(
+                200,
+                json={
+                    "_id": "res-001",
+                    "status": "checked_in",
+                },
+            ),
+        )
+
+        client = actions_client
+        result = await client.set_reservation_status(
+            "res-001",
+            "checked_in",
+        )
+
+        assert isinstance(result, ActionResult)
+        assert result.success is True
+        assert result.target_id == "res-001"
+
+        payload = json.loads(put_route.calls[0].request.content)
+        assert payload == {"status": "checked_in"}
+
+    @respx.mock
+    async def test_checked_out_success(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
+        """Setting checked_out sends correct PUT body."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        res_path = f"{RESERVATIONS_ENDPOINT}/res-002"
+        put_route = respx.put(f"{BASE_URL}{res_path}").mock(
+            return_value=Response(
+                200,
+                json={
+                    "_id": "res-002",
+                    "status": "checked_out",
+                },
+            ),
+        )
+
+        client = actions_client
+        result = await client.set_reservation_status(
+            "res-002",
+            "checked_out",
+        )
+
+        assert result.success is True
+        assert result.target_id == "res-002"
+
+        payload = json.loads(put_route.calls[0].request.content)
+        assert payload == {"status": "checked_out"}
+
+    @respx.mock
+    async def test_api_failure_raises_action_error(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
+        """Non-2xx response raises GuestyActionError."""
+        from unittest.mock import patch as _patch
+
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(),
+            ),
+        )
+        res_path = f"{RESERVATIONS_ENDPOINT}/res-bad"
+        respx.put(f"{BASE_URL}{res_path}").mock(
+            return_value=Response(422, text="Unprocessable"),
+        )
+
+        client = actions_client
+        with (
+            _patch("asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(
+                GuestyActionError,
+                match="Failed to set reservation status",
+            ) as exc_info,
+        ):
+            await client.set_reservation_status(
+                "res-bad",
+                "checked_in",
+            )
+
+        assert exc_info.value.target_id == "res-bad"
+        assert exc_info.value.action_type == "set_reservation_status"
+
+    async def test_empty_reservation_id_raises(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
+        """Empty reservation_id raises ValueError."""
+        client = actions_client
+        with pytest.raises(ValueError, match="reservation_id"):
+            await client.set_reservation_status(
+                "",
+                "checked_in",
+            )
+
+    async def test_invalid_status_raises(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
+        """Invalid status raises ValueError."""
+        client = actions_client
+        with pytest.raises(ValueError, match="invalid status"):
+            await client.set_reservation_status(
+                "res-001",
+                "confirmed",
+            )
+
+    async def test_invalid_status_canceled(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
+        """Canceled status is not allowed."""
+        client = actions_client
+        with pytest.raises(ValueError, match="invalid status"):
+            await client.set_reservation_status(
+                "res-001",
+                "canceled",
+            )
+
+    async def test_invalid_status_random(
+        self,
+        actions_client: GuestyActionsClient,
+    ) -> None:
+        """Random string status is not allowed."""
+        client = actions_client
+        with pytest.raises(ValueError, match="invalid status"):
+            await client.set_reservation_status(
+                "res-001",
+                "some_random_status",
+            )
