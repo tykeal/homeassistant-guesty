@@ -21,6 +21,7 @@ from custom_components.guesty.api.const import (
     TASKS_ENDPOINT,
     VALID_CALENDAR_OPS,
     VALID_LISTING_STATUSES,
+    VALID_RESERVATION_STATUSES,
 )
 from custom_components.guesty.api.exceptions import (
     GuestyActionError,
@@ -336,6 +337,53 @@ class GuestyActionsClient:
             target_id=listing_id,
         )
 
+    async def set_reservation_status(
+        self,
+        reservation_id: str,
+        status: str,
+    ) -> ActionResult:
+        """Set check-in/check-out status on a reservation.
+
+        Args:
+            reservation_id: Target reservation identifier.
+            status: New status ('checked_in' or 'checked_out').
+
+        Returns:
+            ActionResult with the reservation identifier.
+
+        Raises:
+            ValueError: If inputs fail validation.
+            GuestyActionError: If the API returns a non-success
+                HTTP response.
+            GuestyAuthError: On authentication failure.
+            GuestyConnectionError: On network failure.
+            GuestyRateLimitError: On rate limit exhaustion.
+        """
+        self._validate_reservation_status(reservation_id, status)
+
+        path = f"{RESERVATIONS_ENDPOINT}/{reservation_id}"
+        response = await self._api_client._request(
+            "PUT",
+            path,
+            json_data={"status": status},
+        )
+
+        if not response.is_success:
+            raise GuestyActionError(
+                self._error_detail(
+                    "Failed to set reservation status",
+                    reservation_id,
+                    response,
+                ),
+                target_id=reservation_id,
+                action_type="set_reservation_status",
+            )
+
+        return ActionResult(
+            success=True,
+            target_id=reservation_id,
+        )
+
     # ── Error detail helper ────────────────────────────────────
 
     @staticmethod
@@ -496,5 +544,30 @@ class GuestyActionsClient:
                 f"invalid operation '{operation}'; "
                 f"expected one of "
                 f"{sorted(VALID_CALENDAR_OPS)}"
+            )
+            raise ValueError(msg)
+
+    @staticmethod
+    def _validate_reservation_status(
+        reservation_id: str,
+        status: str,
+    ) -> None:
+        """Validate set_reservation_status inputs.
+
+        Args:
+            reservation_id: Reservation identifier to validate.
+            status: Status value to validate.
+
+        Raises:
+            ValueError: If any input is invalid.
+        """
+        if not reservation_id:
+            msg = "reservation_id must be non-empty"
+            raise ValueError(msg)
+        if status not in VALID_RESERVATION_STATUSES:
+            msg = (
+                f"invalid status '{status}'; "
+                f"expected one of "
+                f"{sorted(VALID_RESERVATION_STATUSES)}"
             )
             raise ValueError(msg)

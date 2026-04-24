@@ -241,6 +241,24 @@
                     "description": "Target a specific Guesty config entry."
                 }
             }
+        },
+        "set_reservation_status": {
+            "name": "Set reservation status",
+            "description": "Set the check-in or check-out status on a reservation.",
+            "fields": {
+                "reservation_id": {
+                    "name": "Reservation ID",
+                    "description": "The Guesty reservation identifier."
+                },
+                "status": {
+                    "name": "Status",
+                    "description": "The status to set on the reservation."
+                },
+                "config_entry_id": {
+                    "name": "Config entry ID",
+                    "description": "Target a specific Guesty config entry."
+                }
+            }
         }
     },
     "entity": {

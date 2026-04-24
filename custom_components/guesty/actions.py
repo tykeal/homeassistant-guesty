@@ -3,7 +3,7 @@
 """Service handlers for Guesty automation actions.
 
 Bridges the HA-independent GuestyActionsClient to Home Assistant's
-service infrastructure. Registers four domain-level services via
+service infrastructure. Registers five domain-level services via
 hass.services.async_register() and translates API exceptions into
 HomeAssistantError for clear automation feedback.
 """
@@ -25,6 +25,7 @@ from homeassistant.exceptions import HomeAssistantError
 from custom_components.guesty.api.const import (
     VALID_CALENDAR_OPS,
     VALID_LISTING_STATUSES,
+    VALID_RESERVATION_STATUSES,
 )
 from custom_components.guesty.api.exceptions import (
     GuestyActionError,
@@ -48,11 +49,13 @@ SERVICE_ADD_NOTE = "add_reservation_note"
 SERVICE_SET_STATUS = "set_listing_status"
 SERVICE_CREATE_TASK = "create_task"
 SERVICE_SET_CALENDAR = "set_calendar_availability"
+SERVICE_SET_RESERVATION_STATUS = "set_reservation_status"
 _ALL_SERVICES = (
     SERVICE_ADD_NOTE,
     SERVICE_SET_STATUS,
     SERVICE_CREATE_TASK,
     SERVICE_SET_CALENDAR,
+    SERVICE_SET_RESERVATION_STATUS,
 )
 
 # ── Voluptuous schemas ──────────────────────────────────────────────
@@ -92,6 +95,16 @@ _SCHEMA_SET_CALENDAR = vol.Schema(
         vol.Required("end_date"): str,
         vol.Required("operation"): vol.In(
             sorted(VALID_CALENDAR_OPS),
+        ),
+        vol.Optional("config_entry_id"): str,
+    },
+)
+
+_SCHEMA_SET_RESERVATION_STATUS = vol.Schema(
+    {
+        vol.Required("reservation_id"): str,
+        vol.Required("status"): vol.In(
+            sorted(VALID_RESERVATION_STATUSES),
         ),
         vol.Optional("config_entry_id"): str,
     },
@@ -275,6 +288,33 @@ async def _handle_set_calendar(
     return _result_to_dict(result)
 
 
+async def _handle_set_reservation_status(
+    hass: HomeAssistant,
+    call: ServiceCall,
+) -> dict[str, Any]:
+    """Handle guesty.set_reservation_status service call.
+
+    Args:
+        hass: Home Assistant instance.
+        call: The incoming service call.
+
+    Returns:
+        ActionResult as a dictionary.
+
+    Raises:
+        HomeAssistantError: On API or validation failure.
+    """
+    client = _get_actions_client(hass, call)
+    try:
+        result = await client.set_reservation_status(
+            reservation_id=call.data["reservation_id"],
+            status=call.data["status"],
+        )
+    except (GuestyActionError, GuestyApiError, ValueError) as exc:
+        raise HomeAssistantError(str(exc)) from exc
+    return _result_to_dict(result)
+
+
 # ── Lifecycle ───────────────────────────────────────────────────────
 
 _HandlerFn = Callable[
@@ -297,6 +337,11 @@ _SERVICE_DEFS: tuple[
         SERVICE_SET_CALENDAR,
         _SCHEMA_SET_CALENDAR,
         _handle_set_calendar,
+    ),
+    (
+        SERVICE_SET_RESERVATION_STATUS,
+        _SCHEMA_SET_RESERVATION_STATUS,
+        _handle_set_reservation_status,
     ),
 )
 

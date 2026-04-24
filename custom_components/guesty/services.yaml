@@ -299,3 +299,37 @@ set_calendar_availability:
       selector:
         config_entry:
           integration: guesty
+
+set_reservation_status:
+  name: Set reservation status
+  description: >-
+    Set the check-in or check-out status on a Guesty reservation.
+  fields:
+    reservation_id:
+      name: Reservation ID
+      description: The Guesty reservation identifier.
+      required: true
+      example: "abc123def456"
+      selector:
+        text:
+    status:
+      name: Status
+      description: >-
+        The status to set on the reservation.
+      required: true
+      selector:
+        select:
+          options:
+            - label: "Checked in"
+              value: "checked_in"
+            - label: "Checked out"
+              value: "checked_out"
+    config_entry_id:
+      name: Config entry ID
+      description: >-
+        Target a specific Guesty config entry. Required only
+        when multiple Guesty accounts are configured.
+      required: false
+      selector:
+        config_entry:
+          integration: guesty
