@@ -24,7 +24,7 @@ test = [
     "pytest-asyncio>=0.25",
     "pytest-cov>=6.0",
     "pytest-homeassistant-custom-component>=0.13.0",
-    "respx>=0.22",
+    "respx>=0.23.1",
 ]
 
 [dependency-groups]
@@ -37,7 +37,7 @@ dev = [
     "pytest-asyncio>=0.25",
     "pytest-cov>=6.0",
     "pytest-homeassistant-custom-component>=0.13.0",
-    "respx>=0.22",
+    "respx>=0.23.1",
     "ruff>=0.15.12",
 ]
 
