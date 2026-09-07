@@ -202,6 +202,7 @@ data:
 ```python
 import respx
 
+
 @respx.mock
 async def test_send_message_success(
     api_client: GuestyApiClient,
@@ -213,17 +214,18 @@ async def test_send_message_success(
     ).respond(
         200,
         json={
-            "results": [{
-                "_id": "conv-123",
-                "reservation": {"_id": "res-123"},
-                "module": {"type": "platform"},
-            }],
+            "results": [
+                {
+                    "_id": "conv-123",
+                    "reservation": {"_id": "res-123"},
+                    "module": {"type": "platform"},
+                }
+            ],
         },
     )
     # Mock message send
     respx.post(
-        f"{FAKE_BASE_URL}/communication/conversations"
-        f"/conv-123/send-message",
+        f"{FAKE_BASE_URL}/communication/conversations/conv-123/send-message",
     ).respond(
         200,
         json={"_id": "msg-456", "body": "Hello!"},
@@ -247,8 +249,8 @@ async def test_notify_entity_send(
     """Test notify entity sends message via messaging client."""
     # Set up mock messaging client
     mock_messaging = AsyncMock(spec=GuestyMessagingClient)
-    mock_messaging.send_message.return_value = (
-        MessageDeliveryResult(success=True, message_id="msg-1")
+    mock_messaging.send_message.return_value = MessageDeliveryResult(
+        success=True, message_id="msg-1"
     )
 
     # Call the service
