@@ -146,8 +146,7 @@ class GuestyCustomFieldDefinition:
     @classmethod
     def from_api_dict(
         cls, data: dict[str, Any]
-    ) -> GuestyCustomFieldDefinition | None:
-        ...
+    ) -> GuestyCustomFieldDefinition | None: ...
 ```
 
 ### Service Registration

@@ -26,8 +26,8 @@ messaging target.
 class Conversation:
     """Guesty conversation associated with a reservation."""
 
-    id: str                     # Guesty conversation ID
-    reservation_id: str         # Associated reservation ID
+    id: str  # Guesty conversation ID
+    reservation_id: str  # Associated reservation ID
     available_channels: tuple[str, ...]  # Module types available
 ```
 
@@ -60,8 +60,8 @@ template rendering.
 class MessageRequest:
     """Validated request to send a message via Guesty."""
 
-    conversation_id: str        # Target conversation
-    body: str                   # Rendered message text
+    conversation_id: str  # Target conversation
+    body: str  # Rendered message text
     channel: str | None = None  # Optional channel override
 ```
 
@@ -90,8 +90,8 @@ caller after the API response is processed.
 class MessageDeliveryResult:
     """Outcome of a Guesty message delivery attempt."""
 
-    success: bool               # Whether delivery was accepted
-    message_id: str | None = None   # Guesty message ID if successful
+    success: bool  # Whether delivery was accepted
+    message_id: str | None = None  # Guesty message ID if successful
     error_details: str | None = None  # Error description if failed
     reservation_id: str | None = None  # For error context
 ```
@@ -123,8 +123,7 @@ class GuestyMessageError(GuestyApiError):
         message: str,
         reservation_id: str | None = None,
         available_channels: tuple[str, ...] | None = None,
-    ) -> None:
-        ...
+    ) -> None: ...
 ```
 
 **Attributes**:
@@ -153,19 +152,19 @@ New constants added to the existing module:
 ```python
 # Messaging endpoints
 CONVERSATIONS_PATH = "/communication/conversations"
-SEND_MESSAGE_PATH = (
-    "/communication/conversations/{conversation_id}/send-message"
-)
+SEND_MESSAGE_PATH = "/communication/conversations/{conversation_id}/send-message"
 
 # Validation limits
-MAX_MESSAGE_LENGTH = 10000    # Conservative limit
-KNOWN_CHANNEL_TYPES = frozenset({
-    "email",
-    "sms",
-    "airbnb2",
-    "platform",
-    "whatsapp",
-})
+MAX_MESSAGE_LENGTH = 10000  # Conservative limit
+KNOWN_CHANNEL_TYPES = frozenset(
+    {
+        "email",
+        "sms",
+        "airbnb2",
+        "platform",
+        "whatsapp",
+    }
+)
 ```
 
 ## Messaging Client (`api/messaging.py`)
@@ -179,13 +178,9 @@ rendering, and message delivery. This class has zero HA imports.
 class GuestyMessagingClient:
     """Client for sending messages via Guesty conversations."""
 
-    def __init__(self, api_client: GuestyApiClient) -> None:
-        ...
+    def __init__(self, api_client: GuestyApiClient) -> None: ...
 
-    async def resolve_conversation(
-        self, reservation_id: str
-    ) -> Conversation:
-        ...
+    async def resolve_conversation(self, reservation_id: str) -> Conversation: ...
 
     async def send_message(
         self,
@@ -193,15 +188,13 @@ class GuestyMessagingClient:
         body: str,
         channel: str | None = None,
         template_variables: dict[str, str] | None = None,
-    ) -> MessageDeliveryResult:
-        ...
+    ) -> MessageDeliveryResult: ...
 
     def render_template(
         self,
         template: str,
         variables: dict[str, str],
-    ) -> str:
-        ...
+    ) -> str: ...
 ```
 
 **Methods**:
@@ -233,13 +226,11 @@ class GuestyNotifyEntity(NotifyEntity):
         self,
         messaging_client: GuestyMessagingClient,
         entry: ConfigEntry,
-    ) -> None:
-        ...
+    ) -> None: ...
 
     async def async_send_message(
         self, message: str, title: str | None = None
-    ) -> None:
-        ...
+    ) -> None: ...
 ```
 
 **Service call data** (passed via `self.hass` service call context):
