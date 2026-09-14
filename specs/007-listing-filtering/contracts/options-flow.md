@@ -65,7 +65,7 @@ Each option in the `SelectSelector` is:
 
 ```python
 SelectOptionDict(
-    value=listing.id,       # Guesty listing ID
+    value=listing.id,  # Guesty listing ID
     label="{title} — {formatted_address}",  # Human-readable label
 )
 ```

@@ -78,11 +78,11 @@ contains all fields needed for this feature:
 ```python
 @dataclass(frozen=True)
 class GuestyListing:
-    id: str                                    # Used as selection key
-    title: str                                 # Displayed in selector
+    id: str  # Used as selection key
+    title: str  # Displayed in selector
     nickname: str | None
     status: str
-    address: GuestyAddress | None              # Displayed in selector (formatted)
+    address: GuestyAddress | None  # Displayed in selector (formatted)
     property_type: str | None
     room_type: str | None
     bedrooms: int | None
@@ -90,7 +90,7 @@ class GuestyListing:
     timezone: str
     check_in_time: str | None
     check_out_time: str | None
-    tags: tuple[str, ...]                      # Used for tag pre-filtering
+    tags: tuple[str, ...]  # Used for tag pre-filtering
     custom_fields: MappingProxyType[str, str]
 ```
 
@@ -135,8 +135,9 @@ API: get_listings()
 selected = self.config_entry.options.get(CONF_SELECTED_LISTINGS)
 if selected is not None:
     selected_set = set(selected)
-    new_data = {lid: listing for lid, listing in new_data.items()
-                if lid in selected_set}
+    new_data = {
+        lid: listing for lid, listing in new_data.items() if lid in selected_set
+    }
 ```
 
 ### ReservationsCoordinator (Unchanged)
