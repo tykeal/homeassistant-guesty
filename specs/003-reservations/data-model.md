@@ -214,12 +214,14 @@ RESERVATIONS_FIELDS = (
 )
 
 # Status constants
-ACTIONABLE_STATUSES = frozenset({
-    "confirmed",
-    "checked_in",
-    "checked_out",
-    "canceled",
-})
+ACTIONABLE_STATUSES = frozenset(
+    {
+        "confirmed",
+        "checked_in",
+        "checked_out",
+        "canceled",
+    }
+)
 
 # Default date range window
 DEFAULT_PAST_DAYS = 30
