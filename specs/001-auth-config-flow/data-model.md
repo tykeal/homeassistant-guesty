@@ -49,6 +49,7 @@ def to_dict(self) -> dict[str, Any]:
         "issued_at": self.issued_at.isoformat(),
     }
 
+
 @classmethod
 def from_dict(cls, data: dict[str, Any]) -> CachedToken:
     return cls(
@@ -96,9 +97,7 @@ class TokenStorage(Protocol):
         """
         ...
 
-    async def save_request_count(
-        self, count: int, window_start: datetime
-    ) -> None:
+    async def save_request_count(self, count: int, window_start: datetime) -> None:
         """Persist the token request counter and window start."""
         ...
 ```
@@ -124,7 +123,6 @@ Home Assistant implementation of `TokenStorage` backed by
     # User-provided (set during config flow)
     "client_id": str,
     "client_secret": str,
-
     # Token cache (set by HATokenStorage)
     "cached_token": {
         "access_token": str,
@@ -132,8 +130,8 @@ Home Assistant implementation of `TokenStorage` backed by
         "expires_in": int,
         "scope": str,
         "issued_at": str,  # ISO 8601
-    } | None,
-
+    }
+    | None,
     # Rate limit tracking (set by HATokenStorage)
     "token_request_count": int,
     "token_window_start": str | None,  # ISO 8601
