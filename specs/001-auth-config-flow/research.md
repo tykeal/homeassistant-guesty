@@ -108,7 +108,7 @@ approach avoids external files or databases.
         "issued_at": "2025-07-18T12:00:00+00:00",
     },
     "token_request_count": 1,
-    "token_window_start": "2025-07-18T12:00:00+00:00"
+    "token_window_start": "2025-07-18T12:00:00+00:00",
 }
 ```
 
@@ -278,9 +278,7 @@ class TokenStorage(Protocol):
     async def load_request_count(
         self,
     ) -> tuple[int, datetime | None]: ...
-    async def save_request_count(
-        self, count: int, window_start: datetime
-    ) -> None: ...
+    async def save_request_count(self, count: int, window_start: datetime) -> None: ...
 ```
 
 ---

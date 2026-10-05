@@ -176,15 +176,19 @@ except GuestyRateLimitError:
 import respx
 from httpx import Response
 
+
 @respx.mock
 async def test_token_acquisition():
     respx.post("https://open-api.guesty.com/oauth2/token").mock(
-        return_value=Response(200, json={
-            "token_type": "Bearer",
-            "access_token": "test-token",
-            "expires_in": 86400,
-            "scope": "open-api",
-        })
+        return_value=Response(
+            200,
+            json={
+                "token_type": "Bearer",
+                "access_token": "test-token",
+                "expires_in": 86400,
+                "scope": "open-api",
+            },
+        )
     )
     token = await token_manager.get_token()
     assert token == "test-token"
