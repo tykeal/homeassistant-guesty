@@ -47,9 +47,7 @@ dev_registry = dr.async_get(hass)
 for device in dr.async_entries_for_config_entry(dev_registry, entry.entry_id):
     # Extract the Guesty listing ID from device identifiers
     listing_ids_in_device = {
-        identifier[1]
-        for identifier in device.identifiers
-        if identifier[0] == DOMAIN
+        identifier[1] for identifier in device.identifiers if identifier[0] == DOMAIN
     }
     # If this device's listing is no longer selected, remove it
     if not listing_ids_in_device & selected_listing_ids:
@@ -102,26 +100,26 @@ listing_options = [
         value=listing.id,
         label=(
             f"{listing.title} — "
-            f"{listing.address.formatted()
-            if listing.address
-            else 'No address'}"
+            f"{listing.address.formatted() if listing.address else 'No address'}"
         ),
     )
     for listing in available_listings
 ]
 
-schema = vol.Schema({
-    vol.Required(
-        CONF_SELECTED_LISTINGS,
-        default=currently_selected_ids,
-    ): SelectSelector(
-        SelectSelectorConfig(
-            options=listing_options,
-            multiple=True,
-            mode=SelectSelectorMode.LIST,
-        )
-    ),
-})
+schema = vol.Schema(
+    {
+        vol.Required(
+            CONF_SELECTED_LISTINGS,
+            default=currently_selected_ids,
+        ): SelectSelector(
+            SelectSelectorConfig(
+                options=listing_options,
+                multiple=True,
+                mode=SelectSelectorMode.LIST,
+            )
+        ),
+    }
+)
 ```
 
 The `SelectSelector` is the standard HA mechanism for select inputs in config
