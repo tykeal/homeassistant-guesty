@@ -1,0 +1,10 @@
+---
+# SPDX-FileCopyrightText: 2026 Andrew Grimberg <tykeal@bardicgrove.org>
+# SPDX-License-Identifier: Apache-2.0
+
+# Prose stays at 80 columns. Fenced code blocks are allowed 88 to match
+# ruff's line-length, because ruff formats Python code blocks embedded
+# in Markdown and would otherwise produce lines markdownlint rejects.
+MD013:
+  line_length: 80
+  code_block_line_length: 88
