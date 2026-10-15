@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.device_registry import DeviceEntry, DeviceRegistry
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.guesty.api.models import (
@@ -37,6 +39,33 @@ FAKE_CLIENT_SECRET = "test-client-secret"
 FAKE_TOKEN = "test-access-token-jwt"
 FAKE_TOKEN_URL = "https://open-api.guesty.com/oauth2/token"
 FAKE_BASE_URL = "https://open-api.guesty.com/v1"
+
+
+def device_for_listing(
+    dev_reg: DeviceRegistry,
+    entry_id: str,
+    listing_id: str,
+) -> DeviceEntry | None:
+    """Look up the device registered for a listing.
+
+    Uses ``async_entries_for_config_entry`` rather than
+    ``DeviceRegistry.async_get_device``, which Home Assistant 2026.10
+    turned into a ``RuntimeError``. The suggested replacements are not
+    available in every supported Home Assistant version, while this
+    helper works across all of them.
+
+    Args:
+        dev_reg: Device registry to search.
+        entry_id: Config entry the device belongs to.
+        listing_id: Guesty listing identifier to match.
+
+    Returns:
+        The matching device entry, or None when no device exists.
+    """
+    for device in dr.async_entries_for_config_entry(dev_reg, entry_id):
+        if (DOMAIN, listing_id) in device.identifiers:
+            return device
+    return None
 
 
 def make_token_response(**overrides: Any) -> dict[str, Any]:

@@ -35,6 +35,7 @@ from custom_components.guesty.const import (
     DOMAIN,
     SERVICE_SET_CUSTOM_FIELD,
 )
+from tests.conftest import device_for_listing
 
 
 def _make_entry(**overrides: object) -> MockConfigEntry:
@@ -1838,12 +1839,7 @@ class TestDeselectedDeviceRemoval:
         assert "listing-002" not in listing_ids_after
         assert listing_a.id in listing_ids_after
         # Verify device fully removed from registry
-        assert (
-            dev_reg.async_get_device(
-                identifiers={(DOMAIN, "listing-002")},
-            )
-            is None
-        )
+        assert device_for_listing(dev_reg, entry.entry_id, "listing-002") is None
 
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
@@ -1924,18 +1920,8 @@ class TestDeselectedDeviceRemoval:
         assert "listing-003" not in listing_ids_after
         assert listing_a.id in listing_ids_after
         # Verify devices fully removed from registry
-        assert (
-            dev_reg.async_get_device(
-                identifiers={(DOMAIN, "listing-002")},
-            )
-            is None
-        )
-        assert (
-            dev_reg.async_get_device(
-                identifiers={(DOMAIN, "listing-003")},
-            )
-            is None
-        )
+        assert device_for_listing(dev_reg, entry.entry_id, "listing-002") is None
+        assert device_for_listing(dev_reg, entry.entry_id, "listing-003") is None
 
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
@@ -2026,25 +2012,10 @@ class TestDeselectedDeviceRemoval:
         assert "listing-002" in ids_after
         assert "listing-003" not in ids_after
         # Verify listing-003 fully removed from registry
-        assert (
-            dev_reg.async_get_device(
-                identifiers={(DOMAIN, "listing-003")},
-            )
-            is None
-        )
+        assert device_for_listing(dev_reg, entry.entry_id, "listing-003") is None
         # Verify selected devices still exist in registry
-        assert (
-            dev_reg.async_get_device(
-                identifiers={(DOMAIN, listing_a.id)},
-            )
-            is not None
-        )
-        assert (
-            dev_reg.async_get_device(
-                identifiers={(DOMAIN, "listing-002")},
-            )
-            is not None
-        )
+        assert device_for_listing(dev_reg, entry.entry_id, listing_a.id) is not None
+        assert device_for_listing(dev_reg, entry.entry_id, "listing-002") is not None
 
 
 class TestIntervalRefreshOnOptionsUpdate:

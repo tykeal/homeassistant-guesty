@@ -27,6 +27,7 @@ from custom_components.guesty.const import (
     CONF_CLIENT_SECRET,
     DOMAIN,
 )
+from tests.conftest import device_for_listing
 
 
 def _make_entry(**overrides: object) -> MockConfigEntry:
@@ -934,9 +935,7 @@ class TestSensorEntitySetup:
         from homeassistant.helpers import device_registry as dr
 
         dev_reg = dr.async_get(hass)
-        device = dev_reg.async_get_device(
-            identifiers={(DOMAIN, "listing-001")},
-        )
+        device = device_for_listing(dev_reg, entry.entry_id, "listing-001")
         assert device is not None
 
 
@@ -1911,9 +1910,7 @@ class TestFinancialDiagnosticSensors:
         from homeassistant.helpers import device_registry as dr
 
         dev_reg = dr.async_get(hass)
-        device = dev_reg.async_get_device(
-            identifiers={(DOMAIN, "listing-001")},
-        )
+        device = device_for_listing(dev_reg, entry.entry_id, "listing-001")
         assert device is not None
 
         entity_reg = er.async_get(hass)
