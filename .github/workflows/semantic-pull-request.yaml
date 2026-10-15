@@ -40,15 +40,11 @@ concurrency:
   queue: max
 
 jobs:
-  semantic-pull-request:
-    name: "Semantic Pull Request"
+  validate:
+    name: "Validate"
     # Delegate to the shared reusable workflow, which tolerates
     # Dependabot's truncated single-commit subjects for long dependency
     # names that otherwise trip validateSingleCommitMatchesPrTitle.
-    #
-    # The reusable's job is still named 'Semantic Pull Request', so the
-    # check run name is unchanged and any ruleset naming it keeps
-    # matching.
     #
     # Every input is optional and defaults to the same capitalised
     # Conventional Commits vocabulary this repository uses, so this
@@ -59,3 +55,26 @@ jobs:
     permissions:
       contents: read
       pull-requests: read  # Gate step queries the PR API (avoids 403)
+
+  semantic-pull-request:
+    # Calling a reusable workflow prefixes the check run name with the
+    # caller job, so the reusable's own job cannot supply the
+    # 'Semantic Pull Request' context the repository ruleset requires.
+    # This job re-emits that exact name and fails whenever validation
+    # did not succeed, keeping the required status check stable.
+    name: "Semantic Pull Request"
+    needs: [validate]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: "Report validation result"
+        shell: bash
+        env:
+          RESULT: ${{ needs.validate.result }}
+        run: |
+          echo "Validation result: $RESULT"
+          if [ "$RESULT" != "success" ]; then
+            echo "::error::Semantic pull request validation did not succeed"
+            exit 1
+          fi
