@@ -78,6 +78,11 @@ def device_in_registry(
     entry, so it distinguishes a device that was fully removed from one
     that merely lost its config entry association.
 
+    Home Assistant 2026.10 forbids using ``DeviceRegistry.devices`` as a
+    mapping and yields device entries when iterating it, while earlier
+    releases still yield device identifiers. Both shapes are handled so
+    the helper works across every supported version.
+
     Args:
         dev_reg: Device registry to search.
         listing_id: Guesty listing identifier to match.
@@ -85,8 +90,9 @@ def device_in_registry(
     Returns:
         The matching device entry, or None when no device exists.
     """
-    for device in dev_reg.devices.values():
-        if (DOMAIN, listing_id) in device.identifiers:
+    for item in dev_reg.devices:
+        device = dev_reg.async_get(item) if isinstance(item, str) else item
+        if device is not None and (DOMAIN, listing_id) in device.identifiers:
             return device
     return None
 
