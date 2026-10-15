@@ -13,44 +13,49 @@ on:
 
 permissions: {}
 
+# Scope the group to this check, not to '${{ github.workflow }}'.
+# github.workflow resolves to the workflow NAME, so any workflow in this
+# repository sharing this one's name would share the group and one of
+# the two would be cancelled before running.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: 'semantic-pull-request-${{ github.ref }}'
+  # Do NOT cancel, and queue rather than replace.
+  #
+  # Back-to-back 'edited' and 'synchronize' events otherwise leave a
+  # cancelled check run beside a successful one for the same head SHA.
+  # The merge box then reads "Some checks were not successful", and
+  # where this is a required status check, ruleset evaluation blocks on
+  # the cancelled run even though the check passed.
+  #
+  # cancel-in-progress alone is not enough. The default queue is
+  # 'single', which holds one pending run and cancels it when a third
+  # event arrives, so a burst still leaves a cancellation behind.
+  # 'queue: max' holds up to 100 and runs them in order. The two
+  # settings are complementary: 'queue: max' cannot be combined with
+  # 'cancel-in-progress: true', which is a validation error.
+  #
+  # The check takes seconds, so running every superseded event through
+  # to completion costs almost nothing.
+  cancel-in-progress: false
+  queue: max
 
 jobs:
   semantic-pull-request:
     name: "Semantic Pull Request"
+    # Delegate to the shared reusable workflow, which tolerates
+    # Dependabot's truncated single-commit subjects for long dependency
+    # names that otherwise trip validateSingleCommitMatchesPrTitle.
+    #
+    # The reusable's job is still named 'Semantic Pull Request', so the
+    # check run name is unchanged and any ruleset naming it keeps
+    # matching.
+    #
+    # Every input is optional and defaults to the same capitalised
+    # Conventional Commits vocabulary this repository uses, so this
+    # caller passes none. See generic-workflows'
+    # docs/semantic-pull-request.md for the reference.
+    # yamllint disable-line rule:line-length
+    uses: lfreleng-actions/generic-workflows/.github/workflows/semantic-pull-request.yaml@0ed9c16d59a3ff92afad23a7c1aba3ab61238b87  # v0.4.3
     permissions:
       contents: read
-      pull-requests: read
-    runs-on: ubuntu-latest
-    timeout-minutes: 3
-    steps:
-      # Harden the runner used by this workflow
-      # yamllint disable-line rule:line-length
-      - uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
-        with:
-          egress-policy: audit
-
-      - name: "Validate pull request title"
-        # yamllint disable-line rule:line-length
-        uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          # Requires the type to be capitalised,
-          # but accept any of the standard types
-          types: |
-            Fix
-            Feat
-            Chore
-            Docs
-            Style
-            Refactor
-            Perf
-            Test
-            Revert
-            CI
-            Build
-          validateSingleCommit: true
-          validateSingleCommitMatchesPrTitle: true
+      pull-requests: read  # Gate step queries the PR API (avoids 403)
