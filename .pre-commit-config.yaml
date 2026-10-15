@@ -68,7 +68,7 @@ repos:
       - id: trailing-whitespace
 
   - repo: https://github.com/igorshubovych/markdownlint-cli
-    rev: e72a3ca1632f0b11a07d171449fe447a7ff6795e  # frozen: v0.48.0
+    rev: 5b5dddc4fb0f83c3ea1fc5616fa63e115dce83e0  # frozen: v0.49.1
     hooks:
       - id: markdownlint
         args: ["--fix"]
@@ -81,14 +81,14 @@ repos:
         # args: ["-c body-max-line-length=120", "-c title-max-length=120"]
 
   - repo: https://github.com/openstack/bashate
-    rev: 5798d24d571676fc407e81df574c1ef57b520f23  # frozen: 2.1.1
+    rev: fbd7c2534c2701351c603ff700ddf08202430a31  # frozen: 2.1.1
     hooks:
       - id: bashate
         args: ["--ignore=E006,E011"]
         exclude: ^.(specify|github)/
 
   - repo: https://github.com/shellcheck-py/shellcheck-py
-    rev: 745eface02aef23e168a8afb6b5737818efbea95  # frozen: v0.11.0.1
+    rev: a6564f5d57444e123433a5c9af733e3975c77229  # frozen: v0.11.0.1-1
     hooks:
       - id: shellcheck
         args: ["-x"] # Check external files
@@ -102,7 +102,7 @@ repos:
   # semantic-pull-request.yaml relies on that key to queue superseded
   # runs instead of cancelling them. This fork understands it.
   - repo: https://github.com/kjanat/actionlint
-    rev: 2da2ceb4af2c7ecc48f5b9311d85080c3971b5f0  # frozen: v1.17.0
+    rev: 722799fa4b8cc6734debb97bae24aca9e0dbaf59  # frozen: v1.17
     hooks:
       - id: actionlint
 
@@ -118,14 +118,14 @@ repos:
           ]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: d1b833175a5d08a925900115526febd8fe71c98e  # frozen: v0.15.11
+    rev: 38bfb07c0c64c304f47eb52090f8288150c77730  # frozen: v0.17.1
     hooks:
       - id: ruff-check
         args: [--fix, --exit-non-zero-on-fix]
       - id: ruff-format
 
   - repo: https://github.com/fsfe/reuse-tool
-    rev: 9fabf9eb815a57aac116b435e8346c200cdb8604  # frozen: v6.2.0
+    rev: a1bb792acda6fd0724936b4ebbdbc8eceb9c0459  # frozen: v6.2.0
     hooks:
       - id: reuse
 
@@ -138,7 +138,7 @@ repos:
         entry: bash -c 'if [ ! -d .mypy_cache ]; then mkdir .mypy_cache; fi; exit 0'
 
   - repo: https://github.com/abravalheri/validate-pyproject
-    rev: 4b2e70d08cb2ccd26d1fba73588de41c7a5d50b7  # frozen: v0.25
+    rev: 17e12779811926f000bdfa1795f9e3735dd71ac3  # frozen: 0.26
     hooks:
       - id: validate-pyproject
         # Optional extra validations from SchemaStore:
@@ -154,10 +154,10 @@ repos:
 
   # Check for misspellings in documentation files
   - repo: https://github.com/codespell-project/codespell
-    rev: 2ccb47ff45ad361a21071a7eedda4c37e6ae8c5a  # frozen: v2.4.2
+    rev: 57b21406f092110c18776e39b0bda50d37c945c8  # frozen: v2.4.3
     hooks:
       - id: codespell
-        args: ["-L", "hass,checkin"]
+        args: ["-L", "hass,checkin,notin"]
 
   # Automatically upgrade Python syntax for newer versions
   # - repo: https://github.com/asottile/pyupgrade
@@ -167,31 +167,29 @@ repos:
   #       args: ['--py37-plus']
 
   - repo: https://github.com/econchick/interrogate
-    rev: a6268877efd41a21197445cc04cbf28f9c6facba  # frozen: 1.7.0
+    rev: 4894019dc8876092bc9b6d56878798c550fad998  # frozen: 1.7.0
     hooks:
       - id: interrogate
         args: [-vv, --fail-under=100]
         additional_dependencies:
           - setuptools
 
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: 0f369d245750787ce34997d464ed9605391a5283  # frozen: v1.20.1
+  # mypy runs through the project environment rather than
+  # mirrors-mypy. The mirror builds an isolated virtualenv from
+  # additional_dependencies, which resolves a different Home Assistant
+  # than uv.lock pins and therefore type checks against the wrong
+  # stubs. Running 'uv run mypy' guarantees the same interpreter and
+  # dependency set as the test suite. pre-commit.ci has no uv, so the
+  # hook stays in the ci skip list above.
+  - repo: local
     hooks:
       - id: mypy
-        verbose: true
-        language_version: python3.13
-        args: ["--show-error-codes", "--install-types", "--non-interactive"]
-        additional_dependencies:
-          - "homeassistant>=2026.2.0"
-          - "icalendar>=6.1.0"
-          - "pytest"
-          - "pytest-homeassistant-custom-component>=0.13.0"
-          - "pylocal-akuvox"
-          - "types-icalendar"
-          - "types-pexpect"
-          - "types-pygments"
-          - "types-pytz"
-          - "types-requests"
+        name: mypy
+        language: system
+        pass_filenames: false
+        require_serial: true
+        types_or: [python, pyi]
+        entry: uv run mypy --show-error-codes custom_components/ tests/
 
   # - repo: local
   #   hooks:
