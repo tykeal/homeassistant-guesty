@@ -68,6 +68,29 @@ def device_for_listing(
     return None
 
 
+def device_in_registry(
+    dev_reg: DeviceRegistry,
+    listing_id: str,
+) -> DeviceEntry | None:
+    """Look up a listing's device anywhere in the device registry.
+
+    Unlike :func:`device_for_listing`, this is not scoped to a config
+    entry, so it distinguishes a device that was fully removed from one
+    that merely lost its config entry association.
+
+    Args:
+        dev_reg: Device registry to search.
+        listing_id: Guesty listing identifier to match.
+
+    Returns:
+        The matching device entry, or None when no device exists.
+    """
+    for device in dev_reg.devices.values():
+        if (DOMAIN, listing_id) in device.identifiers:
+            return device
+    return None
+
+
 def make_token_response(**overrides: Any) -> dict[str, Any]:
     """Create a mock Guesty token endpoint response.
 
