@@ -14,8 +14,13 @@ on:
         type: boolean
         default: false
         required: false
+  # 'edited' is deliberately absent. It fires on PR title/body
+  # changes, which cannot affect the build, and 'cancel-in-progress'
+  # then kills the live run for the same SHA, leaving a phantom
+  # cancelled check behind. semantic-pull-request.yaml keeps 'edited'
+  # because it validates the PR title.
   pull_request:
-    types: [opened, reopened, edited, synchronize]
+    types: [opened, reopened, synchronize]
     branches:
       - main
 
