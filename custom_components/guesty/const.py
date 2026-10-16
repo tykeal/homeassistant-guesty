@@ -63,3 +63,8 @@ CONF_SELECTED_LISTINGS: str = "selected_listings"
 
 # Configuration key for the tag-based listing pre-filter.
 CONF_TAG_FILTER: str = "tag_filter"
+
+
+def _probe_type_error() -> int:
+    """Deliberate type error proving the CI gate fails."""
+    return "not an int"
