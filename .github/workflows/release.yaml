@@ -92,9 +92,13 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+          # Passed through the environment rather than interpolated
+          # into the script. A tag name is attacker-influenced input,
+          # and '${{ }}' expansion happens before bash ever sees the
+          # text, so a crafted tag could inject shell syntax.
+          TAG: "${{ steps.tag-validate.outputs.tag_name }}"
         run: |
           # Ensure draft release exists
-          TAG="${{ steps.tag-validate.outputs.tag_name }}"
           # Check if release exists and get its draft status
           if RELEASE_INFO=$(gh release view "$TAG" \
             --json isDraft 2>/dev/null); then
@@ -316,13 +320,17 @@ jobs:
 
       - name: 'Update manifest version'
         shell: bash
+        env:
+          # See 'Ensure draft release exists' above: a tag name is
+          # attacker-influenced, so it reaches the script through the
+          # environment instead of '${{ }}' expansion.
+          TAG: "${{ needs.tag-validate.outputs.tag }}"
         run: |
           # Update manifest.json version from tag
-          TAG="${{ needs.tag-validate.outputs.tag }}"
           # Strip leading 'v' if present
           VERSION="${TAG#v}"
           echo "Setting version to: $VERSION"
-          cd "${{ github.workspace }}/custom_components/guesty"
+          cd "${GITHUB_WORKSPACE}/custom_components/guesty"
           jq --arg v "$VERSION" '.version = $v' manifest.json \
             > manifest.tmp && mv manifest.tmp manifest.json
           echo "Updated manifest.json:"
@@ -332,9 +340,9 @@ jobs:
         shell: bash
         run: |
           # Create ZIP of the integration directory
-          cd "${{ github.workspace }}/custom_components/guesty"
+          cd "${GITHUB_WORKSPACE}/custom_components/guesty"
           zip -r \
-            "${{ github.workspace }}/guesty.zip" \
+            "${GITHUB_WORKSPACE}/guesty.zip" \
             ./ \
             -x '*__pycache__/*' '*.pyc'
 
@@ -419,8 +427,9 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+          # See 'Ensure draft release exists' above.
+          TAG: "${{ needs.tag-validate.outputs.tag }}"
         run: |
-          TAG="${{ needs.tag-validate.outputs.tag }}"
           if gh release view "$TAG" \
               --json isDraft --jq '.isDraft' \
               2>/dev/null | grep -q "false"; then
@@ -451,8 +460,9 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+          # See 'Ensure draft release exists' above.
+          TAG: "${{ needs.tag-validate.outputs.tag }}"
         run: |
-          TAG="${{ needs.tag-validate.outputs.tag }}"
           RELEASE_URL=$(gh release view "$TAG" \
             --json url --jq '.url')
           echo "release_url=$RELEASE_URL" \
