@@ -106,6 +106,16 @@ repos:
     hooks:
       - id: actionlint
 
+  # Static security analysis of workflow definitions. Mirrors the
+  # 'Zizmor' CI job so findings surface before the push rather than
+  # after it. Runs offline, which is zizmor's default without a token:
+  # the audits that resolve 'uses:' refs over the API (such as
+  # ref-version-mismatch) only run in CI.
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: c92afdf2c6ca336aaa8f39e2bd8d48f62dbd8e1f  # frozen: v1.31.1
+    hooks:
+      - id: zizmor
+
   - repo: https://github.com/adrienverge/yamllint.git
     rev: cba56bcde1fdd01c1deb3f945e69764c291a6530  # frozen: v1.38.0
     hooks:
