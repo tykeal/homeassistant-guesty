@@ -34,6 +34,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: "Gather repository metadata"
         id: repo-metadata
@@ -64,6 +65,13 @@ jobs:
         # yamllint disable-line rule:line-length
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
+          # Credentials are deliberately persisted here. The
+          # tag-validate-action below runs 'git fetch origin
+          # refs/tags/<tag>' through the git credential helper to
+          # retrieve the annotated tag object, and the signature
+          # check ('require_signed') depends on that object being
+          # present. Dropping the credential would make a
+          # load-bearing fetch silently best-effort at tag time.
           fetch-depth: 0
           fetch-tags: true
 
@@ -130,6 +138,7 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
 
       - name: 'Build Python project'
         id: 'python-build'
@@ -157,6 +166,8 @@ jobs:
 
       # yamllint disable-line rule:line-length
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: 'Test Python project [PYTEST]'
         # yamllint disable-line rule:line-length
@@ -182,6 +193,8 @@ jobs:
 
       # yamllint disable-line rule:line-length
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: 'Audit Python project'
         # yamllint disable-line rule:line-length
@@ -215,6 +228,8 @@ jobs:
 
       # yamllint disable-line rule:line-length
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: "Generate SBOM"
         id: sbom
@@ -296,6 +311,8 @@ jobs:
 
       # yamllint disable-line rule:line-length
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: 'Update manifest version'
         shell: bash
@@ -349,6 +366,8 @@ jobs:
 
       # yamllint disable-line rule:line-length
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: 'Download build artefacts'
         # yamllint disable-line rule:line-length
@@ -392,6 +411,8 @@ jobs:
 
       # yamllint disable-line rule:line-length
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: 'Check if release is already promoted'
         id: 'check-promoted'
