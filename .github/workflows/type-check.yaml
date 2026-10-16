@@ -1,0 +1,94 @@
+---
+# SPDX-FileCopyrightText: 2026 Andrew Grimberg <tykeal@bardicgrove.org>
+# SPDX-License-Identifier: Apache-2.0
+
+# Static type checking with mypy.
+#
+# The mypy pre-commit hook is in the 'ci: skip' list because it shells out
+# to 'uv run' and pre-commit.ci has no uv in its sandbox. That leaves no
+# other place where typing is enforced, so this workflow is the gate.
+#
+# Running mypy through 'uv run' is the whole point: it resolves the
+# environment from uv.lock, so CI type checks against the exact Home
+# Assistant and Python versions the project pins. An isolated environment
+# built from a separate dependency list silently checks the wrong stubs
+# and reports success on code that does not type check.
+name: 'Type Check'
+
+# yamllint disable-line rule:truthy
+on:
+  # 'edited' is deliberately absent. It fires on PR title/body
+  # changes, which cannot affect type checking, and
+  # 'cancel-in-progress' then kills the live run for the same SHA,
+  # leaving a phantom cancelled check behind.
+  pull_request:
+    types: [opened, reopened, synchronize]
+    branches:
+      - main
+  workflow_dispatch:
+
+# No 'paths' filter by design. A skipped workflow reports no status at
+# all, so a path filter would leave this check permanently pending on
+# any PR that touches only excluded paths, which blocks the merge for
+# good once the check is required.
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  # The job name becomes the status check context. Keep it stable:
+  # renaming it would orphan the entry in any branch ruleset that
+  # requires it.
+  mypy:
+    name: 'Type Check'
+    runs-on: 'ubuntu-latest'
+    permissions:
+      contents: read
+    # Python 3.14 has no prebuilt wheels for parts of the Home Assistant
+    # dependency tree, so a cache miss (any uv.lock change) makes
+    # 'uv sync' build those from source. That is slow in the same way
+    # the SBOM job is slow, and a tight limit would fail the gate for
+    # reasons unrelated to typing.
+    timeout-minutes: 45
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          # Nothing in this job writes to git.
+          persist-credentials: false
+
+      - name: 'Install uv'
+        # yamllint disable-line rule:line-length
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        with:
+          enable-cache: true
+
+      - name: 'Install locked dependencies'
+        shell: 'bash'
+        run: |
+          # Install locked dependencies
+          set -euo pipefail
+          # --locked refuses to proceed when uv.lock is stale, so a
+          # drifted lock file fails here rather than silently type
+          # checking against a resolution nobody committed.
+          uv sync --locked
+
+      - name: 'Run mypy'
+        shell: 'bash'
+        run: |
+          # Run mypy
+          set -euo pipefail
+          # Matches the pre-commit hook entry exactly. Both directories
+          # are passed explicitly so this stays a whole-tree check: a
+          # typing change under custom_components/ must not be able to
+          # break an untouched caller in tests/ without failing.
+          uv run --no-sync mypy --show-error-codes custom_components/ tests/

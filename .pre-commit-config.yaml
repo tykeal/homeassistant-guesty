@@ -180,7 +180,8 @@ repos:
   # than uv.lock pins and therefore type checks against the wrong
   # stubs. Running 'uv run mypy' guarantees the same interpreter and
   # dependency set as the test suite. pre-commit.ci has no uv, so the
-  # hook stays in the ci skip list above.
+  # hook stays in the ci skip list above; the Type Check workflow in
+  # .github/workflows/type-check.yaml is what enforces mypy in CI.
   - repo: local
     hooks:
       - id: mypy
