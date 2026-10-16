@@ -1,135 +1,17 @@
 # SPDX-FileCopyrightText: 2026 Andrew Grimberg <tykeal@bardicgrove.org>
 # SPDX-License-Identifier: Apache-2.0
 ---
-ignore:
-  # pillow transitive dependency via homeassistant —
-  # buffer over-read in PcxDecode (CVE-2025-2312).
-  - vulnerability: GHSA-4xh5-x5gv-qwph
-    package:
-      name: pillow
-      type: python
-
-  # pillow transitive dependency via homeassistant —
-  # PSD out-of-bounds write (CVE-2026-25990).
-  - vulnerability: GHSA-cfh3-3jmp-rvhc
-    package:
-      name: pillow
-      type: python
-
-  # PyJWT transitive dependency via homeassistant —
-  # accepts unknown crit header extensions
-  # (CVE-2026-32597).
-  - vulnerability: CVE-2026-32597
-    package:
-      name: PyJWT
-      type: python
-
-  - vulnerability: GHSA-752w-5fwx-jx9f
-    package:
-      name: PyJWT
-      type: python
-
-  # pyOpenSSL transitive dependency via homeassistant —
-  # use-after-free on connection shutdown.
-  - vulnerability: GHSA-5pwr-322w-8jr4
-    package:
-      name: pyOpenSSL
-      type: python
-
-  - vulnerability: GHSA-vp96-hxj8-p424
-    package:
-      name: pyOpenSSL
-      type: python
-
-  # orjson transitive dependency via homeassistant —
-  # unlimited recursion depth in orjson.dumps.
-  - vulnerability: GHSA-hx9q-6w63-j58v
-    package:
-      name: orjson
-      type: python
-
-  # pygments transitive dependency via homeassistant —
-  # ReDoS in AdlLexer (CVE-2026-4539).
-  - vulnerability: CVE-2026-4539
-    package:
-      name: pygments
-      type: python
-
-  # Transitive dep CVEs (via homeassistant).
-  - vulnerability: CVE-2026-27448
-
-  - vulnerability: CVE-2026-27459
-
-  - vulnerability: CVE-2025-67221
-
-  # aiohttp transitive dependency via homeassistant —
-  # multiple medium-severity CVEs in 3.13.3 (fixed in
-  # 3.13.4). We cannot pin aiohttp directly.
-  - vulnerability: GHSA-c427-h43c-vf67
-    package:
-      name: aiohttp
-      type: python
-
-  - vulnerability: GHSA-p998-jp59-783m
-    package:
-      name: aiohttp
-      type: python
-
-  - vulnerability: GHSA-w2fm-2cpv-w7v5
-    package:
-      name: aiohttp
-      type: python
-
-  - vulnerability: GHSA-m5qp-6w8w-w647
-    package:
-      name: aiohttp
-      type: python
-
-  # cryptography transitive dependency via homeassistant —
-  # buffer overflow with non-contiguous Python buffers.
-  - vulnerability: GHSA-p423-j2cm-9vmq
-    package:
-      name: cryptography
-      type: python
-
-  # cryptography transitive dependency via homeassistant —
-  # DNS name constraints not validated against peer
-  # names.
-  - vulnerability: GHSA-m959-cc7f-wv43
-    package:
-      name: cryptography
-      type: python
-
-  # requests transitive dependency via homeassistant —
-  # CVE in 2.32.5 (fixed in 2.33.0).
-  - vulnerability: GHSA-gc5v-m9x4-r6x2
-    package:
-      name: requests
-      type: python
-
-  # pillow transitive dependency via homeassistant —
-  # FITS GZIP decompression bomb (CVE-2026-40192).
-  - vulnerability: GHSA-whj4-6x5x-4v2j
-    package:
-      name: pillow
-      type: python
-
-  # pytest pinned by pytest-homeassistant-custom-
-  # component — path traversal in cache (medium).
-  - vulnerability: GHSA-6w46-j5rx-g56g
-    package:
-      name: pytest
-      type: python
-
-  # pip build tool — tar/ZIP concatenation handling
-  - vulnerability: CVE-2026-3219
-    package:
-      name: pip
-      type: python
-
-  # uv build tool — transitive in lock file;
-  # wheel RECORD path traversal file deletion.
-  - vulnerability: GHSA-pjjw-68hj-v9mw
-    package:
-      name: uv
-      type: python
+# Grype ignore rules for the "Generate SBOM" job.
+#
+# Every rule previously listed here was verified stale: scanning the
+# CycloneDX SBOM produced by lfreleng-actions/python-sbom-action with
+# ignores disabled reports no vulnerabilities at any severity. The
+# homeassistant 2026.10.1 bump and the anyio/urllib3/idna/multidict
+# upgrades moved every affected package past its fixed version, so the
+# rules no longer matched anything and would only have masked the same
+# advisories if they ever reappeared.
+#
+# Add a rule back only for a finding that is live and genuinely
+# unfixable. Each entry must carry a `package:` scope and a comment
+# naming the package and explaining why we cannot upgrade.
+ignore: []
