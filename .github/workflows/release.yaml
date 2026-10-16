@@ -64,6 +64,7 @@ jobs:
       - name: 'Checkout repository'
         # yamllint disable-line rule:line-length
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        # zizmor: ignore[artipacked]
         with:
           # Credentials are deliberately persisted here. The
           # tag-validate-action below runs 'git fetch origin
