@@ -1,0 +1,98 @@
+---
+# SPDX-FileCopyrightText: 2026 Andrew Grimberg <tykeal@bardicgrove.org>
+# SPDX-License-Identifier: Apache-2.0
+
+# Static security analysis of this repository's GitHub Actions workflows.
+#
+# zizmor audits workflow definitions for the failure modes that code
+# review keeps catching by hand: template injection through '${{ }}' in
+# run: blocks, credential persistence after checkout, over-broad job
+# permissions, dangerous triggers and unpinned action references. The
+# repository already follows all of those rules by convention; this job
+# is what turns the convention into a gate.
+#
+# It also replaces a separate action pin audit. '.github/zizmor.yml'
+# sets the 'unpinned-uses' policy to 'hash-pin' for every action, so a
+# tag or branch reference fails here at High severity. A second lane
+# calling an external reusable workflow would duplicate that check, and
+# a reusable workflow would report under a status context named after
+# the caller file and job rather than the job name alone, which is an
+# easy way to orphan a required check.
+#
+# Accepted findings are suppressed with inline '# zizmor: ignore[rule]'
+# comments at the exact line they excuse, never by disabling a rule
+# repository-wide. See '.github/zizmor.yml' for the current list.
+name: 'Zizmor'
+
+# yamllint disable-line rule:truthy
+on:
+  # 'edited' is deliberately absent. It fires on PR title/body changes,
+  # which cannot affect workflow security, and 'cancel-in-progress'
+  # then kills the live run for the same SHA, leaving a phantom
+  # cancelled check behind.
+  pull_request:
+    types: [opened, reopened, synchronize]
+    branches:
+      - main
+  workflow_dispatch:
+
+# No 'paths' filter by design, even though this job only ever reads
+# '.github/'. A skipped workflow reports no status at all, so a path
+# filter would leave this check permanently pending on any PR that
+# touches only excluded paths, which blocks the merge for good once the
+# check is required.
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  # The job name becomes the status check context. Keep it stable:
+  # renaming it would orphan the entry in any branch ruleset that
+  # requires it.
+  zizmor:
+    name: 'Zizmor'
+    runs-on: 'ubuntu-latest'
+    permissions:
+      # Read the workflow files under audit, and let zizmor's online
+      # audits resolve action refs through the GitHub API.
+      contents: read
+    timeout-minutes: 10
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          # Nothing in this job writes to git.
+          persist-credentials: false
+
+      - name: 'Run zizmor'
+        # yamllint disable-line rule:line-length
+        uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e  # v0.7.1
+        with:
+          inputs: '.'
+          # Named explicitly so the gate does not move when the action's
+          # defaults change. 'regular' is zizmor's own default persona:
+          # the pedantic and auditor personas add stylistic findings
+          # such as 'undocumented-permissions' that would fail this job
+          # without describing a security problem.
+          persona: 'regular'
+          # Online audits resolve 'uses:' refs against the GitHub API,
+          # which is what makes 'ref-version-mismatch' and the stricter
+          # 'unpinned-uses' policy able to tell a tag from a SHA.
+          online-audits: 'true'
+          config: '.github/zizmor.yml'
+          # Report findings as inline annotations on the diff rather
+          # than uploading SARIF to code scanning. Mutually exclusive
+          # with 'advanced-security', and uploading would need
+          # security-events: write plus a token that pull requests from
+          # forks do not get.
+          advanced-security: 'false'
+          annotations: 'true'

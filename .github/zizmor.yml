@@ -1,0 +1,30 @@
+---
+# SPDX-FileCopyrightText: 2026 Andrew Grimberg <tykeal@bardicgrove.org>
+# SPDX-License-Identifier: Apache-2.0
+
+# Configuration for the zizmor GitHub Actions security audit.
+#
+# Only policy lives here. Suppressions for individual accepted findings
+# stay as inline '# zizmor: ignore[rule]' comments next to the code they
+# excuse, so the rationale travels with the exception and a suppression
+# cannot quietly outlive the line it was written for. There are two:
+#
+#   * release.yaml, 'Validate Tag Push' checkout -> artipacked. That job
+#     deliberately persists git credentials; tag-validate-action fetches
+#     the annotated tag object through the credential helper and its
+#     'require_signed' check depends on that object.
+#   * autolabeler.yaml, pull_request_target -> dangerous-triggers. No job
+#     in that workflow checks out pull request code; the autolabeler only
+#     reads the PR title and body over the API.
+
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        # Require a full commit SHA for every action, including those
+        # owned by this repository's org. zizmor's default only asks for
+        # a symbolic ref, which a mutable tag satisfies. Tightening it to
+        # 'hash-pin' turns the repository's existing SHA-pinning habit
+        # into an enforced gate, so this audit also covers what a
+        # separate action-pin lane would have checked.
+        '*': hash-pin
