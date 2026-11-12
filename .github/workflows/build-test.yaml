@@ -111,7 +111,7 @@ jobs:
           python_version: ${{ matrix.python-version }}
 
   python-tests-gate:
-    # Stable, non-matrix check context for branch protection.
+    # Stable, non-matrix check context used by branch protection.
     # 'python-tests' expands its matrix from requires-python, so it
     # reports as 'Python Tests (3.14)'. Requiring that string would
     # brick merges the moment requires-python is bumped, because the
