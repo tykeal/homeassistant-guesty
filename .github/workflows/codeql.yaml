@@ -1,0 +1,63 @@
+---
+# SPDX-FileCopyrightText: 2026 Andrew Grimberg <tykeal@bardicgrove.org>
+# SPDX-License-Identifier: Apache-2.0
+
+name: 'CodeQL'
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_dispatch:
+  push:
+    branches: ['main']
+    paths-ignore:
+      - 'docs/**'
+      - 'specs/**'
+  pull_request:
+    # Deliberately no 'paths' filter. A workflow skipped by a path
+    # filter reports no status at all, so if a context below ever
+    # becomes required, pull requests touching only excluded paths
+    # would stay pending forever and could never merge. 'paths-ignore'
+    # on push is safe because push checks do not gate merges.
+    branches: ['main']
+  schedule:
+    # Weekly, staggered away from the sibling rental-control repository
+    # (26 16 * * 2) so the two do not contend for the same slot.
+    - cron: '41 7 * * 4'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  scan:
+    name: 'Audit Repository'
+    # Delegates to the security lane in
+    # lfreleng-actions/security-workflows, matching the sibling
+    # rental-control repository rather than hand-rolling a local
+    # github/codeql-action pipeline.
+    #
+    # The lane builds its matrix from the 'languages' input, which
+    # defaults to 'python', so this caller gets single-language Python
+    # analysis without passing it. The 'actions' language is
+    # deliberately not enabled: zizmor already audits the workflow
+    # files in this repository, and adding CodeQL's actions queries
+    # would duplicate that coverage with a second, noisier reporting
+    # surface.
+    #
+    # Calling a reusable workflow names the resulting check contexts
+    # '<caller job name> / <called job name>', not the caller job name
+    # alone. These are therefore 'Audit Repository / Analyze (python)'
+    # and 'Audit Repository / Validate Workflow Inputs'. Neither name
+    # collides with an existing required status check, so nothing
+    # gating a merge is affected by adding this workflow.
+    # yamllint disable-line rule:line-length
+    uses: lfreleng-actions/security-workflows/.github/workflows/codeql.yaml@b9d7b83b5696ab8388bcc11c3fe931563861e258  # v0.10.0
+    with:
+      config_file: .github/codeql/codeql-config.yml
+    permissions:
+      security-events: write  # Upload CodeQL results to code scanning.
+      packages: read  # Fetch internal or private CodeQL packs.
+      actions: read  # Read workflow metadata (private repos only).
+      contents: read  # Check out the repository to analyze.
