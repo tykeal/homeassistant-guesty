@@ -82,6 +82,7 @@ jobs:
       # fork -- cannot widen its own allow-list by editing either file.
       # yamllint disable-line rule:line-length
       - uses: lfreleng-actions/harden-runner-block-action@65ff87957e1cac2de3203a85dbb07c31810321cb  # v0.16.4
+        id: 'egress'
         with:
           # yamllint disable-line rule:line-length
           config: 'lfreleng-actions/.github//.github/harden-runner/lfreleng-actions/allow_list.txt@e6f7647d8aba77836b1e1ccbadc945934607ed98'
@@ -103,7 +104,16 @@ jobs:
       # yamllint disable-line rule:line-length
       - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a  # v2.22.4
         with:
-          egress-policy: 'block'
+          # Read from the loader rather than written out again, so
+          # this job has a single policy value that cannot drift from
+          # the one the assertion below checks. This is the form the
+          # action documents for a harden-runner 'with:' block; the
+          # equivalent step output is published in the pre phase and
+          # is not addressable here. The loader only recommends
+          # 'audit' under 'invalid_records: warning', which this
+          # workflow does not use, so it is always 'block' -- and if
+          # it ever is not, the assertion fails the job.
+          egress-policy: '${{ env.HARDEN_RUNNER_EGRESS_POLICY }}'
           allowed-endpoints: '${{ env.CONNECTION_ALLOW_LIST }}'
 
       # harden-runner fails OPEN: when it cannot resolve an allow-list
@@ -115,20 +125,41 @@ jobs:
       # fails the job if the agent never reports enforcement in place
       # ('agent_not_ready: error', the default) -- but both guards live
       # inside the action. This step states the expectation in the
-      # workflow, so a future input change that quietly degrades the
-      # policy to 'audit' turns this check red instead of green.
+      # workflow instead, so that a future change which quietly
+      # degrades enforcement turns this check red rather than green.
+      #
+      # Both halves matter. The policy variable is what the loader
+      # asked for, and is the same value harden-runner was given
+      # above, so the two cannot disagree. It does not say the agent
+      # is actually running, so it is checked together with the
+      # loader's 'agent_status' output, published by its main step
+      # after harden-runner started. That must be 'ready': the agent
+      # reported
+      # enforcement in place. Every other value -- 'skipped' (no agent
+      # to wait for), 'timeout', 'reverted', 'failed', 'disabled' --
+      # means traffic is not being filtered, and 'skipped' in
+      # particular does not fail the loader on its own.
       - name: 'Assert egress policy is enforcing'
         shell: 'bash'
         env:
           POLICY: '${{ env.HARDEN_RUNNER_EGRESS_POLICY }}'
+          AGENT_STATUS: '${{ steps.egress.outputs.agent_status }}'
         run: |
           # Assert egress policy is enforcing
           set -euo pipefail
-          echo "HARDEN_RUNNER_EGRESS_POLICY=${POLICY}"
+          echo "egress_policy=${POLICY} agent_status=${AGENT_STATUS}"
+          rc=0
           if [ "${POLICY}" != "block" ]; then
             echo "::error::Egress policy is '${POLICY}', expected 'block'"
-            exit 1
+            rc=1
           fi
+          if [ "${AGENT_STATUS}" != "ready" ]; then
+            echo "::error::harden-runner agent status is" \
+              "'${AGENT_STATUS}', expected 'ready'; egress is not" \
+              "being filtered"
+            rc=1
+          fi
+          exit "${rc}"
 
       - name: 'Checkout repository'
         # yamllint disable-line rule:line-length
