@@ -54,10 +54,65 @@ jobs:
     # reasons unrelated to typing.
     timeout-minutes: 45
     steps:
+      # Loads the block-mode egress allow-list before harden-runner's
+      # own pre hook runs, and publishes it as CONNECTION_ALLOW_LIST.
+      # See '.github/harden-runner/allow_list.txt' for the mechanism.
+      #
+      # 'config' names the shared Linux Foundation RelEng list by an
+      # explicit in-repo path, pinned to a commit. The pin is the point:
+      # an unpinned cross-org fetch would let a third party widen this
+      # job's egress policy with no review here. An explicit path also
+      # fails loudly if the file ever moves, rather than falling through
+      # a search chain to some other file.
+      #
+      # 'supplemental_config' layers this repository's own list on top.
+      # It is a search chain ('//' with nothing after it), not an
+      # explicit path, so a miss is tolerated instead of fatal, and it
+      # is unpinned, which the action permits only within the
+      # workflow's own org. Both lists are fetched over the network
+      # from a default branch or a pinned commit, never from the
+      # checked-out tree, so a pull request -- including one from a
+      # fork -- cannot widen its own allow-list by editing either file.
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@65ff87957e1cac2de3203a85dbb07c31810321cb  # v0.16.4
+        with:
+          # yamllint disable-line rule:line-length
+          config: 'lfreleng-actions/.github//.github/harden-runner/lfreleng-actions/allow_list.txt@e6f7647d8aba77836b1e1ccbadc945934607ed98'
+          supplemental_config: 'tykeal/homeassistant-guesty//'
+          supplemental_unpinned: 'true'
+          # Anonymous fetches of a public config repository are rate
+          # limited; the job token lifts that and grants nothing extra.
+          token: '${{ github.token }}'
+
       # yamllint disable-line rule:line-length
       - uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
-          egress-policy: 'audit'
+          egress-policy: 'block'
+          allowed-endpoints: '${{ env.CONNECTION_ALLOW_LIST }}'
+
+      # harden-runner fails OPEN: when it cannot resolve an allow-list
+      # hostname it reverts the firewall and DNS changes, leaving the
+      # job with no egress filtering at all while still reporting
+      # success. The block action guards that twice -- it drops
+      # unresolvable entries before they reach harden-runner
+      # ('invalid_records: filter', the default) and its main step
+      # fails the job if the agent never reports enforcement in place
+      # ('agent_not_ready: error', the default) -- but both guards live
+      # inside the action. This step states the expectation in the
+      # workflow, so a future input change that quietly degrades the
+      # policy to 'audit' turns this check red instead of green.
+      - name: 'Assert egress policy is enforcing'
+        shell: 'bash'
+        env:
+          POLICY: '${{ env.HARDEN_RUNNER_EGRESS_POLICY }}'
+        run: |
+          # Assert egress policy is enforcing
+          set -euo pipefail
+          echo "HARDEN_RUNNER_EGRESS_POLICY=${POLICY}"
+          if [ "${POLICY}" != "block" ]; then
+            echo "::error::Egress policy is '${POLICY}', expected 'block'"
+            exit 1
+          fi
 
       - name: 'Checkout repository'
         # yamllint disable-line rule:line-length
