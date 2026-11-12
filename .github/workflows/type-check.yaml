@@ -114,6 +114,17 @@ jobs:
             exit 1
           fi
 
+      # TEMPORARY PROBE - remove before merge. Proves the allow-list
+      # actually denies something: example.com is on neither list.
+      - name: 'Probe off-list host (temporary)'
+        shell: 'bash'
+        run: |
+          # Probe off-list host
+          set -euo pipefail
+          curl -sS --max-time 10 https://example.com -o /dev/null
+          echo "::error::Off-list host reachable; egress is NOT blocked"
+          exit 1
+
       - name: 'Checkout repository'
         # yamllint disable-line rule:line-length
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
