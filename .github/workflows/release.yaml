@@ -241,6 +241,15 @@ jobs:
         # yamllint disable-line rule:line-length
         uses: lfreleng-actions/python-sbom-action@639001a0def8109e045818dfb3ee82cf602657af  # v0.1.4
         with:
+          # The action defaults to 3.12, which does not satisfy our
+          # 'requires-python = ">=3.14.2"'. It hands the interpreter
+          # to uv as UV_PYTHON with UV_PYTHON_DOWNLOADS=never, so uv
+          # cannot resolve its own and 'uv lock --check' fails before
+          # any SBOM is produced. The action takes a plain version
+          # string with no way to read it from project metadata, so
+          # this constant has to track requires-python by hand.
+          # 'actions/setup-python' resolves it to the newest 3.14.x.
+          python_version: "3.14"
           include_dev: "false"
           sbom_format: "both"
 
