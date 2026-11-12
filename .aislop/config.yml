@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 Andrew Grimberg <tykeal@bardicgrove.org>
+# SPDX-License-Identifier: Apache-2.0
+
+# Configuration for aislop (https://github.com/scanaislop/aislop), run
+# in CI by .github/workflows/aislop.yaml. The CLI discovers this file
+# at '.aislop/config.yml' relative to the scanned directory.
+#
+# Deliberately minimal: this repository takes aislop's defaults for
+# engines, thresholds, scoring and rule severities. The only thing
+# recorded here is the one import aislop cannot resolve on its own.
+
+# Config schema revision, not an aislop version. 1 is the current and
+# only revision; stating it keeps the file explicit.
+version: 1
+
+imports:
+  # 'ai-slop/hallucinated-import' flags any Python import that is not
+  # stdlib and not declared in requirements files, pyproject.toml or
+  # Pipfile, on the assumption that a plausible-sounding undeclared
+  # package name is a model inventing a dependency.
+  #
+  # 'voluptuous' is a genuine, installed, directly imported dependency
+  # here: __init__.py, actions.py and config_flow.py use it to build
+  # the integration's config-flow and service-call schemas, which is
+  # the documented way a Home Assistant custom component declares
+  # them. It is absent from pyproject.toml because 'homeassistant'
+  # depends on it and so always provides it at runtime; Home Assistant
+  # custom components do not redeclare the dependencies the core
+  # supplies. The import is real, the package is present, and the
+  # finding is a false positive. (The same undeclared-but-present
+  # quirk produced spurious mypy errors in October 2026.)
+  #
+  # 'imports.provided' is the remedy aislop's own rule help points at
+  # for exactly this case ("If your runtime provides it, list it under
+  # imports.provided in .aislop/config.yml"). It is narrower than the
+  # alternatives: it silences this one module name under this one
+  # rule, rather than turning 'ai-slop/hallucinated-import' off via
+  # 'rules:' or excluding the files outright. Every other import in
+  # the repository is still checked.
+  #
+  # Removing this entry is correct the moment 'voluptuous' becomes a
+  # declared dependency in pyproject.toml.
+  provided:
+    - voluptuous
