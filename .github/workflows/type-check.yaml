@@ -84,8 +84,17 @@ jobs:
           # limited; the job token lifts that and grants nothing extra.
           token: '${{ github.token }}'
 
+      # Pinned ahead of the other workflows, which still run v2.22.2 in
+      # audit mode. v2.22.3 fixed allowed connections being blocked by
+      # GitHub's DNS resolver and outbound proxy experiment on hosted
+      # Linux runners, and v2.22.4 made that workaround default to
+      # enabled when the StepSecurity feature-flag fetch fails, which
+      # it does from these runners. On v2.22.2 that combination
+      # dropped github.com by IP, with no domain mapping, and failed
+      # checkout in roughly one run in three. Audit mode never noticed,
+      # because it blocks nothing.
       # yamllint disable-line rule:line-length
-      - uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a  # v2.22.4
         with:
           egress-policy: 'block'
           allowed-endpoints: '${{ env.CONNECTION_ALLOW_LIST }}'
