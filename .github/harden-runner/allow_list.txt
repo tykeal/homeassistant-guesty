@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: 2026 Andrew Grimberg <tykeal@bardicgrove.org>
+# SPDX-License-Identifier: Apache-2.0
+#
+# Repository-specific harden-runner egress allow-list (supplemental).
+#
+# This file is the "supplemental" half of the block-mode allow-list.
+# The baseline is the shared Linux Foundation RelEng list at
+# lfreleng-actions/.github, pinned to a commit in each workflow that
+# consumes it; lfreleng-actions/harden-runner-block-action fetches
+# both, merges them (baseline first, duplicates removed, first-seen
+# order kept) and exports the result as CONNECTION_ALLOW_LIST for a
+# following step-security/harden-runner step in 'block' mode.
+#
+# How workflows reference this file
+# ---------------------------------
+# Workflows name it as 'tykeal/homeassistant-guesty//' -- a search
+# chain rather than an explicit path -- with
+# 'supplemental_unpinned: true'. Two consequences are deliberate:
+#
+#   * The chain tries '.github/harden-runner/tykeal/allow_list.txt'
+#     and then '.github/harden-runner/allow_list.txt'. A search-chain
+#     miss is tolerated (soft); an explicit path that does not exist
+#     is a hard error. That tolerance is what let the pull request
+#     introducing this file run at all, since an unpinned supplemental
+#     reads the default branch, where the file did not yet exist.
+#   * The action permits an unpinned supplemental only when it lives
+#     in the workflow's own org. Anyone who can merge here can already
+#     edit the workflows, so following the default branch grants no
+#     new trust -- and it means adding a host does not require bumping
+#     a ref in every workflow. A cross-org list must always be pinned,
+#     which is why the LF baseline is pinned to a commit.
+#
+# Because the supplemental is read from this repository's DEFAULT
+# BRANCH over the network, and never from the checked-out tree, a pull
+# request (including one from a fork) cannot widen its own egress
+# allow-list by editing this file.
+#
+# File format (enforced by the action's sanitiser)
+# ------------------------------------------------
+#   * One 'host' or 'host:port' token per line; '#' starts a comment.
+#   * '*.host' matches subdomains ONLY -- it does not include the bare
+#     host -- and opens only the FIRST port listed for that wildcard.
+#     Bare '*' is rejected.
+#   * A file that parses to ZERO tokens is a hard error
+#     ("config file is empty after parsing"), so this list must never
+#     be reduced to comments alone. Delete the file and the
+#     'supplemental_config' inputs together if it is ever emptied.
+#   * Entries whose hostname does not resolve are dropped before
+#     enforcement (invalid_records: filter), because harden-runner
+#     reverts to no filtering at all if it cannot resolve an entry.
+#
+# Entries are sorted alphabetically. Every entry records why it is
+# here, taken from observed egress in audit-mode runs of the jobs that
+# consume this list (StepSecurity run data for the 'Type Check' and
+# 'Zizmor' workflows), never from guesswork.
+#
+# Overlap with the LF baseline is intentional for these three. The
+# action de-duplicates, so a repeated entry costs nothing, and the
+# shared list is maintained for the whole LF estate rather than for
+# this repository. Carrying this project's own toolchain hosts here
+# means a future trim of the shared baseline cannot silently break
+# 'uv sync' or the uv download.
+
+# uv/Python wheel and sdist downloads during 'uv sync --locked'
+# (Type Check). Observed: uv -> files.pythonhosted.org:443.
+files.pythonhosted.org:443
+
+# PyPI index metadata for 'uv sync --locked' (Type Check) and for the
+# Python the zizmor action runs from (Zizmor).
+# Observed: uv -> pypi.org:443, python3.14 -> pypi.org:443.
+pypi.org:443
+
+# uv binary download by astral-sh/setup-uv (Type Check).
+# Observed: node -> releases.astral.sh:443.
+releases.astral.sh:443
