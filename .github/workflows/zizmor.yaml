@@ -173,12 +173,40 @@ jobs:
         uses: zizmorcore/zizmor-action@53290badfa369cb0bf7ad16342cb62c2fa47ac7b  # v0.8.0
         with:
           inputs: '.'
+          # The analyzer version, pinned separately from the action
+          # above. This job is a required check, so the version that
+          # decides whether a pull request can merge belongs in the
+          # diff rather than behind a default.
+          #
+          # The action installs zizmor from a hash-pinned lockfile it
+          # ships itself, one per release, and 'latest' is just the
+          # lockfile its own release froze. So this value may only name
+          # a version the pinned action carries a lockfile for -- an
+          # unknown version fails the job outright -- and 1.31.1 is
+          # what 'latest' already resolved to at v0.8.0. Bumping
+          # zizmor therefore means bumping the action pin first.
+          #
+          # Dependabot updates the 'uses:' ref above but not this
+          # input, so an action bump silently moves 'latest' while
+          # leaving this pin behind: treat each zizmor-action
+          # Dependabot pull request as the prompt to raise this
+          # version and the 'zizmor-pre-commit' rev in
+          # '.pre-commit-config.yaml' with it.
+          version: '1.31.1'
           # Named explicitly so the gate does not move when the action's
-          # defaults change. 'regular' is zizmor's own default persona:
-          # the pedantic and auditor personas add stylistic findings
-          # such as 'undocumented-permissions' that would fail this job
-          # without describing a security problem.
-          persona: 'regular'
+          # defaults change. Over 'regular', 'auditor' adds two rules
+          # here: 'undocumented-permissions', which asks every elevated
+          # permission to carry a comment on its own line saying why
+          # the job needs it, and 'stale-action-refs', which asks that
+          # a pinned commit also be reachable from a tag. 'pedantic'
+          # currently reports the same set, so there is nothing further
+          # to gain from it. The matching
+          # '--persona=auditor' is set on the 'zizmor-pre-commit' hook
+          # in '.pre-commit-config.yaml'; the two must agree, because
+          # zizmor has no config-file key for the persona and a
+          # divergence would only show up as a CI failure after a clean
+          # local commit.
+          persona: 'auditor'
           # Online audits resolve 'uses:' refs against the GitHub API,
           # which is what makes 'ref-version-mismatch' and the stricter
           # 'unpinned-uses' policy able to tell a tag from a SHA.

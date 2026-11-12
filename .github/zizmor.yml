@@ -16,6 +16,21 @@
 #   * autolabeler.yaml, pull_request_target -> dangerous-triggers. No job
 #     in that workflow checks out pull request code; the autolabeler only
 #     reads the PR title and body over the API.
+#   * validate.yaml, the hassfest step -> stale-action-refs. That action
+#     lives on its repository's default branch; the one tag there dates
+#     from 2020, so no current commit is reachable from a tag.
+
+# The persona is not settable here -- zizmor only accepts it on the
+# command line -- so it lives in two places that must agree: the
+# 'persona:' input on the 'Zizmor' workflow job and the
+# '--persona=auditor' argument on the 'zizmor-pre-commit' hook. The
+# repository audits under 'auditor'. Over 'regular' that adds
+# 'undocumented-permissions' -- every permission raised above read-only
+# repository contents must carry a trailing comment saying what the job
+# does with it, and zizmor accepts the explanation only on the same
+# line as the permission key, not on the line above -- and
+# 'stale-action-refs', which is an online audit and so does not appear
+# in an offline local run.
 
 rules:
   unpinned-uses:

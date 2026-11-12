@@ -111,10 +111,22 @@ repos:
   # after it. Runs offline, which is zizmor's default without a token:
   # the audits that resolve 'uses:' refs over the API (such as
   # ref-version-mismatch) only run in CI.
+  #
+  # pre-commit.ci keeps this 'rev' on the newest release while the CI
+  # job pins its analyzer explicitly, so this hook may sit a version
+  # ahead. That direction is the safe one -- a newly added audit stops
+  # a commit here instead of a merge there -- but when the two drift,
+  # reconcile by raising the CI pin rather than holding this one back.
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
     rev: 06a39750ec31860bb44f2acf67182c40016cd1e7  # frozen: v1.32.0
     hooks:
       - id: zizmor
+        # Must match the 'persona:' input on the 'Zizmor' workflow job,
+        # which is a required check. zizmor takes the persona only from
+        # the command line, never from '.github/zizmor.yml', so without
+        # this the hook would audit a weaker rule set than the gate and
+        # a permission added here would pass locally and fail on push.
+        args: ['--persona=auditor']
 
   - repo: https://github.com/adrienverge/yamllint.git
     rev: cba56bcde1fdd01c1deb3f945e69764c291a6530  # frozen: v1.38.0
