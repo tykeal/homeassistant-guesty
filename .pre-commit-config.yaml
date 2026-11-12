@@ -68,7 +68,7 @@ repos:
       - id: trailing-whitespace
 
   - repo: https://github.com/igorshubovych/markdownlint-cli
-    rev: 5b5dddc4fb0f83c3ea1fc5616fa63e115dce83e0  # frozen: v0.49.1
+    rev: cbcdc463be5464e25e3e955a511599a67b9b987f  # frozen: v0.50.0
     hooks:
       - id: markdownlint
         args: ["--fix"]
@@ -81,7 +81,7 @@ repos:
         # args: ["-c body-max-line-length=120", "-c title-max-length=120"]
 
   - repo: https://github.com/openstack/bashate
-    rev: fbd7c2534c2701351c603ff700ddf08202430a31  # frozen: 2.1.1
+    rev: 5798d24d571676fc407e81df574c1ef57b520f23  # frozen: 2.1.1
     hooks:
       - id: bashate
         args: ["--ignore=E006,E011"]
@@ -102,7 +102,7 @@ repos:
   # semantic-pull-request.yaml relies on that key to queue superseded
   # runs instead of cancelling them. This fork understands it.
   - repo: https://github.com/kjanat/actionlint
-    rev: 722799fa4b8cc6734debb97bae24aca9e0dbaf59  # frozen: v1.17
+    rev: 2da2ceb4af2c7ecc48f5b9311d85080c3971b5f0  # frozen: v1.17.0
     hooks:
       - id: actionlint
 
@@ -112,7 +112,7 @@ repos:
   # the audits that resolve 'uses:' refs over the API (such as
   # ref-version-mismatch) only run in CI.
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
-    rev: c92afdf2c6ca336aaa8f39e2bd8d48f62dbd8e1f  # frozen: v1.31.1
+    rev: 06a39750ec31860bb44f2acf67182c40016cd1e7  # frozen: v1.32.0
     hooks:
       - id: zizmor
 
@@ -128,14 +128,14 @@ repos:
           ]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: 38bfb07c0c64c304f47eb52090f8288150c77730  # frozen: v0.17.1
+    rev: c0f278f1254ccc8fb09676bcdb8d847e7db493e5  # frozen: v0.17.4
     hooks:
       - id: ruff-check
         args: [--fix, --exit-non-zero-on-fix]
       - id: ruff-format
 
   - repo: https://github.com/fsfe/reuse-tool
-    rev: a1bb792acda6fd0724936b4ebbdbc8eceb9c0459  # frozen: v6.2.0
+    rev: bffd9abdccdd86e7926c871a31564913547552c9  # frozen: v6.3.0
     hooks:
       - id: reuse
 
@@ -148,7 +148,7 @@ repos:
         entry: bash -c 'if [ ! -d .mypy_cache ]; then mkdir .mypy_cache; fi; exit 0'
 
   - repo: https://github.com/abravalheri/validate-pyproject
-    rev: 17e12779811926f000bdfa1795f9e3735dd71ac3  # frozen: 0.26
+    rev: 82d21874c3242e4dc27bb47641c996902ef64eef  # frozen: v0.27
     hooks:
       - id: validate-pyproject
         # Optional extra validations from SchemaStore:
@@ -177,7 +177,7 @@ repos:
   #       args: ['--py37-plus']
 
   - repo: https://github.com/econchick/interrogate
-    rev: 4894019dc8876092bc9b6d56878798c550fad998  # frozen: 1.7.0
+    rev: a6268877efd41a21197445cc04cbf28f9c6facba  # frozen: 1.7.0
     hooks:
       - id: interrogate
         args: [-vv, --fail-under=100]
