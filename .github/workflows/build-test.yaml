@@ -36,7 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read
+      pull-requests: read  # Metadata action reads PR files and commits
     timeout-minutes: 5
     steps:
       # yamllint disable-line rule:line-length
@@ -70,7 +70,6 @@ jobs:
       artefact_path: "${{ steps.python-build.outputs.artefact_path }}"
     permissions:
       contents: read
-      actions: write
     timeout-minutes: 12
     env:
       GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
@@ -213,8 +212,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      # Read maintainer-approved bypass issues.
-      issues: read
+      issues: read  # Reads maintainer-approved Grype bypass issues
     steps:
       # yamllint disable-line rule:line-length
       - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a  # v2.22.4
