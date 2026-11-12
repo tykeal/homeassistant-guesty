@@ -1,0 +1,257 @@
+---
+# SPDX-FileCopyrightText: 2026 Andrew Grimberg <tykeal@bardicgrove.org>
+# SPDX-License-Identifier: Apache-2.0
+
+# AI slop / code quality scan of the files a pull request changes.
+#
+# aislop (https://github.com/scanaislop/aislop), driven by
+# lfreleng-actions/aislop-scan-action, looks for the patterns that
+# machine-written code tends to leave behind: hallucinated imports,
+# decorative narrative comment blocks, hardcoded environment URLs and
+# provider IDs, dead patterns and unused imports. It also carries
+# complexity thresholds (file and function length) and delegates
+# Python formatting and linting to 'ruff'.
+#
+# Scope: ONLY the files the pull request changes ('scan-mode: changes'
+# against the PR base), not the whole repository, so the report
+# describes what the change introduces rather than pre-existing state.
+# aislop does not analyse YAML, so this job never reports on the
+# workflow files themselves.
+#
+# Gating: ADVISORY by default, deliberately. Measured against this
+# repository before adoption, a whole-tree scan scored 76 with 20
+# findings, and changes-mode runs over real merged pull requests
+# produced 0-9 findings each. Low volume, but dominated by two things
+# a pull request author cannot reasonably fix on the spot:
+#
+#   * 'ai-slop/hallucinated-import' for 'voluptuous', which is a
+#     transitive dependency of 'homeassistant' and the documented way
+#     a Home Assistant custom component builds service schemas. It is
+#     a false positive here, and it fires on '__init__.py',
+#     'actions.py' and 'config_flow.py'.
+#   * 'complexity/file-too-large' on six pre-existing modules, which
+#     fires on any pull request that touches them at all.
+#
+# An enforcing gate would therefore fail most substantive pull
+# requests for reasons unrelated to the change, so this starts at
+# 'off': the findings land in the step summary and as inline
+# annotations, and nothing blocks. See issue #228 for the measured
+# numbers and the plan to re-evaluate.
+#
+# The gate level is read from the AISLOP_GATE_LEVEL repository
+# variable (Settings -> Secrets and variables -> Actions -> Variables),
+# so raising it is a settings change rather than a code change:
+#
+#   off (default)  Advisory. Report only; never block.
+#   high           Block on high-severity (aislop 'error') findings.
+#   any            Block on ANY finding at any severity on the changed
+#                  files: the "this pull request adds no slop" gate.
+#   all            Block on the full aislop quality gate: the score
+#                  threshold OR any high-severity finding.
+#
+# This check is NOT in the branch ruleset. Were it ever made required,
+# the status context is the job name: 'AI Slop Scan'.
+name: 'AI Slop Scan'
+
+# yamllint disable-line rule:truthy
+on:
+  # 'edited' is deliberately absent. It fires on PR title/body changes,
+  # which cannot affect the diff this job scans, and
+  # 'cancel-in-progress' then kills the live run for the same SHA,
+  # leaving a phantom cancelled check behind (removed repository-wide
+  # in PR #177).
+  pull_request:
+    types: [opened, reopened, synchronize]
+    branches:
+      - main
+  workflow_dispatch:
+
+# No 'paths' filter by design, even though aislop only reports on code.
+# A skipped workflow reports no status at all, so a path filter would
+# leave this check permanently pending on any pull request touching
+# only excluded paths, which blocks the merge for good once the check
+# is required.
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  # The job name becomes the status check context. Keep it stable:
+  # renaming it would orphan the entry in any branch ruleset that
+  # requires it.
+  aislop:
+    name: 'AI Slop Scan'
+    runs-on: 'ubuntu-latest'
+    permissions:
+      # Check out the repository under audit. That is the only
+      # permission the action documents for an advisory run: inline
+      # annotations are emitted as workflow commands on the job's own
+      # log, which needs no token scope, and 'security-events: write'
+      # is only required when publishing SARIF to code scanning, which
+      # this job deliberately does not do.
+      contents: read
+    # aislop installs a Node CLI plus the 'ruff' and 'golangci-lint'
+    # engine binaries, each with a retry budget, before it scans.
+    timeout-minutes: 20
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # Full history so aislop can resolve the merge base of the
+          # pull request branch against the base branch.
+          fetch-depth: 0
+          # Nothing in this job writes to git.
+          persist-credentials: false
+
+      - name: 'Run aislop scan (changed files)'
+        id: 'scan'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/aislop-scan-action@e6978bd7318af5b8671ec709fd40fe7d37041829  # v0.4.2
+        with:
+          scan-mode: 'changes'
+          # On pull_request the diff base is the PR base branch; on
+          # workflow_dispatch fall back to the default branch, which
+          # yields an empty diff and so a no-op smoke test.
+          # yamllint disable-line rule:line-length
+          base: 'origin/${{ github.base_ref || github.event.repository.default_branch }}'
+          annotate: 'true'
+          # SARIF upload needs 'security-events: write' and a token
+          # that pull requests from forks do not get. Findings surface
+          # as the step summary and inline annotations instead.
+          upload-sarif: 'false'
+
+      - name: 'Evaluate quality gate'
+        shell: 'bash'
+        env:
+          AISLOP_GATE_LEVEL: '${{ vars.AISLOP_GATE_LEVEL }}'
+          SCAN_RC: '${{ steps.scan.outputs.exit-code }}'
+          REPORT_FILE: '${{ steps.scan.outputs.report-file }}'
+          COVERAGE_DEGRADED: '${{ steps.scan.outputs.coverage-degraded }}'
+        run: |
+          # Evaluate quality gate
+          set -euo pipefail
+
+          level="${AISLOP_GATE_LEVEL:-off}"
+          case "${level}" in
+            off|high|any|all) ;;
+            *)
+              echo "::error::invalid AISLOP_GATE_LEVEL '${level}';" \
+                   "expected 'off', 'high', 'any', or 'all'"
+              exit 1
+              ;;
+          esac
+
+          # aislop emits a few diagnostics that record visibility loss
+          # rather than a defect: a dependency audit that timed out
+          # against the npm registry, analyzer chunks it could not
+          # run. They describe the run, not the change, so they are
+          # excluded from every finding count. Keep this list in step
+          # with COVERAGE_RULES in the action's aislop_coverage.py.
+          notices='["security/dependency-audit-skipped",
+                    "dotnet/projects-skipped",
+                    "cppcheck/chunks-skipped"]'
+
+          if [ "${COVERAGE_DEGRADED:-false}" = 'true' ]; then
+            echo "::warning title=aislop scan coverage degraded::aislop" \
+                 "ran with reduced coverage, so a clean result is not" \
+                 "conclusive. See the Coverage section of the step" \
+                 "summary; this is an infrastructure condition, not a" \
+                 "finding against the pull request."
+          fi
+
+          # An enforcing level needs a readable report, so fail closed
+          # when one is missing: a broken scan must not slip past an
+          # active gate. 'off' never blocks, not even on that.
+          if [ -z "${REPORT_FILE}" ] || [ ! -f "${REPORT_FILE}" ]; then
+            if [ "${level}" = 'off' ]; then
+              echo 'No aislop report; advisory mode, passing.'
+              exit 0
+            fi
+            echo "::error::aislop report not found; cannot evaluate gate"
+            exit 1
+          fi
+
+          # A failed scan can still emit valid JSON carrying no
+          # diagnostics array. jq's optional iterator would read that
+          # as zero findings and pass an active gate, so require the
+          # array explicitly.
+          if ! jq -e '(.diagnostics | type) == "array"' \
+               "${REPORT_FILE}" > /dev/null 2>&1; then
+            if [ "${level}" = 'off' ]; then
+              echo 'aislop report carries no diagnostics array;' \
+                   'advisory mode, passing.'
+              exit 0
+            fi
+            echo "::error::aislop report carries no diagnostics array;" \
+                 "treating this as a failed scan rather than a clean" \
+                 "result (gate exit code ${SCAN_RC})"
+            exit 1
+          fi
+
+          count() {
+            jq --argjson notices "${notices}" "$1" "${REPORT_FILE}"
+          }
+          # '$r' and '$notices' are jq variables, not shell ones, so
+          # this fragment must stay unexpanded by the shell.
+          # shellcheck disable=SC2016
+          finding='.diagnostics[]? | select(.rule as $r
+                    | ($notices | index($r)) == null)'
+          high="$(count "[${finding} | select(.severity == \"error\")]
+                         | length")"
+          medium="$(count "[${finding} | select(.severity == \"warning\")]
+                           | length")"
+          low="$(count "[${finding} | select(.severity == \"info\")]
+                        | length")"
+          total="$(count "[${finding}] | length")"
+
+          echo "aislop findings on changed files: ${total}" \
+               "(high ${high}, medium ${medium}, low ${low})"
+          echo "aislop gate exit code: ${SCAN_RC}"
+          echo "gate level: ${level}"
+
+          case "${level}" in
+            off)
+              if [ "${total}" != '0' ]; then
+                echo "::warning::aislop found ${total} finding(s) on the" \
+                     "changed files (high ${high}, medium ${medium}," \
+                     "low ${low}); advisory mode, not enforced."
+              fi
+              echo 'Advisory mode (AISLOP_GATE_LEVEL=off): passing.'
+              ;;
+            high)
+              if [ "${high}" != '0' ]; then
+                echo "::error::aislop quality gate failed:" \
+                     "${high} high-severity finding(s) on the" \
+                     "changed files"
+                exit 1
+              fi
+              echo 'Passed: no high-severity findings.'
+              ;;
+            any)
+              if [ "${total}" != '0' ]; then
+                echo "::error::aislop quality gate failed:" \
+                     "${total} finding(s) on the changed files" \
+                     "(high ${high}, medium ${medium}, low ${low});" \
+                     "a pull request must not add findings."
+                exit 1
+              fi
+              echo 'Passed: no findings.'
+              ;;
+            all)
+              if [ "${high}" != '0' ] || [ "${SCAN_RC}" != '0' ]; then
+                echo "::error::aislop quality gate failed" \
+                     "(rc=${SCAN_RC}; ${high} high-severity finding(s))"
+                exit 1
+              fi
+              echo 'Passed: full aislop quality gate.'
+              ;;
+          esac
