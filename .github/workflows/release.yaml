@@ -241,6 +241,15 @@ jobs:
         # yamllint disable-line rule:line-length
         uses: lfreleng-actions/python-sbom-action@639001a0def8109e045818dfb3ee82cf602657af  # v0.1.4
         with:
+          # The action defaults to 3.12, which does not satisfy our
+          # 'requires-python = ">=3.14.2"'. It hands the interpreter
+          # to uv as UV_PYTHON with UV_PYTHON_DOWNLOADS=never, so uv
+          # cannot resolve its own and 'uv lock --check' fails before
+          # any SBOM is produced. The action takes a plain version
+          # string with no way to read it from project metadata, so
+          # this constant has to track requires-python by hand.
+          # 'actions/setup-python' resolves it to the newest 3.14.x.
+          python_version: "3.14"
           include_dev: "false"
           sbom_format: "both"
 
@@ -254,49 +263,67 @@ jobs:
             sbom-cyclonedx.xml
           retention-days: 45
 
-      - name: "Security scan with Grype (SARIF)"
-        # yamllint disable-line rule:line-length
-        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439  # v7.4.2
-        id: grype-sarif
+  grype:
+    name: 'Grype Audit SBOM'
+    runs-on: ubuntu-latest
+    needs: 'sbom'
+    if: ${{ !cancelled() && needs.sbom.result == 'success' }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # Read maintainer-approved bypass issues.
+      issues: read
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
-          sbom: "${{ steps.sbom.outputs.sbom_json_path }}"
-          output-format: "sarif"
-          output-file: "grype-results.sarif"
-          fail-build: "true"
-          config: ".grype.yaml"
+          egress-policy: 'audit'
 
-      - name: "Security scan with Grype (Text/Table)"
-        # yamllint disable-line rule:line-length
-        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439  # v7.4.2
-        id: grype-table
-        if: always()
+      # Supplies .github/grype-declared-dependencies.txt, which the
+      # scan classifies its findings against.
+      # yamllint disable-line rule:line-length
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          sbom: "${{ steps.sbom.outputs.sbom_json_path }}"
-          output-format: "table"
-          output-file: "grype-results.txt"
-          fail-build: "false"
-          config: ".grype.yaml"
+          persist-credentials: false
 
-      - name: "Upload Grype scan results"
+      - name: "Download SBOM artefact"
         # yamllint disable-line rule:line-length
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
-        if: always()
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
-          name: grype-scan-results
-          path: |
-            grype-results.sarif
-            grype-results.txt
+          name: sbom-files
+
+      - name: "Grype audit SBOM"
+        id: grype-audit
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/grype-scan-action@f65dca2762823cfc8f376e32fee9baa6f3292696  # v0.6.2
+        with:
+          sbom: 'sbom-cyclonedx.json'
+          fail-on: 'medium'
+          # Our own dependencies gate at 'medium' exactly as the
+          # previous anchore/scan-action step did. Packages we merely
+          # inherit - almost all of the SBOM, since Home Assistant
+          # pins its requirements exactly and we cannot bump them from
+          # here - are reported as warnings instead. They still reach
+          # the job summary and the SARIF report; they just no longer
+          # turn a pull request red with no fix available to us.
+          dependency-policy: 'declared'
+          transitive-fail-on: 'none'
+          # The SBOM cannot answer the declared-vs-inherited question:
+          # lfreleng-actions/python-sbom-action runs 'cyclonedx-py
+          # environment', which scans the virtualenv rather than the
+          # project and so emits no 'metadata.component' root. The
+          # action refuses an unrooted graph, and an unusable source
+          # leaves every finding classified as declared, which gates.
+          # Supply the answer directly instead.
+          declared-source: 'file'
+          # yamllint disable-line rule:line-length
+          declared-dependencies: '.github/grype-declared-dependencies.txt'
+          cache-db: 'true'
+          artifact-name: 'grype-scan-results'
           retention-days: 90
-
-      - name: "Grype summary"
-        if: always()
-        run: |
-            # Grype summary
-            echo "## Grype Summary" >> "$GITHUB_STEP_SUMMARY"
-            [ -f grype-results.txt ] && cat grype-results.txt \
-              >> "$GITHUB_STEP_SUMMARY" \
-              || echo "No scan results available" \
-              >> "$GITHUB_STEP_SUMMARY"
+          summary-title: 'Grype Vulnerability Scan'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          permit-fail: ${{ vars.NO_BLOCK_AUDIT_FAIL == 'true' }}
 
   build-zip:
     name: 'Build Integration ZIP'
