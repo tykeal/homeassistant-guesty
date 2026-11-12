@@ -170,7 +170,7 @@ jobs:
 
       - name: 'Run zizmor'
         # yamllint disable-line rule:line-length
-        uses: zizmorcore/zizmor-action@53290badfa369cb0bf7ad16342cb62c2fa47ac7b  # v0.8.0
+        uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd  # v0.8.1
         with:
           inputs: '.'
           # The analyzer version, pinned separately from the action
@@ -182,9 +182,9 @@ jobs:
           # ships itself, one per release, and 'latest' is just the
           # lockfile its own release froze. So this value may only name
           # a version the pinned action carries a lockfile for -- an
-          # unknown version fails the job outright -- and 1.31.1 is
-          # what 'latest' already resolved to at v0.8.0. Bumping
-          # zizmor therefore means bumping the action pin first.
+          # unknown version fails the job outright -- and 1.32.0 is
+          # the newest lockfile v0.8.1 carries. Bumping zizmor
+          # therefore means bumping the action pin first.
           #
           # Dependabot updates the 'uses:' ref above but not this
           # input, so an action bump silently moves 'latest' while
@@ -192,7 +192,7 @@ jobs:
           # Dependabot pull request as the prompt to raise this
           # version and the 'zizmor-pre-commit' rev in
           # '.pre-commit-config.yaml' with it.
-          version: '1.31.1'
+          version: '1.32.0'
           # Named explicitly so the gate does not move when the action's
           # defaults change. Over 'regular', 'auditor' adds two rules
           # here: 'undocumented-permissions', which asks every elevated
