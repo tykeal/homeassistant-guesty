@@ -203,7 +203,7 @@ jobs:
 
       - name: 'Audit Python project'
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/python-audit-action@fcb1b2e0cdbe19edf11057e598138f3d57f2b249  # v0.3.1
+        uses: lfreleng-actions/python-audit-action@47af793a2a28882b10ceb9109646cbbcecc2e7b0  # v0.6.1
         with:
           python_version: "${{ matrix.python-version }}"
           # Transitive / upstream-pinned dep CVEs
