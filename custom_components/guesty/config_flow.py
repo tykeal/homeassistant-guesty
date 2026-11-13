@@ -27,7 +27,10 @@ from homeassistant.helpers.selector import (
 )
 
 from custom_components.guesty.api.auth import GuestyTokenManager
-from custom_components.guesty.api.client import GuestyApiClient
+from custom_components.guesty.api.client import (
+    GuestyApiClient,
+    resolve_reservations_api,
+)
 from custom_components.guesty.api.exceptions import (
     GuestyApiError,
     GuestyAuthError,
@@ -41,14 +44,18 @@ from custom_components.guesty.const import (
     CONF_FUTURE_DAYS,
     CONF_PAST_DAYS,
     CONF_RESERVATION_SCAN_INTERVAL,
+    CONF_RESERVATIONS_API,
     CONF_SCAN_INTERVAL,
     CONF_SELECTED_LISTINGS,
     CONF_TAG_FILTER,
     DEFAULT_RESERVATION_SCAN_INTERVAL,
+    DEFAULT_RESERVATIONS_API,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     MIN_RESERVATION_SCAN_INTERVAL,
     MIN_SCAN_INTERVAL,
+    RESERVATIONS_API_LEGACY,
+    RESERVATIONS_API_V3,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -521,6 +528,7 @@ class GuestyOptionsFlowHandler(OptionsFlow):
                     ],
                     CONF_PAST_DAYS: user_input[CONF_PAST_DAYS],
                     CONF_FUTURE_DAYS: user_input[CONF_FUTURE_DAYS],
+                    CONF_RESERVATIONS_API: user_input[CONF_RESERVATIONS_API],
                 },
             )
 
@@ -544,6 +552,9 @@ class GuestyOptionsFlowHandler(OptionsFlow):
         current_future_days = self._config_entry.options.get(
             CONF_FUTURE_DAYS,
             DEFAULT_FUTURE_DAYS,
+        )
+        current_reservations_api = _current_reservations_api(
+            self._config_entry,
         )
 
         schema = vol.Schema(
@@ -576,6 +587,25 @@ class GuestyOptionsFlowHandler(OptionsFlow):
                     vol.Coerce(int),
                     vol.Range(min=1),
                 ),
+                vol.Required(
+                    CONF_RESERVATIONS_API,
+                    default=current_reservations_api,
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[
+                            SelectOptionDict(
+                                value=RESERVATIONS_API_V3,
+                                label="Reservations v3 API",
+                            ),
+                            SelectOptionDict(
+                                value=RESERVATIONS_API_LEGACY,
+                                label="Legacy reservations API",
+                            ),
+                        ],
+                        mode=SelectSelectorMode.DROPDOWN,
+                        translation_key=CONF_RESERVATIONS_API,
+                    ),
+                ),
             }
         )
 
@@ -583,3 +613,22 @@ class GuestyOptionsFlowHandler(OptionsFlow):
             step_id="intervals",
             data_schema=schema,
         )
+
+
+def _current_reservations_api(entry: ConfigEntry) -> str:
+    """Resolve the reservation API value stored on an entry.
+
+    An entry created before this option existed has no stored
+    value and takes the default without any migration step; an
+    unparsable stored value resolves to v3 with a warning.
+
+    Args:
+        entry: The config entry being configured.
+
+    Returns:
+        The reservation API value to offer as the form default.
+    """
+    stored = entry.options.get(CONF_RESERVATIONS_API)
+    if stored is None:
+        return DEFAULT_RESERVATIONS_API
+    return resolve_reservations_api(stored)

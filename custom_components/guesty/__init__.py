@@ -42,13 +42,17 @@ from custom_components.guesty.const import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
     CONF_RESERVATION_SCAN_INTERVAL,
+    CONF_RESERVATIONS_API,
     CONF_SCAN_INTERVAL,
     CONF_SELECTED_LISTINGS,
     DEFAULT_CF_SCAN_INTERVAL,
     DEFAULT_RESERVATION_SCAN_INTERVAL,
+    DEFAULT_RESERVATIONS_API,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    LEGACY_RESERVATIONS_RETIREMENT_DATE,
     PLATFORMS,
+    RESERVATIONS_API_LEGACY,
     SERVICE_GET_CUSTOM_FIELD_VALUES,
     SERVICE_GET_CUSTOM_FIELDS,
     SERVICE_SEND_GUEST_MESSAGE,
@@ -250,10 +254,23 @@ async def async_setup_entry(
     if persisted is not None and not persisted.is_expired():
         token_manager.seed_token(persisted)
 
+    reservations_api = entry.options.get(
+        CONF_RESERVATIONS_API,
+        DEFAULT_RESERVATIONS_API,
+    )
     api_client = GuestyApiClient(
         token_manager=token_manager,
         http_client=http_client,
+        reservations_api=reservations_api,
     )
+
+    if api_client.reservations_api == RESERVATIONS_API_LEGACY:
+        _LOGGER.warning(
+            "The Guesty legacy reservation API is in use; Guesty "
+            "retires it on %s. Set the 'Reservations API' option "
+            "to 'v3' before then",
+            LEGACY_RESERVATIONS_RETIREMENT_DATE,
+        )
 
     try:
         await api_client.test_connection()
@@ -686,6 +703,10 @@ async def async_setup_entry(
         )
 
     _prev_selected = entry.options.get(CONF_SELECTED_LISTINGS)
+    _prev_reservations_api = entry.options.get(
+        CONF_RESERVATIONS_API,
+        DEFAULT_RESERVATIONS_API,
+    )
     _prev_intervals: dict[str, int] = {
         CONF_SCAN_INTERVAL: entry.options.get(
             CONF_SCAN_INTERVAL,
@@ -709,16 +730,19 @@ async def async_setup_entry(
 
         When the selected-listings filter changes, reloads the
         config entry so that all entities and devices are cleanly
-        torn down and recreated with the new filter.  When only
-        polling intervals change, updates coordinators in place
-        and triggers an immediate refresh.  When nothing changes,
-        no action is taken.
+        torn down and recreated with the new filter.  When the
+        reservation API selection changes, reloads so the client
+        rebuilds on the newly selected path.  When only polling
+        intervals change, updates coordinators in place and
+        triggers an immediate refresh.  When nothing changes, no
+        action is taken.
 
         Args:
             hass: Home Assistant instance.
             entry: The config entry that was updated.
         """
         nonlocal _prev_selected, _prev_intervals
+        nonlocal _prev_reservations_api
 
         new_selected = entry.options.get(CONF_SELECTED_LISTINGS)
         if new_selected != _prev_selected:
@@ -745,6 +769,15 @@ async def async_setup_entry(
                             )
                             break
 
+            await hass.config_entries.async_reload(entry.entry_id)
+            return
+
+        new_reservations_api = entry.options.get(
+            CONF_RESERVATIONS_API,
+            DEFAULT_RESERVATIONS_API,
+        )
+        if new_reservations_api != _prev_reservations_api:
+            _prev_reservations_api = new_reservations_api
             await hass.config_entries.async_reload(entry.entry_id)
             return
 

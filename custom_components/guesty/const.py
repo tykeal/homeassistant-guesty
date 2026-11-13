@@ -4,6 +4,8 @@
 
 from homeassistant.const import Platform
 
+from custom_components.guesty.api import const as api_const
+
 # Integration domain identifier.
 DOMAIN: str = "guesty"
 
@@ -63,3 +65,18 @@ CONF_SELECTED_LISTINGS: str = "selected_listings"
 
 # Configuration key for the tag-based listing pre-filter.
 CONF_TAG_FILTER: str = "tag_filter"
+
+# Configuration key for the reservation API path selector.
+CONF_RESERVATIONS_API: str = "reservations_api"
+
+# Reservations v3 API path selector value.
+RESERVATIONS_API_V3: str = api_const.RESERVATIONS_API_V3
+
+# Legacy Open API reservations path selector value.
+RESERVATIONS_API_LEGACY: str = api_const.RESERVATIONS_API_LEGACY
+
+# Default reservation API path. Flipped to v3 by Feature 008 Phase 8.
+DEFAULT_RESERVATIONS_API: str = RESERVATIONS_API_LEGACY
+
+# Date Guesty retires the legacy Open API reservation resources.
+LEGACY_RESERVATIONS_RETIREMENT_DATE: str = api_const.LEGACY_RESERVATIONS_RETIREMENT_DATE
