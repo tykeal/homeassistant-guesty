@@ -14,8 +14,12 @@ SPDX-License-Identifier: Apache-2.0
 - Pre-commit hooks installed (`pre-commit install`)
 - Working dev environment: `uv sync --group dev`
 
-No Guesty account with v3 access is required — and none is available.
-All development is against synthetic dictionary fixtures.
+No Guesty account with v3 access is required for development: all of it
+runs against synthetic dictionary fixtures. This project still has no
+account of its own, but an external user has offered theirs for
+**pre-release** verification, starting with test reservations
+(`research.md` R14). That run happens once an implementation exists; it
+changes nothing about how you develop or test here.
 
 ## Development Environment Setup
 
@@ -37,6 +41,7 @@ uv run pytest tests/api/test_actions.py -v
 uv run pytest tests/test_coordinator.py -v
 uv run pytest tests/test_reservation_sensor.py -v
 uv run pytest tests/test_identity.py -v
+uv run pytest tests/api/test_reservations_fallback.py -v
 
 uv run pytest tests/ --cov=custom_components/guesty --cov-report=term-missing
 ```
@@ -57,12 +62,14 @@ prek run --all-files
 | --- | --- |
 | `api/reservations_legacy.py` | today's `get_reservations`, moved verbatim |
 | `api/reservations_v3.py` | the v3 source: requests, paging, mapping |
+| `api/reservations_fallback.py` | legacy by-id lookup for v3 not-found |
 | `api/guest_cache.py` | guest lookups and their TTL/LRU cache |
 | `api/models.py` | `GuestyStaySegment`, `GuestyReservation.stay` |
 | `api/const.py` | v3 resources, status maps, budget constants |
 | `api/actions.py` | the two v3 write resources |
 | `identity.py` | confirmation-code baseline, `Store`-backed |
 | `coordinator.py` | trim, attribution, projection, diagnostics |
+| `diagnostics.py` | the config-entry diagnostics download |
 | `config_flow.py` | the `reservations_api` option |
 
 `api/` keeps zero Home Assistant imports; the identity guard and the
@@ -117,12 +124,15 @@ true.
 
 ## Reading diagnostics
 
-The config-entry diagnostics download gains a `reservations` block
-(FR-042): the active path, pages fetched, reservations received, trimmed
-and skipped, the raw status histogram, the segment-count histogram,
-unknown-listing counts, guest lookups issued, cache hits and failures,
-and whether an identity mismatch aborted the last refresh. No guest
-details and no confirmation codes appear there.
+FR-042 requires two surfaces carrying the same numbers: a per-refresh
+DEBUG log line and a `reservations` block in the config-entry
+diagnostics download. The block carries the active path, pages fetched,
+reservations received, trimmed and skipped, the raw status histogram,
+the segment-count histogram, unknown-listing counts, guest lookups
+issued, cache hits and failures, whether an identity mismatch aborted
+the last refresh, the bootstrap-sweep page count, and the fallback
+counters and the ids currently served from the fallback. No guest
+details and no confirmation code values appear there.
 
 ## Things that will bite you
 
@@ -137,5 +147,16 @@ details and no confirmation codes appear there.
   completed stays are filtered out server-side before mapping.
 - **Never log a guest name, phone, email or confirmation code,** at any
   level.
+- **A reservation missing from a v3 result is not necessarily gone.**
+  Guesty's backfill is still running, so a previously known reservation
+  that vanishes is looked up on the legacy resource by id before it is
+  allowed to disappear (FR-050 to FR-057). Do not "simplify" that away.
+- **A fallback-sourced reservation is read-only.** Its id came from a
+  legacy response, and Guesty rejects such ids on v3 resources, so every
+  write against it is refused loudly (FR-055).
+- **Never use a confirmation code, `originId` or any other external
+  reference as a v3 lookup key.** v3 answers "Reservation not found".
+  The confirmation code is a cross-check and a sensor attribute only
+  (FR-031e).
 - **Every v3 behaviour here is documentation-derived.** Before a stable
   release, work through the verification checklist in `research.md`.

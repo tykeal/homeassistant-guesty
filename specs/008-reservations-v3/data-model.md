@@ -127,6 +127,12 @@ Returned by both sources so the coordinator is source-agnostic.
 | `pages` | `int` | pages fetched (FR-042) |
 | `status_counts` | `Mapping[str, int]` | raw status histogram |
 | `segment_histogram` | `Mapping[int, int]` | segments per reservation |
+| `bootstrap_pages` | `int` | legacy bootstrap pages (FR-001 #1) |
+| `fallback` | `FallbackCounters` | see §9 (FR-057) |
+| `fallback_ids` | `tuple[str, ...]` | ids served from the fallback |
+
+The legacy source leaves the last three at their zero values; only the
+v3 source populates them.
 
 ## 2. Guest cache (`custom_components/guesty/api/guest_cache.py`)
 
@@ -225,6 +231,7 @@ Persisted with `homeassistant.helpers.storage.Store`, key
 | `updated` | `str` | ISO timestamp of the last successful refresh |
 | `codes` | `dict[str, str]` | confirmation code → reservation id |
 | `bootstrap_codes` | `dict[str, str] \| None` | retained legacy map |
+| `fallback_codes` | `dict[str, str] \| None` | fallback-sourced map |
 
 | Rule | Behaviour |
 | --- | --- |
@@ -250,9 +257,18 @@ not clear the remainder. An unchecked entry is retired only under the
 explicit safe policy that its reservation checked out more than
 `past_days` ago and so can never recur in a future window.
 
+`fallback_codes` holds the code-to-id mappings learned from
+fallback-sourced reservations (§9). It is kept apart from `codes` for
+the same reason as `bootstrap_codes`: a fallback record is
+legacy-sourced, so letting it into `codes` would allow legacy evidence
+to confirm itself. Entries are compared like any other and are dropped
+as soon as the reservation reappears in a v3 result. Continuity is never
+promoted to `verified` on `fallback_codes` alone.
+
 A write is permitted only when the baseline is usable, its `continuity`
-is not `unconfirmed`, the last refresh was not aborted as ambiguous, and
-the target reservation carries a confirmation code.
+is not `unconfirmed`, the last refresh was not aborted as ambiguous, the
+target reservation carries a confirmation code, and the target is not
+fallback-sourced (FR-055).
 
 Confirmation code **values** are persisted (they are the key of the
 check) but never logged (FR-021, NFR-009).
@@ -286,7 +302,14 @@ existing options listener and changes no entity (FR-038, SC-008).
 | `V3_STATUS_MAP` | see §1.4 |
 | `V3_STATUS_FILTER_MAP` | see §1.5 |
 | `HOLD_STATUSES` | `frozenset({"alteration"})` |
-| `MAX_LISTING_IDS_PER_SEARCH` | `50` — reserved for OQ-008; unused |
+| `RESERVATION_BY_ID_LEGACY_PATH` | `/reservations/{reservation_id}` |
+| `MAX_LEGACY_FALLBACK_LOOKUPS_PER_REFRESH` | `20` |
+| `LEGACY_FALLBACK_RECHECK_SECONDS` | `3600` |
+
+No `MAX_LISTING_IDS_PER_SEARCH` constant is added. A chunk size of 50 is
+recorded in `research.md` R6 as a design parameter for OQ-008 only, and
+T024 forbids introducing an unused constant for a deferred option; it
+becomes a constant if and when OQ-008 is adopted.
 
 `RESERVATIONS_ENDPOINT`, `RESERVATIONS_FIELDS`, `ACTIONABLE_STATUSES`,
 `VALID_RESERVATION_STATUSES` and `NOTE_SEPARATOR` stay as they are; the
@@ -314,3 +337,36 @@ Unchanged. For completeness, what exists today and continues to exist:
 
 No entity is added, removed, renamed or re-created by this feature
 (NFR-003).
+
+## 9. Legacy not-found fallback state
+
+(`custom_components/guesty/api/reservations_fallback.py`)
+
+Held in memory by `ReservationFallbackSource`, per config entry, and not
+persisted — a persisted absence could permanently hide a reservation
+that returns, and the candidate set is cheaply re-learned from the
+identity baseline after a restart.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `served` | `dict[str, ServedRecord]` | id → record and fetch time |
+| `confirmed_absent` | `set[str]` | legacy said not found; retired |
+| `deferred` | `tuple[str, ...]` | over the per-refresh cap |
+| `disabled` | `bool` | retirement detected (FR-056) |
+
+`ServedRecord` is a frozen dataclass of `reservation`
+(`GuestyReservation`) and `fetched_at` (`datetime`). A record is
+re-looked-up only once `fetched_at` is older than
+`LEGACY_FALLBACK_RECHECK_SECONDS`, and is dropped the moment its
+reservation reappears in a v3 result.
+
+`FallbackCounters` is a frozen dataclass of `attempted`, `served`,
+`succeeded`, `confirmed_absent`, `failed` and `deferred` integers,
+carried on `ReservationFetchResult` and surfaced in both diagnostics
+surfaces (FR-042, FR-057). It carries counts and identifiers only, never
+guest data.
+
+Every reservation published from `served` is flagged fallback-sourced
+for the coordinator, which uses the flag for the write refusal (FR-055)
+and the diagnostics listing — never for a sensor attribute, which would
+break attribute-key parity (SC-002, NFR-004).

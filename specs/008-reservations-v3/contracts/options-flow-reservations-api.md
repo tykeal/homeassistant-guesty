@@ -8,7 +8,7 @@ SPDX-License-Identifier: Apache-2.0
 **Consumer**: the existing options flow in
 `custom_components/guesty/config_flow.py`
 **Purpose**: let an operator move an entry between the v3 and legacy
-reservation paths without reconfiguring anything else (FR-035)
+reservation paths without reconfiguring anything else (FR-036)
 
 ## Option
 
