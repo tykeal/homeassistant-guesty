@@ -7,9 +7,10 @@ Also includes Phase 4 (T025) transient failure retry tests.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -17,14 +18,29 @@ import respx
 from httpx import Response
 
 from custom_components.guesty.api.auth import GuestyTokenManager
-from custom_components.guesty.api.client import GuestyApiClient
-from custom_components.guesty.api.const import BASE_URL, TOKEN_URL
+from custom_components.guesty.api.client import (
+    GuestyApiClient,
+    resolve_reservations_api,
+)
+from custom_components.guesty.api.const import (
+    BASE_URL,
+    RESERVATIONS_API_LEGACY,
+    RESERVATIONS_API_V3,
+    TOKEN_URL,
+)
 from custom_components.guesty.api.exceptions import (
     GuestyAuthError,
     GuestyConnectionError,
     GuestyResponseError,
 )
-from custom_components.guesty.api.models import CachedToken
+from custom_components.guesty.api.models import (
+    CachedToken,
+    GuestyReservation,
+    ReservationFetchResult,
+)
+from custom_components.guesty.api.reservations_legacy import (
+    LegacyReservationSource,
+)
 from tests.conftest import (
     FAKE_CLIENT_ID,
     FAKE_CLIENT_SECRET,
@@ -36,11 +52,13 @@ from tests.conftest import (
 
 def _make_client(
     storage: FakeTokenStorage | None = None,
+    reservations_api: str | None = None,
 ) -> tuple[GuestyApiClient, GuestyTokenManager, FakeTokenStorage]:
     """Create a GuestyApiClient with test defaults.
 
     Args:
         storage: Optional FakeTokenStorage to use.
+        reservations_api: Optional reservation path selector.
 
     Returns:
         Tuple of (api_client, token_manager, storage).
@@ -55,9 +73,13 @@ def _make_client(
         storage=storage,
         refresh_buffer=0,
     )
+    kwargs: dict[str, Any] = {}
+    if reservations_api is not None:
+        kwargs["reservations_api"] = reservations_api
     client = GuestyApiClient(
         token_manager=token_manager,
         http_client=http,
+        **kwargs,
     )
     return client, token_manager, storage
 
@@ -1103,7 +1125,7 @@ class TestGetReservations:
         """Date boundaries computed from past/future days."""
         from unittest.mock import patch as _patch
 
-        from custom_components.guesty.api.client import (
+        from custom_components.guesty.api.reservations_legacy import (
             datetime as client_datetime,
         )
 
@@ -1122,7 +1144,7 @@ class TestGetReservations:
         ]
         client, _, _ = _make_client()
         with _patch(
-            "custom_components.guesty.api.client.datetime",
+            "custom_components.guesty.api.reservations_legacy.datetime",
             wraps=client_datetime,
         ) as mock_dt:
             mock_dt.now.return_value = fixed_now
@@ -1339,7 +1361,7 @@ class TestGetReservations:
         client, _, _ = _make_client()
         with caplog.at_level(
             logging.DEBUG,
-            logger="custom_components.guesty.api.client",
+            logger="custom_components.guesty.api.reservations_legacy",
         ):
             result = await client.get_reservations()
         assert len(result) == 1
@@ -1917,3 +1939,170 @@ class TestGetAccountId:
             match="missing _id",
         ):
             await client.get_account_id()
+
+
+# ── Reservation source seam (T007, T013) ────────────────────────────
+
+
+class TestReservationsApiResolution:
+    """Tests for resolve_reservations_api()."""
+
+    def test_legacy_resolves_to_legacy(self) -> None:
+        """The literal 'legacy' is preserved."""
+        assert resolve_reservations_api("legacy") == RESERVATIONS_API_LEGACY
+
+    def test_v3_resolves_to_v3(self) -> None:
+        """The literal 'v3' is preserved."""
+        assert resolve_reservations_api("v3") == RESERVATIONS_API_V3
+
+    def test_unknown_value_resolves_to_v3_with_warning(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An unparsable stored value resolves to v3 with a WARNING."""
+        with caplog.at_level(
+            logging.WARNING,
+            logger="custom_components.guesty.api.client",
+        ):
+            assert resolve_reservations_api("nonsense") == RESERVATIONS_API_V3
+        assert "nonsense" in caplog.text
+        assert "v3" in caplog.text
+
+    def test_non_string_resolves_to_v3_with_warning(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A non-string stored value resolves to v3 with a WARNING."""
+        with caplog.at_level(
+            logging.WARNING,
+            logger="custom_components.guesty.api.client",
+        ):
+            assert resolve_reservations_api(17) == RESERVATIONS_API_V3
+        assert caplog.records
+
+    def test_client_exposes_resolved_value(self) -> None:
+        """The client exposes the resolved reservations_api value."""
+        http = httpx.AsyncClient()
+        token_manager = GuestyTokenManager(
+            client_id=FAKE_CLIENT_ID,
+            client_secret=FAKE_CLIENT_SECRET,
+            http_client=http,
+            storage=FakeTokenStorage(),
+            refresh_buffer=0,
+        )
+        client = GuestyApiClient(
+            token_manager=token_manager,
+            http_client=http,
+            reservations_api="nonsense",
+        )
+        assert client.reservations_api == RESERVATIONS_API_V3
+
+    def test_client_defaults_to_legacy(self) -> None:
+        """The client default matches the staged legacy default."""
+        client, _, _ = _make_client()
+        assert client.reservations_api == RESERVATIONS_API_LEGACY
+
+
+class TestReservationSourceDelegation:
+    """Tests for get_reservations() source delegation (T007)."""
+
+    async def test_delegates_to_legacy_source(self) -> None:
+        """A legacy client dispatches to the legacy source."""
+        client, _, _ = _make_client(reservations_api=RESERVATIONS_API_LEGACY)
+        reservation = GuestyReservation.from_api_dict(
+            _make_reservation_dict(),
+        )
+        assert reservation is not None
+        fetch = AsyncMock(
+            return_value=ReservationFetchResult(
+                reservations=(reservation,),
+                pages=2,
+            ),
+        )
+        with patch.object(LegacyReservationSource, "fetch", fetch):
+            result = await client.get_reservations(
+                past_days=7,
+                future_days=14,
+            )
+
+        assert result == [reservation]
+        fetch.assert_awaited_once_with(
+            past_days=7,
+            future_days=14,
+            statuses=None,
+        )
+
+    @respx.mock
+    async def test_legacy_source_issues_two_sequences(self) -> None:
+        """The legacy source issues the two historical requests."""
+        from custom_components.guesty.api.const import (
+            RESERVATIONS_FIELDS,
+            RESERVATIONS_PAGE_SIZE,
+        )
+
+        _mock_token_endpoint()
+        route = respx.get(f"{BASE_URL}/reservations")
+        route.side_effect = [
+            Response(
+                200,
+                json=_make_reservations_page(
+                    [_make_reservation_dict(_id="res-0")],
+                ),
+            ),
+            Response(200, json=_make_reservations_page([])),
+        ]
+        client, _, _ = _make_client(reservations_api=RESERVATIONS_API_LEGACY)
+        source = LegacyReservationSource(client)
+        result = await source.fetch(
+            past_days=30,
+            future_days=365,
+            statuses=None,
+        )
+
+        assert len(route.calls) == 2
+        primary = route.calls[0].request.url.params
+        assert primary["limit"] == str(RESERVATIONS_PAGE_SIZE)
+        assert primary["sort"] == "_id"
+        assert primary["fields"] == " ".join(RESERVATIONS_FIELDS)
+        assert "checkIn" in primary
+        assert "checkOut" in primary
+        secondary = route.calls[1].request.url.params
+        assert secondary["status"] == "checked_in"
+        assert "checkIn" not in secondary
+        assert len(result.reservations) == 1
+
+    @respx.mock
+    async def test_legacy_source_returns_fetch_result(self) -> None:
+        """The legacy source populates the counters it can (T009)."""
+        _mock_token_endpoint()
+        route = respx.get(f"{BASE_URL}/reservations")
+        route.side_effect = [
+            Response(
+                200,
+                json=_make_reservations_page(
+                    [
+                        _make_reservation_dict(_id="res-0"),
+                        _make_reservation_dict(
+                            _id="res-1",
+                            status="checked_in",
+                        ),
+                    ],
+                ),
+            ),
+            Response(200, json=_make_reservations_page([])),
+        ]
+        client, _, _ = _make_client(reservations_api=RESERVATIONS_API_LEGACY)
+        source = LegacyReservationSource(client)
+        result = await source.fetch(
+            past_days=30,
+            future_days=365,
+            statuses=None,
+        )
+
+        assert isinstance(result, ReservationFetchResult)
+        assert result.pages == 2
+        assert dict(result.status_counts) == {
+            "confirmed": 1,
+            "checked_in": 1,
+        }
+        assert dict(result.segment_histogram) == {}

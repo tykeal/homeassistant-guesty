@@ -45,7 +45,12 @@ from custom_components.guesty.api.models import (
     GuestyReservationsResponse,
     MessageDeliveryResult,
     MessageRequest,
+    ReservationFetchResult,
+    ReservationSource,
     TokenStorage,
+)
+from custom_components.guesty.api.reservations_legacy import (
+    LegacyReservationSource,
 )
 
 __all__ = [
@@ -77,7 +82,10 @@ __all__ = [
     "GuestyReservationsResponse",
     "GuestyResponseError",
     "GuestyTokenManager",
+    "LegacyReservationSource",
     "MessageDeliveryResult",
     "MessageRequest",
+    "ReservationFetchResult",
+    "ReservationSource",
     "TokenStorage",
 ]
