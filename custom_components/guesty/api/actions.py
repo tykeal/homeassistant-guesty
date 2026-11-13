@@ -12,11 +12,13 @@ import httpx
 from custom_components.guesty.api.client import GuestyApiClient
 from custom_components.guesty.api.const import (
     CALENDAR_ENDPOINT,
+    LEGACY_RESERVATIONS_RETIREMENT_DATE,
     LISTINGS_ENDPOINT,
     MAX_DESCRIPTION_LENGTH,
     MAX_NOTE_LENGTH,
     MAX_TASK_TITLE_LENGTH,
     NOTE_SEPARATOR,
+    RESERVATIONS_API_LEGACY,
     RESERVATIONS_ENDPOINT,
     TASKS_ENDPOINT,
     VALID_CALENDAR_OPS,
@@ -89,7 +91,7 @@ class GuestyActionsClient:
 
         if not get_response.is_success:
             raise GuestyActionError(
-                self._error_detail(
+                self._reservation_error_detail(
                     "Failed to fetch reservation",
                     reservation_id,
                     get_response,
@@ -125,7 +127,7 @@ class GuestyActionsClient:
 
         if not put_response.is_success:
             raise GuestyActionError(
-                self._error_detail(
+                self._reservation_error_detail(
                     "Failed to update reservation note",
                     reservation_id,
                     put_response,
@@ -370,7 +372,7 @@ class GuestyActionsClient:
 
         if not response.is_success:
             raise GuestyActionError(
-                self._error_detail(
+                self._reservation_error_detail(
                     "Failed to set reservation status",
                     reservation_id,
                     response,
@@ -385,6 +387,37 @@ class GuestyActionsClient:
         )
 
     # ── Error detail helper ────────────────────────────────────
+
+    def _reservation_error_detail(
+        self,
+        prefix: str,
+        reservation_id: str,
+        response: httpx.Response,
+    ) -> str:
+        """Build an error message for a reservation write failure.
+
+        A 404 or 410 while the legacy reservation path is active is
+        retirement-shaped, so the message tells the operator to set
+        the ``reservations_api`` option back to ``v3`` (FR-039).
+
+        Args:
+            prefix: Error message prefix.
+            reservation_id: Targeted reservation identifier.
+            response: The HTTP response with the error.
+
+        Returns:
+            Formatted error message, with the rollback instruction
+            appended when the failure is retirement-shaped.
+        """
+        detail = self._error_detail(prefix, reservation_id, response)
+        legacy_active = self._api_client.reservations_api == RESERVATIONS_API_LEGACY
+        if legacy_active and response.status_code in (404, 410):
+            detail += (
+                ". The legacy Guesty reservation resources are "
+                f"retiring on {LEGACY_RESERVATIONS_RETIREMENT_DATE}; "
+                "set the reservations_api option back to 'v3'"
+            )
+        return detail
 
     @staticmethod
     def _error_detail(

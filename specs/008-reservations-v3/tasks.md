@@ -113,7 +113,7 @@ change; each task produces a recorded decision.
 
 **Rollback**: none needed — no production code is touched.
 
-- [ ] T001 Record the bootstrap-sweep contradiction as an
+- [x] T001 Record the bootstrap-sweep contradiction as an
   analyze-stage finding: `plan.md` § "Identity guard" and
   § "Complexity Tracking" require one legacy page sequence at the
   first v3 setup of an upgrading entry, which contradicts FR-001,
@@ -121,7 +121,7 @@ change; each task produces a recorded decision.
   Produce the finding in the analyze stage's output; do **not** edit
   `spec.md` in this task. Blocks T002. **Satisfied by `analysis.md`
   finding A1; tick this box in the implementation pull request.**
-- [ ] T002 Land the specification amendment arising from T001 in
+- [x] T002 Land the specification amendment arising from T001 in
   `specs/008-reservations-v3/spec.md`: scope FR-001 and SC-001 to
   steady-state **refreshes** and FR-034 to **per-refresh** cost, and
   record the bootstrap sweep as a bounded, one-time, pre-publication
@@ -131,7 +131,7 @@ change; each task produces a recorded decision.
   is scoped to the per-refresh comparison and
   the sweep is specified as FR-031d. T067, T073 and T074 are
   unblocked. Tick this box in the implementation pull request.
-- [ ] T003 Decide OQ-009, the delivery mechanism for the FR-046
+- [x] T003 Decide OQ-009, the delivery mechanism for the FR-046
   financial-sensor deprecation notice, and record the decision and
   rationale in `specs/008-reservations-v3/research.md` as a new
   decision section during the analyze stage. **Recommendation: ship
@@ -153,7 +153,7 @@ change; each task produces a recorded decision.
   recommendation** — both surfaces — and recorded in `research.md` R15
   and spec OQ-009. T087, T094 and T095 are unblocked and T075 uses the
   same mechanism. Tick this box in the implementation pull request.
-- [ ] T004 Record for the analyze stage a **new, minor discrepancy**
+- [x] T004 Record for the analyze stage a **new, minor discrepancy**
   found while writing this task list: `plan.md` § "Diagnostics
   (FR-042)" specifies DEBUG log lines only, while
   `specs/008-reservations-v3/quickstart.md` § "Reading diagnostics"
@@ -192,31 +192,31 @@ commits. No user-visible behaviour changes while the default is
 
 ### Phase 1 Tests (Red) — write first, verify they FAIL
 
-- [ ] T005 [US6] Write tests for the `reservations_api` option in the
+- [x] T005 [US6] Write tests for the `reservations_api` option in the
   options flow: the option is offered with exactly the values `v3` and
   `legacy`, an entry created before this feature resolves without a
   migration step, and an unparsable stored value resolves to `v3` with
   a WARNING, in `tests/test_config_flow.py` (FR-036, FR-038,
   contracts/options-flow-reservations-api.md).
-- [ ] T006 [P] [US6] Write tests asserting the config-entry update
+- [x] T006 [P] [US6] Write tests asserting the config-entry update
   listener reloads the entry when **only** `reservations_api` changes,
   covering today's early return when listing selection and polling
   intervals are unchanged (`__init__.py:723-770`), in
   `tests/test_init.py` (FR-038).
-- [ ] T007 [P] [US6] Write tests for reservation **source delegation**:
+- [x] T007 [P] [US6] Write tests for reservation **source delegation**:
   `GuestyApiClient.get_reservations()` dispatches to the legacy source
   when `reservations_api="legacy"`, the legacy source issues exactly
   the requests the previous release issued (two paginated sequences,
   `api/client.py:277-287`), and every existing legacy reservation test
   still passes against the extracted module, in
   `tests/api/test_client.py` (FR-040).
-- [ ] T008 [P] [US6] Write tests for legacy-path deprecation
+- [x] T008 [P] [US6] Write tests for legacy-path deprecation
   signalling: a single startup WARNING naming the 2027-03-01
   retirement per setup, and a retirement-shaped failure (HTTP 404 or
   410 on `/v1/reservations/{id}`) re-raised with a message instructing
   the user to set the option back to `v3`, in `tests/test_init.py` and
   `tests/api/test_actions.py` (FR-039).
-- [ ] T009 [P] [US6] Write tests for `ReservationFetchResult`: that it
+- [x] T009 [P] [US6] Write tests for `ReservationFetchResult`: that it
   carries `reservations`, `pages`, `status_counts` and
   `segment_histogram`, and that the **legacy** source returns it and
   populates the counters it can, in `tests/api/test_models.py`
@@ -228,46 +228,46 @@ commits. No user-visible behaviour changes while the default is
 
 ### Phase 1 Implementation (Green)
 
-- [ ] T010 [P] [US6] Add `CONF_RESERVATIONS_API`,
+- [x] T010 [P] [US6] Add `CONF_RESERVATIONS_API`,
   `RESERVATIONS_API_V3`, `RESERVATIONS_API_LEGACY`,
   `DEFAULT_RESERVATIONS_API = RESERVATIONS_API_LEGACY` (flipped to v3
   by T092) and `LEGACY_RESERVATIONS_RETIREMENT_DATE = "2027-03-01"` to
   `custom_components/guesty/const.py` (FR-036, FR-039).
-- [ ] T011 [US6] Add the frozen dataclass `ReservationFetchResult` and
+- [x] T011 [US6] Add the frozen dataclass `ReservationFetchResult` and
   the `ReservationSource` protocol
   (`fetch(past_days, future_days, statuses) -> ReservationFetchResult`)
   to `custom_components/guesty/api/models.py`, with zero HA imports
   (FR-042, NFR-007). Depends on T009.
-- [ ] T012 [US6] Create `custom_components/guesty/api/reservations_legacy.py`
+- [x] T012 [US6] Create `custom_components/guesty/api/reservations_legacy.py`
   holding today's `get_reservations()` body
   (`api/client.py:227-390`, `api/client.py:621-648`) moved
   **verbatim** behind the `ReservationSource` protocol, so FR-040's
   behavioural identity holds by construction. Depends on T011.
-- [ ] T013 [US6] Add a `reservations_api: Literal["v3", "legacy"]`
+- [x] T013 [US6] Add a `reservations_api: Literal["v3", "legacy"]`
   constructor argument to `GuestyApiClient` and make
   `get_reservations()` delegate to the selected source in
   `custom_components/guesty/api/client.py`; an unrecognized value
   resolves to `v3` with a WARNING. Depends on T012.
-- [ ] T014 [US6] Make `GuestyActionsClient` read the same setting from
+- [x] T014 [US6] Make `GuestyActionsClient` read the same setting from
   the client it already holds so reads and writes flip together, and
   add the retirement-shaped (404/410) legacy error message, in
   `custom_components/guesty/api/actions.py` (FR-036, FR-039). Depends
   on T013.
-- [ ] T015 [US6] Add the `reservations_api` selector to the existing
+- [x] T015 [US6] Add the `reservations_api` selector to the existing
   options flow in `custom_components/guesty/config_flow.py` with two
   values and the current default (FR-036, FR-038).
-- [ ] T016 [P] [US6] Add the option label, description and both value
+- [x] T016 [P] [US6] Add the option label, description and both value
   labels to `custom_components/guesty/strings.json` and
   `custom_components/guesty/translations/en.json`.
-- [ ] T017 [US6] Pass the option from `entry.options` into the client
+- [x] T017 [US6] Pass the option from `entry.options` into the client
   at setup and extend the update listener to track `reservations_api`
   alongside `_prev_selected` and `_prev_intervals`, reloading the
   entry when it changes, in `custom_components/guesty/__init__.py`
   (FR-038). Depends on T013, T015.
-- [ ] T018 [P] [US6] Export `ReservationFetchResult`,
+- [x] T018 [P] [US6] Export `ReservationFetchResult`,
   `ReservationSource` and the legacy source from
   `custom_components/guesty/api/__init__.py`.
-- [ ] T019 [US6] Log the FR-039 startup deprecation WARNING naming
+- [x] T019 [US6] Log the FR-039 startup deprecation WARNING naming
   2027-03-01 exactly once per setup when the legacy path is active, in
   `custom_components/guesty/__init__.py`. Depends on T017.
 

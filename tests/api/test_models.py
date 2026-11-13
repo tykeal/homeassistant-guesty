@@ -27,6 +27,8 @@ from custom_components.guesty.api.models import (
     GuestyReservationsResponse,
     MessageDeliveryResult,
     MessageRequest,
+    ReservationFetchResult,
+    ReservationSource,
     TokenStorage,
     _parse_custom_fields_array,
 )
@@ -1989,3 +1991,78 @@ class TestActionResultFrozen:
         )
         with pytest.raises(AttributeError):
             result.success = False  # type: ignore[misc]
+
+
+class TestReservationFetchResult:
+    """Tests for the ReservationFetchResult DTO (T009)."""
+
+    def test_defaults_are_empty(self) -> None:
+        """An empty result carries no reservations and zero pages."""
+        result = ReservationFetchResult()
+        assert result.reservations == ()
+        assert result.pages == 0
+        assert dict(result.status_counts) == {}
+        assert dict(result.segment_histogram) == {}
+
+    def test_carries_reservations_and_counters(self) -> None:
+        """All four documented fields round-trip unchanged."""
+        reservation = GuestyReservation.from_api_dict(
+            _make_reservation_dict(),
+        )
+        assert reservation is not None
+        result = ReservationFetchResult(
+            reservations=(reservation,),
+            pages=3,
+            status_counts={"confirmed": 1},
+            segment_histogram={1: 1},
+        )
+        assert result.reservations == (reservation,)
+        assert result.pages == 3
+        assert dict(result.status_counts) == {"confirmed": 1}
+        assert dict(result.segment_histogram) == {1: 1}
+
+    def test_frozen(self) -> None:
+        """ReservationFetchResult fields cannot be modified."""
+        result = ReservationFetchResult()
+        with pytest.raises(AttributeError):
+            result.pages = 2  # type: ignore[misc]
+
+
+class TestReservationSourceProtocol:
+    """Tests for the ReservationSource protocol interface (T009)."""
+
+    def test_conforming_class_satisfies_protocol(self) -> None:
+        """A class with a matching fetch() satisfies the protocol."""
+
+        class FakeSource:
+            """Minimal conforming reservation source."""
+
+            async def fetch(
+                self,
+                *,
+                past_days: int,
+                future_days: int,
+                statuses: frozenset[str] | None = None,
+            ) -> ReservationFetchResult:
+                """Return an empty fetch result.
+
+                Args:
+                    past_days: Past window in days.
+                    future_days: Future window in days.
+                    statuses: Statuses to request.
+
+                Returns:
+                    An empty ReservationFetchResult.
+                """
+                return ReservationFetchResult()
+
+        source: ReservationSource = FakeSource()
+        assert isinstance(source, ReservationSource)
+
+    def test_non_conforming_class_fails_protocol(self) -> None:
+        """A class without fetch() does not satisfy the protocol."""
+
+        class NotASource:
+            """A class that is not a reservation source."""
+
+        assert not isinstance(NotASource(), ReservationSource)

@@ -26,13 +26,18 @@ from custom_components.guesty.const import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
     CONF_RESERVATION_SCAN_INTERVAL,
+    CONF_RESERVATIONS_API,
     CONF_SCAN_INTERVAL,
     CONF_SELECTED_LISTINGS,
     CONF_TAG_FILTER,
     DEFAULT_CF_SCAN_INTERVAL,
     DEFAULT_RESERVATION_SCAN_INTERVAL,
+    DEFAULT_RESERVATIONS_API,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    LEGACY_RESERVATIONS_RETIREMENT_DATE,
+    RESERVATIONS_API_LEGACY,
+    RESERVATIONS_API_V3,
     SERVICE_SET_CUSTOM_FIELD,
 )
 from tests.conftest import device_for_listing, device_in_registry
@@ -4152,3 +4157,276 @@ class TestSendGuestMessageService:
             DOMAIN,
             SERVICE_SEND_GUEST_MESSAGE,
         )
+
+
+class TestReservationsApiOptionReload:
+    """Tests for the reservations_api option listener (T006)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_reload_when_only_reservations_api_changes(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Flipping only reservations_api reloads the entry."""
+        entry = _make_entry(
+            options={
+                CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
+                CONF_RESERVATION_SCAN_INTERVAL: DEFAULT_RESERVATION_SCAN_INTERVAL,
+                CONF_CF_SCAN_INTERVAL: DEFAULT_CF_SCAN_INTERVAL,
+                CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY,
+            },
+        )
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        with patch.object(
+            hass.config_entries,
+            "async_reload",
+            new_callable=AsyncMock,
+        ) as mock_reload:
+            hass.config_entries.async_update_entry(
+                entry,
+                options={
+                    CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
+                    CONF_RESERVATION_SCAN_INTERVAL: (DEFAULT_RESERVATION_SCAN_INTERVAL),
+                    CONF_CF_SCAN_INTERVAL: DEFAULT_CF_SCAN_INTERVAL,
+                    CONF_RESERVATIONS_API: RESERVATIONS_API_V3,
+                },
+            )
+            await hass.async_block_till_done()
+
+            mock_reload.assert_awaited_once()
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_no_reload_when_reservations_api_unchanged(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Re-saving the same option value does not reload."""
+        options = {
+            CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
+            CONF_RESERVATION_SCAN_INTERVAL: DEFAULT_RESERVATION_SCAN_INTERVAL,
+            CONF_CF_SCAN_INTERVAL: DEFAULT_CF_SCAN_INTERVAL,
+            CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY,
+        }
+        entry = _make_entry(options=dict(options))
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        with patch.object(
+            hass.config_entries,
+            "async_reload",
+            new_callable=AsyncMock,
+        ) as mock_reload:
+            hass.config_entries.async_update_entry(
+                entry,
+                options=dict(options),
+            )
+            await hass.async_block_till_done()
+
+            mock_reload.assert_not_awaited()
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_option_is_passed_to_the_client(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """The stored option selects the client's reservation path."""
+        entry = _make_entry(
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_V3},
+        )
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        api_client = hass.data[DOMAIN][entry.entry_id]["api_client"]
+        assert api_client.reservations_api == RESERVATIONS_API_V3
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_entry_without_option_uses_default(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """An entry predating the feature needs no migration."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        assert CONF_RESERVATIONS_API not in entry.options
+        api_client = hass.data[DOMAIN][entry.entry_id]["api_client"]
+        assert api_client.reservations_api == DEFAULT_RESERVATIONS_API
+
+
+class TestLegacyDeprecationWarning:
+    """Tests for the FR-039 startup deprecation warning (T019)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_legacy_logs_retirement_warning_once(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The legacy path warns exactly once per setup."""
+        entry = _make_entry(
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
+        entry.add_to_hass(hass)
+        with caplog.at_level(
+            logging.WARNING,
+            logger="custom_components.guesty",
+        ):
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+
+        warnings = [
+            record
+            for record in caplog.records
+            if LEGACY_RESERVATIONS_RETIREMENT_DATE in record.getMessage()
+        ]
+        assert len(warnings) == 1
+        assert warnings[0].levelno == logging.WARNING
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_v3_does_not_log_retirement_warning(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The v3 path logs no retirement warning."""
+        entry = _make_entry(
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_V3},
+        )
+        entry.add_to_hass(hass)
+        with caplog.at_level(
+            logging.WARNING,
+            logger="custom_components.guesty",
+        ):
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+
+        assert LEGACY_RESERVATIONS_RETIREMENT_DATE not in caplog.text

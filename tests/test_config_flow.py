@@ -4,8 +4,10 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Generator
 from types import MappingProxyType
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -32,12 +34,16 @@ from custom_components.guesty.const import (
     CONF_FUTURE_DAYS,
     CONF_PAST_DAYS,
     CONF_RESERVATION_SCAN_INTERVAL,
+    CONF_RESERVATIONS_API,
     CONF_SCAN_INTERVAL,
     CONF_SELECTED_LISTINGS,
     CONF_TAG_FILTER,
+    DEFAULT_RESERVATIONS_API,
     DOMAIN,
     MIN_RESERVATION_SCAN_INTERVAL,
     MIN_SCAN_INTERVAL,
+    RESERVATIONS_API_LEGACY,
+    RESERVATIONS_API_V3,
 )
 from tests.conftest import make_token_response
 
@@ -1713,3 +1719,241 @@ class TestTagFilterOptionsFlow:
         # lst_002 was previously selected but is not in
         # tag-filtered set, so only lst_001 remains
         assert self._default_ids(result) == ["lst_001"]
+
+
+class TestReservationsApiOption:
+    """Tests for the reservations_api options field (T005)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
+    @staticmethod
+    def _option_schema(result: ConfigFlowResult) -> dict[Any, Any]:
+        """Return the intervals form schema as a plain dict.
+
+        Args:
+            result: Flow result holding the intervals schema.
+
+        Returns:
+            The voluptuous schema mapping.
+        """
+        data_schema = result["data_schema"]
+        assert data_schema is not None
+        return dict(data_schema.schema)
+
+    @classmethod
+    def _option_marker(cls, result: ConfigFlowResult) -> Any:
+        """Find the reservations_api schema key in a form result.
+
+        Args:
+            result: Flow result holding the intervals schema.
+
+        Returns:
+            The voluptuous marker for the option.
+        """
+        for marker in cls._option_schema(result):
+            if marker == CONF_RESERVATIONS_API:
+                return marker
+        raise AssertionError("reservations_api missing from schema")
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_option_offers_exactly_two_values(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """The selector offers exactly v3 and legacy."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        _setup_api_client(hass, entry.entry_id)
+
+        result = await _navigate_to_intervals(hass, entry.entry_id)
+        marker = self._option_marker(result)
+        selector = self._option_schema(result)[marker]
+        values = [option["value"] for option in selector.config["options"]]
+        assert sorted(values) == [
+            RESERVATIONS_API_LEGACY,
+            RESERVATIONS_API_V3,
+        ]
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_entry_without_value_defaults_without_migration(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """A pre-feature entry resolves to the default value."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        assert CONF_RESERVATIONS_API not in entry.options
+        _setup_api_client(hass, entry.entry_id)
+
+        result = await _navigate_to_intervals(hass, entry.entry_id)
+        marker = self._option_marker(result)
+        assert marker.default() == DEFAULT_RESERVATIONS_API
+        assert entry.version == 1
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_unparsable_value_resolves_to_v3_with_warning(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A stored nonsense value is shown as v3 with a WARNING."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        hass.config_entries.async_update_entry(
+            entry,
+            options={
+                **entry.options,
+                CONF_RESERVATIONS_API: "nonsense",
+            },
+        )
+        _setup_api_client(hass, entry.entry_id)
+
+        with caplog.at_level(logging.WARNING):
+            result = await _navigate_to_intervals(hass, entry.entry_id)
+
+        marker = self._option_marker(result)
+        assert marker.default() == RESERVATIONS_API_V3
+        assert "nonsense" in caplog.text
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_stored_null_resolves_like_the_client(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """A stored null is invalid, not an absent option."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        hass.config_entries.async_update_entry(
+            entry,
+            options={**entry.options, CONF_RESERVATIONS_API: None},
+        )
+        _setup_api_client(hass, entry.entry_id)
+
+        result = await _navigate_to_intervals(hass, entry.entry_id)
+        marker = self._option_marker(result)
+        assert marker.default() == RESERVATIONS_API_V3
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_selected_value_is_stored(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Submitting the option stores it on the config entry."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        _setup_api_client(hass, entry.entry_id)
+
+        result = await _navigate_to_intervals(hass, entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={
+                **_DEFAULT_INTERVALS,
+                CONF_RESERVATIONS_API: RESERVATIONS_API_V3,
+            },
+        )
+        assert result["type"] is FlowResultType.CREATE_ENTRY
+        assert entry.options[CONF_RESERVATIONS_API] == RESERVATIONS_API_V3
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_omitted_value_stores_the_default(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """Omitting the option stores the staged default."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        _setup_api_client(hass, entry.entry_id)
+
+        result = await _navigate_to_intervals(hass, entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input=dict(_DEFAULT_INTERVALS),
+        )
+        assert result["type"] is FlowResultType.CREATE_ENTRY
+        assert entry.options[CONF_RESERVATIONS_API] == DEFAULT_RESERVATIONS_API

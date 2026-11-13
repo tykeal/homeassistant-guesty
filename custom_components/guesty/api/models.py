@@ -5,10 +5,11 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from custom_components.guesty.api.const import (
     KNOWN_CHANNEL_TYPES,
@@ -801,6 +802,65 @@ class GuestyReservationsResponse:
             limit=data.get("limit", 100),
             skip=data.get("skip", 0),
         )
+
+
+# ── Reservation Fetch Seam (Feature 008, Phase 1) ───────────────────
+
+
+@dataclass(frozen=True)
+class ReservationFetchResult:
+    """Result of one reservation retrieval, whatever the source.
+
+    Returned by every ``ReservationSource`` so consumers stay
+    source-agnostic. The diagnostics counters are best-effort: a
+    source populates only the counters it can derive from its own
+    payloads.
+
+    Attributes:
+        reservations: Validated, mapped reservations.
+        pages: Number of API pages fetched.
+        status_counts: Histogram of raw, pre-mapping statuses.
+        segment_histogram: Histogram of stay-segment counts per
+            reservation. Empty for sources without stay segments.
+    """
+
+    reservations: tuple[GuestyReservation, ...] = ()
+    pages: int = 0
+    status_counts: Mapping[str, int] = field(
+        default_factory=lambda: MappingProxyType({}),
+    )
+    segment_histogram: Mapping[int, int] = field(
+        default_factory=lambda: MappingProxyType({}),
+    )
+
+
+@runtime_checkable
+class ReservationSource(Protocol):
+    """Protocol for a reservation retrieval strategy.
+
+    Implemented once per reservation API generation so the client
+    can select a path without the callers knowing which is active.
+    """
+
+    async def fetch(
+        self,
+        *,
+        past_days: int,
+        future_days: int,
+        statuses: frozenset[str] | None = None,
+    ) -> ReservationFetchResult:
+        """Fetch reservations for the configured window.
+
+        Args:
+            past_days: Days in the past to include.
+            future_days: Days in the future to include.
+            statuses: Statuses to request, or None for the
+                source's own default set.
+
+        Returns:
+            The reservations and the diagnostics counters.
+        """
+        ...
 
 
 # --- Custom Field Models (Feature 004, Phase 1) ---

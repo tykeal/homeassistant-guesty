@@ -189,3 +189,14 @@ VALID_RESERVATION_STATUSES: frozenset[str] = frozenset(
 
 # Separator used when appending notes to reservations.
 NOTE_SEPARATOR: str = "\n---\n"
+
+# ── Reservation API selection (Feature 008) ─────────────────────────
+
+# Reservations v3 API path selector value.
+RESERVATIONS_API_V3: str = "v3"
+
+# Legacy Open API reservations path selector value.
+RESERVATIONS_API_LEGACY: str = "legacy"
+
+# Date Guesty retires the legacy Open API reservation resources.
+LEGACY_RESERVATIONS_RETIREMENT_DATE: str = "2027-03-01"
