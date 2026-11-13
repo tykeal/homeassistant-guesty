@@ -284,9 +284,11 @@ toggle.
    the legacy endpoints exactly as the previous release did.
 3. **Given** the option is changed, **When** the integration reloads, **Then**
    reservation entity ids and unique ids are unchanged and no entity is
-   removed or re-created; the three deprecated financial sensors keep their
-   registry entries in both directions and only change between available
-   (legacy path) and unavailable (v3 path).
+   removed or re-created; the three deprecated financial sensors, where they
+   are already registered, keep their registry entries in both directions and
+   only change between available (legacy path) and unavailable (v3 path),
+   and where they have never been registered they may be registered for the
+   first time on a switch to the legacy path (FR-045).
 4. **Given** the legacy path is active and Guesty has retired it, **When** a
    refresh fails with a retirement-shaped error, **Then** the error message
    tells the user to switch the option back to v3.
@@ -386,7 +388,9 @@ is surfaced exactly once on the v3 path.
   Guesty omits the value. It never shows a stale monetary figure.
 - **An installation that has never run the legacy path.** The three financial
   sensors are never created at all and no deprecation notice is raised,
-  because there is nothing the user can have bound an automation to.
+  because there is nothing the user can have bound an automation to. If such
+  an installation is later switched to the legacy path, they are registered
+  for the first time at that point (FR-045).
 
 ## Requirements *(mandatory)*
 
@@ -645,9 +649,13 @@ sensors are deprecated rather than re-sourced
   earlier legacy refresh, any cached value, or any placeholder. Entity
   registry entries created by earlier releases MUST be retained, so the
   entities remain registered under their existing entity ids and unique ids
-  and Home Assistant reports them as `unavailable`. Toggling the reservation
-  API path in either direction MUST therefore cause no entity registry
-  change (NFR-003, SC-008).
+  and Home Assistant reports them as `unavailable`. For an installation that
+  already has those registry entries, toggling the reservation API path in
+  either direction MUST therefore cause no entity registry change (NFR-003,
+  SC-008). An installation that has never run the legacy path has no such
+  entries; if it is later switched to the legacy path, the three sensors are
+  registered for the first time, which is an additive registration and not a
+  removal, rename or re-creation.
 - **FR-046**: When the v3 path is active and at least one of the three
   entities already exists in the entity registry, system MUST surface a
   user-visible deprecation notice that names the three sensors, states that
@@ -798,8 +806,12 @@ sensors are deprecated rather than re-sourced
   on both listings' sensors with each listing's own segment dates.
 - **SC-007**: An ambiguous-identity fixture causes zero writes and zero
   published changes, and produces exactly one actionable error.
-- **SC-008**: Toggling the reservation API path setting and reloading produces
-  zero entity registry changes.
+- **SC-008**: Toggling the reservation API path setting and reloading an
+  installation whose entities are all already registered produces zero entity
+  registry changes. The only permitted registry addition anywhere in this
+  feature is the first-time registration of the three financial sensors on an
+  installation that has never run the legacy path and is then switched to it
+  (FR-045).
 - **SC-009**: A guest-lookup outage lasting one full refresh leaves every
   reservation published and every previously known guest attribute intact.
 - **SC-010**: Each distinct guest is fetched at most once per refresh; a
@@ -818,10 +830,11 @@ sensors are deprecated rather than re-sourced
 - **SC-014**: Over a fixture whose legacy payload carries `money` values, the
   `total_paid`, `balance_due` and `currency` sensors report those values on
   the legacy path and report `unavailable` on the v3 path, with identical
-  entity ids on both and zero entity registry changes across the toggle; no
-  request is made to any guest-folio resource on either path; and the
-  deprecation notice of FR-046 is raised exactly once when the v3 path starts
-  with those entities present and not at all when they are absent.
+  entity ids on both and, for an installation where they are already
+  registered, zero entity registry changes across the toggle; no request is
+  made to any guest-folio resource on either path; and the deprecation notice
+  of FR-046 is raised exactly once when the v3 path starts with those
+  entities present and not at all when they are absent.
 - **SC-011**: Every assumption in this specification appears as an item in the
   plan's pre-release live-verification checklist (FR-041).
 
@@ -1041,7 +1054,8 @@ confirmed before this feature is declared stable.
 - Listings, calendar, custom variables and notify features, which use
   resources that are not retiring.
 - Any change to the default window, poll interval or status filter defaults.
-- Removal of the legacy path. That is a follow-up before 2027-03-01 (FR-040).
+- Removal of the legacy path. That is a follow-up on or after 2027-03-01
+  (FR-040, FR-048).
 
 ## Open Questions
 
