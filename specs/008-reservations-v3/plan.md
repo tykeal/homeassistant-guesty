@@ -511,8 +511,14 @@ this feature could produce.
     upgrade. Setup performs a **one-time legacy bootstrap sweep** over
     the same window, using the still-live legacy resource, and stores
     its code-to-id map with `path: "legacy"`. The first v3 refresh is
-    then checked against it exactly as any later refresh would be; on
-    agreement continuity becomes `verified` and writes are permitted.
+    then checked against it exactly as any later refresh would be.
+    Continuity becomes `verified` only when the comparison is
+    *informative*: at least one confirmation code appears in both maps
+    and no code's mapping conflicts. An empty or disjoint comparison
+    proves nothing, so the bootstrap evidence is retained, continuity
+    stays `unconfirmed`, and writes stay blocked until a later refresh
+    produces an overlap — mirroring the acceptance rule in the
+    pre-release checklist (research.md, "Identity and continuity").
   - *Bootstrap sweep unavailable* — the legacy resource is retired,
     rate-limited or errors. Continuity stays `unconfirmed`: reservations
     publish normally, but every reservation write is refused with an
@@ -525,7 +531,24 @@ this feature could produce.
   The sweep costs one extra legacy page sequence, once per entry, and
   only for installations that actually have something to contradict.
   Tests cover the upgrade path with no Store, the fresh-install path,
-  an unavailable bootstrap, and a disagreeing bootstrap.
+  an unavailable bootstrap, a disagreeing bootstrap, and the empty and
+  disjoint comparisons.
+
+  **This is a narrowly scoped exception to FR-001, SC-001 and FR-034**,
+  all of which are written as absolutes: no legacy request while v3 is
+  active, and no additional request for the guard. The exception is
+  bounded to one legacy page sequence, at the first v3 setup of an
+  upgrading entry, before any v3 data is published, and never again.
+  The alternative — enabling writes on an identity that nothing has
+  ever cross-checked — is strictly worse. Because the plan may not
+  silently contradict the specification, this requires a **specification
+  amendment** in the analyze stage: FR-001 and SC-001 scoped to steady
+  state, and FR-034 scoped to per-refresh cost. Until that amendment
+  lands, the assertion "no request targets `/v1/reservations` while the
+  v3 path is active" holds for every refresh but is qualified for the
+  bootstrap (contracts/guesty-reservations-v3-search.md), and the
+  request-budget test asserts the bootstrap sequence exactly once for an
+  upgrading entry and zero times otherwise.
 - **Check**: before publishing a refresh, every reservation carrying a
   confirmation code is compared with the baseline. Any code whose mapping
   *differs* makes the identity ambiguous — including the swap case where
@@ -535,11 +558,17 @@ this feature could produce.
   value), and the rollback instruction.
 - **Cost**: zero additional requests; the comparison runs on data already
   fetched (FR-034).
-- **Fail closed for writes**: a runtime flag records whether a baseline
-  exists. Until it does, reservations are published but every reservation
-  write aborts with an explanatory error (FR-031c, SC-013). A reservation
-  with no confirmation code is publishable but is never a valid write
-  target (FR-033).
+- **Fail closed for writes**: a write is permitted only when *all* of
+  the following hold — a usable baseline exists, its `continuity` is
+  `verified` or `not_applicable`, the last refresh was not aborted as
+  ambiguous, and the target reservation carries a confirmation code.
+  Existence alone is **not** sufficient: after a failed or uninformative
+  bootstrap a successful v3 refresh does create a baseline while
+  continuity is still `unconfirmed`, and writes must stay blocked in
+  that state. Reservations are published throughout; only writes abort,
+  with an explanatory error (FR-031c, FR-033, SC-013). The predicate is
+  re-evaluated from the Store after every reload, and the guard tests
+  cover each failing conjunct, including across a reload.
 - **Observability**: the first successful v3 refresh logs, at INFO, how
   many previously known identifiers matched (FR-035).
 
@@ -795,6 +824,15 @@ v3 attribution is per segment while every consumer expects one
 reservation per listing. Teaching `sensor.py` about segments is rejected
 because it would put migration logic in the entity layer and put every
 attribute name at risk, directly against NFR-004.
+
+**A one-time legacy bootstrap sweep on the v3 path.** Needed because an
+upgrading installation has no baseline to compare the first v3 refresh
+against, and a baseline built from v3 alone is self-consistent by
+construction. It is a bounded exception to FR-001, SC-001 and FR-034 and
+requires the specification amendment recorded under "Identity guard".
+Enabling writes on a never-cross-checked identity is rejected as the
+simpler alternative because reservation custom-field writes carry
+door-lock codes.
 
 **A persisted identity baseline.** Needed because the guard must survive
 restarts and the coordinator is rebuilt on every setup

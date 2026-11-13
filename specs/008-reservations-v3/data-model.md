@@ -231,11 +231,16 @@ Persisted with `homeassistant.helpers.storage.Store`, key
 | Write | after each successful, unambiguous refresh, replacing the map |
 | Read | once per setup, into the coordinator |
 | Missing | writes fail closed; reservations still publish (FR-031c) |
+| Write permitted | see the four conditions below |
 | Missing on upgrade | a one-time legacy bootstrap sweep seeds the map |
-| Bootstrap impossible | `continuity` is `unconfirmed`; writes stay refused |
+| Bootstrap uninformative | `continuity` stays `unconfirmed`; writes refused |
 | Fresh install | `continuity` is `not_applicable`; writes permitted |
 | Mismatch | refresh aborts; last-known-good retained; writes blocked (FR-032) |
 | Removal | deleted with the config entry |
+
+A write is permitted only when the baseline is usable, its `continuity`
+is not `unconfirmed`, the last refresh was not aborted as ambiguous, and
+the target reservation carries a confirmation code.
 
 Confirmation code **values** are persisted (they are the key of the
 check) but never logged (FR-021, NFR-009).

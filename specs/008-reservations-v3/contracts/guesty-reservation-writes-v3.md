@@ -14,9 +14,20 @@ SPDX-License-Identifier: Apache-2.0
 (FR-041)
 
 Both actions are gated by the identity guard before any request is sent.
-A write is refused when no identity baseline exists, when the refresh
-that produced the current data was aborted as ambiguous, or when the
-target reservation has no confirmation code (FR-031c, FR-032, FR-033).
+A write proceeds only when **every** one of these holds:
+
+1. a usable identity baseline exists;
+2. its `continuity` is `verified` or `not_applicable` — an
+   `unconfirmed` baseline, which is what a failed or uninformative
+   bootstrap leaves behind, blocks writes even though a baseline exists;
+3. the refresh that produced the current data was not aborted as
+   ambiguous;
+4. the target reservation carries a confirmation code.
+
+Otherwise the action is refused with an explanatory error and no request
+is sent (FR-031c, FR-032, FR-033). The predicate is re-evaluated from
+the Store after a reload, and the guard tests cover each failing
+conjunct, including after a reload.
 
 ## 1. Add reservation note
 

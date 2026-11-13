@@ -40,7 +40,11 @@ padded server window is a **superset**; the client trim is authoritative
 
 **MUST NOT be requested**: `GET /v1/reservations` or any other resource
 the migration guide marks deprecated, while the v3 path is active
-(SC-001).
+(SC-001). The single exception is the one-time identity bootstrap sweep
+at the first v3 setup of an upgrading entry (plan.md, "Identity guard"),
+which runs before any v3 data is published and never again; it requires
+the specification amendment recorded there. No *refresh* ever targets a
+legacy resource on the v3 path.
 
 Example (unencoded for readability):
 
