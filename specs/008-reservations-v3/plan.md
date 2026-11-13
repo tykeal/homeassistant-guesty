@@ -499,10 +499,19 @@ this feature could produce.
   so storage stays bounded. A legacy bootstrap map is held *separately*
   in `bootstrap_codes` and is never overwritten by a refresh, so a
   successful but disjoint v3 refresh cannot discard the only cross-path
-  evidence there is; every refresh is compared against both maps, and
-  the bootstrap map is dropped only once an informative, conflict-free
-  overlap sets continuity to `verified`. Tests cover a disjoint refresh
-  followed by a conflicting overlap, including across a reload.
+  evidence there is. Every refresh is compared against both maps, and
+  bootstrap entries are retired **individually**, not wholesale: a code
+  checked without conflict against the refresh is removed, while a code
+  the refresh never mentioned is retained — a partial overlap must not
+  discharge the codes it did not cover. Reaching `verified` continuity
+  therefore does not clear the map either; it only reflects that at
+  least one code has been checked. A retained entry is retired without
+  a check only under the explicit safe policy that its reservation
+  checked out more than `past_days` ago, so it can no longer appear in
+  any future window, which also keeps the map bounded. Tests cover a
+  disjoint refresh followed by a conflicting overlap, and a partial
+  overlap followed by a conflict on an uncovered code, both across a
+  reload.
 - **Bootstrap on upgrade**: because no release ships between phases, an
   existing installation meets v3 with no stored baseline at all. A
   baseline built from the first v3 refresh alone would then be

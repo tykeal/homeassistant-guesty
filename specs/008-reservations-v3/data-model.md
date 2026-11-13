@@ -230,7 +230,7 @@ Persisted with `homeassistant.helpers.storage.Store`, key
 | --- | --- |
 | Size bound | at most 5,000 codes, earliest check-out evicted first |
 | Write | after each successful, unambiguous refresh, replacing `codes` |
-| Bootstrap retention | `bootstrap_codes` survives refreshes (see below) |
+| Bootstrap retention | entries retired one by one (see below) |
 | Read | once per setup, into the coordinator |
 | Missing | writes fail closed; reservations still publish (FR-031c) |
 | Write permitted | see the four conditions below |
@@ -243,8 +243,12 @@ Persisted with `homeassistant.helpers.storage.Store`, key
 `bootstrap_codes` holds the legacy bootstrap map for an upgrading entry.
 A successful refresh replaces `codes` but **never** `bootstrap_codes`,
 so a disjoint refresh cannot discard the only cross-path evidence. Every
-refresh is checked against both maps; `bootstrap_codes` is dropped once
-an informative, conflict-free overlap sets `continuity` to `verified`.
+refresh is checked against both maps, and bootstrap entries are retired
+one at a time: a code the refresh covered without conflict is removed,
+a code it did not cover is kept, and reaching `verified` continuity does
+not clear the remainder. An unchecked entry is retired only under the
+explicit safe policy that its reservation checked out more than
+`past_days` ago and so can never recur in a future window.
 
 A write is permitted only when the baseline is usable, its `continuity`
 is not `unconfirmed`, the last refresh was not aborted as ambiguous, and
