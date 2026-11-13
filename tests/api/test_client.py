@@ -955,7 +955,7 @@ class TestGetReservations:
             ),
         ]
         client, _, _ = _make_client()
-        result = await client.get_reservations()
+        result = (await client.get_reservations()).reservations
         assert len(result) == 5
         assert result[0].id == "res-0"
 
@@ -1013,7 +1013,7 @@ class TestGetReservations:
             ),
         ]
         client, _, _ = _make_client()
-        result = await client.get_reservations()
+        result = (await client.get_reservations()).reservations
         assert len(result) == 130
 
     @respx.mock
@@ -1032,8 +1032,8 @@ class TestGetReservations:
             ),
         ]
         client, _, _ = _make_client()
-        result = await client.get_reservations()
-        assert result == []
+        result = (await client.get_reservations()).reservations
+        assert result == ()
 
     @respx.mock
     async def test_dual_request_merge(self) -> None:
@@ -1061,7 +1061,7 @@ class TestGetReservations:
             ),
         ]
         client, _, _ = _make_client()
-        result = await client.get_reservations()
+        result = (await client.get_reservations()).reservations
         assert len(result) == 2
         ids = {r.id for r in result}
         assert ids == {"primary-1", "secondary-1"}
@@ -1092,7 +1092,7 @@ class TestGetReservations:
             ),
         ]
         client, _, _ = _make_client()
-        result = await client.get_reservations()
+        result = (await client.get_reservations()).reservations
         assert len(result) == 1
         assert result[0].id == "shared-1"
 
@@ -1305,7 +1305,7 @@ class TestGetReservations:
             ),
         ]
         client, _, _ = _make_client()
-        result = await client.get_reservations()
+        result = (await client.get_reservations()).reservations
         assert len(result) == 1
         assert result[0].id == "valid-1"
 
@@ -1363,7 +1363,7 @@ class TestGetReservations:
             logging.DEBUG,
             logger="custom_components.guesty.api.reservations_legacy",
         ):
-            result = await client.get_reservations()
+            result = (await client.get_reservations()).reservations
         assert len(result) == 1
         expected_keys = sorted(reservations[0].keys())
         expected_guest_keys = sorted(
@@ -2025,7 +2025,8 @@ class TestReservationSourceDelegation:
                 future_days=14,
             )
 
-        assert result == [reservation]
+        assert result.reservations == (reservation,)
+        assert result.pages == 2
         fetch.assert_awaited_once_with(
             past_days=7,
             future_days=14,

@@ -39,6 +39,7 @@ from custom_components.guesty.const import (
 )
 from tests.conftest import (
     make_custom_field_definition_dict,
+    make_fetch_result,
     make_token_response,
     sample_custom_field_definitions,
 )
@@ -114,7 +115,7 @@ class TestServiceHandler:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -172,7 +173,7 @@ class TestServiceHandler:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -228,7 +229,7 @@ class TestServiceHandler:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -269,7 +270,7 @@ class TestServiceHandler:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -311,7 +312,7 @@ class TestServiceHandler:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -368,7 +369,7 @@ class TestServiceHandler:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -422,7 +423,7 @@ class TestServiceHandler:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -469,7 +470,7 @@ class TestServiceHandler:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -522,7 +523,7 @@ class TestServiceHandler:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -583,7 +584,7 @@ class TestReservationCustomFields:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -641,7 +642,7 @@ class TestReservationCustomFields:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -715,7 +716,7 @@ class TestAutomationCompatibility:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -767,7 +768,7 @@ class TestAutomationCompatibility:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -822,7 +823,7 @@ class TestAutomationCompatibility:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -874,7 +875,7 @@ class TestAutomationCompatibility:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -928,7 +929,7 @@ class TestAutomationCompatibility:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -986,7 +987,7 @@ class TestAutomationCompatibility:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1064,7 +1065,7 @@ class TestEdgeCases:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1109,7 +1110,7 @@ class TestEdgeCases:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1167,7 +1168,7 @@ class TestEdgeCases:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1220,7 +1221,7 @@ class TestEdgeCases:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1271,7 +1272,7 @@ class TestEdgeCases:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1366,7 +1367,7 @@ class TestEdgeCases:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1425,7 +1426,7 @@ class TestEdgeCases:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1487,7 +1488,7 @@ class TestEdgeCases:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1724,7 +1725,7 @@ class TestErrorDetailQuality:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1767,7 +1768,7 @@ class TestErrorDetailQuality:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -2051,7 +2052,7 @@ class TestIntegrationDataFlow:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -2113,7 +2114,7 @@ class TestIntegrationDataFlow:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -2183,7 +2184,7 @@ class TestSuccessCriteria:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -2238,7 +2239,7 @@ class TestSuccessCriteria:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -2282,7 +2283,7 @@ class TestSuccessCriteria:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",

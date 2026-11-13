@@ -27,7 +27,7 @@ from custom_components.guesty.const import (
     CONF_CLIENT_SECRET,
     DOMAIN,
 )
-from tests.conftest import device_for_listing
+from tests.conftest import device_for_listing, make_fetch_result
 
 
 def _make_entry(**overrides: object) -> MockConfigEntry:
@@ -99,7 +99,7 @@ class TestReservationSensorEnumConfig:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -121,7 +121,7 @@ class TestReservationSensorEnumConfig:
     ) -> None:
         """Reservation sensor has ENUM device class."""
         mock_listings.return_value = [sample_listing]
-        mock_reservations.return_value = []
+        mock_reservations.return_value = make_fetch_result([])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -137,7 +137,7 @@ class TestReservationSensorEnumConfig:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -159,7 +159,7 @@ class TestReservationSensorEnumConfig:
     ) -> None:
         """Reservation sensor options match expected statuses."""
         mock_listings.return_value = [sample_listing]
-        mock_reservations.return_value = []
+        mock_reservations.return_value = make_fetch_result([])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -182,7 +182,7 @@ class TestReservationSensorEnumConfig:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -207,7 +207,7 @@ class TestReservationSensorEnumConfig:
         reservations = [
             _make_reservation(res_id="r1", status="future_status"),
         ]
-        mock_reservations.return_value = reservations
+        mock_reservations.return_value = make_fetch_result(list(reservations))
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -238,7 +238,7 @@ class TestPrioritySelection:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -267,7 +267,7 @@ class TestPrioritySelection:
             _make_reservation(res_id="r3", status="checked_out"),
             _make_reservation(res_id="r4", status="canceled"),
         ]
-        mock_reservations.return_value = reservations
+        mock_reservations.return_value = make_fetch_result(list(reservations))
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -283,7 +283,7 @@ class TestPrioritySelection:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -308,7 +308,7 @@ class TestPrioritySelection:
         reservations = [
             _make_reservation(res_id="r1", status="confirmed"),
         ]
-        mock_reservations.return_value = reservations
+        mock_reservations.return_value = make_fetch_result(list(reservations))
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -324,7 +324,7 @@ class TestPrioritySelection:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -350,7 +350,7 @@ class TestPrioritySelection:
             _make_reservation(res_id="r1", status="confirmed"),
             _make_reservation(res_id="r2", status="checked_out"),
         ]
-        mock_reservations.return_value = reservations
+        mock_reservations.return_value = make_fetch_result(list(reservations))
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -366,7 +366,7 @@ class TestPrioritySelection:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -391,7 +391,7 @@ class TestPrioritySelection:
         reservations = [
             _make_reservation(res_id="r1", status="checked_out"),
         ]
-        mock_reservations.return_value = reservations
+        mock_reservations.return_value = make_fetch_result(list(reservations))
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -407,7 +407,7 @@ class TestPrioritySelection:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -432,7 +432,7 @@ class TestPrioritySelection:
         reservations = [
             _make_reservation(res_id="r1", status="canceled"),
         ]
-        mock_reservations.return_value = reservations
+        mock_reservations.return_value = make_fetch_result(list(reservations))
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -448,7 +448,7 @@ class TestPrioritySelection:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -474,7 +474,7 @@ class TestPrioritySelection:
             _make_reservation(res_id="r1", status="checked_out"),
             _make_reservation(res_id="r2", status="canceled"),
         ]
-        mock_reservations.return_value = reservations
+        mock_reservations.return_value = make_fetch_result(list(reservations))
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -490,7 +490,7 @@ class TestPrioritySelection:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -512,7 +512,7 @@ class TestPrioritySelection:
     ) -> None:
         """No reservations shows no_reservation state."""
         mock_listings.return_value = [sample_listing]
-        mock_reservations.return_value = []
+        mock_reservations.return_value = make_fetch_result([])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -528,7 +528,7 @@ class TestPrioritySelection:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -553,7 +553,7 @@ class TestPrioritySelection:
         reservations = [
             _make_reservation(res_id="r1", status="future_status"),
         ]
-        mock_reservations.return_value = reservations
+        mock_reservations.return_value = make_fetch_result(list(reservations))
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -583,7 +583,7 @@ class TestSensorAttributes:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -622,7 +622,7 @@ class TestSensorAttributes:
                 email="jane@example.com",
             ),
         )
-        mock_reservations.return_value = [reservation]
+        mock_reservations.return_value = make_fetch_result([reservation])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -655,7 +655,7 @@ class TestSensorAttributes:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -677,7 +677,7 @@ class TestSensorAttributes:
     ) -> None:
         """No reservation shows None attributes."""
         mock_listings.return_value = [sample_listing]
-        mock_reservations.return_value = []
+        mock_reservations.return_value = make_fetch_result([])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -697,7 +697,7 @@ class TestSensorAttributes:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -748,7 +748,7 @@ class TestSensorAttributes:
                     ),
                 ),
             )
-        mock_reservations.return_value = reservations
+        mock_reservations.return_value = make_fetch_result(list(reservations))
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -765,7 +765,7 @@ class TestSensorAttributes:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -792,7 +792,7 @@ class TestSensorAttributes:
             status="checked_in",
             guest=None,
         )
-        mock_reservations.return_value = [reservation]
+        mock_reservations.return_value = make_fetch_result([reservation])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -824,7 +824,7 @@ class TestSensorEntitySetup:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -846,7 +846,7 @@ class TestSensorEntitySetup:
     ) -> None:
         """One reservation status sensor created per listing."""
         mock_listings.return_value = [sample_listing]
-        mock_reservations.return_value = []
+        mock_reservations.return_value = make_fetch_result([])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -861,7 +861,7 @@ class TestSensorEntitySetup:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -883,7 +883,7 @@ class TestSensorEntitySetup:
     ) -> None:
         """Unique ID follows {entry_unique_id}_{listing_id}_{key}."""
         mock_listings.return_value = [sample_listing]
-        mock_reservations.return_value = []
+        mock_reservations.return_value = make_fetch_result([])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -903,7 +903,7 @@ class TestSensorEntitySetup:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -925,7 +925,7 @@ class TestSensorEntitySetup:
     ) -> None:
         """Sensor device_info links to the listing device."""
         mock_listings.return_value = [sample_listing]
-        mock_reservations.return_value = []
+        mock_reservations.return_value = make_fetch_result([])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -955,7 +955,7 @@ class TestGuestInformation:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -986,7 +986,7 @@ class TestGuestInformation:
                 email="bob@example.com",
             ),
         )
-        mock_reservations.return_value = [reservation]
+        mock_reservations.return_value = make_fetch_result([reservation])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -1005,7 +1005,7 @@ class TestGuestInformation:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1036,7 +1036,7 @@ class TestGuestInformation:
                 email=None,
             ),
         )
-        mock_reservations.return_value = [reservation]
+        mock_reservations.return_value = make_fetch_result([reservation])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -1055,7 +1055,7 @@ class TestGuestInformation:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1096,11 +1096,13 @@ class TestGuestInformation:
             check_out=datetime(2025, 10, 5, 11, 0, 0, tzinfo=UTC),
             guest=None,
         )
-        mock_reservations.return_value = [
-            active,
-            upcoming_with_guest,
-            upcoming_no_guest,
-        ]
+        mock_reservations.return_value = make_fetch_result(
+            [
+                active,
+                upcoming_with_guest,
+                upcoming_no_guest,
+            ]
+        )
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -1120,7 +1122,7 @@ class TestGuestInformation:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1151,7 +1153,7 @@ class TestGuestInformation:
                 email=None,
             ),
         )
-        mock_reservations.return_value = [reservation]
+        mock_reservations.return_value = make_fetch_result([reservation])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -1477,7 +1479,7 @@ class TestFinancialDiagnosticSensors:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1508,7 +1510,7 @@ class TestFinancialDiagnosticSensors:
                 currency="USD",
             ),
         )
-        mock_reservations.return_value = [reservation]
+        mock_reservations.return_value = make_fetch_result([reservation])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -1525,7 +1527,7 @@ class TestFinancialDiagnosticSensors:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1556,7 +1558,7 @@ class TestFinancialDiagnosticSensors:
                 currency="USD",
             ),
         )
-        mock_reservations.return_value = [reservation]
+        mock_reservations.return_value = make_fetch_result([reservation])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -1572,7 +1574,7 @@ class TestFinancialDiagnosticSensors:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1603,7 +1605,7 @@ class TestFinancialDiagnosticSensors:
                 currency="USD",
             ),
         )
-        mock_reservations.return_value = [reservation]
+        mock_reservations.return_value = make_fetch_result([reservation])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -1619,7 +1621,7 @@ class TestFinancialDiagnosticSensors:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1650,7 +1652,7 @@ class TestFinancialDiagnosticSensors:
                 currency="EUR",
             ),
         )
-        mock_reservations.return_value = [reservation]
+        mock_reservations.return_value = make_fetch_result([reservation])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -1673,7 +1675,7 @@ class TestFinancialDiagnosticSensors:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1700,7 +1702,7 @@ class TestFinancialDiagnosticSensors:
             status="checked_in",
             money=None,
         )
-        mock_reservations.return_value = [reservation]
+        mock_reservations.return_value = make_fetch_result([reservation])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -1721,7 +1723,7 @@ class TestFinancialDiagnosticSensors:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1743,7 +1745,7 @@ class TestFinancialDiagnosticSensors:
     ) -> None:
         """Financial sensors unavailable when no reservation."""
         mock_listings.return_value = [sample_listing]
-        mock_reservations.return_value = []
+        mock_reservations.return_value = make_fetch_result([])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -1764,7 +1766,7 @@ class TestFinancialDiagnosticSensors:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1795,7 +1797,7 @@ class TestFinancialDiagnosticSensors:
                 currency=None,
             ),
         )
-        mock_reservations.return_value = [reservation]
+        mock_reservations.return_value = make_fetch_result([reservation])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -1816,7 +1818,7 @@ class TestFinancialDiagnosticSensors:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1847,7 +1849,7 @@ class TestFinancialDiagnosticSensors:
                 currency="EUR",
             ),
         )
-        mock_reservations.return_value = [reservation]
+        mock_reservations.return_value = make_fetch_result([reservation])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -1869,7 +1871,7 @@ class TestFinancialDiagnosticSensors:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1900,7 +1902,7 @@ class TestFinancialDiagnosticSensors:
                 currency="EUR",
             ),
         )
-        mock_reservations.return_value = [reservation]
+        mock_reservations.return_value = make_fetch_result([reservation])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -2165,7 +2167,7 @@ class TestEdgeCaseSameDayTurnover:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -2201,7 +2203,7 @@ class TestEdgeCaseSameDayTurnover:
                 check_out=datetime(2025, 8, 5, 11, 0, tzinfo=UTC),
             ),
         ]
-        mock_reservations.return_value = reservations
+        mock_reservations.return_value = make_fetch_result(list(reservations))
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -2218,7 +2220,7 @@ class TestEdgeCaseSameDayTurnover:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -2254,7 +2256,7 @@ class TestEdgeCaseSameDayTurnover:
                 check_out=datetime(2025, 8, 8, 11, 0, tzinfo=UTC),
             ),
         ]
-        mock_reservations.return_value = reservations
+        mock_reservations.return_value = make_fetch_result(list(reservations))
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -2290,7 +2292,7 @@ class TestEdgeCaseMissingOptionalFields:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -2321,7 +2323,7 @@ class TestEdgeCaseMissingOptionalFields:
                 email=None,
             ),
         )
-        mock_reservations.return_value = [reservation]
+        mock_reservations.return_value = make_fetch_result([reservation])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -2339,7 +2341,7 @@ class TestEdgeCaseMissingOptionalFields:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -2368,7 +2370,7 @@ class TestEdgeCaseMissingOptionalFields:
             note=None,
             confirmation_code=None,
         )
-        mock_reservations.return_value = [reservation]
+        mock_reservations.return_value = make_fetch_result([reservation])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -2385,7 +2387,7 @@ class TestEdgeCaseMissingOptionalFields:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -2422,7 +2424,7 @@ class TestEdgeCaseMissingOptionalFields:
             guests_count=None,
             source=None,
         )
-        mock_reservations.return_value = [reservation]
+        mock_reservations.return_value = make_fetch_result([reservation])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -2457,7 +2459,7 @@ class TestEdgeCaseSingleListingReservations:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -2479,7 +2481,7 @@ class TestEdgeCaseSingleListingReservations:
     ) -> None:
         """Listing with zero reservations shows no_reservation."""
         mock_listings.return_value = [sample_listing]
-        mock_reservations.return_value = []
+        mock_reservations.return_value = make_fetch_result([])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -2496,7 +2498,7 @@ class TestEdgeCaseSingleListingReservations:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -2538,7 +2540,7 @@ class TestEdgeCaseSingleListingReservations:
                 check_out=datetime(2025, 9, 5, 11, 0, tzinfo=UTC),
             ),
         ]
-        mock_reservations.return_value = reservations
+        mock_reservations.return_value = make_fetch_result(list(reservations))
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -2574,7 +2576,7 @@ class TestStateTransitionEvents:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -2596,12 +2598,14 @@ class TestStateTransitionEvents:
     ) -> None:
         """confirmed→checked_in transition fires state_changed."""
         mock_listings.return_value = [sample_listing]
-        mock_reservations.return_value = [
-            _make_reservation(
-                res_id="r1",
-                status="confirmed",
-            ),
-        ]
+        mock_reservations.return_value = make_fetch_result(
+            [
+                _make_reservation(
+                    res_id="r1",
+                    status="confirmed",
+                ),
+            ]
+        )
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -2625,12 +2629,14 @@ class TestStateTransitionEvents:
         hass.bus.async_listen("state_changed", _capture)
 
         # Simulate transition: guest checks in
-        mock_reservations.return_value = [
-            _make_reservation(
-                res_id="r1",
-                status="checked_in",
-            ),
-        ]
+        mock_reservations.return_value = make_fetch_result(
+            [
+                _make_reservation(
+                    res_id="r1",
+                    status="checked_in",
+                ),
+            ]
+        )
         coord = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
         await coord.async_refresh()
         await hass.async_block_till_done()
@@ -2646,7 +2652,7 @@ class TestStateTransitionEvents:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -2668,12 +2674,14 @@ class TestStateTransitionEvents:
     ) -> None:
         """checked_in→checked_out transition fires state_changed."""
         mock_listings.return_value = [sample_listing]
-        mock_reservations.return_value = [
-            _make_reservation(
-                res_id="r1",
-                status="checked_in",
-            ),
-        ]
+        mock_reservations.return_value = make_fetch_result(
+            [
+                _make_reservation(
+                    res_id="r1",
+                    status="checked_in",
+                ),
+            ]
+        )
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -2695,12 +2703,14 @@ class TestStateTransitionEvents:
 
         hass.bus.async_listen("state_changed", _capture)
 
-        mock_reservations.return_value = [
-            _make_reservation(
-                res_id="r1",
-                status="checked_out",
-            ),
-        ]
+        mock_reservations.return_value = make_fetch_result(
+            [
+                _make_reservation(
+                    res_id="r1",
+                    status="checked_out",
+                ),
+            ]
+        )
         coord = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
         await coord.async_refresh()
         await hass.async_block_till_done()
@@ -2712,7 +2722,7 @@ class TestStateTransitionEvents:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -2734,12 +2744,14 @@ class TestStateTransitionEvents:
     ) -> None:
         """confirmed→canceled transition fires state_changed."""
         mock_listings.return_value = [sample_listing]
-        mock_reservations.return_value = [
-            _make_reservation(
-                res_id="r1",
-                status="confirmed",
-            ),
-        ]
+        mock_reservations.return_value = make_fetch_result(
+            [
+                _make_reservation(
+                    res_id="r1",
+                    status="confirmed",
+                ),
+            ]
+        )
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -2761,12 +2773,14 @@ class TestStateTransitionEvents:
 
         hass.bus.async_listen("state_changed", _capture)
 
-        mock_reservations.return_value = [
-            _make_reservation(
-                res_id="r1",
-                status="canceled",
-            ),
-        ]
+        mock_reservations.return_value = make_fetch_result(
+            [
+                _make_reservation(
+                    res_id="r1",
+                    status="canceled",
+                ),
+            ]
+        )
         coord = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
         await coord.async_refresh()
         await hass.async_block_till_done()
@@ -2778,7 +2792,7 @@ class TestStateTransitionEvents:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -2800,17 +2814,19 @@ class TestStateTransitionEvents:
     ) -> None:
         """State change event includes guest context attributes."""
         mock_listings.return_value = [sample_listing]
-        mock_reservations.return_value = [
-            _make_reservation(
-                res_id="r1",
-                status="confirmed",
-                guest=GuestyGuest(
-                    full_name="Alice Smith",
-                    phone="+15550001111",
-                    email="alice@example.com",
+        mock_reservations.return_value = make_fetch_result(
+            [
+                _make_reservation(
+                    res_id="r1",
+                    status="confirmed",
+                    guest=GuestyGuest(
+                        full_name="Alice Smith",
+                        phone="+15550001111",
+                        email="alice@example.com",
+                    ),
                 ),
-            ),
-        ]
+            ]
+        )
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -2828,17 +2844,19 @@ class TestStateTransitionEvents:
 
         hass.bus.async_listen("state_changed", _capture)
 
-        mock_reservations.return_value = [
-            _make_reservation(
-                res_id="r1",
-                status="checked_in",
-                guest=GuestyGuest(
-                    full_name="Alice Smith",
-                    phone="+15550001111",
-                    email="alice@example.com",
+        mock_reservations.return_value = make_fetch_result(
+            [
+                _make_reservation(
+                    res_id="r1",
+                    status="checked_in",
+                    guest=GuestyGuest(
+                        full_name="Alice Smith",
+                        phone="+15550001111",
+                        email="alice@example.com",
+                    ),
                 ),
-            ),
-        ]
+            ]
+        )
         coord = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
         await coord.async_refresh()
         await hass.async_block_till_done()
@@ -2867,7 +2885,7 @@ class TestReservationCustomFieldAttributes:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -2896,7 +2914,7 @@ class TestReservationCustomFieldAttributes:
                 {"cf_door_code": "1234", "cf_wifi_pass": "secret"},
             ),
         )
-        mock_reservations.return_value = [reservation]
+        mock_reservations.return_value = make_fetch_result([reservation])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -2916,7 +2934,7 @@ class TestReservationCustomFieldAttributes:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -2942,7 +2960,7 @@ class TestReservationCustomFieldAttributes:
             res_id="res-no-cf",
             status="checked_in",
         )
-        mock_reservations.return_value = [reservation]
+        mock_reservations.return_value = make_fetch_result([reservation])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -2959,7 +2977,7 @@ class TestReservationCustomFieldAttributes:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -2981,7 +2999,7 @@ class TestReservationCustomFieldAttributes:
     ) -> None:
         """No reservation shows empty custom_fields."""
         mock_listings.return_value = [sample_listing]
-        mock_reservations.return_value = []
+        mock_reservations.return_value = make_fetch_result([])
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -3002,7 +3020,7 @@ class TestReservationCFNameResolution:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -3048,7 +3066,7 @@ class TestReservationCFNameResolution:
                     {"cf_door_code": "1234"},
                 ),
             )
-            mock_reservations.return_value = [reservation]
+            mock_reservations.return_value = make_fetch_result([reservation])
 
             entry = _make_entry()
             entry.add_to_hass(hass)
@@ -3067,7 +3085,7 @@ class TestReservationCFNameResolution:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -3113,7 +3131,7 @@ class TestReservationCFNameResolution:
                     {"cf_unknown_field": "mystery"},
                 ),
             )
-            mock_reservations.return_value = [reservation]
+            mock_reservations.return_value = make_fetch_result([reservation])
 
             entry = _make_entry()
             entry.add_to_hass(hass)
@@ -3132,7 +3150,7 @@ class TestReservationCFNameResolution:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -3178,7 +3196,7 @@ class TestReservationCFNameResolution:
                     {"cf_region": "southeast"},
                 ),
             )
-            mock_reservations.return_value = [reservation]
+            mock_reservations.return_value = make_fetch_result([reservation])
 
             entry = _make_entry()
             entry.add_to_hass(hass)
@@ -3197,7 +3215,7 @@ class TestReservationCFNameResolution:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -3256,7 +3274,7 @@ class TestReservationCFNameResolution:
                     },
                 ),
             )
-            mock_reservations.return_value = [reservation]
+            mock_reservations.return_value = make_fetch_result([reservation])
 
             entry = _make_entry()
             entry.add_to_hass(hass)
@@ -3275,7 +3293,7 @@ class TestReservationCFNameResolution:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -3321,7 +3339,7 @@ class TestReservationCFNameResolution:
                     {"cf_door_code": "9999"},
                 ),
             )
-            mock_reservations.return_value = [reservation]
+            mock_reservations.return_value = make_fetch_result([reservation])
 
             entry = _make_entry()
             entry.add_to_hass(hass)
@@ -3359,7 +3377,7 @@ class TestReservationCFNameResolution:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=[],
+        return_value=make_fetch_result([]),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -3418,7 +3436,7 @@ class TestReservationCFNameResolution:
                     },
                 ),
             )
-            mock_reservations.return_value = [reservation]
+            mock_reservations.return_value = make_fetch_result([reservation])
 
             entry = _make_entry()
             entry.add_to_hass(hass)

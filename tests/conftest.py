@@ -25,6 +25,7 @@ from custom_components.guesty.api.models import (
     GuestyListing,
     GuestyMoney,
     GuestyReservation,
+    ReservationFetchResult,
     TokenStorage,
 )
 from custom_components.guesty.const import (
@@ -39,6 +40,25 @@ FAKE_CLIENT_SECRET = "test-client-secret"
 FAKE_TOKEN = "test-access-token-jwt"
 FAKE_TOKEN_URL = "https://open-api.guesty.com/oauth2/token"
 FAKE_BASE_URL = "https://open-api.guesty.com/v1"
+
+
+def make_fetch_result(
+    reservations: list[GuestyReservation] | None = None,
+    **counters: Any,
+) -> ReservationFetchResult:
+    """Wrap reservations in a ReservationFetchResult for mocks.
+
+    Args:
+        reservations: Reservations the fetch returned.
+        **counters: Diagnostics counters to override.
+
+    Returns:
+        A ReservationFetchResult carrying the reservations.
+    """
+    return ReservationFetchResult(
+        reservations=tuple(reservations or ()),
+        **counters,
+    )
 
 
 def device_for_listing(

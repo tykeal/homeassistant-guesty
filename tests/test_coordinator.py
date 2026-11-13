@@ -43,6 +43,7 @@ from custom_components.guesty.coordinator import (
     ListingsCoordinator,
     ReservationsCoordinator,
 )
+from tests.conftest import make_fetch_result
 
 
 def _make_entry(**overrides: object) -> MockConfigEntry:
@@ -688,7 +689,7 @@ class TestReservationsCoordinator:
         entry.add_to_hass(hass)
         api_client = AsyncMock()
         api_client.get_reservations = AsyncMock(
-            return_value=[sample_reservation],
+            return_value=make_fetch_result([sample_reservation]),
         )
         listings_coordinator = AsyncMock()
         listings_coordinator.data = {sample_listing.id: sample_listing}
@@ -752,7 +753,7 @@ class TestReservationsCoordinator:
 
         api_client = AsyncMock()
         api_client.get_reservations = AsyncMock(
-            return_value=[res_a, res_b],
+            return_value=make_fetch_result([res_a, res_b]),
         )
         listings_coordinator = AsyncMock()
         listings_coordinator.data = {
@@ -802,7 +803,7 @@ class TestReservationsCoordinator:
 
         api_client = AsyncMock()
         api_client.get_reservations = AsyncMock(
-            return_value=[known_res, unknown_res],
+            return_value=make_fetch_result([known_res, unknown_res]),
         )
         listings_coordinator = AsyncMock()
         listings_coordinator.data = {sample_listing.id: sample_listing}
@@ -859,7 +860,7 @@ class TestReservationsCoordinator:
 
         api_client = AsyncMock()
         api_client.get_reservations = AsyncMock(
-            return_value=[res_late, res_early],
+            return_value=make_fetch_result([res_late, res_early]),
         )
         listings_coordinator = AsyncMock()
         listings_coordinator.data = {sample_listing.id: sample_listing}
@@ -1000,7 +1001,7 @@ class TestReservationsCoordinator:
         entry = _make_entry()
         entry.add_to_hass(hass)
         api_client = AsyncMock()
-        api_client.get_reservations = AsyncMock(return_value=[])
+        api_client.get_reservations = AsyncMock(return_value=make_fetch_result([]))
         listings_coordinator = AsyncMock()
         listings_coordinator.data = {}
 
@@ -1029,7 +1030,7 @@ class TestReservationsCoordinator:
         )
         entry.add_to_hass(hass)
         api_client = AsyncMock()
-        api_client.get_reservations = AsyncMock(return_value=[])
+        api_client.get_reservations = AsyncMock(return_value=make_fetch_result([]))
         listings_coordinator = AsyncMock()
         listings_coordinator.data = {}
 
@@ -1059,7 +1060,7 @@ class TestReservationsCoordinator:
         entry = _make_entry()
         entry.add_to_hass(hass)
         api_client = AsyncMock()
-        api_client.get_reservations = AsyncMock(return_value=[])
+        api_client.get_reservations = AsyncMock(return_value=make_fetch_result([]))
         listings_coordinator = AsyncMock()
         listings_coordinator.data = {}
 
@@ -1096,7 +1097,7 @@ class TestReservationsCoordinator:
 
         api_client = AsyncMock()
         api_client.get_reservations = AsyncMock(
-            return_value=[reservation],
+            return_value=make_fetch_result([reservation]),
         )
         listings_coordinator = AsyncMock()
         listings_coordinator.data = None
@@ -1185,7 +1186,7 @@ class TestReservationsCoordinatorErrorResilience:
         entry.add_to_hass(hass)
         api_client = AsyncMock()
         api_client.get_reservations = AsyncMock(
-            return_value=[sample_reservation],
+            return_value=make_fetch_result([sample_reservation]),
         )
         listings_coordinator = AsyncMock()
         listings_coordinator.data = {sample_listing.id: sample_listing}
@@ -1222,7 +1223,7 @@ class TestReservationsCoordinatorErrorResilience:
         entry.add_to_hass(hass)
         api_client = AsyncMock()
         api_client.get_reservations = AsyncMock(
-            return_value=[sample_reservation],
+            return_value=make_fetch_result([sample_reservation]),
         )
         listings_coordinator = AsyncMock()
         listings_coordinator.data = {sample_listing.id: sample_listing}
@@ -1267,7 +1268,7 @@ class TestReservationsCoordinatorErrorResilience:
         entry.add_to_hass(hass)
         api_client = AsyncMock()
         api_client.get_reservations = AsyncMock(
-            return_value=[sample_reservation],
+            return_value=make_fetch_result([sample_reservation]),
         )
         listings_coordinator = AsyncMock()
         listings_coordinator.data = {sample_listing.id: sample_listing}
@@ -1299,7 +1300,7 @@ class TestReservationsCoordinatorErrorResilience:
             check_out=datetime(2025, 9, 5, 11, 0, 0, tzinfo=UTC),
         )
         api_client.get_reservations = AsyncMock(
-            return_value=[new_reservation],
+            return_value=make_fetch_result([new_reservation]),
         )
         await coordinator.async_refresh()
         assert coordinator.last_update_success is True
@@ -1316,7 +1317,7 @@ class TestReservationsCoordinatorErrorResilience:
         entry = _make_entry()
         entry.add_to_hass(hass)
         api_client = AsyncMock()
-        api_client.get_reservations = AsyncMock(return_value=[])
+        api_client.get_reservations = AsyncMock(return_value=make_fetch_result([]))
         listings_coordinator = AsyncMock()
         listings_coordinator.data = {}
 

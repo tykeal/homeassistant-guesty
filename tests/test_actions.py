@@ -40,7 +40,11 @@ from custom_components.guesty.const import (
     CONF_CLIENT_SECRET,
     DOMAIN,
 )
-from tests.conftest import FakeTokenStorage, make_token_response
+from tests.conftest import (
+    FakeTokenStorage,
+    make_fetch_result,
+    make_token_response,
+)
 
 # ── Patch targets ───────────────────────────────────────────────────
 
@@ -99,7 +103,7 @@ async def _setup_entry(hass: HomeAssistant) -> MockConfigEntry:
         patch(
             _PATCH_RESERVATIONS,
             new_callable=AsyncMock,
-            return_value=[],
+            return_value=make_fetch_result([]),
         ),
     ):
         await hass.config_entries.async_setup(entry.entry_id)
@@ -212,7 +216,7 @@ class TestActionServiceRegistration:
             patch(
                 _PATCH_RESERVATIONS,
                 new_callable=AsyncMock,
-                return_value=[],
+                return_value=make_fetch_result([]),
             ),
         ):
             await hass.config_entries.async_setup(entry2.entry_id)
@@ -256,7 +260,7 @@ class TestActionServiceRegistration:
             patch(
                 _PATCH_RESERVATIONS,
                 new_callable=AsyncMock,
-                return_value=[],
+                return_value=make_fetch_result([]),
             ),
         ):
             await hass.config_entries.async_setup(entry2.entry_id)
@@ -305,7 +309,7 @@ class TestActionServiceRegistration:
             patch(
                 _PATCH_RESERVATIONS,
                 new_callable=AsyncMock,
-                return_value=[],
+                return_value=make_fetch_result([]),
             ),
         ):
             await hass.config_entries.async_setup(
@@ -1716,7 +1720,7 @@ class TestHandleSetReservationStatus:
             patch(
                 _PATCH_RESERVATIONS,
                 new_callable=AsyncMock,
-                return_value=[],
+                return_value=make_fetch_result([]),
             ),
         ):
             await hass.config_entries.async_setup(entry2.entry_id)

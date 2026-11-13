@@ -224,7 +224,7 @@ class ReservationsCoordinator(
         )
 
         try:
-            reservations = await self.api_client.get_reservations(
+            fetch_result = await self.api_client.get_reservations(
                 past_days=past_days,
                 future_days=future_days,
             )
@@ -236,6 +236,8 @@ class ReservationsCoordinator(
             raise UpdateFailed(
                 f"Error fetching reservations: {exc.message}",
             ) from exc
+
+        reservations = list(fetch_result.reservations)
 
         # Group by listing ID
         grouped: dict[str, list[GuestyReservation]] = defaultdict(list)
