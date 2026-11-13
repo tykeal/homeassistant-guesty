@@ -900,9 +900,12 @@ reservation. Anything wider violates FR-001.
   target that reappeared in v3 since the last refresh selects v3; a
   v3-sourced target can never select legacy; and selection ignores
   anything the caller supplies; and a target that is fallback-sourced
-  but only republished from retained values after a failed lookup
-  (FR-054) selects **neither** route and is refused with no request of
-  either generation (FR-055, FR-058, SC-016). The requests
+  but has never been served in this session — its first lookup failed,
+  or it was reconstructed after a reload (FR-054) — selects **neither**
+  route and is refused with no request of either generation, while a
+  target that was served successfully and whose later re-check failed
+  still selects legacy, because its identifier was already validated
+  (FR-055, FR-058, SC-016). The requests
   themselves are Phase 7 (T128 to T134). Depends on T114.
 - [ ] T123 [P] [US8] Write an identity-isolation test in
   `tests/test_identity.py`: a fallback-sourced reservation's
@@ -931,8 +934,9 @@ reservation. Anything wider violates FR-001.
 - [ ] T126 [US8] Implement write-route selection alongside the
   identity guard in `custom_components/guesty/actions.py` and
   `custom_components/guesty/__init__.py` — evaluated **after** the
-  guard, reading the fallback's current served set at write time and
-  refusing a target that is only republished from retained values —
+  guard, reading the fallback's current served set at write time,
+  keeping a served record across a failed re-check and refusing a
+  target that has never been served in this session —
   carry the fallback-sourced flag and the `fallback_codes` isolation
   through `custom_components/guesty/coordinator.py` and
   `custom_components/guesty/identity.py`, and surface the fallback

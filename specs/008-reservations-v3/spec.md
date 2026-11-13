@@ -857,7 +857,9 @@ reservation would silently vanish from sensors and calendars mid-migration.
   reservation: the reservation's **last successfully published values MUST
   be retained and republished**, whether those values came from an earlier
   fallback lookup or from the v3 path before the reservation went missing,
-  the reservation stays fallback-sourced, the refresh still publishes, and
+  the reservation stays fallback-sourced, any served record it already has
+  is kept with the legacy identifier it validated, the refresh still
+  publishes, and
   the failure is logged without personal data. This MUST hold on the **first**
   failed lookup for a candidate, when no fallback record exists yet, so
   long as the integration still holds values for it in the current
@@ -913,12 +915,18 @@ This is permitted exception 3 of FR-001 and is bounded by it.
 - **FR-058**: Legacy write routing MUST apply **only** to a reservation the
   fallback is **currently serving** — one whose identifier is in the
   fallback's served set because a legacy by-id lookup for it succeeded in
-  this session (FR-050). A reservation whose record came from a v3 response
-  MUST NEVER have a write routed to the legacy resource, whatever happened on
-  an earlier refresh. A reservation that is only being **republished from
-  retained values** after a failed lookup (FR-054), and is therefore
-  fallback-sourced but not currently served, MUST NOT be routed to either
-  generation: System MUST refuse that write with an error saying the
+  this session (FR-050). A served record survives a **failed re-check**
+  (FR-054): the identifier it carries was validated by the earlier success,
+  so the reservation stays routable and a transient lookup failure MUST NOT
+  cost the user the write. Only a candidate that has **never** been served
+  in this session — a first lookup that failed, or a candidate
+  reconstructed after a reload — is outside the served set. A reservation
+  whose record came from a v3 response MUST NEVER have a write routed to the
+  legacy resource, whatever happened on an earlier refresh. A reservation
+  that is only being **republished from retained values** and has never been
+  served in this session (FR-054), and is therefore fallback-sourced but not
+  currently served, MUST NOT be routed to either generation: System MUST
+  refuse that write with an error saying the
   reservation is not currently reachable in either API and that the action
   may be retried after the next successful refresh. Provenance MUST be read
   from the fallback's served set (FR-057) and MUST be re-evaluated at write

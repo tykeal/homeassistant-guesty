@@ -30,16 +30,18 @@ A write proceeds only when **every** one of these holds:
    the legacy path is retired, such a write is refused with an error
    naming the 2027-03-01 retirement and no request is sent (FR-061,
    SC-019); and when the target is fallback-sourced but only
-   republished from retained values after a failed lookup (FR-054), it
-   is refused as not currently reachable in either API, again with no
-   request (FR-058).
+   republished from retained values and has never been served in this
+   session (FR-054), it is refused as not currently reachable in either
+   API, again with no request (FR-058).
 
 Once the guard permits a write, the **route** is chosen from the
 target's provenance, read at write time from the fallback's `served`
 map: a target the fallback is currently serving goes to §4, everything
 else to §1 and §2. "Currently serving" means a legacy by-id lookup for
-that reservation succeeded in this session; being published from
-retained values is not enough, because no legacy identifier has been
+that reservation succeeded in this session and its served record has not
+been dropped; a failed re-check keeps the record, so it stays routable.
+Being published from retained values after a lookup that has never
+succeeded is not enough, because no legacy identifier has been
 validated for it.
 A fallback-sourced identifier came from a legacy response, and Guesty
 Support states that such an identifier returns "Reservation not found"
@@ -214,8 +216,10 @@ set the option back to `v3` (FR-039).
 - provenance is read at write time from the current `served` map, so a
   target that a refresh completing between action scheduling and
   execution found in v3 is written through v3 (FR-058);
-- a target republished from retained values after a failed lookup is
-  refused with no request of either generation (FR-054, FR-058);
+- a target republished from retained values whose lookup has never
+  succeeded is refused with no request of either generation, while a
+  target whose earlier lookup succeeded and whose re-check then failed
+  is still routed to §4 (FR-054, FR-058);
 - with the fallback disabled, all three operations refuse with an error
   naming the retirement and send no request (SC-019);
 - a routed write logs once, is counted by operation and outcome, and

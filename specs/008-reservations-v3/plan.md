@@ -865,11 +865,15 @@ execution found in v3 is written through v3 (FR-058). Guesty's backfill
 is not observable between refreshes, so that is the limit of the
 guarantee: the first write after a refresh observes the reservation in
 v3 uses v3. Routing is keyed on the served set, **not** on the
-fallback-sourced publication flag: a reservation republished from
-retained values after a failed lookup (FR-054) is flagged
-fallback-sourced but has no validated legacy identifier, so its write is
-refused as not currently reachable in either API rather than routed
-(FR-055, FR-058). Provenance is never taken
+fallback-sourced publication flag. A served record is created by a
+success and survives a failed re-check, so a transient lookup failure
+leaves the reservation routable — the identifier was already validated.
+A reservation republished from retained values whose lookup has
+**never** succeeded in this session (a failed first attempt, or a
+candidate reconstructed after a reload) is flagged fallback-sourced but
+has no validated legacy identifier, so its write is refused as not
+currently reachable in either API rather than routed (FR-054, FR-055,
+FR-058). Provenance is never taken
 from anything the caller supplies. A successful legacy write does not
 change provenance: the reservation stays fallback-sourced until a v3
 result returns it.

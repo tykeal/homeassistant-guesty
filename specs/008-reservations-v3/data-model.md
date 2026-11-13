@@ -403,6 +403,15 @@ identity baseline after a restart.
 (`GuestyReservation`) and `fetched_at` (`datetime`), and is dropped the
 moment its reservation reappears in a v3 result.
 
+A `ServedRecord` is created only by a successful lookup and is removed
+only when the reservation reappears in a v3 result or is confirmed
+absent; a failed re-check updates `last_attempt` and leaves the record
+in place. Write eligibility is exactly "has a `ServedRecord`", so a
+transient re-check failure does not cost the user a write, while a
+candidate that has never been served in this session — a failed first
+attempt, or one reconstructed after a reload — has no record and its
+write is refused (FR-054, FR-058).
+
 `last_attempt` is recorded for **every** lookup, successful or not, and
 is what the re-check interval is measured from. A success also updates
 `ServedRecord.fetched_at`, but eligibility never reads that field: a
@@ -426,9 +435,11 @@ NFR-004). **Routing is not keyed on that flag.** It is keyed on the
 `served` map itself, which holds only reservations a legacy lookup has
 actually returned in this session, because only those have a legacy
 identifier the write can use (FR-058, FR-060). A reservation
-republished from retained values after a failed lookup (FR-054) is
-fallback-sourced but absent from `served`: its write is refused, not
-routed to either generation. The `served` keys are read at write time,
+republished from retained values whose lookup has never succeeded in
+this session is fallback-sourced but absent from `served`: its write is
+refused, not routed to either generation. A reservation whose re-check
+failed still has its record, so it stays routable. The `served` keys
+are read at write time,
 so a reservation a completed refresh has since found in v3 — and which
 is therefore no longer served — is written through v3 at the next
 write.
