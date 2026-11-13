@@ -20,11 +20,14 @@ from custom_components.guesty.api.client import GuestyApiClient
 from custom_components.guesty.api.const import (
     BASE_URL,
     CALENDAR_ENDPOINT,
+    LEGACY_RESERVATIONS_RETIREMENT_DATE,
     LISTINGS_ENDPOINT,
     MAX_DESCRIPTION_LENGTH,
     MAX_NOTE_LENGTH,
     MAX_TASK_TITLE_LENGTH,
     NOTE_SEPARATOR,
+    RESERVATIONS_API_LEGACY,
+    RESERVATIONS_API_V3,
     RESERVATIONS_ENDPOINT,
     TASKS_ENDPOINT,
     TOKEN_URL,
@@ -1906,3 +1909,136 @@ class TestSetReservationStatus:
                 "res-001",
                 "some_random_status",
             )
+
+
+# ── Legacy retirement signalling (T008) ─────────────────────────────
+
+
+def _make_actions_client(
+    http: httpx.AsyncClient,
+    reservations_api: str,
+) -> GuestyActionsClient:
+    """Build an actions client bound to a reservation path.
+
+    Args:
+        http: Async HTTP client to use.
+        reservations_api: Reservation path selector.
+
+    Returns:
+        A GuestyActionsClient on the requested path.
+    """
+    token_manager = GuestyTokenManager(
+        client_id="test-client-id",
+        client_secret="test-client-secret",
+        http_client=http,
+        storage=FakeTokenStorage(),
+        refresh_buffer=0,
+    )
+    api_client = GuestyApiClient(
+        token_manager=token_manager,
+        http_client=http,
+        reservations_api=reservations_api,
+    )
+    return GuestyActionsClient(api_client)
+
+
+class TestLegacyRetirementErrors:
+    """Tests for retirement-shaped legacy failures (FR-039)."""
+
+    @respx.mock
+    @pytest.mark.parametrize("status_code", [404, 410])
+    async def test_legacy_note_fetch_tells_user_to_roll_forward(
+        self,
+        status_code: int,
+    ) -> None:
+        """A 404/410 names the retirement and the rollback step."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        res_path = f"{RESERVATIONS_ENDPOINT}/res-001"
+        respx.get(f"{BASE_URL}{res_path}").mock(
+            return_value=Response(status_code, json={"error": "gone"}),
+        )
+        http = httpx.AsyncClient()
+        client = _make_actions_client(http, RESERVATIONS_API_LEGACY)
+        try:
+            with pytest.raises(GuestyActionError) as exc_info:
+                await client.add_reservation_note("res-001", "note")
+        finally:
+            await http.aclose()
+
+        message = str(exc_info.value)
+        assert LEGACY_RESERVATIONS_RETIREMENT_DATE in message
+        assert "reservations_api" in message
+        assert "v3" in message
+
+    @respx.mock
+    async def test_legacy_status_write_tells_user_to_roll_forward(
+        self,
+    ) -> None:
+        """A 410 on the status write carries the same instruction."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        res_path = f"{RESERVATIONS_ENDPOINT}/res-001"
+        respx.put(f"{BASE_URL}{res_path}").mock(
+            return_value=Response(410, json={"error": "gone"}),
+        )
+        http = httpx.AsyncClient()
+        client = _make_actions_client(http, RESERVATIONS_API_LEGACY)
+        try:
+            with pytest.raises(GuestyActionError) as exc_info:
+                await client.set_reservation_status(
+                    "res-001",
+                    "checked_in",
+                )
+        finally:
+            await http.aclose()
+
+        assert LEGACY_RESERVATIONS_RETIREMENT_DATE in str(exc_info.value)
+
+    @respx.mock
+    async def test_other_status_codes_keep_plain_message(self) -> None:
+        """A non-retirement failure carries no rollback hint."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        res_path = f"{RESERVATIONS_ENDPOINT}/res-001"
+        respx.put(f"{BASE_URL}{res_path}").mock(
+            return_value=Response(422, json={"error": "nope"}),
+        )
+        http = httpx.AsyncClient()
+        client = _make_actions_client(http, RESERVATIONS_API_LEGACY)
+        try:
+            with pytest.raises(GuestyActionError) as exc_info:
+                await client.set_reservation_status(
+                    "res-001",
+                    "checked_in",
+                )
+        finally:
+            await http.aclose()
+
+        assert LEGACY_RESERVATIONS_RETIREMENT_DATE not in str(exc_info.value)
+
+    @respx.mock
+    async def test_v3_path_keeps_plain_message(self) -> None:
+        """The v3 path never emits the legacy rollback hint."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        res_path = f"{RESERVATIONS_ENDPOINT}/res-001"
+        respx.put(f"{BASE_URL}{res_path}").mock(
+            return_value=Response(404, json={"error": "gone"}),
+        )
+        http = httpx.AsyncClient()
+        client = _make_actions_client(http, RESERVATIONS_API_V3)
+        try:
+            with pytest.raises(GuestyActionError) as exc_info:
+                await client.set_reservation_status(
+                    "res-001",
+                    "checked_in",
+                )
+        finally:
+            await http.aclose()
+
+        assert LEGACY_RESERVATIONS_RETIREMENT_DATE not in str(exc_info.value)
