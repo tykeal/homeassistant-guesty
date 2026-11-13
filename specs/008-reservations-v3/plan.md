@@ -755,10 +755,16 @@ record exists, so a first lookup that fails transiently leaves nothing
 to republish. Reconstructing guest-bearing records from storage is not
 an acceptable price for this, so FR-054 takes an explicit, bounded
 exception: on a cold start with no in-session values, the reservation
-is simply absent for that refresh, the failure is counted and logged,
-and the candidate is retried on the next refresh under the normal
-attempt interval. The gap closes as soon as one lookup succeeds, and
-the candidate is never retired by a transient failure. A fallback
+is simply not published, the failure is counted and logged, and the
+candidate is retried at the next refresh for which it is eligible. That
+is governed by the same rules as any other candidate — the re-check
+interval runs from the last *attempt*, so a failed cold-start lookup is
+not retried on the next 15-minute poll but once
+`LEGACY_FALLBACK_RECHECK_SECONDS` has elapsed and the cap allows it.
+The gap therefore lasts until a lookup succeeds rather than a single
+refresh, which is the honest statement of the trade: the alternative is
+persisting guest data. The candidate is never retired by a transient
+failure. A fallback
 failure can never raise `UpdateFailed`.
 
 Distinguishing "this reservation does not exist" from "this resource is

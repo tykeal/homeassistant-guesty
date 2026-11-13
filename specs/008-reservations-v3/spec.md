@@ -817,10 +817,13 @@ reservation would silently vanish from sensors and calendars mid-migration.
   session. It MUST NOT hold on a **cold start**: after a restart or
   reload, a candidate reconstructed from storage has no retained values
   and no guest data may be persisted to create them, so a transient
-  failure leaves that reservation absent for that refresh only; the
-  failure is counted and logged and the candidate is retried on the next
-  refresh. A fallback failure MUST NOT fail a refresh, and a transient
-  failure MUST NOT retire a candidate.
+  failure leaves that reservation unpublished until a later lookup
+  succeeds. The failure is counted and logged, and the candidate is
+  retried at the next refresh for which it is **eligible** under FR-053 —
+  that is, once the re-check interval since its last attempt has elapsed
+  and the per-refresh cap allows it — so the absence MUST NOT be
+  described as lasting a single refresh. A fallback failure MUST NOT fail
+  a refresh, and a transient failure MUST NOT retire a candidate.
 - **FR-055**: A fallback-sourced reservation MUST be published **read-only**.
   Every reservation write action targeting it — the note action, the status
   action and the reservation branch of the custom-field service — MUST abort

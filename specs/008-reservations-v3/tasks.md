@@ -858,9 +858,10 @@ reservation. Anything wider violates FR-001.
   served record exists yet, where the values come from the last v3
   refresh and a multi-segment reservation retains **every** listing it
   projected onto through the coordinator; that a cold start with no
-  retained values leaves the reservation absent for that refresh only
-  and retries it on the next one without retiring it; and that none of
-  these raise out of the fetch (FR-054, NFR-005). Depends on T114.
+  retained values leaves the reservation unpublished and retries it at
+  the next refresh for which it is eligible under FR-053 — not on the
+  next poll — without retiring it; and that none of these raise out of
+  the fetch (FR-053, FR-054, NFR-005). Depends on T114.
 - [ ] T119 [P] [US8] Write retirement tests in
   `tests/api/test_reservations_fallback.py`: a retirement-shaped
   answer disables the fallback for the session, logs exactly one
