@@ -493,10 +493,16 @@ this feature could produce.
   and would reload the integration on every refresh; Store satisfies
   FR-031a's requirement that the baseline survive a restart and a reload
   without that side effect.
-- **Establishment**: rewritten wholesale after each successful,
-  unambiguous refresh, from whichever path produced it (FR-031b). Entries
-  are capped at 5,000 codes, oldest check-out first, so storage stays
-  bounded.
+- **Establishment**: the active map is rewritten wholesale after each
+  successful, unambiguous refresh, from whichever path produced it
+  (FR-031b). Entries are capped at 5,000 codes, oldest check-out first,
+  so storage stays bounded. A legacy bootstrap map is held *separately*
+  in `bootstrap_codes` and is never overwritten by a refresh, so a
+  successful but disjoint v3 refresh cannot discard the only cross-path
+  evidence there is; every refresh is compared against both maps, and
+  the bootstrap map is dropped only once an informative, conflict-free
+  overlap sets continuity to `verified`. Tests cover a disjoint refresh
+  followed by a conflicting overlap, including across a reload.
 - **Bootstrap on upgrade**: because no release ships between phases, an
   existing installation meets v3 with no stored baseline at all. A
   baseline built from the first v3 refresh alone would then be

@@ -224,19 +224,27 @@ Persisted with `homeassistant.helpers.storage.Store`, key
 | `continuity` | `verified`, `unconfirmed` or `not_applicable` | cross-path |
 | `updated` | `str` | ISO timestamp of the last successful refresh |
 | `codes` | `dict[str, str]` | confirmation code → reservation id |
+| `bootstrap_codes` | `dict[str, str] \| None` | retained legacy map |
 
 | Rule | Behaviour |
 | --- | --- |
 | Size bound | at most 5,000 codes, earliest check-out evicted first |
-| Write | after each successful, unambiguous refresh, replacing the map |
+| Write | after each successful, unambiguous refresh, replacing `codes` |
+| Bootstrap retention | `bootstrap_codes` survives refreshes (see below) |
 | Read | once per setup, into the coordinator |
 | Missing | writes fail closed; reservations still publish (FR-031c) |
 | Write permitted | see the four conditions below |
 | Missing on upgrade | a one-time legacy bootstrap sweep seeds the map |
 | Bootstrap uninformative | `continuity` stays `unconfirmed`; writes refused |
 | Fresh install | `continuity` is `not_applicable`; writes permitted |
-| Mismatch | refresh aborts; last-known-good retained; writes blocked (FR-032) |
+| Mismatch, either map | refresh aborts; writes blocked (FR-032) |
 | Removal | deleted with the config entry |
+
+`bootstrap_codes` holds the legacy bootstrap map for an upgrading entry.
+A successful refresh replaces `codes` but **never** `bootstrap_codes`,
+so a disjoint refresh cannot discard the only cross-path evidence. Every
+refresh is checked against both maps; `bootstrap_codes` is dropped once
+an informative, conflict-free overlap sets `continuity` to `verified`.
 
 A write is permitted only when the baseline is usable, its `continuity`
 is not `unconfirmed`, the last refresh was not aborted as ambiguous, and
