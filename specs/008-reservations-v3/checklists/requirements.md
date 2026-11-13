@@ -19,7 +19,7 @@ to planning
 
 ## Requirement Completeness
 
-- [ ] No [NEEDS CLARIFICATION] markers remain
+- [x] No [NEEDS CLARIFICATION] markers remain
 - [x] Requirements are testable and unambiguous
 - [x] Success criteria are measurable
 - [ ] Success criteria are technology-agnostic (no implementation details)
@@ -46,6 +46,9 @@ to planning
       (NFR-001, NFR-002, SC-003, SC-010)
 - [x] A rollback path with a stated default and deprecation plan exists
       (FR-036 to FR-040)
+- [x] The one declared breaking change — the financial sensors — carries
+      explicit behaviour, notice, release-note and removal requirements
+      (FR-043 to FR-049)
 - [x] The wrong-identity write failure mode is explicitly guarded
       (FR-031 to FR-035, R-001)
 - [x] Issue #204 is captured as a requirement (FR-002, FR-003, SC-004)
@@ -63,19 +66,24 @@ to planning
   `[NEEDS CLARIFICATION]` markers. They are deliberate, permanent
   records of documentation-derived claims that no one can resolve
   without live Guesty API access, and FR-041 carries them forward into
-  the plan's pre-release checklist. The one item that is genuinely
-  unresolved and blocks planning is OQ-001 (financial sensors), which
-  is flagged as awaiting the repository owner's decision; the
-  "No [NEEDS CLARIFICATION] markers remain" item stays unchecked until
-  that decision is recorded.
-- Eight open questions (OQ-001 to OQ-008) are recorded. OQ-001 (financial
-  sensors) and OQ-008 (whether a server-side listing filter may trade
-  coverage for request budget) are scope decisions; the remainder are
-  live-verification items that the plan stage must either answer from
-  the vendor reference or carry as defensive handling.
+  the plan's pre-release checklist. The one item that was genuinely
+  unresolved and blocked planning was OQ-001 (financial sensors). The
+  repository owner decided it on 2026-11-13 in favour of deprecating
+  the three sensors, and the decision is recorded in OQ-001 and
+  specified by FR-043 to FR-049, so the "No [NEEDS CLARIFICATION]
+  markers remain" item is now checked.
+- Nine open questions (OQ-001 to OQ-009) are recorded. OQ-001 (financial
+  sensors) is decided and closed. OQ-008 (whether a server-side listing
+  filter may trade coverage for request budget) remains an open scope
+  decision, and OQ-009 (which deprecation-notice mechanism to use for the
+  financial sensors) is a plan-stage design choice arising from the OQ-001
+  decision; the remainder are live-verification items that the plan stage
+  must either answer from the vendor reference or carry as defensive
+  handling.
 - Scope decisions already settled by the repository owner and not
   re-opened here: no live API access, write actions in scope, cached
   guest lookups, a configuration toggle rather than a hard cutover,
-  and #204 resolved by this migration.
-- Spec ready for `/speckit.clarify` or `/speckit.plan` once OQ-001 is
+  #204 resolved by this migration, and the deprecation of the three
+  reservation financial sensors (OQ-001).
+- Spec ready for `/speckit.clarify` or `/speckit.plan`: OQ-001 is
   decided.
