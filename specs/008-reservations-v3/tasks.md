@@ -573,14 +573,15 @@ reservations attributed to a tracked listing).
   a fixture of ten reservations for ten distinct guests issues exactly
   the search pages plus ten, asserted as a pinned number (NFR-001,
   SC-003).
-- [ ] T057 [P] [US2] Write a privacy test in a new
-  `tests/test_privacy_logging.py` asserting that **no** guest name,
-  phone number, email address or confirmation code appears in captured
-  log records at DEBUG across a full v3 refresh and a guest-lookup
-  failure (FR-021, NFR-009). The identity-guard abort scenario is
-  **not** part of this task: the abort path does not exist until T070
-  in Phase 6, and Phases 5 and 6 may run independently. T066a extends
-  this same file with the identity-abort privacy scenario.
+- [ ] T057 [P] [US2] Write a privacy test in
+  `tests/test_privacy_logging.py`, **creating that module if T066a has
+  not already created it**, asserting that **no** guest name, phone
+  number, email address or confirmation code appears in captured log
+  records at DEBUG across a full v3 refresh and a guest-lookup failure
+  (FR-021, NFR-009). The identity-guard abort scenario is **not** part
+  of this task: the abort path does not exist until T070 in Phase 6,
+  and Phases 5 and 6 may run independently, so T066a adds that
+  scenario to the same module and neither task depends on the other.
 - [ ] T058 [P] [US2] Write tests asserting the sensor publishes
   `guest_name`, `guest_phone` and `guest_email` under their existing
   attribute names from the cache, that the same guest appearing on
@@ -673,10 +674,13 @@ real account, the user sets `reservations_api=legacy` and reloads.
   identifiers matched, and that the count appears in diagnostics
   without exposing any confirmation code value, in
   `tests/test_identity.py` (FR-021, FR-035, FR-042).
-- [ ] T066a [P] [US5] Extend `tests/test_privacy_logging.py` (created
-  at T057) with the identity-guard abort scenario: assert that an
-  aborted refresh emits no guest name, phone number, email address or
-  confirmation code at DEBUG. Deferred here from T057 because the
+- [ ] T066a [P] [US5] Add the identity-guard abort scenario to
+  `tests/test_privacy_logging.py`, **creating that module if T057 has
+  not already created it**: assert that an aborted refresh emits no
+  guest name, phone number, email address or confirmation code at
+  DEBUG. Phases 5 and 6 are independent, so whichever of T057 and
+  T066a runs first creates the module and the other extends it;
+  neither depends on the other. Deferred here from T057 because the
   abort path does not exist until T070 (FR-021, NFR-009).
 - [ ] T067 [US5] **BLOCKED on T002.** Write bootstrap-sweep tests in
   `tests/test_identity.py`: a fresh install (no baseline, no
