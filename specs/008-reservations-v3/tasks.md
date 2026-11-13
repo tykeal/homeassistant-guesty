@@ -462,7 +462,7 @@ published, so it cannot resurrect a dropped reservation.
 
 ### Phase 4 Tests (Red) — write first, verify they FAIL
 
-- [ ] T041 [US1] Write attribution tests: a single-segment
+- [x] T041 [US1] Write attribution tests: a single-segment
   reservation; a two-segment reservation attributed to **both**
   tracked listings; a segment resolving only through
   `parentListingId`; a partly-unknown reservation published with its
@@ -470,7 +470,7 @@ published, so it cannot resurrect a dropped reservation.
   skipped with a warning; and a reservation with no `stay` at all
   skipped with a warning, in `tests/test_coordinator.py` (FR-009,
   FR-010, FR-012, FR-013, SC-006).
-- [ ] T042 [P] [US1] Write per-listing projection tests: a
+- [x] T042 [P] [US1] Write per-listing projection tests: a
   single-segment reservation projects to itself field for field; a
   multi-segment reservation substitutes that listing's segment dates,
   localized dates, `guests_count` and derived `nights_count`; `id`,
@@ -480,7 +480,7 @@ published, so it cannot resurrect a dropped reservation.
   interval containing the refresh instant, else the earliest future
   interval, else the latest past one, in `tests/test_coordinator.py`
   (FR-011, data-model.md §3.1).
-- [ ] T043 [P] [US1] Write frozen-clock segment-aware state tests
+- [x] T043 [P] [US1] Write frozen-clock segment-aware state tests
   (FR-011a, SC-012): before a mid-stay move the reservation is
   `checked_in` on A and `awaiting_checkin` on B without displacing B's
   current occupant; after the move it is `checked_out` on A and
@@ -489,22 +489,22 @@ published, so it cannot resurrect a dropped reservation.
   `awaiting_checkin`. Assert `_STATUS_PRIORITY` in
   `custom_components/guesty/sensor.py` is **unchanged**, in
   `tests/test_coordinator.py` and `tests/test_reservation_sensor.py`.
-- [ ] T044 [P] [US1] Write frozen-clock trim tests (FR-002a): padded
+- [x] T044 [P] [US1] Write frozen-clock trim tests (FR-002a): padded
   boundary results are dropped, an in-progress stay is **never**
   dropped regardless of how far in the past it began, and the trim
   applies on **both** the legacy and v3 paths, in
   `tests/test_coordinator.py`.
-- [ ] T045 [P] [US1] Write tests asserting an `alteration` reservation
+- [x] T045 [P] [US1] Write tests asserting an `alteration` reservation
   is dropped by the coordinator with a debug log and a diagnostics
   counter, is never selected as a sensor state, and never displaces a
   published reservation for the same listing, in
   `tests/test_coordinator.py` and `tests/test_reservation_sensor.py`
   (FR-024).
-- [ ] T046 [P] [US1] Write a test asserting a listing excluded by
+- [x] T046 [P] [US1] Write a test asserting a listing excluded by
   Feature 007 listing filtering publishes no reservations, and that
   the reservation layer performs **no** filtering of its own, in
   `tests/test_coordinator.py` (FR-014).
-- [ ] T047 [P] [US1] Write tests asserting the reservation status
+- [x] T047 [P] [US1] Write tests asserting the reservation status
   sensor's attribute **key set and names** are unchanged when fed
   projections — reservation id, UTC and localized check-in/check-out,
   planned arrival/departure, guest name/phone/email, confirmation
@@ -516,7 +516,7 @@ published, so it cannot resurrect a dropped reservation.
 
 ### Phase 4 Implementation (Green)
 
-- [ ] T048 [US1] Implement segment attribution in
+- [x] T048 [US1] Implement segment attribution in
   `custom_components/guesty/coordinator.py`: attribute to
   `segment.listing_id` when known, else `segment.parent_listing_id`
   when known, else ignore with a debug log; publish a reservation with
@@ -526,24 +526,24 @@ published, so it cannot resurrect a dropped reservation.
   tracking; and drop `alteration` reservations with a debug log
   (FR-009, FR-010, FR-012, FR-013, FR-014, FR-024). Depends on T041,
   T045, T046.
-- [ ] T049 [US1] Implement the per-listing projection in
+- [x] T049 [US1] Implement the per-listing projection in
   `custom_components/guesty/coordinator.py`, keeping segments in the
   same listing as disjoint intervals and selecting the interval per
   data-model.md §3.1, so `ReservationsCoordinator.data` keeps its type
   `dict[str, list[GuestyReservation]]` (FR-011, NFR-003, NFR-004).
   Depends on T048.
-- [ ] T050 [US1] Implement segment-aware status derivation in
+- [x] T050 [US1] Implement segment-aware status derivation in
   `custom_components/guesty/coordinator.py`, applied **only** when the
   reservation-level status is `confirmed` or `checked_in` and the
   reservation has more than one segment; every other status is carried
   unchanged to every listing it touches (FR-011a). Do not modify
   `_STATUS_PRIORITY` in `sensor.py`. Depends on T049.
-- [ ] T051 [US1] Implement the instant-based window trim
+- [x] T051 [US1] Implement the instant-based window trim
   (`keep ⇔ check_out > now − past_days and check_in < now +
   future_days`) in `custom_components/guesty/coordinator.py`, applied
   on **both** paths after mapping and before publication (FR-002a,
   FR-004). Depends on T049.
-- [ ] T052 [US1] Emit the FR-042 per-refresh DEBUG diagnostics in
+- [x] T052 [US1] Emit the FR-042 per-refresh DEBUG diagnostics in
   `custom_components/guesty/coordinator.py` with **no personal data**:
   pages per resource, reservation count by raw status, the
   stay-segment histogram, attributed/partially-attributed/skipped
