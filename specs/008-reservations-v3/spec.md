@@ -758,7 +758,19 @@ reservation would silently vanish from sensors and calendars mid-migration.
   MUST publish it as a **fallback-sourced** reservation with the same entity,
   state and attribute behaviour as any other reservation. The fallback MUST
   be a by-identifier lookup only; a legacy **search** or any speculative
-  legacy sweep is forbidden by FR-001.
+  legacy sweep is forbidden by FR-001. "Previously known" MUST survive a
+  restart: the identifiers retained for fallback candidacy include those
+  learned from earlier fallback-sourced reservations.
+- **FR-050a**: A fallback-sourced reservation MUST satisfy the same
+  configured filters as a v3-sourced one before it is published: the
+  configured date window, the configured status set (FR-003) and the
+  listing and tag selection of Feature 007 (FR-014). A reservation that
+  disappeared from the v3 result because its status moved outside the
+  configured set MUST NOT be reintroduced by the fallback, even though its
+  legacy lookup succeeds. Attribution of a fallback-sourced reservation
+  MUST use the legacy rules, because a legacy document carries no stay
+  segments; the v3 requirement to skip a reservation with no stay segments
+  (FR-013) applies to v3-sourced records only.
 - **FR-051**: The fallback MUST NOT be attempted for a reservation the
   integration has never seen, for a reservation whose stay no longer overlaps
   the configured window, or for an identifier that did not come from a prior
@@ -770,7 +782,13 @@ reservation would silently vanish from sensors and calendars mid-migration.
   sensors exactly as it does today. The fallback MUST NOT keep republishing a
   reservation that both APIs agree is gone, and MUST NOT mask a genuine
   cancellation or deletion.
-- **FR-053**: Fallback lookups MUST be bounded. System MUST issue at most a
+- **FR-053**: Fallback lookups MUST be bounded. Candidates over the
+  per-refresh cap MUST be selected fairly — never-attempted candidates
+  before previously-attempted ones, then least-recently-attempted first —
+  so that no candidate can be starved indefinitely by candidates whose
+  re-check keeps falling due, and the re-check interval MUST be measured
+  from the last **attempt**, including a failed one, not from the last
+  success. System MUST issue at most a
   defined maximum number of fallback lookups per refresh, and at most one
   lookup per candidate per a defined re-check interval that is longer than
   the poll interval, serving the previously retrieved record in between. Both
@@ -779,8 +797,12 @@ reservation would silently vanish from sensors and calendars mid-migration.
   the legacy resource on every poll.
 - **FR-054**: A fallback lookup that fails for any reason other than
   confirmed absence or retirement MUST degrade only the affected
-  reservation: the last known values for that reservation are retained, the
-  refresh still publishes, and the failure is logged without personal data. A
+  reservation: the reservation's **last successfully published values MUST
+  be retained and republished**, whether those values came from an earlier
+  fallback lookup or from the v3 path before the reservation went missing,
+  the reservation stays read-only, the refresh still publishes, and the
+  failure is logged without personal data. This MUST hold on the **first**
+  failed lookup for a candidate, when no fallback record exists yet. A
   fallback failure MUST NOT fail a refresh.
 - **FR-055**: A fallback-sourced reservation MUST be published **read-only**.
   Every reservation write action targeting it — the note action, the status

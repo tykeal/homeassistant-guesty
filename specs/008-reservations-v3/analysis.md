@@ -364,13 +364,13 @@ Full design in `plan.md` § "Legacy not-found fallback"; data in
 
 | Metric | Before | After |
 | --- | --- | --- |
-| Functional requirements | 55 | 65 |
+| Functional requirements | 55 | 66 |
 | Non-functional requirements | 9 | 9 (NFR-001 extended) |
 | Success criteria | 14 | 18 |
 | User stories | 7 | 8 |
 | Risks | 10 | 12 |
 | Open questions | 9 (1 decided) | 10 (2 decided, 1 new for the owner) |
-| Tasks | 114 | 127 |
+| Tasks | 114 | 128 |
 | Requirements with ≥1 task | 100% | 100% |
 | Findings: CRITICAL / MAJOR / MINOR | — | 3 / 8 / 5 |
 

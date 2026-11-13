@@ -818,27 +818,42 @@ reservation. Anything wider violates FR-001.
   by an earlier refresh and absent from the current v3 result is a
   candidate; a never-seen id is not; a candidate whose last known
   stay no longer overlaps the configured window is dropped without a
-  request; a candidate already confirmed absent is not retried
-  (FR-050, FR-051, FR-052). Depends on T114.
+  request; a candidate already confirmed absent is not retried; and a
+  reservation known only from a previous fallback lookup is still a
+  candidate after a reload, reconstructed from `fallback_codes` and
+  `window_hints` with the in-memory caches cleared (FR-050, FR-051,
+  FR-052). Depends on T114.
 - [ ] T116 [P] [US8] Write republication tests in
   `tests/api/test_reservations_fallback.py`: a successful legacy
   by-id lookup yields a reservation flagged fallback-sourced whose
-  mapped fields match what the v3 path would publish, and the
+  mapped fields match what the v3 path would publish; the reservation
+  reaches the **coordinator's published set** with its listing
+  attribution intact, proving source-aware attribution handles a
+  legacy document that carries no stay segments while a v3 record
+  without segments is still skipped; a fallback result whose status
+  falls outside the configured set is **not** published; and the
   reservation reappearing in a later v3 result drops it from the
-  served map (FR-050, SC-015). Depends on T114.
+  served map (FR-050, FR-050a, SC-015). Depends on T114.
 - [ ] T117 [P] [US8] Write budget tests in
   `tests/api/test_reservations_fallback.py` using respx request
   counting: zero legacy requests when nothing is missing; exactly
   `MAX_LEGACY_FALLBACK_LOOKUPS_PER_REFRESH` when more candidates than
   the cap are missing, with the remainder counted as deferred; and at
   most one lookup per candidate per `LEGACY_FALLBACK_RECHECK_SECONDS`
-  across repeated refreshes (FR-053, SC-017, NFR-001). Depends on
-  T114.
+  across repeated refreshes, including when every lookup **fails**, so
+  the interval is measured from the last attempt rather than the last
+  success; and that with far more candidates than the cap every
+  candidate is attempted within a bounded number of refreshes even as
+  earlier candidates become due for re-check (FR-053, SC-017,
+  NFR-001). Depends on T114.
 - [ ] T118 [P] [US8] Write failure-mode tests in
   `tests/api/test_reservations_fallback.py`: a timeout, a 5xx and a
-  malformed body each degrade only that reservation, retain the last
-  served record where one exists, are counted as failures and never
-  raise out of the fetch (FR-054, NFR-005). Depends on T114.
+  malformed body each degrade only that reservation, republish the
+  reservation's last successfully published values read-only —
+  including when the **first** lookup for a candidate fails and no
+  served record exists yet, where the values come from the last v3
+  refresh — are counted as failures and never raise out of the fetch
+  (FR-054, NFR-005). Depends on T114.
 - [ ] T119 [P] [US8] Write retirement tests in
   `tests/api/test_reservations_fallback.py`: a retirement-shaped
   answer disables the fallback for the session, logs exactly one
@@ -1173,12 +1188,21 @@ checked from a user's debug log without a test account).
   the guest-folio assumption is void and nothing about it needs
   verifying (FR-043, research.md R9). This gate exists only so that no
   specification assumption is silently dropped.
-- [ ] T106 [GATE] Record every T099–T105 outcome in
+- [ ] T127 [GATE] Verify the directly testable **legacy not-found
+  fallback** items with any reservation present in both APIs: that the
+  identifier taken from a v3 response is accepted by
+  `GET /v1/reservations/{reservationId}`, and that the attributes
+  derived from the legacy document match those derived from the v3
+  document for the same reservation, so a fallback-sourced reservation
+  is not observably different. Items 1, 3 and 5 of that checklist need
+  an account mid backfill and may be recorded as not observed; items 2
+  and 4 may not (research.md, FR-041).
+- [ ] T106 [GATE] Record every T099–T105 and T127 outcome in
   `specs/008-reservations-v3/research.md`. For **every refuted
   assumption**, land the corrective fix or documented fallback and
   then **re-run the affected live check until it passes**; an open
   follow-up issue alone does **not** close this gate. Only once every
-  check in T099–T105 has passed, or has been recorded as not
+  check in T099–T105 and T127 has passed, or has been recorded as not
   applicable, may the feature be declared stable (FR-041, SC-011).
   Follow-up issues may be opened for non-blocking observations only.
 
@@ -1388,7 +1412,7 @@ requirement is unmapped.**
 | FR-038 | T005, T006, T015, T017, T089 |
 | FR-039 | T008, T014, T019 |
 | FR-040 | T007, T012, T080 |
-| FR-041 | T099–T106 |
+| FR-041 | T099–T106, T127 |
 | FR-042 | T009, T034, T052, T061, T076, T091, T096, T120 |
 | FR-043 | T088 (a prohibition; verified by test, no code) |
 | FR-044 | T086, T093 |
@@ -1398,6 +1422,7 @@ requirement is unmapped.**
 | FR-048 | T094, T097, T098 (see the note below) |
 | FR-049 | T086, T090, T093 |
 | FR-050 | T115, T116, T125 |
+| FR-050a | T116, T125 |
 | FR-051 | T115, T125 |
 | FR-052 | T115, T125 |
 | FR-053 | T117, T124, T125 |

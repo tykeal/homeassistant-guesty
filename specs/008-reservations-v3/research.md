@@ -794,10 +794,16 @@ stay-segment histogram, attribution and skip counts, guest cache
 behaviour, the identity match count, the per-exception counts of
 permitted legacy calls, and the fallback counters. Items 2 and 3 of
 "Write resources" need a deliberate action invocation on a real account.
-Items 1 to 4 of "Legacy not-found fallback" need a real account mid
-backfill and may legitimately be unobservable — "not observed" is a
-valid outcome there, recorded as such, and it does not block release;
-item 5 can only be answered by watching an observed case over time. Item 1
+Items 1 and 3 of "Legacy not-found fallback" need a real account **mid
+backfill**: a reservation genuinely missing from v3 cannot be
+conjured, so "not observed" is a valid recorded outcome for those two,
+and item 5 can only be answered by watching an observed case over
+time. Items 2 and 4 are **not** exempt. Both can be checked with any
+reservation present in both APIs — item 2 by confirming a v3
+identifier is accepted by the legacy by-id resource, item 4 by
+comparing the attributes produced from the legacy document with those
+produced from the v3 document for the same reservation — so both are
+release gates with a pass or fail outcome (T127). Item 1
 of "Identity and continuity" is **not** confirmed merely by two
 successful refreshes: if the legacy and v3 results share no confirmation
 codes, or either is empty, the guard compares nothing and cannot trip.

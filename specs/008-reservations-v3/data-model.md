@@ -232,6 +232,7 @@ Persisted with `homeassistant.helpers.storage.Store`, key
 | `codes` | `dict[str, str]` | confirmation code → reservation id |
 | `bootstrap_codes` | `dict[str, str] \| None` | retained legacy map |
 | `fallback_codes` | `dict[str, str] \| None` | fallback-sourced map |
+| `window_hints` | `dict[str, str]` | reservation id → ISO check-out |
 
 | Rule | Behaviour |
 | --- | --- |
@@ -263,7 +264,18 @@ the same reason as `bootstrap_codes`: a fallback record is
 legacy-sourced, so letting it into `codes` would allow legacy evidence
 to confirm itself. Entries are compared like any other and are dropped
 as soon as the reservation reappears in a v3 result. Continuity is never
-promoted to `verified` on `fallback_codes` alone.
+promoted to `verified` on `fallback_codes` alone. `fallback_codes` is
+part of the previously-known union the fallback draws candidates from,
+so a reservation that has only ever been seen through the fallback is
+still a candidate after a restart.
+
+`window_hints` records the check-out date of every identifier held in
+the three code maps. It is the durable window metadata the fallback
+needs to drop a candidate whose stay no longer overlaps the configured
+window without issuing a request, and it is also what makes the
+"earliest check-out evicted first" size bound computable. It holds
+dates and identifiers only — no guest data — and an identifier is
+removed from it when it leaves every code map.
 
 A write is permitted only when the baseline is usable, its `continuity`
 is not `unconfirmed`, the last refresh was not aborted as ambiguous, the
@@ -350,15 +362,24 @@ identity baseline after a restart.
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `served` | `dict[str, ServedRecord]` | id → record and fetch time |
+| `last_attempt` | `dict[str, datetime]` | id → last lookup attempt |
 | `confirmed_absent` | `set[str]` | legacy said not found; retired |
 | `deferred` | `tuple[str, ...]` | over the per-refresh cap |
 | `disabled` | `bool` | retirement detected (FR-056) |
 
 `ServedRecord` is a frozen dataclass of `reservation`
-(`GuestyReservation`) and `fetched_at` (`datetime`). A record is
-re-looked-up only once `fetched_at` is older than
-`LEGACY_FALLBACK_RECHECK_SECONDS`, and is dropped the moment its
-reservation reappears in a v3 result.
+(`GuestyReservation`) and `fetched_at` (`datetime`), and is dropped the
+moment its reservation reappears in a v3 result.
+
+`last_attempt` is recorded for **every** lookup, successful or not, and
+is what the re-check interval is measured from. A success also updates
+`ServedRecord.fetched_at`, but eligibility never reads that field: a
+first attempt that failed has no served record at all, and a failed
+re-check would leave an already-expired `fetched_at`, so in both cases
+the candidate would be eligible on every poll and FR-053's interval
+would not hold. Candidates are ordered for the per-refresh cap by
+"no `last_attempt` first, then oldest `last_attempt`, then earliest
+check-out", which is what stops a backlog being starved (FR-053).
 
 `FallbackCounters` is a frozen dataclass of `attempted`, `served`,
 `succeeded`, `confirmed_absent`, `failed` and `deferred` integers,

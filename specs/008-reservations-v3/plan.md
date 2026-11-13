@@ -650,6 +650,20 @@ request if its last known stay no longer overlaps the configured window
 absent. A reservation never seen before is not a candidate: there is no
 identifier to look up (FR-051).
 
+**Normalization and attribution.** A legacy document maps through the
+existing legacy mapper, which leaves `stay` empty and populates
+`listing_id` directly (`data-model.md` §1.3). Attribution is therefore
+**source-aware**: a v3-sourced record is attributed from its stay
+segments and a record with no segments is still skipped as malformed
+(FR-013), while a fallback-sourced record is attributed from
+`listing_id` under the Feature 003 rules the legacy path already uses.
+Without that distinction the segment-based attribution would discard
+every fallback record before it reached a sensor, so the fallback would
+buy nothing. The skip-on-no-segments validation of the v3 path is not
+weakened: it simply does not apply to a record that never had segments.
+A fallback record is also subject to the same window trim and the same
+configured status filter as any other reservation (FR-050a).
+
 **Interaction with the identity guard.** A fallback record is
 legacy-sourced, so it may not be allowed to confirm itself. Its
 confirmation code is written to a separate `fallback_codes` map, never
@@ -675,14 +689,31 @@ the baseline entry can share a common legacy ancestor.
   no restart. A record that reappears in the v3 result is dropped from
   the map immediately and reverts to being a normal v3 reservation.
 
-Neither cache is persisted. After a restart the first refresh re-learns
-the candidates from the identity baseline, which costs at most one
-bounded round of lookups and avoids persisting a stale absence.
+Neither cache is persisted — a persisted absence could permanently hide
+a reservation that returns. Candidacy itself must survive a restart,
+however, so the previously-known union includes the baseline's
+`fallback_codes` map as well as `codes` and `bootstrap_codes`:
+otherwise a reservation that only ever arrived through the fallback
+would lose its candidacy on reload and vanish. The window filter needs
+durable stay data that a code-to-identifier map does not carry, so the
+baseline also persists `window_hints`, an identifier-to-check-out map
+covering every identifier in the three code maps (`data-model.md` §4).
+A restart therefore costs at most one bounded round of lookups, and
+confirmed absence is re-established by that round rather than carried
+across the restart.
 
 **Request budget.** `MAX_LEGACY_FALLBACK_LOOKUPS_PER_REFRESH` (20) caps
 the lookups a single refresh may issue; candidates over the cap are
-deferred to the next refresh, oldest check-out first, and counted as
-deferred in diagnostics. Lookups run through the existing
+deferred to the next refresh and counted as deferred in diagnostics.
+Ordering is **fair**, not by check-out date: never-attempted candidates
+come first, then the least-recently-attempted, breaking ties by
+earliest check-out. Ordering by check-out alone would let the same
+early candidates consume the cap, and a re-check becoming due would
+displace a candidate that has never been looked up at all — with 100
+missing reservations, a cap of 20, hourly re-checks and a 15-minute
+poll the backlog would never drain. Fair ordering guarantees every
+candidate is attempted within a bounded number of refreshes. Lookups
+run through the existing
 rate-limit-aware client with the same bounded concurrency as the guest
 lookups, so they cannot exhaust the rate budget (NFR-002). Spec NFR-001
 excludes them from the warm-cache steady-state comparison — a steady
@@ -695,10 +726,16 @@ lookup per candidate per re-check interval (SC-017).
 above. A retirement-shaped answer self-disables the fallback for the
 session with one WARNING naming 2027-03-01 (FR-056). Anything else —
 timeout, 5xx, rate limit, malformed body — degrades only that
-reservation: the last served record is retained if there is one,
-otherwise the reservation is simply absent this refresh, the failure is
-counted and logged without personal data, and the refresh still
-publishes (FR-054). A fallback failure can never raise `UpdateFailed`.
+reservation: the **last successfully published record for that
+identifier is retained and republished read-only, whatever its source**
+— a served fallback record if there is one, otherwise the values the v3
+path last published — the failure is counted and logged without
+personal data, and the refresh still publishes (FR-054). Retaining only
+a served fallback record would drop a reservation on the *first* failed
+lookup, recreating exactly the disappearance the fallback exists to
+prevent. Retention is bounded by the same window trim and re-attempted
+on the next refresh; a confirmed absence or a retirement answer still
+ends it immediately. A fallback failure can never raise `UpdateFailed`.
 
 Distinguishing "this reservation does not exist" from "this resource is
 retired" is **[UNVERIFIED]**; the implementation treats a 404 carrying a
