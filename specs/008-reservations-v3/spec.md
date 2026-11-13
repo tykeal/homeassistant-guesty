@@ -134,15 +134,19 @@ sensor exposes the same guest attribute names and values as the legacy path.
 2. **Given** the same guest appears on several reservations in one refresh,
    **When** the data refreshes, **Then** that guest is looked up at most once
    for that refresh.
-3. **Given** a guest was looked up successfully in an earlier refresh and the
-   reservation still references that same guest, **When** a later refresh
-   occurs, **Then** the cached guest details are reused rather than refetched.
+3. **Given** a guest was looked up successfully in an earlier refresh, the
+   reservation still references that same guest, and the cache entry is
+   within its freshness period, **When** a later refresh occurs, **Then** the
+   cached guest details are reused rather than refetched.
 4. **Given** a guest lookup fails, **When** the data refreshes, **Then** the
    previously known guest details for that same guest identifier are retained,
    the reservation itself is still published, and the failure is logged.
 5. **Given** a reservation's guest identifier has changed since the cached
    lookup, **When** the data refreshes, **Then** the cached details for the
    previous guest are **not** published for the new guest.
+6. **Given** a cached guest entry has passed its freshness period, **When** a
+   refresh occurs, **Then** that guest is looked up again, so a name, phone
+   or email edited directly in Guesty is eventually picked up.
 
 ---
 
@@ -239,6 +243,14 @@ identifier, and asserting that the integration aborts without writing.
 3. **Given** a reservation with no confirmation code, **When** the refresh
    runs, **Then** the reservation is published read-only and any write action
    targeting it aborts with an explanatory error.
+4. **Given** an installation upgrading from a release that never recorded an
+   identity baseline, **When** the first v3 refresh runs, **Then** the
+   reservations are published, the baseline is recorded from that refresh,
+   and any write action attempted before a baseline exists aborts with an
+   explanatory error rather than proceeding on an empty comparison.
+5. **Given** a recorded baseline, **When** Home Assistant restarts or the
+   config entry reloads, **Then** the baseline is still available and writes
+   remain permitted without waiting for a fresh legacy-path refresh.
 
 ---
 
@@ -281,8 +293,12 @@ toggle.
 
 - **A reservation whose stay spans more than one listing (mid-stay move).**
   v3 newly supports this. The reservation is attributed to every known listing
-  that appears in its stay segments, so it is visible on each of them, and
-  the segment dates for that listing are used for that listing's attributes.
+  that appears in its stay segments, so it is visible on each of them, the
+  segment dates for that listing are used for that listing's attributes, and
+  the per-listing state is derived from that segment rather than from the
+  reservation-level status (FR-011a). A guest who has moved out of listing A
+  into listing B is `checked_out` on A and `checked_in` on B, not
+  `checked_in` on both.
 - **A reservation whose stay segments are all for unknown listings.** It is
   skipped with a warning, matching today's behaviour (Feature 003, FR-017).
 - **A reservation whose stay segments are partly known and partly unknown.**
@@ -327,9 +343,26 @@ toggle.
   date filters in the documented bracketed form, and MUST verify by test that
   reservations outside the window are not returned. This resolves
   [#204][issue-204].
+- **FR-002a**: Because the v3 date filters are documented to compare
+  listing-localized dates while the configured window is an instant-based
+  range, system MUST pad the server-side window so that it is a superset of
+  the configured window, and MUST then apply a **new** instant-based
+  client-side trim so that padded boundary results are not published. No such
+  trim exists today — neither `get_reservations()` nor
+  `ReservationsCoordinator` checks the date window, which is part of why
+  [#204][issue-204] had no client-side compensation. The trim MUST NOT discard
+  a stay that is in progress at refresh time (FR-004).
 - **FR-003**: System MUST send the configured status set as a v3 status
   filter in the documented bracketed form. This resolves the status half of
   [#204][issue-204].
+- **FR-003a**: When translating the configured status set into a v3 status
+  filter, system MUST request each configured status together with its v3
+  equivalents. In particular, requesting `checked_out` MUST also request
+  `completed`, because the default configured set is `confirmed`,
+  `checked_in`, `checked_out`, `canceled` (`api/const.py:116-124`) and a
+  server-side filter would otherwise exclude completed reservations before
+  FR-023 could map them. This translation MUST NOT change the configured
+  status set the user sees, nor the sensor state vocabulary.
 - **FR-004**: System MUST preserve the *intent* of today's two-query merge —
   the date-and-status-filtered query plus the unbounded `checked_in` query
   that catches long stays whose check-in predates the window
@@ -364,6 +397,25 @@ toggle.
   that segment's check-in, check-out, localized dates and guest count for that
   listing's sensor attributes, rather than the reservation-level span, when
   the reservation has more than one segment.
+- **FR-011a**: Reservation selection and sensor state derivation MUST be
+  **segment-aware** for a multi-segment reservation. The reservation-level
+  status alone MUST NOT be used, because today's selection and state logic
+  (`sensor.py:305-366`) keys on status only, which would mark both the origin
+  and the not-yet-occupied destination listing as `checked_in` during a
+  mid-stay move, and would let the future segment compete with the
+  destination listing's actual current occupant. For each listing, the state
+  MUST be derived from the segment that applies to that listing at the
+  current time:
+  - before the segment's check-in, the reservation counts as upcoming for
+    that listing (`awaiting_checkin`), never as `checked_in`;
+  - between the segment's check-in and check-out, a reservation-level
+    `checked_in` status counts as `checked_in` for that listing;
+  - after the segment's check-out, the reservation counts as past for that
+    listing (`checked_out`), even while the reservation as a whole is still
+    `checked_in` in another listing;
+  - a reservation that is only upcoming for a listing MUST NOT outrank that
+    listing's genuinely current occupant.
+  A single-segment reservation MUST behave exactly as it does today.
 - **FR-012**: System MUST recognize the documented parent/sub-unit
   relationship carried on a stay segment, so that a reservation assigned to a
   sub-unit or to an unassigned parent unit type is still attributed to the
@@ -377,11 +429,19 @@ toggle.
   continue to be applied on the listing side and MUST NOT be re-implemented in
   the reservation search. A reservation for a filtered-out listing MUST NOT be
   published.
-- **FR-015**: Because the v3 listing filter is documented to match only the
-  **first** stay segment, any use of a server-side listing filter MUST be
-  treated as a narrowing optimisation only, with client-side attribution over
-  all segments remaining authoritative. Any reservation thereby missed MUST be
-  documented as a known, logged gap rather than a silent one.
+- **FR-015**: The v3 listing filter is documented to match only the **first**
+  stay segment. A reservation that begins in an untracked listing and moves
+  into a tracked one is therefore excluded by the server before client-side
+  attribution can see it, so neither attribution (FR-010) nor diagnostics
+  (FR-042) can recover or even name the missing stay. System MUST therefore
+  **NOT** use a server-side listing filter as part of the primary retrieval
+  path. Retrieval MUST be completeness-preserving over the configured
+  window and status set, with client-side attribution over all segments
+  deciding which listings each reservation belongs to. Adopting a listing
+  filter as a request-budget optimisation, and thereby accepting the coverage
+  gap, is deferred to
+  [OQ-008](#oq-008-may-a-server-side-listing-filter-trade-coverage-for-request-budget)
+  and requires an explicit recorded decision.
 
 #### Guest details
 
@@ -391,17 +451,24 @@ toggle.
 - **FR-017**: System MUST expose those guest values under the **same sensor
   attribute names** the legacy path uses today, so that existing automations
   and templates are unaffected.
-- **FR-018**: System MUST cache guest lookups. At minimum, a given guest MUST
-  be looked up at most once per refresh, and a successful lookup MUST be
-  reusable across refreshes while the reservation still references that same
-  guest identifier.
+- **FR-018**: System MUST cache guest lookups. A given guest MUST be looked up
+  at most once per refresh. A successful lookup MUST be reusable across
+  refreshes while the reservation still references that same guest identifier
+  **and** the cache entry is within a bounded freshness period. The freshness
+  period MUST be finite, so that a name, phone or email edited directly in
+  Guesty is eventually picked up; v3 provides no `lastUpdatedAt` to detect
+  such an edit, so time is the only available trigger. An entry that has
+  expired MUST be refreshed on the next refresh that needs it, subject to
+  FR-020 fallback on failure.
 - **FR-019**: System MUST NOT publish cached guest details under a different
   guest identifier than the one they were fetched for.
 - **FR-020**: A failed or rate-limited guest lookup MUST NOT fail the
   reservation refresh. Last-known guest values for the same guest identifier
   MUST be retained, and the failure MUST be logged.
-- **FR-021**: Guest personal data MUST NOT appear in logs above debug level,
-  consistent with constitution principle X.
+- **FR-021**: Guest personal data MUST NOT appear in logs at **any** level,
+  including debug, consistent with constitution principle X. Diagnostics added
+  for this feature (FR-042) MUST be expressible without it, so that enabling
+  debug logging to confirm a v3 assumption can never expose guest details.
 
 #### Status handling
 
@@ -440,10 +507,23 @@ toggle.
 
 #### Identity guard
 
-- **FR-031**: Before publishing a refresh or performing any reservation write,
-  system MUST check each reservation's confirmation code against the
-  confirmation code recorded for the previously known reservation of the same
-  identifier.
+- **FR-031**: System MUST maintain an identity baseline mapping confirmation
+  code to reservation identifier, and before publishing a refresh or
+  performing any reservation write MUST check each reservation's confirmation
+  code against that baseline.
+- **FR-031a**: The identity baseline MUST be persisted in config entry
+  storage and MUST survive a Home Assistant restart and a config entry
+  reload. The current reservation coordinator is created fresh on every setup
+  (`__init__.py:283-289`) and persists nothing, so an in-memory baseline would
+  be empty on every start and the guard would compare against nothing.
+- **FR-031b**: The baseline MUST be established from whichever path produced
+  the last successful refresh, so that an installation upgrading from a
+  legacy-only release records its legacy identities on first use and v3
+  identities thereafter.
+- **FR-031c**: Until a baseline exists, system MUST **fail closed** for
+  writes: reservations are still published, but any reservation write action
+  MUST abort with an explanatory error rather than proceed on an empty
+  comparison. An empty baseline MUST NOT be read as "no conflict found".
 - **FR-032**: If a confirmation code maps to a **different** previously known
   reservation identifier and that previous identifier is absent from the
   current result, system MUST treat the identity as ambiguous, MUST abort the
@@ -492,10 +572,16 @@ toggle.
 
 ### Non-Functional Requirements
 
-- **NFR-001 (Request volume)**: Steady-state requests per refresh under the v3
-  path MUST NOT exceed the legacy path's count for an equivalent account, and
-  MUST be bounded by the number of listings the installation tracks rather
-  than by the size of the Guesty account.
+- **NFR-001 (Request volume)**: In **warm-cache steady state** — guest cache
+  populated and within its freshness period, no reservation changes — requests
+  per refresh under the v3 path MUST NOT exceed the legacy path's count for an
+  equivalent account. In **cold-cache or cache-expiry** refreshes, the v3
+  path MAY exceed the legacy count, but the excess MUST be separately
+  bounded: it MUST be at most one lookup per distinct guest needing a refresh,
+  these lookups MUST be spread or batched so that a single refresh cannot
+  exhaust the rate budget, and the bound MUST be stated in the plan. In both
+  cases, volume MUST be bounded by the number of listings the installation
+  tracks rather than by the size of the Guesty account.
 - **NFR-002 (Rate limiting)**: The additional guest and, if adopted, folio
   lookups MUST go through the existing rate-limit-aware client with backoff,
   and MUST NOT be able to exhaust the account's rate budget on a 15-minute
@@ -525,7 +611,7 @@ toggle.
   Guesty connection, using the repository's existing dictionary-fixture
   pattern (`tests/conftest.py:535-660`).
 - **NFR-009 (Privacy)**: Guest names, phone numbers, email addresses and
-  confirmation codes MUST NOT be logged above debug level.
+  confirmation codes MUST NOT be logged at any level, including debug.
 
 ### Key Entities
 
@@ -558,9 +644,13 @@ toggle.
 - **SC-002**: For an equivalent account, every reservation entity's id, state
   and attribute key set is identical between the legacy path and the v3 path,
   verified by a differential test over a shared fixture set.
-- **SC-003**: Requests per refresh on the v3 path are less than or equal to
-  the legacy path's for the same fixture account, asserted by a
-  request-counting test.
+- **SC-003**: For the same fixture account with a **warm guest cache** and no
+  reservation changes, requests per refresh on the v3 path are less than or
+  equal to the legacy path's, asserted by a request-counting test that pins
+  the cache state. A separate test pins the **cold-cache** budget: a fixture
+  of ten reservations for ten distinct uncached guests performs at most the
+  search requests plus one lookup per distinct guest, and that number is
+  asserted explicitly rather than compared to the legacy path.
 - **SC-004**: A configured 30-day-past / 365-day-future window demonstrably
   excludes out-of-window reservations present in the fake backend, closing
   [#204][issue-204].
@@ -574,9 +664,18 @@ toggle.
   zero entity registry changes.
 - **SC-009**: A guest-lookup outage lasting one full refresh leaves every
   reservation published and every previously known guest attribute intact.
-- **SC-010**: Each distinct guest is fetched at most once per refresh, and a
-  steady-state refresh with no reservation changes performs zero guest
-  lookups.
+- **SC-010**: Each distinct guest is fetched at most once per refresh; a
+  steady-state refresh with no reservation changes and a guest cache within
+  its freshness period performs zero guest lookups; and a refresh taken after
+  the freshness period has elapsed refetches the affected guests.
+- **SC-012**: A multi-segment reservation that has checked out of listing A
+  and into listing B reports `checked_out` on A and `checked_in` on B at the
+  same refresh, and before the move reports `checked_in` on A and
+  `awaiting_checkin` on B without displacing B's current occupant.
+- **SC-013**: An installation with no recorded identity baseline publishes
+  reservations normally and rejects every reservation write with an
+  explanatory error; after one successful refresh the baseline exists,
+  survives a reload, and writes are permitted.
 - **SC-011**: Every assumption in this specification appears as an item in the
   plan's pre-release live-verification checklist (FR-041).
 
@@ -642,11 +741,11 @@ confirmed before this feature is declared stable.
 ### About the listing filter
 
 - **[UNVERIFIED]** The listing filter matches only the **first** stay segment,
-  which is why FR-015 treats it as a narrowing optimisation rather than the
-  attribution mechanism.
+  which is why FR-015 forbids it on the primary retrieval path and defers any
+  trade of coverage for request budget to OQ-008.
 - **[UNVERIFIED]** A comma-joined list of listing identifiers is accepted, and
   a request carrying a realistic number of them is not rejected for URL
-  length.
+  length. This matters only if OQ-008 adopts a listing filter.
 
 ### About guests
 
@@ -722,11 +821,12 @@ confirmed before this feature is declared stable.
 
 - **R-005 — The first-segment-only listing filter hides reservations.**
   *Impact*: medium. A stay that begins in an untracked listing and moves into
-  a tracked one may not be returned by a listing-filtered search.
-  *Mitigation*: FR-015 makes client-side attribution authoritative and
-  requires the residual gap to be documented and logged; FR-042 diagnostics
-  make segment patterns visible, so a user can tell whether the gap affects
-  their account at all.
+  a tracked one is excluded by the server before client-side attribution can
+  see it, so it cannot be recovered or even named in diagnostics.
+  *Mitigation*: FR-015 forbids a server-side listing filter on the primary
+  retrieval path, so the gap does not exist by default. Trading coverage for
+  request budget is deferred to OQ-008 and requires an explicit recorded
+  decision, not a silent optimisation.
 
 - **R-006 — The legacy rollback path rots.**
   *Impact*: medium. A rollback target that is never exercised is not a
@@ -743,9 +843,11 @@ confirmed before this feature is declared stable.
 
 - **R-008 — Timezone handling at the window edges.**
   *Impact*: low-medium. Localized date filters against an instant-based window
-  can clip a reservation at the boundary.
-  *Mitigation*: pad the server-side window and keep the existing
-  instant-based client-side trim authoritative.
+  can clip a reservation at the boundary, and padding the filter to avoid that
+  would publish results outside the configured window.
+  *Mitigation*: FR-002a requires both halves — a padded server-side window and
+  a **new** instant-based client-side trim. Neither exists today; the absence
+  of a trim is part of why #204 produced no visible compensation.
 
 - **R-009 — Mid-stay moves and group reservations create duplicate or
   confusing entities.**
@@ -873,9 +975,25 @@ than discovered. **[UNVERIFIED]**
 
 ### OQ-007: Is there a ceiling on the search's filter list length?
 
-FR-015 and the listing-filter assumption depend on being able to send the
-tracked listing identifiers in one request. A large portfolio may exceed a URL
-length limit, requiring chunking. **[UNVERIFIED]**
+FR-015 forbids a listing filter on the primary path, so this question applies
+only if OQ-008 is answered in favour of adopting one. A large portfolio could
+exceed a URL length limit, requiring chunking. **[UNVERIFIED]**
+
+### OQ-008: May a server-side listing filter trade coverage for request budget?
+
+FR-015 currently forbids one, because the filter is documented to match only
+the first stay segment and would silently exclude a stay that begins in an
+untracked listing and moves into a tracked one — unrecoverable and
+undiagnosable. The cost of forbidding it is that retrieval is scoped by the
+configured window and status set rather than by the tracked listings, so a
+user tracking three listings of a large portfolio pages more than they
+strictly need.
+
+If the request budget proves unacceptable in practice, the owner may choose to
+accept the coverage gap in exchange, in which case FR-015 must be amended to
+record that choice and the gap must be stated in user-facing documentation.
+Until then, completeness wins. Whether the resulting page count is acceptable
+for a large account is itself **[UNVERIFIED]**.
 
 ## Dependencies
 

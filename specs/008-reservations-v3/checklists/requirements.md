@@ -68,10 +68,11 @@ to planning
   is flagged as awaiting the repository owner's decision; the
   "No [NEEDS CLARIFICATION] markers remain" item stays unchecked until
   that decision is recorded.
-- Seven open questions (OQ-001 to OQ-007) are recorded. Only OQ-001 is
-  a scope decision; the remainder are live-verification items that the
-  plan stage must either answer from the vendor reference or carry as
-  defensive handling.
+- Eight open questions (OQ-001 to OQ-008) are recorded. OQ-001 (financial
+  sensors) and OQ-008 (whether a server-side listing filter may trade
+  coverage for request budget) are scope decisions; the remainder are
+  live-verification items that the plan stage must either answer from
+  the vendor reference or carry as defensive handling.
 - Scope decisions already settled by the repository owner and not
   re-opened here: no live API access, write actions in scope, cached
   guest lookups, a configuration toggle rather than a hard cutover,
