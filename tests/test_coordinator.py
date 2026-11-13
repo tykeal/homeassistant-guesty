@@ -5,15 +5,21 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
+from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
+from freezegun.api import FrozenDateTimeFactory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.guesty.api.const import (
+    DEFAULT_FUTURE_DAYS,
+    DEFAULT_PAST_DAYS,
+)
 from custom_components.guesty.api.exceptions import (
     GuestyAuthError,
     GuestyConnectionError,
@@ -23,13 +29,17 @@ from custom_components.guesty.api.exceptions import (
 )
 from custom_components.guesty.api.models import (
     GuestyCustomFieldDefinition,
+    GuestyGuest,
     GuestyListing,
     GuestyReservation,
+    GuestyStaySegment,
 )
 from custom_components.guesty.const import (
     CONF_CF_SCAN_INTERVAL,
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
+    CONF_FUTURE_DAYS,
+    CONF_PAST_DAYS,
     CONF_RESERVATION_SCAN_INTERVAL,
     CONF_SCAN_INTERVAL,
     CONF_SELECTED_LISTINGS,
@@ -43,7 +53,29 @@ from custom_components.guesty.coordinator import (
     ListingsCoordinator,
     ReservationsCoordinator,
 )
-from tests.conftest import make_fetch_result
+from tests.conftest import make_fetch_result, make_listing_dict
+
+
+def _rel(days: int, hour: int, minute: int = 0) -> datetime:
+    """Build a datetime offset from now, so fixtures stay in window.
+
+    The coordinator trims reservations outside the configured
+    instant window, so fixture dates must track the clock.
+
+    Args:
+        days: Day offset from today.
+        hour: Hour of day, UTC.
+        minute: Minute of hour, UTC.
+
+    Returns:
+        The offset datetime, in UTC.
+    """
+    return (datetime.now(UTC) + timedelta(days=days)).replace(
+        hour=hour,
+        minute=minute,
+        second=0,
+        microsecond=0,
+    )
 
 
 def _make_entry(**overrides: object) -> MockConfigEntry:
@@ -713,7 +745,6 @@ class TestReservationsCoordinator:
         sample_listing: GuestyListing,
     ) -> None:
         """Reservations are grouped by listing_id."""
-        from datetime import UTC, datetime
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -722,8 +753,8 @@ class TestReservationsCoordinator:
             id="res-a",
             listing_id="listing-001",
             status="confirmed",
-            check_in=datetime(2025, 8, 1, 15, 0, 0, tzinfo=UTC),
-            check_out=datetime(2025, 8, 5, 11, 0, 0, tzinfo=UTC),
+            check_in=_rel(0, 15),
+            check_out=_rel(4, 11),
         )
         listing_b = GuestyListing(
             id="listing-002",
@@ -747,8 +778,8 @@ class TestReservationsCoordinator:
             id="res-b",
             listing_id="listing-002",
             status="checked_in",
-            check_in=datetime(2025, 8, 2, 15, 0, 0, tzinfo=UTC),
-            check_out=datetime(2025, 8, 6, 11, 0, 0, tzinfo=UTC),
+            check_in=_rel(1, 15),
+            check_out=_rel(5, 11),
         )
 
         api_client = AsyncMock()
@@ -781,7 +812,6 @@ class TestReservationsCoordinator:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Reservations for unknown listings are filtered out."""
-        from datetime import UTC, datetime
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -790,15 +820,15 @@ class TestReservationsCoordinator:
             id="res-known",
             listing_id="listing-001",
             status="confirmed",
-            check_in=datetime(2025, 8, 1, 15, 0, 0, tzinfo=UTC),
-            check_out=datetime(2025, 8, 5, 11, 0, 0, tzinfo=UTC),
+            check_in=_rel(0, 15),
+            check_out=_rel(4, 11),
         )
         unknown_res = GuestyReservation(
             id="res-unknown",
             listing_id="unknown-listing",
             status="confirmed",
-            check_in=datetime(2025, 8, 1, 15, 0, 0, tzinfo=UTC),
-            check_out=datetime(2025, 8, 5, 11, 0, 0, tzinfo=UTC),
+            check_in=_rel(0, 15),
+            check_out=_rel(4, 11),
         )
 
         api_client = AsyncMock()
@@ -838,7 +868,6 @@ class TestReservationsCoordinator:
         sample_listing: GuestyListing,
     ) -> None:
         """Reservations per listing are sorted by check_in date."""
-        from datetime import UTC, datetime
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -847,15 +876,15 @@ class TestReservationsCoordinator:
             id="res-late",
             listing_id="listing-001",
             status="confirmed",
-            check_in=datetime(2025, 9, 1, 15, 0, 0, tzinfo=UTC),
-            check_out=datetime(2025, 9, 5, 11, 0, 0, tzinfo=UTC),
+            check_in=_rel(31, 15),
+            check_out=_rel(35, 11),
         )
         res_early = GuestyReservation(
             id="res-early",
             listing_id="listing-001",
             status="confirmed",
-            check_in=datetime(2025, 8, 1, 15, 0, 0, tzinfo=UTC),
-            check_out=datetime(2025, 8, 5, 11, 0, 0, tzinfo=UTC),
+            check_in=_rel(0, 15),
+            check_out=_rel(4, 11),
         )
 
         api_client = AsyncMock()
@@ -1082,7 +1111,6 @@ class TestReservationsCoordinator:
         hass: HomeAssistant,
     ) -> None:
         """Empty listings data skips all reservations gracefully."""
-        from datetime import UTC, datetime
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -1091,8 +1119,8 @@ class TestReservationsCoordinator:
             id="res-orphan",
             listing_id="listing-orphan",
             status="confirmed",
-            check_in=datetime(2025, 8, 1, 15, 0, 0, tzinfo=UTC),
-            check_out=datetime(2025, 8, 5, 11, 0, 0, tzinfo=UTC),
+            check_in=_rel(0, 15),
+            check_out=_rel(4, 11),
         )
 
         api_client = AsyncMock()
@@ -1262,7 +1290,6 @@ class TestReservationsCoordinatorErrorResilience:
         sample_reservation: GuestyReservation,
     ) -> None:
         """Recovery updates data on next successful fetch."""
-        from datetime import UTC, datetime
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -1296,8 +1323,8 @@ class TestReservationsCoordinatorErrorResilience:
             id="res-new",
             listing_id="listing-001",
             status="checked_in",
-            check_in=datetime(2025, 9, 1, 15, 0, 0, tzinfo=UTC),
-            check_out=datetime(2025, 9, 5, 11, 0, 0, tzinfo=UTC),
+            check_in=_rel(31, 15),
+            check_out=_rel(35, 11),
         )
         api_client.get_reservations = AsyncMock(
             return_value=make_fetch_result([new_reservation]),
@@ -1693,3 +1720,819 @@ class TestCustomFieldDefinitionRefresh:
         cf_client.get_definitions.return_value = _SAMPLE_DEFS[:1]
         await coordinator.async_refresh()
         assert len(coordinator.data) == 1
+
+
+# ── Phase 4: attribution, projection, state and trim (T041-T047) ────
+
+_NOW = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)
+
+
+def _listing(listing_id: str) -> GuestyListing:
+    """Build a GuestyListing with the given identifier.
+
+    Args:
+        listing_id: The listing identifier.
+
+    Returns:
+        A parsed GuestyListing for the identifier.
+    """
+    listing = GuestyListing.from_api_dict(
+        make_listing_dict(_id=listing_id),
+    )
+    assert listing is not None
+    return listing
+
+
+def _seg(
+    listing_id: str,
+    start_days: float,
+    end_days: float,
+    *,
+    parent: str | None = None,
+    guests: int | None = 2,
+) -> GuestyStaySegment:
+    """Build a stay segment relative to the frozen test instant.
+
+    Args:
+        listing_id: Listing the interval belongs to.
+        start_days: Days from ``_NOW`` the interval starts.
+        end_days: Days from ``_NOW`` the interval ends.
+        parent: Parent listing identifier, when any.
+        guests: Party size for the interval.
+
+    Returns:
+        A GuestyStaySegment for the interval.
+    """
+    check_in = _NOW + timedelta(days=start_days)
+    check_out = _NOW + timedelta(days=end_days)
+    return GuestyStaySegment(
+        listing_id=listing_id,
+        check_in=check_in,
+        check_out=check_out,
+        parent_listing_id=parent,
+        check_in_local=check_in.date().isoformat(),
+        check_out_local=check_out.date().isoformat(),
+        guests_count=guests,
+    )
+
+
+def _v3_res(
+    res_id: str,
+    segments: list[GuestyStaySegment],
+    *,
+    status: str = "confirmed",
+    **overrides: object,
+) -> GuestyReservation:
+    """Build a v3-shaped reservation carrying stay segments.
+
+    Args:
+        res_id: Reservation identifier.
+        segments: The stay segments of the reservation.
+        status: Reservation-level status.
+        **overrides: Further reservation fields.
+
+    Returns:
+        A GuestyReservation with the segments attached.
+    """
+    fields: dict[str, object] = {
+        "confirmation_code": "CONF-ABC",
+        "source": "airbnb",
+        "guests_count": segments[0].guests_count,
+        "nights_count": 1,
+    }
+    fields.update(overrides)
+    return GuestyReservation(
+        id=res_id,
+        listing_id=segments[0].listing_id,
+        status=status,
+        check_in=segments[0].check_in,
+        check_out=segments[-1].check_out,
+        check_in_local=segments[0].check_in_local,
+        check_out_local=segments[-1].check_out_local,
+        stay=tuple(segments),
+        **fields,  # type: ignore[arg-type]
+    )
+
+
+def _legacy_res(
+    res_id: str,
+    listing_id: str,
+    start_days: float,
+    end_days: float,
+    *,
+    status: str = "confirmed",
+) -> GuestyReservation:
+    """Build a legacy-shaped reservation without stay segments.
+
+    Args:
+        res_id: Reservation identifier.
+        listing_id: Listing the reservation belongs to.
+        start_days: Days from ``_NOW`` the stay starts.
+        end_days: Days from ``_NOW`` the stay ends.
+        status: Reservation status.
+
+    Returns:
+        A GuestyReservation with an empty ``stay``.
+    """
+    return GuestyReservation(
+        id=res_id,
+        listing_id=listing_id,
+        status=status,
+        check_in=_NOW + timedelta(days=start_days),
+        check_out=_NOW + timedelta(days=end_days),
+    )
+
+
+def _build_coordinator(
+    hass: HomeAssistant,
+    reservations: list[GuestyReservation],
+    known_listing_ids: list[str],
+    *,
+    entry: MockConfigEntry | None = None,
+    fetch_counters: dict[str, object] | None = None,
+) -> ReservationsCoordinator:
+    """Build a ReservationsCoordinator over canned reservations.
+
+    Args:
+        hass: Home Assistant instance.
+        reservations: Reservations the API returns.
+        known_listing_ids: Listing IDs the listings coordinator knows.
+        entry: Config entry to use; a default one when None.
+        fetch_counters: Diagnostics counters for the fetch result.
+
+    Returns:
+        A ReservationsCoordinator wired to mocks.
+    """
+    if entry is None:
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+    api_client = AsyncMock()
+    api_client.get_reservations = AsyncMock(
+        return_value=make_fetch_result(
+            reservations,
+            **(fetch_counters or {}),
+        ),
+    )
+    listings_coordinator = AsyncMock()
+    listings_coordinator.data = {
+        listing_id: _listing(listing_id) for listing_id in known_listing_ids
+    }
+    return ReservationsCoordinator(
+        hass=hass,
+        entry=entry,
+        api_client=api_client,
+        listings_coordinator=listings_coordinator,
+    )
+
+
+class TestSegmentAttribution:
+    """Tests for stay-segment attribution (T041, T045, T046)."""
+
+    async def test_single_segment_attributed_to_its_listing(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """A single-segment reservation lands on its listing."""
+        freezer.move_to(_NOW)
+        reservation = _v3_res("res-1", [_seg("listing-001", -1, 3)])
+        coordinator = _build_coordinator(
+            hass,
+            [reservation],
+            ["listing-001"],
+        )
+
+        data = await coordinator._async_update_data()
+
+        assert list(data) == ["listing-001"]
+        assert [r.id for r in data["listing-001"]] == ["res-1"]
+
+    async def test_two_segments_attributed_to_both_listings(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """A mid-stay move is visible on origin and destination."""
+        freezer.move_to(_NOW)
+        reservation = _v3_res(
+            "res-move",
+            [_seg("listing-001", -2, 0), _seg("listing-002", 0, 3)],
+            status="checked_in",
+        )
+        coordinator = _build_coordinator(
+            hass,
+            [reservation],
+            ["listing-001", "listing-002"],
+        )
+
+        data = await coordinator._async_update_data()
+
+        assert set(data) == {"listing-001", "listing-002"}
+        assert data["listing-001"][0].id == "res-move"
+        assert data["listing-002"][0].id == "res-move"
+
+    async def test_segment_resolves_through_parent_listing(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """An unknown sub-unit resolves through its parent."""
+        freezer.move_to(_NOW)
+        reservation = _v3_res(
+            "res-sub",
+            [_seg("sub-unit-9", -1, 2, parent="listing-001")],
+        )
+        coordinator = _build_coordinator(
+            hass,
+            [reservation],
+            ["listing-001"],
+        )
+
+        data = await coordinator._async_update_data()
+
+        assert list(data) == ["listing-001"]
+        assert data["listing-001"][0].listing_id == "listing-001"
+
+    async def test_partly_unknown_reservation_is_published(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An unknown segment is logged at debug, not dropped."""
+        freezer.move_to(_NOW)
+        reservation = _v3_res(
+            "res-partial",
+            [_seg("listing-001", -2, 0), _seg("listing-999", 0, 3)],
+        )
+        coordinator = _build_coordinator(
+            hass,
+            [reservation],
+            ["listing-001"],
+        )
+
+        with caplog.at_level(
+            logging.DEBUG,
+            logger="custom_components.guesty.coordinator",
+        ):
+            data = await coordinator._async_update_data()
+
+        assert list(data) == ["listing-001"]
+        debug_messages = [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "custom_components.guesty.coordinator"
+            and record.levelno == logging.DEBUG
+        ]
+        assert any("listing-999" in message for message in debug_messages)
+        warnings = [
+            record.getMessage()
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+        ]
+        assert not any("res-partial" in message for message in warnings)
+
+    async def test_wholly_unknown_reservation_is_skipped(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A reservation with no known segment is skipped."""
+        freezer.move_to(_NOW)
+        reservation = _v3_res(
+            "res-orphan",
+            [_seg("listing-998", -1, 2), _seg("listing-999", 2, 4)],
+        )
+        coordinator = _build_coordinator(
+            hass,
+            [reservation],
+            ["listing-001"],
+        )
+
+        with caplog.at_level(
+            logging.WARNING,
+            logger="custom_components.guesty.coordinator",
+        ):
+            data = await coordinator._async_update_data()
+
+        assert data == {}
+        assert any(
+            "res-orphan" in record.getMessage()
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+        )
+
+    async def test_reservation_without_stay_uses_listing_id(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """A legacy reservation keeps its top-level attribution."""
+        freezer.move_to(_NOW)
+        reservation = _legacy_res("res-legacy", "listing-001", -1, 2)
+        coordinator = _build_coordinator(
+            hass,
+            [reservation],
+            ["listing-001"],
+        )
+
+        data = await coordinator._async_update_data()
+
+        assert data["listing-001"] == [reservation]
+
+    async def test_reservation_without_stay_unknown_is_skipped(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A stay-less reservation off a known listing is skipped."""
+        freezer.move_to(_NOW)
+        reservation = _legacy_res("res-nostay", "listing-999", -1, 2)
+        coordinator = _build_coordinator(
+            hass,
+            [reservation],
+            ["listing-001"],
+        )
+
+        with caplog.at_level(
+            logging.WARNING,
+            logger="custom_components.guesty.coordinator",
+        ):
+            data = await coordinator._async_update_data()
+
+        assert data == {}
+        assert any(
+            "res-nostay" in record.getMessage()
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+        )
+
+    async def test_alteration_reservation_is_dropped(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An alteration never reaches the published data (FR-024)."""
+        freezer.move_to(_NOW)
+        published = _v3_res("res-ok", [_seg("listing-001", -1, 2)])
+        alteration = _v3_res(
+            "res-alt",
+            [_seg("listing-001", 1, 4)],
+            status="alteration",
+        )
+        coordinator = _build_coordinator(
+            hass,
+            [published, alteration],
+            ["listing-001"],
+        )
+
+        with caplog.at_level(
+            logging.DEBUG,
+            logger="custom_components.guesty.coordinator",
+        ):
+            data = await coordinator._async_update_data()
+
+        assert [r.id for r in data["listing-001"]] == ["res-ok"]
+        assert any(
+            "res-alt" in record.getMessage()
+            for record in caplog.records
+            if record.levelno == logging.DEBUG
+        )
+        assert any(
+            "alteration_drops=1" in record.getMessage()
+            for record in caplog.records
+            if record.levelno == logging.DEBUG
+        )
+
+    async def test_filtered_out_listing_publishes_nothing(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """Feature 007 filtering alone decides tracking (FR-014)."""
+        freezer.move_to(_NOW)
+        reservation = _v3_res(
+            "res-filtered",
+            [_seg("listing-001", -1, 2), _seg("listing-002", 2, 4)],
+        )
+        coordinator = _build_coordinator(
+            hass,
+            [reservation],
+            ["listing-002"],
+        )
+
+        data = await coordinator._async_update_data()
+
+        assert list(data) == ["listing-002"]
+        fetch = cast("AsyncMock", coordinator.api_client.get_reservations)
+        fetch.assert_awaited_once_with(
+            past_days=DEFAULT_PAST_DAYS,
+            future_days=DEFAULT_FUTURE_DAYS,
+        )
+
+
+class TestPerListingProjection:
+    """Tests for the per-listing projection (T042)."""
+
+    async def test_single_segment_projects_to_itself(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """A single-segment projection keeps every own field."""
+        freezer.move_to(_NOW)
+        reservation = _v3_res(
+            "res-single",
+            [_seg("listing-001", -1, 3)],
+            guest=GuestyGuest(full_name="Jane", guest_id="guest-1"),
+            custom_fields=MappingProxyType({"cf_a": "A"}),
+        )
+        coordinator = _build_coordinator(
+            hass,
+            [reservation],
+            ["listing-001"],
+        )
+
+        projection = (await coordinator._async_update_data())["listing-001"][0]
+
+        assert projection.id == reservation.id
+        assert projection.listing_id == "listing-001"
+        assert projection.status == reservation.status
+        assert projection.check_in == reservation.check_in
+        assert projection.check_out == reservation.check_out
+        assert projection.check_in_local == reservation.check_in_local
+        assert projection.check_out_local == reservation.check_out_local
+        assert projection.guests_count == reservation.guests_count
+        assert projection.nights_count == reservation.nights_count
+        assert projection.confirmation_code == reservation.confirmation_code
+        assert projection.source == reservation.source
+        assert projection.guest == reservation.guest
+        assert projection.custom_fields == reservation.custom_fields
+        assert projection.stay == ()
+
+    async def test_multi_segment_uses_that_listings_segment(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """Each listing gets its own dates, guests and nights."""
+        freezer.move_to(_NOW)
+        first = _seg("listing-001", -2, 0, guests=2)
+        second = _seg("listing-002", 0, 3, guests=4)
+        reservation = _v3_res(
+            "res-multi",
+            [first, second],
+            status="checked_in",
+            guest=GuestyGuest(full_name="Jane", guest_id="guest-1"),
+            custom_fields=MappingProxyType({"cf_a": "A"}),
+        )
+        coordinator = _build_coordinator(
+            hass,
+            [reservation],
+            ["listing-001", "listing-002"],
+        )
+
+        data = await coordinator._async_update_data()
+        origin = data["listing-001"][0]
+        destination = data["listing-002"][0]
+
+        assert origin.check_in == first.check_in
+        assert origin.check_out == first.check_out
+        assert origin.check_in_local == first.check_in_local
+        assert origin.check_out_local == first.check_out_local
+        assert origin.guests_count == 2
+        assert origin.nights_count == 2
+        assert destination.check_in == second.check_in
+        assert destination.check_out == second.check_out
+        assert destination.guests_count == 4
+        assert destination.nights_count == 3
+        for projection in (origin, destination):
+            assert projection.id == "res-multi"
+            assert projection.confirmation_code == "CONF-ABC"
+            assert projection.source == "airbnb"
+            assert projection.guest == reservation.guest
+            assert projection.custom_fields == reservation.custom_fields
+            assert projection.stay == ()
+
+    async def test_repeat_listing_selects_current_interval(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """An A → B → A stay keeps A's intervals disjoint."""
+        freezer.move_to(_NOW)
+        first_a = _seg("listing-001", -6, -4)
+        stay_b = _seg("listing-002", -4, -1)
+        second_a = _seg("listing-001", -1, 2)
+        reservation = _v3_res(
+            "res-aba",
+            [first_a, stay_b, second_a],
+            status="checked_in",
+        )
+        coordinator = _build_coordinator(
+            hass,
+            [reservation],
+            ["listing-001", "listing-002"],
+        )
+
+        projection = (await coordinator._async_update_data())["listing-001"][0]
+
+        assert projection.check_in == second_a.check_in
+        assert projection.check_out == second_a.check_out
+
+    async def test_repeat_listing_selects_earliest_future_interval(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """With no current interval the earliest future one wins."""
+        freezer.move_to(_NOW)
+        first_a = _seg("listing-001", 2, 4)
+        stay_b = _seg("listing-002", 4, 6)
+        second_a = _seg("listing-001", 6, 8)
+        reservation = _v3_res("res-future", [first_a, stay_b, second_a])
+        coordinator = _build_coordinator(
+            hass,
+            [reservation],
+            ["listing-001", "listing-002"],
+        )
+
+        projection = (await coordinator._async_update_data())["listing-001"][0]
+
+        assert projection.check_in == first_a.check_in
+        assert projection.check_out == first_a.check_out
+
+    async def test_repeat_listing_selects_latest_past_interval(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """With only past intervals the latest one wins."""
+        freezer.move_to(_NOW)
+        first_a = _seg("listing-001", -8, -6)
+        stay_b = _seg("listing-002", -6, -4)
+        second_a = _seg("listing-001", -4, -2)
+        reservation = _v3_res(
+            "res-past",
+            [first_a, stay_b, second_a],
+            status="checked_out",
+        )
+        coordinator = _build_coordinator(
+            hass,
+            [reservation],
+            ["listing-001", "listing-002"],
+        )
+
+        projection = (await coordinator._async_update_data())["listing-001"][0]
+
+        assert projection.check_in == second_a.check_in
+        assert projection.check_out == second_a.check_out
+
+
+class TestSegmentAwareState:
+    """Tests for segment-aware status derivation (T043)."""
+
+    async def test_before_move_origin_in_destination_upcoming(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """Before the move the guest is only in the origin."""
+        freezer.move_to(_NOW)
+        reservation = _v3_res(
+            "res-move",
+            [_seg("listing-001", -1, 1), _seg("listing-002", 1, 4)],
+            status="checked_in",
+        )
+        occupant = _v3_res(
+            "res-occupant",
+            [_seg("listing-002", -2, 1)],
+            status="checked_in",
+        )
+        coordinator = _build_coordinator(
+            hass,
+            [reservation, occupant],
+            ["listing-001", "listing-002"],
+        )
+
+        data = await coordinator._async_update_data()
+
+        assert data["listing-001"][0].status == "checked_in"
+        moving = next(r for r in data["listing-002"] if r.id == "res-move")
+        current = next(r for r in data["listing-002"] if r.id == "res-occupant")
+        assert moving.status == "confirmed"
+        assert current.status == "checked_in"
+
+    async def test_after_move_origin_checked_out(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """After the move the origin is past and destination live."""
+        freezer.move_to(_NOW)
+        reservation = _v3_res(
+            "res-move",
+            [_seg("listing-001", -4, -1), _seg("listing-002", -1, 2)],
+            status="checked_in",
+        )
+        coordinator = _build_coordinator(
+            hass,
+            [reservation],
+            ["listing-001", "listing-002"],
+        )
+
+        data = await coordinator._async_update_data()
+
+        assert data["listing-001"][0].status == "checked_out"
+        assert data["listing-002"][0].status == "checked_in"
+
+    async def test_canceled_multi_segment_stays_canceled(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """A canceled stay is canceled on every listing it touches."""
+        freezer.move_to(_NOW)
+        reservation = _v3_res(
+            "res-canceled",
+            [_seg("listing-001", -1, 1), _seg("listing-002", 1, 4)],
+            status="canceled",
+        )
+        coordinator = _build_coordinator(
+            hass,
+            [reservation],
+            ["listing-001", "listing-002"],
+        )
+
+        data = await coordinator._async_update_data()
+
+        assert data["listing-001"][0].status == "canceled"
+        assert data["listing-002"][0].status == "canceled"
+
+
+class TestWindowTrim:
+    """Tests for the instant-based window trim (T044)."""
+
+    async def test_padded_boundary_results_are_dropped(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """Results outside the configured window are not published."""
+        freezer.move_to(_NOW)
+        entry = _make_entry(
+            options={CONF_PAST_DAYS: 2, CONF_FUTURE_DAYS: 5},
+        )
+        entry.add_to_hass(hass)
+        too_old = _v3_res(
+            "res-old",
+            [_seg("listing-001", -6, -3)],
+            status="checked_out",
+        )
+        too_far = _v3_res("res-far", [_seg("listing-001", 6, 8)])
+        inside = _v3_res("res-inside", [_seg("listing-001", -1, 1)])
+        coordinator = _build_coordinator(
+            hass,
+            [too_old, too_far, inside],
+            ["listing-001"],
+            entry=entry,
+        )
+
+        data = await coordinator._async_update_data()
+
+        assert [r.id for r in data["listing-001"]] == ["res-inside"]
+
+    async def test_in_progress_stay_is_never_dropped(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """A long in-progress stay survives however old (FR-004)."""
+        freezer.move_to(_NOW)
+        entry = _make_entry(
+            options={CONF_PAST_DAYS: 2, CONF_FUTURE_DAYS: 5},
+        )
+        entry.add_to_hass(hass)
+        long_stay = _v3_res(
+            "res-long",
+            [_seg("listing-001", -400, 1)],
+            status="checked_in",
+        )
+        coordinator = _build_coordinator(
+            hass,
+            [long_stay],
+            ["listing-001"],
+            entry=entry,
+        )
+
+        data = await coordinator._async_update_data()
+
+        assert [r.id for r in data["listing-001"]] == ["res-long"]
+
+    async def test_trim_applies_to_legacy_shaped_reservations(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """The trim also narrows the legacy path (FR-002a)."""
+        freezer.move_to(_NOW)
+        entry = _make_entry(
+            options={CONF_PAST_DAYS: 2, CONF_FUTURE_DAYS: 5},
+        )
+        entry.add_to_hass(hass)
+        too_old = _legacy_res(
+            "res-old",
+            "listing-001",
+            -9,
+            -6,
+            status="checked_out",
+        )
+        inside = _legacy_res("res-inside", "listing-001", -1, 1)
+        coordinator = _build_coordinator(
+            hass,
+            [too_old, inside],
+            ["listing-001"],
+            entry=entry,
+        )
+
+        data = await coordinator._async_update_data()
+
+        assert [r.id for r in data["listing-001"]] == ["res-inside"]
+
+
+class TestRefreshDiagnostics:
+    """Tests for the per-refresh DEBUG diagnostics (T052)."""
+
+    async def test_debug_line_carries_counters_without_guest_data(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The refresh line reports counters and no personal data."""
+        freezer.move_to(_NOW)
+        entry = _make_entry(
+            options={CONF_PAST_DAYS: 2, CONF_FUTURE_DAYS: 5},
+        )
+        entry.add_to_hass(hass)
+        guest = GuestyGuest(
+            full_name="Jane Traveller",
+            phone="+15551234567",
+            email="jane@example.com",
+            guest_id="guest-1",
+        )
+        published = _v3_res(
+            "res-ok",
+            [_seg("listing-001", -1, 1), _seg("listing-999", 1, 3)],
+            guest=guest,
+        )
+        alteration = _v3_res(
+            "res-alt",
+            [_seg("listing-001", 1, 2)],
+            status="alteration",
+        )
+        trimmed = _v3_res(
+            "res-far",
+            [_seg("listing-001", 9, 11)],
+        )
+        coordinator = _build_coordinator(
+            hass,
+            [published, alteration, trimmed],
+            ["listing-001"],
+            entry=entry,
+            fetch_counters={
+                "pages": 2,
+                "status_counts": MappingProxyType(
+                    {"confirmed": 2, "alteration": 1},
+                ),
+                "segment_histogram": MappingProxyType({1: 2, 2: 1}),
+            },
+        )
+
+        with caplog.at_level(
+            logging.DEBUG,
+            logger="custom_components.guesty.coordinator",
+        ):
+            await coordinator._async_update_data()
+
+        lines = [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "custom_components.guesty.coordinator"
+            and record.levelno == logging.DEBUG
+            and "pages=2" in record.getMessage()
+        ]
+        assert len(lines) == 1
+        line = lines[0]
+        assert "'confirmed': 2" in line
+        assert "segments=" in line
+        assert "attributed=1" in line
+        assert "partially_attributed=1" in line
+        assert "skipped=0" in line
+        assert "alteration_drops=1" in line
+        assert "trim_drops=1" in line
+        for secret in ("Jane Traveller", "+15551234567", "jane@example.com"):
+            assert secret not in caplog.text

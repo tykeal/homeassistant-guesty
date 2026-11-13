@@ -872,7 +872,7 @@ class GuestyReservation:
 
         nights_count = data.get("nightsCount")
         if not isinstance(nights_count, int):
-            nights_count = _derive_nights_count(
+            nights_count = derive_nights_count(
                 check_in_local,
                 check_out_local,
             )
@@ -952,7 +952,7 @@ def translate_v3_status_filter(statuses: Iterable[str]) -> str:
     return ",".join(sorted(requested))
 
 
-def _derive_nights_count(
+def derive_nights_count(
     check_in_local: str | None,
     check_out_local: str | None,
 ) -> int | None:

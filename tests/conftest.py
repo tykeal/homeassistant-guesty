@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -718,6 +718,27 @@ def make_v3_search_page(
     }
 
 
+def _relative_day(days: int, hour: int) -> datetime:
+    """Build a datetime offset from now, so fixtures stay in window.
+
+    The coordinator trims reservations outside the configured
+    instant window, so fixture dates must track the clock.
+
+    Args:
+        days: Day offset from today.
+        hour: Hour of day, UTC.
+
+    Returns:
+        The offset datetime, in UTC.
+    """
+    return (datetime.now(UTC) + timedelta(days=days)).replace(
+        hour=hour,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+
+
 @pytest.fixture
 def sample_reservation() -> GuestyReservation:
     """Provide a valid GuestyReservation instance for tests.
@@ -729,8 +750,8 @@ def sample_reservation() -> GuestyReservation:
         id="res-001",
         listing_id="listing-001",
         status="confirmed",
-        check_in=datetime(2025, 8, 1, 15, 0, 0, tzinfo=UTC),
-        check_out=datetime(2025, 8, 5, 11, 0, 0, tzinfo=UTC),
+        check_in=_relative_day(0, 15),
+        check_out=_relative_day(4, 11),
         confirmation_code="CONF-ABC",
         check_in_local="2025-08-01",
         check_out_local="2025-08-05",

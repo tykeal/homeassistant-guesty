@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from datetime import timedelta
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from homeassistant.helpers.update_coordinator import (
@@ -17,6 +18,7 @@ from homeassistant.helpers.update_coordinator import (
 from custom_components.guesty.api.const import (
     DEFAULT_FUTURE_DAYS,
     DEFAULT_PAST_DAYS,
+    HOLD_STATUSES,
 )
 from custom_components.guesty.api.exceptions import (
     GuestyApiError,
@@ -26,6 +28,9 @@ from custom_components.guesty.api.models import (
     GuestyCustomFieldDefinition,
     GuestyListing,
     GuestyReservation,
+    GuestyStaySegment,
+    ReservationFetchResult,
+    derive_nights_count,
 )
 from custom_components.guesty.const import (
     CONF_CF_SCAN_INTERVAL,
@@ -50,6 +55,9 @@ if TYPE_CHECKING:
     )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Statuses whose per-listing meaning depends on the stay segment.
+_TEMPORAL_STATUSES: frozenset[str] = frozenset({"confirmed", "checked_in"})
 
 
 class ListingsCoordinator(
@@ -201,15 +209,18 @@ class ReservationsCoordinator(
     async def _async_update_data(
         self,
     ) -> dict[str, list[GuestyReservation]]:
-        """Fetch reservations and group by listing ID.
+        """Fetch reservations and publish them per tracked listing.
 
-        Calls the API client with configured date range parameters,
-        groups results by listing ID, filters out reservations for
-        unknown listings, and sorts each listing's reservations by
-        check-in date.
+        Reservations are retrieved from the configured source, then
+        proposed changes are dropped (FR-024), the configured instant
+        window is enforced client-side (FR-002a), and each surviving
+        reservation is attributed to every tracked listing its stay
+        touches (FR-009, FR-010). Each attribution is published as a
+        per-listing projection (FR-011) whose status is segment-aware
+        for a multi-segment stay (FR-011a).
 
         Returns:
-            Dictionary mapping listing ID to sorted reservation list.
+            Dictionary mapping listing ID to sorted projections.
 
         Raises:
             UpdateFailed: On any Guesty API error.
@@ -237,40 +248,318 @@ class ReservationsCoordinator(
                 f"Error fetching reservations: {exc.message}",
             ) from exc
 
-        reservations = list(fetch_result.reservations)
+        reservations = fetch_result.reservations
+        counters = _RefreshCounters()
 
-        # Group by listing ID
-        grouped: dict[str, list[GuestyReservation]] = defaultdict(list)
-        for reservation in reservations:
-            grouped[reservation.listing_id].append(reservation)
-
-        # Filter unknown listing IDs (FR-017)
-        known_ids = set()
+        # Feature 007 decides tracking on the listing side (FR-014).
+        known_ids: set[str] = set()
         if self.listings_coordinator.data:
             known_ids = set(self.listings_coordinator.data.keys())
 
-        result: dict[str, list[GuestyReservation]] = {}
-        if not known_ids and grouped:
+        if not known_ids and reservations:
             _LOGGER.debug(
                 "No known listings yet; skipping %d reservation(s)",
                 len(reservations),
             )
-            return result
+            _log_refresh_diagnostics(fetch_result, counters)
+            return {}
 
-        for listing_id, listing_reservations in grouped.items():
-            if listing_id not in known_ids:
-                _LOGGER.warning(
-                    "Skipping reservations for unknown listing %s",
-                    listing_id,
+        now = datetime.now(UTC)
+        grouped: dict[str, list[GuestyReservation]] = defaultdict(list)
+
+        for reservation in reservations:
+            if reservation.status in HOLD_STATUSES:
+                counters.alteration_drops += 1
+                _LOGGER.debug(
+                    "Dropping reservation %s held at status %s",
+                    reservation.id,
+                    reservation.status,
                 )
                 continue
-            # Sort by check-in date
-            result[listing_id] = sorted(
-                listing_reservations,
-                key=lambda r: r.check_in,
-            )
 
-        return result
+            if not _within_window(
+                reservation,
+                now=now,
+                past_days=past_days,
+                future_days=future_days,
+            ):
+                counters.trim_drops += 1
+                _LOGGER.debug(
+                    "Trimming reservation %s outside the configured window",
+                    reservation.id,
+                )
+                continue
+
+            attributed, unknown_ids = _attribute_segments(
+                reservation,
+                known_ids,
+            )
+            if not attributed:
+                counters.skipped += 1
+                _LOGGER.warning(
+                    "Skipping reservation %s: no tracked listing among %s",
+                    reservation.id,
+                    ", ".join(sorted(unknown_ids)),
+                )
+                continue
+
+            counters.attributed += 1
+            if unknown_ids:
+                counters.partially_attributed += 1
+                _LOGGER.debug(
+                    "Ignoring stay segments of reservation %s for "
+                    "untracked listing(s) %s",
+                    reservation.id,
+                    ", ".join(sorted(unknown_ids)),
+                )
+
+            for listing_id, segments in attributed.items():
+                grouped[listing_id].append(
+                    _project(reservation, listing_id, segments, now),
+                )
+
+        _log_refresh_diagnostics(fetch_result, counters)
+
+        return {
+            listing_id: sorted(projections, key=lambda r: r.check_in)
+            for listing_id, projections in grouped.items()
+        }
+
+
+@dataclass
+class _RefreshCounters:
+    """Per-refresh attribution counters for FR-042 diagnostics.
+
+    Attributes:
+        attributed: Reservations published on at least one listing.
+        partially_attributed: Published reservations that also had
+            at least one untracked stay segment.
+        skipped: Reservations no tracked listing could claim.
+        alteration_drops: Reservations dropped as proposed changes.
+        trim_drops: Reservations dropped by the window trim.
+    """
+
+    attributed: int = 0
+    partially_attributed: int = 0
+    skipped: int = 0
+    alteration_drops: int = 0
+    trim_drops: int = 0
+
+
+def _log_refresh_diagnostics(
+    fetch_result: ReservationFetchResult,
+    counters: _RefreshCounters,
+) -> None:
+    """Emit the per-refresh DEBUG diagnostics line (FR-042).
+
+    The line carries counts only: no reservation identifier and no
+    guest detail ever appears in it (FR-021, NFR-009).
+
+    Args:
+        fetch_result: The retrieval result and its source counters.
+        counters: The attribution counters of this refresh.
+    """
+    _LOGGER.debug(
+        "Reservation refresh: pages=%d statuses=%s segments=%s "
+        "attributed=%d partially_attributed=%d skipped=%d "
+        "alteration_drops=%d trim_drops=%d",
+        fetch_result.pages,
+        dict(fetch_result.status_counts),
+        dict(fetch_result.segment_histogram),
+        counters.attributed,
+        counters.partially_attributed,
+        counters.skipped,
+        counters.alteration_drops,
+        counters.trim_drops,
+    )
+
+
+def _within_window(
+    reservation: GuestyReservation,
+    *,
+    now: datetime,
+    past_days: int,
+    future_days: int,
+) -> bool:
+    """Test a reservation against the configured instant window.
+
+    The server-side window is padded because the v3 filters compare
+    listing-localized dates, so the configured window is enforced
+    here instead (FR-002a). A stay in progress satisfies both terms
+    by construction and can never be trimmed (FR-004).
+
+    Args:
+        reservation: The reservation to test.
+        now: The refresh instant.
+        past_days: Configured days of history to publish.
+        future_days: Configured days ahead to publish.
+
+    Returns:
+        True when the reservation overlaps the configured window.
+    """
+    return reservation.check_out > now - timedelta(
+        days=past_days
+    ) and reservation.check_in < now + timedelta(days=future_days)
+
+
+def _attribute_segments(
+    reservation: GuestyReservation,
+    known_ids: set[str],
+) -> tuple[dict[str, list[GuestyStaySegment]], set[str]]:
+    """Attribute a reservation's stay segments to tracked listings.
+
+    A segment is attributed to its own listing when that listing is
+    tracked, else to its parent listing when that is (FR-012). A
+    reservation without stay segments carries its listing at the top
+    level, which is how the legacy path reports attribution.
+
+    Args:
+        reservation: The reservation to attribute.
+        known_ids: Listing IDs the listings coordinator tracks.
+
+    Returns:
+        Tuple of the tracked listings with their segments, and the
+        listing IDs that could not be resolved.
+    """
+    attributed: dict[str, list[GuestyStaySegment]] = {}
+    unknown_ids: set[str] = set()
+
+    if not reservation.stay:
+        if reservation.listing_id in known_ids:
+            attributed[reservation.listing_id] = []
+        else:
+            unknown_ids.add(reservation.listing_id)
+        return attributed, unknown_ids
+
+    for segment in reservation.stay:
+        if segment.listing_id in known_ids:
+            listing_id = segment.listing_id
+        elif segment.parent_listing_id in known_ids:
+            listing_id = segment.parent_listing_id or ""
+        else:
+            unknown_ids.add(segment.listing_id)
+            continue
+        attributed.setdefault(listing_id, []).append(segment)
+
+    return attributed, unknown_ids
+
+
+def _project(
+    reservation: GuestyReservation,
+    listing_id: str,
+    segments: list[GuestyStaySegment],
+    now: datetime,
+) -> GuestyReservation:
+    """Project a reservation onto one tracked listing (FR-011).
+
+    A reservation with at most one segment projects to itself apart
+    from the tracked listing it is published under. With more than
+    one segment the listing's own interval supplies the dates, guest
+    count and night count, and the status becomes segment-aware.
+
+    Args:
+        reservation: The reservation to project.
+        listing_id: The tracked listing to project onto.
+        segments: The reservation's segments for that listing.
+        now: The refresh instant.
+
+    Returns:
+        The projection published for that listing.
+    """
+    if len(reservation.stay) <= 1:
+        if not reservation.stay and reservation.listing_id == listing_id:
+            return reservation
+        return replace(reservation, listing_id=listing_id, stay=())
+
+    segment = _select_segment(segments, now)
+    return replace(
+        reservation,
+        listing_id=listing_id,
+        status=_segment_status(reservation.status, segment, now),
+        check_in=segment.check_in,
+        check_out=segment.check_out,
+        check_in_local=segment.check_in_local,
+        check_out_local=segment.check_out_local,
+        guests_count=segment.guests_count,
+        nights_count=_segment_nights(segment),
+        stay=(),
+    )
+
+
+def _select_segment(
+    segments: list[GuestyStaySegment],
+    now: datetime,
+) -> GuestyStaySegment:
+    """Select the interval a listing's projection represents.
+
+    Segments in the same listing stay disjoint rather than being
+    collapsed into one span, because an A -> B -> A stay would then
+    cover the guest's time in B. The interval containing the refresh
+    instant wins, else the earliest future one, else the latest past
+    one (data-model.md 3.1).
+
+    Args:
+        segments: The listing's segments, in payload order.
+        now: The refresh instant.
+
+    Returns:
+        The selected segment.
+    """
+    ordered = sorted(segments, key=lambda segment: segment.check_in)
+    for segment in ordered:
+        if segment.check_in <= now < segment.check_out:
+            return segment
+    for segment in ordered:
+        if segment.check_in > now:
+            return segment
+    return max(ordered, key=lambda segment: segment.check_out)
+
+
+def _segment_status(
+    status: str,
+    segment: GuestyStaySegment,
+    now: datetime,
+) -> str:
+    """Derive a listing's status from its segment (FR-011a).
+
+    Only ``confirmed`` and ``checked_in`` are temporal: every other
+    status, including ``canceled``, is carried unchanged to every
+    listing the reservation touches, so a canceled stay can never
+    surface as upcoming on a later segment's listing.
+
+    Args:
+        status: The reservation-level status.
+        segment: The segment this listing is published from.
+        now: The refresh instant.
+
+    Returns:
+        The status published for that listing.
+    """
+    if status not in _TEMPORAL_STATUSES:
+        return status
+    if now < segment.check_in:
+        return "confirmed"
+    if now >= segment.check_out:
+        return "checked_out"
+    return status
+
+
+def _segment_nights(segment: GuestyStaySegment) -> int | None:
+    """Derive the night count of one stay segment.
+
+    Args:
+        segment: The segment to measure.
+
+    Returns:
+        Whole nights in the segment, or None when undeterminable.
+    """
+    nights = derive_nights_count(
+        segment.check_in_local,
+        segment.check_out_local,
+    )
+    if nights is not None:
+        return nights
+    return (segment.check_out.date() - segment.check_in.date()).days
 
 
 class CustomFieldsDefinitionCoordinator(
