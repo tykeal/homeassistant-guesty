@@ -371,7 +371,7 @@ selected.
 
 ### Phase 3 Tests (Red) — write first, verify they FAIL
 
-- [ ] T029 [US4] Write tests pinning the **exact outgoing query** for
+- [x] T029 [US4] Write tests pinning the **exact outgoing query** for
   a known configuration: `filter[checkOut][gte]`,
   `filter[checkIn][lte]`, the one-day pad on each side,
   `filter[status][in]` translated/sorted/comma-joined, `sort=_id`,
@@ -379,7 +379,7 @@ selected.
   `fields` projection and of `filter[listingId]` in any form, in a new
   `tests/api/test_reservations_v3.py` using respx (FR-002, FR-003,
   FR-007, FR-015, contracts/guesty-reservations-v3-search.md).
-- [ ] T030 [P] [US1] Write tests for paging and the **nine-check page
+- [x] T030 [P] [US1] Write tests for paging and the **nine-check page
   guard**, one failing case each: missing `results`/`pagination` or a
   non-boolean `hasMore`; `pagination.skip` mismatch; `len(results) >
   limit`; `hasMore` true on an empty page; `hasMore` true on a short
@@ -388,55 +388,55 @@ selected.
   `hasMore` still true after `MAX_V3_RESERVATION_PAGES`. Each MUST
   raise, publish nothing and leave last-known-good data intact, in
   `tests/api/test_reservations_v3.py` (FR-005, FR-006, NFR-005).
-- [ ] T031 [P] [US1] Write tests asserting an HTTP 400 raises
+- [x] T031 [P] [US1] Write tests asserting an HTTP 400 raises
   `GuestyFilterRejectedError` carrying the endpoint, status and a
   truncated body excerpt, that it is surfaced to the user through
   `UpdateFailed` with the detail intact, and that the request is
   **never** retried with filters removed, in
   `tests/api/test_reservations_v3.py` and `tests/test_coordinator.py`
   (FR-008, US4 scenario 3).
-- [ ] T032 [P] [US4] Write frozen-clock window tests: a configured
+- [x] T032 [P] [US4] Write frozen-clock window tests: a configured
   30-past/365-future window excludes out-of-window fixtures present in
   the fake backend, and a stay whose check-in is 200 days in the past
   and which is still in progress **is** returned by the overlap
   filter, in `tests/api/test_reservations_v3.py` (FR-002, FR-004,
   SC-004, SC-005). These close [#204][issue-204] on the request side.
-- [ ] T033 [P] [US1] Write a test asserting that **no request targets
+- [x] T033 [P] [US1] Write a test asserting that **no request targets
   `/v1/reservations` or any other resource the migration guide marks
   deprecated** while the v3 path is active, over a full refresh, in
   `tests/api/test_reservations_v3.py` (FR-001, SC-001). Note in the
   test docstring that the one-time identity bootstrap sweep (T073) is
   the single qualified exception, pending the T002 amendment.
-- [ ] T034 [P] [US1] Write tests asserting the diagnostics counters on
+- [x] T034 [P] [US1] Write tests asserting the diagnostics counters on
   `ReservationFetchResult`: pages fetched, raw (pre-mapping) status
   histogram, and the stay-segment-count histogram, in
   `tests/api/test_reservations_v3.py` (FR-042).
-- [ ] T035 [P] [US1] Write tests for `GuestyFilterRejectedError`:
+- [x] T035 [P] [US1] Write tests for `GuestyFilterRejectedError`:
   derives from `GuestyResponseError`, carries endpoint, status and a
   truncated excerpt, and truncates a long body, in
   `tests/api/test_exceptions.py` (FR-008, data-model.md §7).
 
 ### Phase 3 Implementation (Green)
 
-- [ ] T036 [US1] Implement `GuestyFilterRejectedError` in
+- [x] T036 [US1] Implement `GuestyFilterRejectedError` in
   `custom_components/guesty/api/exceptions.py` (data-model.md §7).
   Depends on T035.
-- [ ] T037 [US1] Implement request construction in a new
+- [x] T037 [US1] Implement request construction in a new
   `custom_components/guesty/api/reservations_v3.py`: the padded
   overlap filter, the translated status filter, `sort=_id`,
   `limit=100`, `skip` paging, and an explicit refusal to emit a
   `fields` or `filter[listingId]` parameter (FR-001 to FR-004,
   FR-007, FR-015). Depends on T024, T027, T029.
-- [ ] T038 [US1] Implement paging and the nine-check page guard in
+- [x] T038 [US1] Implement paging and the nine-check page guard in
   `custom_components/guesty/api/reservations_v3.py`, raising on any
   failed check so the coordinator retains last-known-good data
   (FR-005, FR-006). Depends on T037.
-- [ ] T039 [US1] Implement result mapping and the diagnostics counters
+- [x] T039 [US1] Implement result mapping and the diagnostics counters
   in `custom_components/guesty/api/reservations_v3.py`, returning a
   `ReservationFetchResult`; raise `GuestyFilterRejectedError` on HTTP
   400 with no unfiltered retry (FR-008, FR-042). Depends on T036,
   T038.
-- [ ] T040 [US1] Select `V3ReservationSource` in
+- [x] T040 [US1] Select `V3ReservationSource` in
   `custom_components/guesty/api/client.py` when
   `reservations_api="v3"`, and convert `GuestyFilterRejectedError` to
   `UpdateFailed` with the rejection detail preserved in
