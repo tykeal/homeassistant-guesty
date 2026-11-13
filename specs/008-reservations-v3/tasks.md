@@ -187,11 +187,15 @@ commits. No user-visible behaviour changes while the default is
   410 on `/v1/reservations/{id}`) re-raised with a message instructing
   the user to set the option back to `v3`, in `tests/test_init.py` and
   `tests/api/test_actions.py` (FR-039).
-- [ ] T009 [P] [US6] Write tests for `ReservationFetchResult`: both
-  sources return it, it carries `reservations`, `pages`,
-  `status_counts` and `segment_histogram`, and the legacy source
+- [ ] T009 [P] [US6] Write tests for `ReservationFetchResult`: that it
+  carries `reservations`, `pages`, `status_counts` and
+  `segment_histogram`, and that the **legacy** source returns it and
   populates the counters it can, in `tests/api/test_models.py`
-  (FR-042, data-model.md §1.6).
+  (FR-042, data-model.md §1.6). Scope this task to the result type and
+  the legacy source only — the v3 source does not exist until Phase 3,
+  so the assertion that the v3 source returns the same type is
+  deliberately deferred to T034/T039 and must **not** be written here,
+  or the Phase 1 green checkpoint becomes unreachable.
 
 ### Phase 1 Implementation (Green)
 
@@ -572,8 +576,11 @@ reservations attributed to a tracked listing).
 - [ ] T057 [P] [US2] Write a privacy test in a new
   `tests/test_privacy_logging.py` asserting that **no** guest name,
   phone number, email address or confirmation code appears in captured
-  log records at DEBUG across a full v3 refresh, a guest-lookup
-  failure and an identity-guard abort (FR-021, NFR-009).
+  log records at DEBUG across a full v3 refresh and a guest-lookup
+  failure (FR-021, NFR-009). The identity-guard abort scenario is
+  **not** part of this task: the abort path does not exist until T070
+  in Phase 6, and Phases 5 and 6 may run independently. T066a extends
+  this same file with the identity-abort privacy scenario.
 - [ ] T058 [P] [US2] Write tests asserting the sensor publishes
   `guest_name`, `guest_phone` and `guest_email` under their existing
   attribute names from the cache, that the same guest appearing on
@@ -666,6 +673,11 @@ real account, the user sets `reservations_api=legacy` and reloads.
   identifiers matched, and that the count appears in diagnostics
   without exposing any confirmation code value, in
   `tests/test_identity.py` (FR-021, FR-035, FR-042).
+- [ ] T066a [P] [US5] Extend `tests/test_privacy_logging.py` (created
+  at T057) with the identity-guard abort scenario: assert that an
+  aborted refresh emits no guest name, phone number, email address or
+  confirmation code at DEBUG. Deferred here from T057 because the
+  abort path does not exist until T070 (FR-021, NFR-009).
 - [ ] T067 [US5] **BLOCKED on T002.** Write bootstrap-sweep tests in
   `tests/test_identity.py`: a fresh install (no baseline, no
   reservation entities) is `not_applicable` and permits writes; an
@@ -892,13 +904,18 @@ resume reporting values.
   may regress, and the absence of financial data must not fail, delay
   or degrade a refresh (FR-044, FR-045, FR-049). Depends on T086.
 - [ ] T094 [US7] Implement the FR-046 deprecation notice using the
-  T003 mechanism in `custom_components/guesty/__init__.py` (and a new
-  `custom_components/guesty/repairs.py` plus a `repairs` entry in
-  `manifest.json` if the repairs issue is adopted): raised at most
-  once per config entry per start, only when the v3 path is active and
-  at least one of the three entities exists, naming the three sensors,
-  the reason, the rollback option and the removal timeline, with a
-  matching WARNING log line. Depends on T003, T087.
+  T003 mechanism in `custom_components/guesty/__init__.py`: if the
+  repairs issue is adopted, raise it with
+  `homeassistant.helpers.issue_registry.async_create_issue` and add
+  the translated strings to `strings.json` and
+  `translations/en.json`. A non-fixable issue needs **no**
+  `manifest.json` change and **no** `repairs.py` module; add
+  `custom_components/guesty/repairs.py` only if a real repair *flow*
+  is ever required. Raise at most once per config entry per start,
+  only when the v3 path is active and at least one of the three
+  entities exists, naming the three sensors, the reason, the rollback
+  option and the removal timeline, with a matching WARNING log line.
+  Depends on T003, T087.
 - [ ] T095 [US7] Add the notice's translated strings to
   `custom_components/guesty/strings.json` and
   `custom_components/guesty/translations/en.json` under
@@ -1003,13 +1020,20 @@ checked from a user's debug log without a test account).
   verifying (FR-043, research.md R9). This gate exists only so that no
   specification assumption is silently dropped.
 - [ ] T106 [GATE] Record every T099–T105 outcome in
-  `specs/008-reservations-v3/research.md`, open follow-up issues for
-  any refuted assumption, and only then declare the feature stable
-  (FR-041, SC-011).
+  `specs/008-reservations-v3/research.md`. For **every refuted
+  assumption**, land the corrective fix or documented fallback and
+  then **re-run the affected live check until it passes**; an open
+  follow-up issue alone does **not** close this gate. Only once every
+  check in T099–T105 has passed, or has been recorded as not
+  applicable, may the feature be declared stable (FR-041, SC-011).
+  Follow-up issues may be opened for non-blocking observations only.
 
-**Checkpoint**: every unverified assumption has been exercised against
-a live account or has an open follow-up issue. Only now may the
-feature be called stable.
+**Checkpoint**: every assumption the implementation relies on has been
+exercised against a live Guesty account and passed, or has been
+recorded as not applicable. No relied-upon assumption may remain
+unverified or refuted at this point. Only now may the feature be
+called stable; if any check still fails, the feature stays pre-release
+and Phase 9 repeats.
 
 ---
 
@@ -1037,7 +1061,8 @@ the end.
   `api/reservations_v3.py`, `api/guest_cache.py`,
   `custom_components/guesty/identity.py`,
   `custom_components/guesty/diagnostics.py`,
-  `custom_components/guesty/repairs.py` (if adopted),
+  `custom_components/guesty/repairs.py` (only if a repair flow is
+  adopted),
   `tests/api/test_reservations_v3.py`, `tests/api/test_guest_cache.py`,
   `tests/test_identity.py`, `tests/test_reservations_parity.py`,
   `tests/test_privacy_logging.py` and `tests/test_diagnostics.py` —
@@ -1133,7 +1158,7 @@ Phase 10 run against each phase.
   `coordinator.py`.
 - **Phase 5 tests**: T054–T058 are parallel with T053; T060
   (`api/const.py`) is parallel with T059.
-- **Phase 6 tests**: T064–T066 are parallel with T063; T067 waits on
+- **Phase 6 tests**: T064–T066a are parallel with T063; T067 waits on
   T002.
 - **Phase 7 tests**: T078–T081 are parallel with T077.
 - **Phase 8 tests**: T086–T091 are parallel with T085.
@@ -1175,7 +1200,7 @@ requirement is unmapped.**
 | FR-018 | T053, T059 |
 | FR-019 | T053, T059 |
 | FR-020 | T054, T059 |
-| FR-021 | T052, T057, T059, T066, T070, T091 |
+| FR-021 | T052, T057, T059, T066, T066a, T070, T091 |
 | FR-022 | T022, T026 |
 | FR-023 | T022, T027 |
 | FR-024 | T022, T045, T048 |
@@ -1229,7 +1254,7 @@ follow-up issue during T106.
 | NFR-006 event loop | T053, T059, T108 |
 | NFR-007 library isolation | T011, T059, T071, T108 |
 | NFR-008 testability | T020, T056 |
-| NFR-009 privacy | T052, T057, T059, T091 |
+| NFR-009 privacy | T052, T057, T059, T066a, T091 |
 
 ### Success criteria
 
@@ -1273,7 +1298,8 @@ follow-up issue during T106.
 3. **PR 3** — Phase 3 (T029–T040). v3 search source.
 4. **PR 4** — Phase 4 (T041–T052). Attribution, projection, trim.
 5. **PR 5** — Phase 5 (T053–T062). Guest cache.
-6. **PR 6** — Phase 6 (T063–T066, T068–T072, T076). Identity guard.
+6. **PR 6** — Phase 6 (T063–T066a, T068–T072, T076). Identity
+   guard.
 7. **PR 7** — Phase 6 bootstrap (T067, T073–T075), **after** the T002
    amendment has merged.
 8. **PR 8** — Phase 7 (T077–T084). v3 write actions.
