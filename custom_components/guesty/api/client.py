@@ -40,6 +40,9 @@ from custom_components.guesty.api.models import (
 from custom_components.guesty.api.reservations_legacy import (
     LegacyReservationSource,
 )
+from custom_components.guesty.api.reservations_v3 import (
+    V3ReservationSource,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -120,18 +123,11 @@ class GuestyApiClient:
     def _build_reservation_source(self) -> ReservationSource:
         """Select the reservation source for the resolved path.
 
-        The v3 source does not exist yet; until it lands the v3
-        selection is served by the legacy source so an entry that
-        selects it stays functional.
-
         Returns:
             The reservation source to serve reads from.
         """
         if self._reservations_api == RESERVATIONS_API_V3:
-            _LOGGER.warning(
-                "The v3 reservation path is not implemented yet; "
-                "serving reservations from the legacy path",
-            )
+            return V3ReservationSource(self)
         return LegacyReservationSource(self)
 
     async def test_connection(self) -> bool:

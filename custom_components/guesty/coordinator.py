@@ -18,7 +18,10 @@ from custom_components.guesty.api.const import (
     DEFAULT_FUTURE_DAYS,
     DEFAULT_PAST_DAYS,
 )
-from custom_components.guesty.api.exceptions import GuestyApiError
+from custom_components.guesty.api.exceptions import (
+    GuestyApiError,
+    GuestyFilterRejectedError,
+)
 from custom_components.guesty.api.models import (
     GuestyCustomFieldDefinition,
     GuestyListing,
@@ -225,6 +228,10 @@ class ReservationsCoordinator(
                 past_days=past_days,
                 future_days=future_days,
             )
+        except GuestyFilterRejectedError as exc:
+            raise UpdateFailed(
+                f"Guesty rejected the reservation query filters: {exc.message}",
+            ) from exc
         except GuestyApiError as exc:
             raise UpdateFailed(
                 f"Error fetching reservations: {exc.message}",

@@ -249,3 +249,6 @@ V3_STATUS_FILTER_MAP: Mapping[str, tuple[str, ...]] = MappingProxyType(
 
 # Statuses representing a proposed change rather than a stay.
 HOLD_STATUSES: frozenset[str] = frozenset({"alteration"})
+
+# Maximum characters of a response body kept in an error excerpt.
+MAX_ERROR_BODY_EXCERPT: int = 500

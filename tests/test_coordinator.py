@@ -17,6 +17,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.guesty.api.exceptions import (
     GuestyAuthError,
     GuestyConnectionError,
+    GuestyFilterRejectedError,
     GuestyRateLimitError,
     GuestyResponseError,
 )
@@ -1137,6 +1138,78 @@ class TestReservationsCoordinatorErrorResilience:
 
         with pytest.raises(UpdateFailed, match="rate limited"):
             await coordinator._async_update_data()
+
+    async def test_filter_rejection_surfaces_detail(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A rejected filter reaches the user with its detail (FR-008)."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_reservations = AsyncMock(
+            side_effect=GuestyFilterRejectedError(
+                "Guesty rejected the reservation search filters",
+                endpoint="/reservations-v3/search",
+                status_code=400,
+                body_excerpt="unsupported filter checkIn",
+            ),
+        )
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = {}
+
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+
+        with pytest.raises(UpdateFailed) as excinfo:
+            await coordinator._async_update_data()
+
+        detail = str(excinfo.value)
+        assert "/reservations-v3/search" in detail
+        assert "400" in detail
+        assert "unsupported filter checkIn" in detail
+        api_client.get_reservations.assert_awaited_once()
+
+    async def test_filter_rejection_retains_last_known_good(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        sample_reservation: GuestyReservation,
+    ) -> None:
+        """A rejected filter leaves last-known-good data intact."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_reservations = AsyncMock(
+            return_value=[sample_reservation],
+        )
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = {sample_listing.id: sample_listing}
+
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+        await coordinator.async_refresh()
+
+        api_client.get_reservations = AsyncMock(
+            side_effect=GuestyFilterRejectedError(
+                "Guesty rejected the reservation search filters",
+                endpoint="/reservations-v3/search",
+                status_code=400,
+            ),
+        )
+        await coordinator.async_refresh()
+
+        assert coordinator.last_update_success is False
+        assert coordinator.data is not None
+        assert coordinator.data[sample_listing.id] == [sample_reservation]
 
     async def test_retains_last_known_good_data_after_error(
         self,
