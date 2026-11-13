@@ -234,21 +234,24 @@ identifier, and asserting that the integration aborts without writing.
    v3 path returns a reservation with the same confirmation code and the same
    identifier, **Then** processing continues normally and the match is
    recorded in diagnostics.
-2. **Given** a v3 reservation whose confirmation code matches a previously
-   known reservation but whose identifier differs, and the previously known
-   identifier is absent from the v3 result, **When** the refresh runs,
-   **Then** the integration treats the identity as ambiguous, aborts the
+2. **Given** a v3 reservation whose confirmation code maps to a different
+   reservation identifier than the baseline records, **When** the refresh
+   runs, **Then** the integration treats the identity as ambiguous, aborts the
    refresh, retains last-known-good data, performs no write, and logs an error
    that names both identifiers and tells the user how to roll back.
-3. **Given** a reservation with no confirmation code, **When** the refresh
+3. **Given** two baseline entries whose confirmation codes map to each
+   other's identifiers in the v3 result, so that both previous identifiers are
+   still present, **When** the refresh runs, **Then** the integration still
+   treats the identity as ambiguous and aborts.
+4. **Given** a reservation with no confirmation code, **When** the refresh
    runs, **Then** the reservation is published read-only and any write action
    targeting it aborts with an explanatory error.
-4. **Given** an installation upgrading from a release that never recorded an
+5. **Given** an installation upgrading from a release that never recorded an
    identity baseline, **When** the first v3 refresh runs, **Then** the
    reservations are published, the baseline is recorded from that refresh,
    and any write action attempted before a baseline exists aborts with an
    explanatory error rather than proceeding on an empty comparison.
-5. **Given** a recorded baseline, **When** Home Assistant restarts or the
+6. **Given** a recorded baseline, **When** Home Assistant restarts or the
    config entry reloads, **Then** the baseline is still available and writes
    remain permitted without waiting for a fresh legacy-path refresh.
 
@@ -301,6 +304,9 @@ toggle.
   `checked_in` on both.
 - **A reservation whose stay segments are all for unknown listings.** It is
   skipped with a warning, matching today's behaviour (Feature 003, FR-017).
+- **A canceled reservation that spans more than one listing.** The temporal
+  per-listing rules of FR-011a do not apply: it reports `canceled` on every
+  listing it touches, never `awaiting_checkin` on a future segment.
 - **A reservation whose stay segments are partly known and partly unknown.**
   The known segments are published; the unknown segments are logged at debug
   level and ignored. The reservation is not dropped wholesale.
@@ -416,6 +422,12 @@ toggle.
   - a reservation that is only upcoming for a listing MUST NOT outrank that
     listing's genuinely current occupant.
   A single-segment reservation MUST behave exactly as it does today.
+  These temporal rules apply **only** to reservations whose reservation-level
+  status is `confirmed` or `checked_in`. A `canceled`, `checked_out`,
+  `completed`, `alteration` or unrecognized status MUST keep the
+  status-derived behaviour of FR-023 to FR-026 for every listing it touches,
+  so that a canceled multi-segment reservation can never appear as
+  `awaiting_checkin` on a future segment's listing.
 - **FR-012**: System MUST recognize the documented parent/sub-unit
   relationship carried on a stay segment, so that a reservation assigned to a
   sub-unit or to an unassigned parent unit type is still attributed to the
@@ -524,11 +536,15 @@ toggle.
   writes: reservations are still published, but any reservation write action
   MUST abort with an explanatory error rather than proceed on an empty
   comparison. An empty baseline MUST NOT be read as "no conflict found".
-- **FR-032**: If a confirmation code maps to a **different** previously known
-  reservation identifier and that previous identifier is absent from the
-  current result, system MUST treat the identity as ambiguous, MUST abort the
-  refresh, MUST retain last-known-good data, MUST perform no write, and MUST
-  log an error naming both identifiers and the rollback option.
+- **FR-032**: If any confirmation code's mapping to a reservation identifier
+  differs from the baseline, system MUST treat the identity as ambiguous,
+  MUST abort the refresh, MUST retain last-known-good data, MUST perform no
+  write, and MUST log an error naming both identifiers and the rollback
+  option. This applies to **every** changed mapping, not only to one whose
+  previous identifier has disappeared from the result: a wholesale re-key that
+  swaps two codes between two still-present identifiers (baseline `A→id1`,
+  `B→id2`; result `A→id2`, `B→id1`) is exactly the failure this guard exists
+  to catch, and must fail closed.
 - **FR-033**: A reservation with no confirmation code MUST be publishable but
   MUST NOT be a valid target for a write action; a write targeting it MUST
   abort with an explanatory error.
@@ -579,9 +595,15 @@ toggle.
   path MAY exceed the legacy count, but the excess MUST be separately
   bounded: it MUST be at most one lookup per distinct guest needing a refresh,
   these lookups MUST be spread or batched so that a single refresh cannot
-  exhaust the rate budget, and the bound MUST be stated in the plan. In both
-  cases, volume MUST be bounded by the number of listings the installation
-  tracks rather than by the size of the Guesty account.
+  exhaust the rate budget, and the bound MUST be stated in the plan.
+  Because FR-015 forbids a server-side listing filter, **search** pagination
+  necessarily scales with the account-wide result set for the configured
+  window and status set, not with the number of tracked listings; that is the
+  accepted cost of completeness and is the subject of OQ-008. The bound that
+  does apply per tracked listing is on **supplementary** lookups: guest and,
+  if adopted, folio requests MUST be issued only for reservations attributed
+  to a tracked listing, so that untracked reservations returned by the search
+  cost nothing beyond the page they arrive on.
 - **NFR-002 (Rate limiting)**: The additional guest and, if adopted, folio
   lookups MUST go through the existing rate-limit-aware client with backoff,
   and MUST NOT be able to exhaust the account's rate budget on a 15-minute
@@ -671,7 +693,8 @@ toggle.
 - **SC-012**: A multi-segment reservation that has checked out of listing A
   and into listing B reports `checked_out` on A and `checked_in` on B at the
   same refresh, and before the move reports `checked_in` on A and
-  `awaiting_checkin` on B without displacing B's current occupant.
+  `awaiting_checkin` on B without displacing B's current occupant. The same
+  reservation, when canceled, reports `canceled` on both listings.
 - **SC-013**: An installation with no recorded identity baseline publishes
   reservations normally and rejects every reservation write with an
   explanatory error; after one successful refresh the baseline exists,
