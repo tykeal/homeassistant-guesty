@@ -96,7 +96,9 @@ legacy path produces for an equivalent legacy response set.
 1. **Given** an installation whose reservation entities were created on the
    legacy path, **When** the integration is upgraded and the v3 path is
    active, **Then** every reservation entity keeps its existing entity id and
-   unique id, and no entity is removed, renamed or re-created.
+   unique id, and no entity is removed, renamed or re-created, with the single
+   declared exception of the three deprecated financial sensors, which become
+   unavailable rather than being removed (User Story 7, FR-043 to FR-049).
 2. **Given** a listing with a confirmed future reservation, **When** the v3
    path refreshes, **Then** the reservation status sensor reports
    `awaiting_checkin` exactly as the legacy path did.
@@ -282,13 +284,57 @@ toggle.
    the legacy endpoints exactly as the previous release did.
 3. **Given** the option is changed, **When** the integration reloads, **Then**
    reservation entity ids and unique ids are unchanged and no entity is
-   removed or re-created.
+   removed or re-created; the three deprecated financial sensors keep their
+   registry entries in both directions and only change between available
+   (legacy path) and unavailable (v3 path).
 4. **Given** the legacy path is active and Guesty has retired it, **When** a
    refresh fails with a retirement-shaped error, **Then** the error message
    tells the user to switch the option back to v3.
 5. **Given** the legacy path is active, **When** the integration starts,
    **Then** a deprecation warning naming the 2027-03-01 retirement date is
    logged.
+
+---
+
+### User Story 7 - Financial sensors deprecate cleanly (Priority: P2)
+
+As a property manager who has `total_paid`, `balance_due` or `currency` on a
+dashboard card or in an automation, I want to be told clearly that those
+sensors are going away and to see them go unavailable rather than keep
+reporting a number that is no longer being updated, so that I can remove or
+replace them deliberately instead of acting on a stale figure.
+
+**Why this priority**: The owner has decided (OQ-001) that reservation
+financial data is not retrieved under v3. That is a user-visible breaking
+change under constitution principle VII, so it must be communicated and must
+fail visibly. It is P2 rather than P1 because no reservation state or
+automation trigger depends on it, but a silently wrong monetary value would be
+worse than any other outcome in this feature.
+
+**Independent Test**: Can be fully tested by toggling the reservation API path
+over a fixture whose legacy payload carries `money` values, and asserting that
+the three sensors report values on the legacy path, report `unavailable` on
+the v3 path, keep their entity ids across both, and that a deprecation notice
+is surfaced exactly once on the v3 path.
+
+**Acceptance Scenarios**:
+
+1. **Given** an installation whose financial sensors exist from a legacy-path
+   release, **When** the v3 path becomes active, **Then** all three sensors
+   report `unavailable` and never report a value carried over from an earlier
+   legacy refresh.
+2. **Given** the v3 path is active, **When** a refresh occurs, **Then** no
+   request is made to any guest-folio resource.
+3. **Given** the v3 path is active and at least one of the three entities
+   exists, **When** the integration starts, **Then** a deprecation notice
+   naming the three sensors, the reason and the removal timeline is surfaced
+   to the user once, and a deprecation warning is logged.
+4. **Given** the option is set back to the legacy path, **When** the
+   integration reloads, **Then** all three sensors report values again from
+   the embedded legacy `money` object, under their existing entity ids.
+5. **Given** the v3 path is active, **When** a refresh occurs, **Then** every
+   other reservation entity, attribute and entity id is unaffected and the
+   reservation refresh succeeds without any financial data.
 
 ---
 
@@ -334,6 +380,13 @@ toggle.
   total count to cross-check against.
 - **An unrecognized status value.** Passed through as-is and logged, matching
   today's behaviour (Feature 003, FR-025).
+- **A dashboard card or template bound to a financial sensor under the v3
+  path.** The sensor is `unavailable`, so the card shows it as unavailable
+  and a template referring to it degrades the same way it already does when
+  Guesty omits the value. It never shows a stale monetary figure.
+- **An installation that has never run the legacy path.** The three financial
+  sensors are never created at all and no deprecation notice is raised,
+  because there is nothing the user can have bound an automation to.
 
 ## Requirements *(mandatory)*
 
@@ -573,6 +626,59 @@ toggle.
   legacy option value and its code MUST be removable as a unit after
   2027-03-01.
 
+#### Financial sensor deprecation
+
+The repository owner decided on 2026-11-13 that the reservation financial
+sensors are deprecated rather than re-sourced
+([OQ-001](#oq-001-financial-sensors--resolved-deprecate)).
+
+- **FR-043**: System MUST NOT integrate `GET /v1/guest-folio/overview`, nor
+  any other guest-folio or payments resource, as part of this feature. No
+  reservation financial data is retrieved on the v3 path, and no batched
+  supplementary folio lookup is implemented.
+- **FR-044**: On the **legacy** path, the `total_paid`, `balance_due` and
+  `currency` sensors MUST continue to behave exactly as in the previous
+  release, sourced from the embedded legacy `money` object, so that the
+  rollback target remains genuinely known-good (FR-040).
+- **FR-045**: On the **v3** path, system MUST NOT create the three financial
+  sensors, and MUST NOT publish for them any value carried over from an
+  earlier legacy refresh, any cached value, or any placeholder. Entity
+  registry entries created by earlier releases MUST be retained, so the
+  entities remain registered under their existing entity ids and unique ids
+  and Home Assistant reports them as `unavailable`. Toggling the reservation
+  API path in either direction MUST therefore cause no entity registry
+  change (NFR-003, SC-008).
+- **FR-046**: When the v3 path is active and at least one of the three
+  entities already exists in the entity registry, system MUST surface a
+  user-visible deprecation notice that names the three sensors, states that
+  Guesty v3 no longer provides the data, points at the reservation API path
+  option as the temporary rollback, and states the removal timeline of
+  FR-048. The notice MUST be raised at most once per config entry per Home
+  Assistant start and MUST NOT be raised on an installation where none of the
+  three entities exists. A deprecation warning MUST additionally be logged at
+  warning level in that same case. The delivery mechanism — a Home Assistant
+  repairs issue, a logged warning alone, or both — is
+  [OQ-009](#oq-009-which-deprecation-notice-mechanism); the repository has no
+  existing repairs-platform precedent.
+- **FR-047**: The deprecation MUST be documented as a breaking change in the
+  release notes of the release that ships this feature and in the
+  integration's user documentation, naming the three entities, stating that
+  no replacement data source is provided, and describing the reservation API
+  path option as a temporary rollback that itself expires on 2027-03-01. This
+  satisfies the explicit-declaration requirement of NFR-004 and constitution
+  principle VII.
+- **FR-048**: The removal timeline MUST be: the three sensors are
+  **unavailable** on the v3 path from the release that ships this feature;
+  they are **removed outright** — entity creation code, entity registry
+  entries, strings and the FR-046 notice deleted together — in the same
+  release that removes the legacy path under FR-040, which MUST NOT ship
+  before 2027-03-01 so that the rollback remains available for as long as the
+  legacy endpoints exist.
+- **FR-049**: No entity, attribute or entity id other than the three named
+  financial sensors may regress as a result of this deprecation. The absence
+  of financial data MUST NOT fail, delay or degrade a reservation refresh, and
+  every attribute listed in NFR-004 MUST remain unaffected.
+
 #### Verification discipline
 
 - **FR-041**: Every v3 behaviour this feature relies on that cannot be
@@ -600,17 +706,22 @@ toggle.
   necessarily scales with the account-wide result set for the configured
   window and status set, not with the number of tracked listings; that is the
   accepted cost of completeness and is the subject of OQ-008. The bound that
-  does apply per tracked listing is on **supplementary** lookups: guest and,
-  if adopted, folio requests MUST be issued only for reservations attributed
-  to a tracked listing, so that untracked reservations returned by the search
-  cost nothing beyond the page they arrive on.
-- **NFR-002 (Rate limiting)**: The additional guest and, if adopted, folio
-  lookups MUST go through the existing rate-limit-aware client with backoff,
-  and MUST NOT be able to exhaust the account's rate budget on a 15-minute
-  poll (`coordinator.py:175-198`).
+  does apply per tracked listing is on **supplementary** lookups: guest
+  requests MUST be issued only for reservations attributed to a tracked
+  listing, so that untracked reservations returned by the search cost nothing
+  beyond the page they arrive on. No folio lookups exist, because FR-043
+  forbids them.
+- **NFR-002 (Rate limiting)**: The additional guest lookups MUST go through
+  the existing rate-limit-aware client with backoff, and MUST NOT be able to
+  exhaust the account's rate budget on a 15-minute poll
+  (`coordinator.py:175-198`).
 - **NFR-003 (Entity compatibility)**: Entity ids, unique ids, device
   assignment, entity categories and state vocabularies MUST be unchanged. No
-  entity may be removed, renamed or re-created by this migration.
+  entity may be removed, renamed or re-created by this migration. The three
+  deprecated financial sensors are the one declared exception and are
+  nonetheless held to the weaker form of this rule: their entity ids, unique
+  ids, device assignment and entity category are unchanged and their registry
+  entries are retained; only their availability changes (FR-045, FR-048).
 - **NFR-004 (Attribute compatibility)**: Every attribute the reservation
   status sensor exposes today (`sensor.py:370-504`) MUST keep its name and
   meaning: reservation identifier, UTC check-in/check-out, localized
@@ -619,11 +730,13 @@ toggle.
   source, listing identifier, the upcoming/active reservation summary list,
   and reservation custom fields. Any attribute that cannot be preserved MUST
   be called out as a breaking change in this specification and in release
-  notes, not dropped silently.
-- **NFR-005 (Graceful degradation)**: A failure in any *supplementary* lookup
-  (guest, folio) MUST degrade only the affected attributes or sensors, never
-  the reservation refresh as a whole. A failure in the *primary* reservation
-  search MUST retain last-known-good data (Feature 003 FR-014).
+  notes, not dropped silently. The loss of the `total_paid`, `balance_due`
+  and `currency` sensors on the v3 path is exactly such a declared breaking
+  change and is specified by FR-043 to FR-049.
+- **NFR-005 (Graceful degradation)**: A failure in the *supplementary* guest
+  lookup MUST degrade only the affected attributes, never the reservation
+  refresh as a whole. A failure in the *primary* reservation search MUST
+  retain last-known-good data (Feature 003 FR-014).
 - **NFR-006 (Event loop)**: All added I/O MUST be async and MUST NOT block the
   Home Assistant event loop (constitution principle VIII).
 - **NFR-007 (Library isolation)**: All v3 request construction, response
@@ -650,8 +763,9 @@ toggle.
 - **Guest**: A person record fetched separately by guest identifier, supplying
   the full name, phone and email the sensor exposes today. Cached.
 - **Reservation Financial Summary**: Total paid, balance due and currency. No
-  longer part of the reservation. Its fate is
-  [Open Question OQ-001](#oq-001-financial-sensors--retain-via-guest-folio-or-deprecate).
+  longer part of the reservation and, by the owner's decision recorded in
+  [OQ-001](#oq-001-financial-sensors--resolved-deprecate), not re-sourced.
+  The three sensors fed by it are deprecated (FR-043 to FR-049).
 - **Reservation API Path Setting**: The rollout toggle (FR-036 to FR-040).
 - **Identity Record**: The previously known mapping from confirmation code to
   reservation identifier used by the identity guard (FR-031 to FR-035).
@@ -665,7 +779,9 @@ toggle.
   deprecated path is requested on the v3 path.
 - **SC-002**: For an equivalent account, every reservation entity's id, state
   and attribute key set is identical between the legacy path and the v3 path,
-  verified by a differential test over a shared fixture set.
+  verified by a differential test over a shared fixture set. The three
+  deprecated financial sensors are excluded from the state comparison and
+  asserted separately by SC-014; their entity ids are still compared.
 - **SC-003**: For the same fixture account with a **warm guest cache** and no
   reservation changes, requests per refresh on the v3 path are less than or
   equal to the legacy path's, asserted by a request-counting test that pins
@@ -699,6 +815,13 @@ toggle.
   reservations normally and rejects every reservation write with an
   explanatory error; after one successful refresh the baseline exists,
   survives a reload, and writes are permitted.
+- **SC-014**: Over a fixture whose legacy payload carries `money` values, the
+  `total_paid`, `balance_due` and `currency` sensors report those values on
+  the legacy path and report `unavailable` on the v3 path, with identical
+  entity ids on both and zero entity registry changes across the toggle; no
+  request is made to any guest-folio resource on either path; and the
+  deprecation notice of FR-046 is raised exactly once when the v3 path starts
+  with those entities present and not at all when they are absent.
 - **SC-011**: Every assumption in this specification appears as an item in the
   plan's pre-release live-verification checklist (FR-041).
 
@@ -790,10 +913,11 @@ confirmed before this feature is declared stable.
 
 ### About financials
 
-- **[UNVERIFIED]** `GET /guest-folio/overview` accepts up to 200 reservations
-  per request (the vendor guide states the 200 limit) and returns values
-  equivalent to today's total paid, balance due and currency. The field
-  mapping is unknown and is part of OQ-001.
+- Not applicable. `GET /v1/guest-folio/overview` is not integrated (FR-043),
+  so nothing about its batching limit, field mapping or error behaviour needs
+  verifying. The former assumption about it is recorded in
+  [OQ-001](#oq-001-financial-sensors--resolved-deprecate) as part of the
+  rejected Option A.
 
 ### About the environment
 
@@ -827,20 +951,23 @@ confirmed before this feature is declared stable.
   assumption; the toggle gives an immediate rollback.
 
 - **R-003 — Added per-reservation lookups multiply request volume.**
-  *Impact*: medium. Guest lookups, and folio lookups if adopted, could turn
-  one request per refresh into dozens, risking rate limiting on a 15-minute
-  poll.
+  *Impact*: medium. Guest lookups could turn one request per refresh into
+  dozens, risking rate limiting on a 15-minute poll.
   *Mitigation*: NFR-001 caps v3 volume at the legacy count; FR-018 mandates
-  caching and per-refresh deduplication; batching is required for folio
-  (OQ-001); SC-003 and SC-010 assert the budget in tests.
+  caching and per-refresh deduplication; FR-043 removes the folio lookup from
+  the design entirely, so guest lookups are the only added traffic; SC-003 and
+  SC-010 assert the budget in tests.
 
 - **R-004 — Silent attribute loss breaks user automations.**
-  *Impact*: medium-high. Attributes such as guest phone and the financial
-  values feed real automations and dashboards; losing them without notice
-  looks like a Home Assistant bug to the user.
+  *Impact*: medium-high. Attributes such as guest phone feed real automations
+  and dashboards; losing them without notice looks like a Home Assistant bug
+  to the user.
   *Mitigation*: NFR-004 requires every at-risk attribute to be preserved or
-  explicitly declared a breaking change; SC-002 asserts attribute-key parity;
-  OQ-001 forces an explicit decision on the financial sensors.
+  explicitly declared a breaking change; SC-002 asserts attribute-key parity.
+  The financial sensors are the one declared loss, and FR-043 to FR-049 make
+  it loud: the sensors go `unavailable` rather than stale, a deprecation
+  notice and release-note entry are required, and SC-014 asserts the
+  behaviour.
 
 - **R-005 — The first-segment-only listing filter hides reservations.**
   *Impact*: medium. A stay that begins in an untracked listing and moves into
@@ -878,6 +1005,16 @@ confirmed before this feature is declared stable.
   *Mitigation*: FR-010 and FR-011 define per-listing attribution explicitly;
   no new entity type is created (see [Out of Scope](#out-of-scope)).
 
+- **R-010 — The financial deprecation surprises a user mid-season.**
+  *Impact*: medium. Three sensors that work today stop reporting after an
+  upgrade, and a user who only reads the dashboard may not connect that to a
+  release.
+  *Mitigation*: FR-045 makes the sensors unavailable rather than silently
+  stale, so the failure is visible rather than wrong; FR-046 surfaces a
+  notice in Home Assistant and logs a warning; FR-047 requires release-note
+  and documentation treatment; FR-044 keeps the legacy path working as a
+  temporary rollback until FR-048's removal release.
+
 ## Out of Scope
 
 - Webhook-based updates, including `reservation.updated.v2`. Polling remains
@@ -893,8 +1030,9 @@ confirmed before this feature is declared stable.
 - Payments (`GET /payments`). It supports only one reservation per request,
   which is incompatible with this integration's request budget, and no current
   sensor needs it.
-- Guest folio invoice items and settings snapshots. Only the folio overview is
-  under consideration, and only via OQ-001.
+- Guest folio resources in their entirety — overview, invoice items and
+  settings snapshots. The folio overview is no longer under consideration;
+  the financial sensors are deprecated instead (FR-043, OQ-001).
 - New entities for group reservations or for individual stay segments. Group
   reservations and mid-stay moves are **in scope for correct attribution**
   (FR-010, FR-011) but **out of scope as a new entity model**.
@@ -907,56 +1045,55 @@ confirmed before this feature is declared stable.
 
 ## Open Questions
 
-### OQ-001: Financial sensors — retain via guest folio, or deprecate?
+### OQ-001: Financial sensors — RESOLVED: deprecate
 
-**Decision required before the plan stage. This is the one scope question the
-owner has not yet settled.**
+**Status: DECIDED on 2026-11-13 by the repository owner — Option B
+(deprecate). This reverses the recommendation previously recorded here, which
+was Option A. No further decision is required and the plan stage may proceed.**
 
 v3 does not embed `money.totalPaid`, `money.balanceDue` or `money.currency`.
 Today those feed three diagnostic sensors (`sensor.py:150-184`,
 `sensor.py:740-830`), which already go unavailable when the values are
 missing.
 
-**Option A — retain, sourced from `GET /guest-folio/overview`.**
+**Decision**: the three sensors are **deprecated**.
+`GET /v1/guest-folio/overview` is **not** integrated, no supplementary
+financial lookup is implemented, and on the v3 path the sensors are not
+created and therefore report `unavailable`. The legacy path keeps them
+working as a temporary rollback until it is removed. The behaviour, the
+user-facing notice, the release-note treatment and the removal timeline are
+specified by FR-043 to FR-049, with User Story 7, SC-014 and R-010 covering
+acceptance and risk.
 
-- *For*: no breaking change; dashboards and automations that read the three
-  sensors keep working; NFR-003 and NFR-004 are satisfied with no caveat; the
+**Alternative considered and not taken — Option A, retain via
+`GET /v1/guest-folio/overview`.** Recorded so the reasoning is not lost:
+
+- *For*: no breaking change; dashboards and automations reading the three
+  sensors keep working; NFR-003 and NFR-004 satisfied with no caveat; the
   resource batches up to 200 reservations per request, so a typical
-  installation adds roughly one extra request per refresh, which keeps
-  NFR-001 achievable.
+  installation adds roughly one extra request per refresh.
 - *Against*: a new resource dependency whose field mapping to today's three
-  values is **[UNVERIFIED]**; a new failure mode on every refresh, mitigated
-  by NFR-005 degradation to unavailable, which is the existing behaviour for
-  missing values; additional rate-limit exposure; a batching and
-  partial-failure path to design and test; the folio's notion of "total paid"
-  may not equal the legacy reservation's, which would change sensor *values*
-  without changing names — arguably worse than removing them.
+  values is **[UNVERIFIED]**; a new failure mode on every refresh; additional
+  rate-limit exposure; a batching and partial-failure path to design and
+  test; and, decisively, the folio's notion of "total paid" may not equal the
+  legacy reservation's, which would change sensor *values* without changing
+  names. A financial sensor that is confidently wrong is worse than one that
+  is unavailable.
 
-**Option B — deprecate the three sensors.**
+**Rationale for the decision**: the Option A safety valve — "fall back to
+Option B if live verification shows the values are not equivalent" — could
+never be exercised, because FR-041 records that no live Guesty access exists
+for this project, so equivalence could not be established before release.
+Shipping an unverifiable monetary value under an existing sensor name is a
+worse breach of trust than withdrawing the sensor. Option B also removes a
+whole resource, failure mode and request-budget argument from a migration
+that is already entirely documentation-derived and deadline-bound.
 
-- *For*: smallest v3 surface; no new resource, no new failure mode, no extra
-  requests; fastest to deliver before the deadline.
-- *Against*: a breaking change for every user who put these on a dashboard or
-  in an automation; requires a deprecation period, release-note treatment and
-  repair-issue handling; conflicts with NFR-004 unless explicitly accepted.
-
-**Recommendation: Option A, with a safety valve.** Retain the three sensors
-sourced from the batched folio overview, implemented as a *supplementary*
-lookup that can fail without affecting reservation publication, and gate it
-behind the same reservation API path toggle. Rationale: constitution principle
-VII requires state attributes to maintain backward compatibility unless
-explicitly versioned with a migration path, and the batching limit of 200
-reservations per request makes the cost roughly one extra request per refresh
-rather than one per reservation — the objection that would otherwise decide
-this against retention.
-
-**Safety valve**: if live verification shows the folio overview's values are
-not equivalent to the legacy reservation money values, fall back to Option B
-rather than publish sensors whose numbers changed meaning. That check belongs
-on the FR-041 pre-release checklist.
-
-**Status**: awaiting the repository owner's decision. The plan stage MUST NOT
-begin on the financial sensors until it is recorded here.
+Constitution principle VII is satisfied not by preserving the sensors but by
+the alternative it allows: the change is explicitly versioned with a
+migration path — declared here, announced in-product (FR-046) and in release
+notes (FR-047), reversible through the rollout toggle (FR-044), and given a
+removal date tied to the vendor retirement (FR-048).
 
 ### OQ-002: Does the v3 notes resource replace or append?
 
@@ -1017,6 +1154,18 @@ accept the coverage gap in exchange, in which case FR-015 must be amended to
 record that choice and the gap must be stated in user-facing documentation.
 Until then, completeness wins. Whether the resulting page count is acceptable
 for a large account is itself **[UNVERIFIED]**.
+
+### OQ-009: Which deprecation-notice mechanism?
+
+FR-046 requires a user-visible deprecation notice for the three financial
+sensors, but does not fix its delivery mechanism, because this repository has
+no precedent to follow: the integration ships no `repairs` platform and no
+issue translations today. The plan stage must choose between a Home Assistant
+repairs issue (visible in Settings → Repairs, dismissible, but new platform
+surface and new translated strings to add and later remove under FR-048) and
+a logged warning alone (zero new surface, but easily missed by a user who
+never reads the log). This question exists only because Option B was chosen
+in OQ-001; it did not arise under Option A.
 
 ## Dependencies
 
