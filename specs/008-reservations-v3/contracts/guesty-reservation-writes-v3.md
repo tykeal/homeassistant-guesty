@@ -29,11 +29,18 @@ A write proceeds only when **every** one of these holds:
    routing of §4 is available: when the fallback has self-disabled or
    the legacy path is retired, such a write is refused with an error
    naming the 2027-03-01 retirement and no request is sent (FR-061,
-   SC-019).
+   SC-019); and when the target is fallback-sourced but only
+   republished from retained values after a failed lookup (FR-054), it
+   is refused as not currently reachable in either API, again with no
+   request (FR-058).
 
 Once the guard permits a write, the **route** is chosen from the
-target's provenance, read at write time: a target currently served from
-the legacy not-found fallback goes to §4, everything else to §1 and §2.
+target's provenance, read at write time from the fallback's `served`
+map: a target the fallback is currently serving goes to §4, everything
+else to §1 and §2. "Currently serving" means a legacy by-id lookup for
+that reservation succeeded in this session; being published from
+retained values is not enough, because no legacy identifier has been
+validated for it.
 A fallback-sourced identifier came from a legacy response, and Guesty
 Support states that such an identifier returns "Reservation not found"
 on v3 resources (FR-031e), so it is never sent to a v3 resource
@@ -178,7 +185,10 @@ A routed write is logged once at WARNING naming the operation and the
 identifier, is counted by operation and outcome in both diagnostics
 surfaces, exposes no sensor attribute and contains no personal data
 (FR-062, SC-020). It is retried neither automatically nor against v3,
-and never optimistically updates a published value (FR-063).
+and never optimistically updates a published value. It is issued in the
+single-attempt mode of FR-063, so the shared client's transient,
+rate-limit and token retries cannot turn one invocation into several
+writes.
 
 ## 5. Legacy path
 
@@ -201,14 +211,19 @@ set the option back to `v3` (FR-039).
 - a fallback-sourced target routes all three operations to §4 with no
   request to any v3 write resource, while a v3-sourced target issues no
   legacy request (SC-016);
-- provenance is read at write time, so a target backfilled into v3
-  between refreshes is written through v3 (FR-058);
+- provenance is read at write time from the current `served` map, so a
+  target that a refresh completing between action scheduling and
+  execution found in v3 is written through v3 (FR-058);
+- a target republished from retained values after a failed lookup is
+  refused with no request of either generation (FR-054, FR-058);
 - with the fallback disabled, all three operations refuse with an error
   naming the retirement and send no request (SC-019);
 - a routed write logs once, is counted by operation and outcome, and
   leaks no personal data (SC-020);
 - a rejected routed write raises, issues exactly one request and is
-  never reported as success; a not-found retires the candidate
-  (SC-021);
+  never reported as success — a transient failure, a 429 and a 401 each
+  produce exactly one legacy write request, proving the single-attempt
+  mode suppresses the shared client's retries — and a not-found retires
+  the candidate (FR-063, SC-021);
 - a four-digit custom-field value with a leading zero is transmitted
   verbatim (FR-059).

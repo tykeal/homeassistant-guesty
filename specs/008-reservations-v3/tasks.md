@@ -899,7 +899,10 @@ reservation. Anything wider violates FR-001.
   moment of the write rather than a value captured earlier, so a
   target that reappeared in v3 since the last refresh selects v3; a
   v3-sourced target can never select legacy; and selection ignores
-  anything the caller supplies (FR-055, FR-058, SC-016). The requests
+  anything the caller supplies; and a target that is fallback-sourced
+  but only republished from retained values after a failed lookup
+  (FR-054) selects **neither** route and is refused with no request of
+  either generation (FR-055, FR-058, SC-016). The requests
   themselves are Phase 7 (T128 to T134). Depends on T114.
 - [ ] T123 [P] [US8] Write an identity-isolation test in
   `tests/test_identity.py`: a fallback-sourced reservation's
@@ -928,7 +931,8 @@ reservation. Anything wider violates FR-001.
 - [ ] T126 [US8] Implement write-route selection alongside the
   identity guard in `custom_components/guesty/actions.py` and
   `custom_components/guesty/__init__.py` — evaluated **after** the
-  guard and reading the fallback's current served set at write time —
+  guard, reading the fallback's current served set at write time and
+  refusing a target that is only republished from retained values —
   carry the fallback-sourced flag and the `fallback_codes` isolation
   through `custom_components/guesty/coordinator.py` and
   `custom_components/guesty/identity.py`, and surface the fallback
@@ -1034,7 +1038,11 @@ restores a v3-only write path with no other change.
   `/reservations-v3/{id}/custom-fields`, and transmits a four-digit
   access code with a leading zero verbatim as text; a listing target
   and a v3-sourced reservation target are unaffected and still use the
-  v3 custom-fields resource (FR-030, FR-059). The assumed legacy body
+  v3 custom-fields resource — a listing target still uses
+  `LISTING_CUSTOM_FIELDS_PATH` (`/listings/{listing_id}/custom-fields`,
+  `api/const.py:140`), which this feature does not touch, and a
+  v3-sourced reservation target still uses
+  `RESERVATION_CUSTOM_FIELDS_PATH` (FR-030, FR-059). The assumed legacy body
   shape is OQ-011; if live verification refutes it, this task's
   expectations and FR-059's recorded fallback change together. Depends
   on T126.
@@ -1060,7 +1068,11 @@ restores a v3-only write path with no other change.
   `GuestyActionError` naming the resource and the rejection detail, is
   never reported as success, issues exactly one request — no automatic
   retry and no retry against the v3 resource — and leaves published
-  values untouched; a legacy "not found" retires the fallback
+  values untouched; a transient connection failure, a 429 and a 401
+  each still produce exactly **one** legacy write request, proving the
+  single-attempt mode suppresses `GuestyApiClient._request`'s retries
+  (`api/client.py:425-527`) for this request only while every other
+  caller keeps them; a legacy "not found" retires the fallback
   candidate under FR-052 and reports that the reservation no longer
   exists; and the identity guard still refuses first, before any route
   is chosen (FR-060, FR-063, SC-021). Depends on T126.
@@ -1070,10 +1082,13 @@ restores a v3-only write path with no other change.
 - [ ] T133 [US8] Implement the legacy note and status write branch in
   `custom_components/guesty/api/actions.py`, reusing the previous
   release's requests via `RESERVATION_BY_ID_LEGACY_PATH` and the
-  legacy read-before-write, with the retirement self-disable and the
-  refusal it produces, and wire it to the route selection T126
-  provides in `custom_components/guesty/actions.py` (FR-055, FR-058,
-  FR-059, FR-061, FR-063). Zero Home Assistant imports in `api/`
+  legacy read-before-write, add the opt-in single-attempt request mode
+  to `custom_components/guesty/api/client.py` that FR-063 requires —
+  default off, so no existing caller's retry behaviour changes — with
+  the retirement self-disable and the refusal it produces, and wire it
+  to the route selection T126 provides in
+  `custom_components/guesty/actions.py` (FR-055, FR-058, FR-059,
+  FR-061, FR-063). Zero Home Assistant imports in `api/`
   (NFR-007). Depends on T128, T130, T132, T082, T083, T084.
 - [ ] T134 [US8] Implement the custom-field legacy branch in
   `custom_components/guesty/api/custom_fields.py` and its service

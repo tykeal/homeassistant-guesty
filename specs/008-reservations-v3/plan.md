@@ -782,8 +782,10 @@ degrades to today's behaviour rather than erasing a reservation.
 
 **Writes.** A fallback-sourced reservation is not in v3, so no write
 against it may go to a v3 resource. All three write entry points instead
-route to the legacy write resource while it exists, and refuse loudly
-once it does not (FR-055, FR-058 to FR-063); see
+route to the legacy write resource while it exists and the fallback is
+currently serving that reservation, and refuse loudly otherwise — once
+legacy is gone, or while the reservation is only republished from
+retained values (FR-055, FR-058 to FR-063); see
 [Write actions](#write-actions). This honours Support's instruction that
 an identifier used against v3 must have come from a v3 response: a
 legacy identifier is only ever used against a legacy resource.
@@ -852,13 +854,22 @@ the guard (FR-060). Only a write the guard permits reaches the routing
 decision.
 
 **Provenance, from read to write.** `ReservationFallbackSource` already
-records which identifiers it is currently serving, and
+records which identifiers it is currently **serving** — those a legacy
+by-id lookup actually returned in this session — and
 `ReservationFetchResult` already carries that set out of the seam for
 diagnostics (FR-057). The coordinator keeps it as the authoritative
-fallback-sourced set for the current data, and the HA service layer
-reads it at **write time** rather than capturing it when the action was
-scheduled, so a reservation Guesty has since backfilled is written
-through v3 at the very next write (FR-058). Provenance is never taken
+served set for the current data, and the HA service layer reads it at
+**write time** rather than capturing it when the action was scheduled,
+so a reservation that a refresh completing between scheduling and
+execution found in v3 is written through v3 (FR-058). Guesty's backfill
+is not observable between refreshes, so that is the limit of the
+guarantee: the first write after a refresh observes the reservation in
+v3 uses v3. Routing is keyed on the served set, **not** on the
+fallback-sourced publication flag: a reservation republished from
+retained values after a failed lookup (FR-054) is flagged
+fallback-sourced but has no validated legacy identifier, so its write is
+refused as not currently reachable in either API rather than routed
+(FR-055, FR-058). Provenance is never taken
 from anything the caller supplies. A successful legacy write does not
 change provenance: the reservation stays fallback-sourced until a v3
 result returns it.
@@ -896,7 +907,12 @@ warning naming the operation and the identifier, and increments counters
 by operation and outcome that appear in both FR-042 surfaces, never as a
 sensor attribute (FR-062). A failed legacy write raises the same
 actionable error as a failed v3 write, is never reported as success, is
-never retried against v3 and is never retried automatically; a
+never retried against v3 and is never retried automatically. The shared
+`GuestyApiClient._request` retries transient failures, 429 answers and
+an expired token for every caller today, so the legacy-routed write must
+be issued through an explicit single-attempt mode added for this
+purpose, leaving every other caller's retry behaviour untouched
+(FR-063). A
 "not found" from the legacy resource retires the candidate exactly as
 FR-052 requires (FR-063).
 
@@ -1021,9 +1037,10 @@ what makes the differential test possible.
   reservation missing from v3 but present in legacy keeps its state and
   attributes and is counted as fallback-sourced (SC-015); a legacy
   not-found retires it and stops further lookups (SC-015, FR-052); every
-  write entry point routes a fallback-sourced target to the legacy write
+  write entry point routes a currently served target to the legacy write
   resource and issues no v3 write request, while a v3-sourced target
-  issues no legacy request (SC-016); the per-refresh cap, the
+  issues no legacy request and a retained-values-only target is refused
+  with no request at all (SC-016); the per-refresh cap, the
   zero-legacy-request steady state and the re-check interval are
   asserted by a
   request-counting test (SC-017); a retirement-shaped answer
@@ -1032,9 +1049,11 @@ what makes the differential test possible.
   attribute key differs for a fallback-sourced reservation (FR-057,
   SC-002).
 - **Legacy write routing** — unit and integration: provenance is read at
-  write time, so a target backfilled into v3 between refreshes is
-  written through v3 (FR-058); the identity guard refuses before routing
-  is even considered (FR-060); a disabled or retired fallback turns every
+  write time from the served set, so a target a refresh found in v3
+  between action scheduling and execution is written through v3, and a
+  target republished from retained values is refused (FR-054, FR-058);
+  the identity guard refuses before routing is even considered
+  (FR-060); a disabled or retired fallback turns every
   such write into a refusal naming the retirement with no request of
   either generation (SC-019); each routed write logs once and is counted
   by operation and outcome in both diagnostics surfaces with no new

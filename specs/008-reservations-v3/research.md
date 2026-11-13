@@ -850,7 +850,9 @@ merely what it checks:
    custom-field** write, given that the custom-field resource this
    integration uses is v3-only (spec OQ-011). **Acceptance**: a value
    written through the assumed legacy body is read back unchanged,
-   including a leading zero on a numeric-looking code. If it is refuted,
+   including a leading zero on a numeric-looking code. This item may
+   **not** be recorded as "not observed" while the legacy resources
+   exist: it needs no mid-backfill reservation. If it is refuted,
    FR-059's recorded fallback applies: the custom-field branch reverts
    to a loud refusal.
 3. A write accepted by the legacy resource for a not-yet-backfilled
@@ -899,10 +901,16 @@ without a test account: pages per resource, counts by raw status, the
 stay-segment histogram, attribution and skip counts, guest cache
 behaviour, the identity match count, the per-exception counts of
 permitted legacy calls, and the fallback counters. Items 2 and 3 of
-"Write resources", and all three items of "Legacy write routing", need a
-deliberate action invocation on a real account; the last two also need a
-reservation that is genuinely mid-backfill, so "not observed" is a valid
-recorded outcome for them as well.
+"Write resources", and all three items of "Legacy write routing", need
+a deliberate action invocation on a real account. Items 1 and 3 of
+"Legacy write routing" also need a reservation that is genuinely
+mid-backfill, so "not observed" is a valid recorded outcome for those
+two. Item 2 is **not** exempt: the legacy custom-field body and the
+leading-zero round trip can be exercised on any reservation the legacy
+resource still answers for, so it is a release gate that must either
+pass or be recorded as refuted — in which case FR-059's documented
+fallback applies and the custom-field branch reverts to a loud
+refusal (T135).
 Items 1 and 3 of "Legacy not-found fallback" need a real account **mid
 backfill**: a reservation genuinely missing from v3 cannot be
 conjured, so "not observed" is a valid recorded outcome for those two,
