@@ -30,12 +30,22 @@ file the repository already ships, so no language regresses.
 - **An existing entry is upgraded**: no value is stored, so the default
   applies; there is no migration step and no reconfiguration prompt
   (FR-037).
-- **The value is changed**: the existing update listener reloads the
-  entry.
+- **The value is changed**: the update listener must reload the entry.
+  Today's listener reloads only on a listing-selection change and
+  returns early when the polling intervals are unchanged
+  (`__init__.py:723-770`), so it is extended to track this option; a
+  regression test asserts that flipping only this option reloads.
 - **After a reload**: no entity is added, removed, renamed or
   re-created, and unique ids are untouched (FR-038, SC-008).
-- **The first refresh after a switch**: repopulates from the newly
-  selected path; until it completes, the previous data stays published.
+- **The first refresh after a switch**: a reload discards the
+  coordinator (`__init__.py:818-833`) and setup builds a fresh one whose
+  first refresh must succeed before the platforms load
+  (`__init__.py:283-289`). There is therefore **no** carried-over
+  snapshot: if the newly selected path fails, or the identity guard
+  trips, setup is retried by Home Assistant and the entities are
+  unavailable until a refresh succeeds. A failed-first-refresh test
+  pins this behaviour. Only refreshes *after* a successful setup retain
+  last-known-good data.
 - **`legacy` is selected**: reservation reads **and** both write actions
   use the legacy resources together — the option is never split across
   read and write (FR-036) — and a WARNING naming the 2027-03-01

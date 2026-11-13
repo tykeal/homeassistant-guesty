@@ -186,11 +186,20 @@ keep passing against it. `GuestyActionsClient` reads the same setting
 from the client it already holds, so both read and write paths flip
 together (FR-036, contracts/options-flow-reservations-api.md).
 
-Changing the option goes through the existing options flow and the
-existing update listener, which reloads the entry. Entity unique ids are
-derived from `entry.unique_id`, the listing id and the sensor key
-(`sensor.py:748-750`) and are untouched by the toggle, so a reload
-produces zero entity-registry changes (FR-038, SC-008).
+Changing the option goes through the existing options flow, but the
+existing update listener is **not** sufficient: it reloads only when the
+listing selection changed and returns early when the polling intervals
+are unchanged (`__init__.py:723-770`). Because the reservation source is
+selected in the client constructor, a changed `reservations_api` would
+otherwise be persisted without switching the running client, making
+rollback silently ineffective. The listener must therefore track the
+option alongside `_prev_selected` and `_prev_intervals` and reload the
+entry when it changes; a regression test asserts that flipping only this
+option reloads.
+
+Entity unique ids are derived from `entry.unique_id`, the listing id and
+the sensor key (`sensor.py:748-750`) and are untouched by the toggle, so
+a reload produces zero entity-registry changes (FR-038, SC-008).
 
 Deleting the legacy path after 2027-03-01 means deleting
 `api/reservations_legacy.py`, its tests, the `legacy` option value and
@@ -321,10 +330,16 @@ reservation's, but whose `listing_id`, `check_in`, `check_out`,
 localized dates, `guests_count` and `nights_count` come from that
 listing's segment when the reservation has more than one segment
 (FR-011). A single-segment reservation projects to itself, byte for byte.
-When one reservation has several segments in the *same* tracked listing,
-they are merged into one projection spanning the earliest check-in to the
-latest check-out with the maximum guest count; no per-segment entity is
-created (explicitly out of scope in the spec).
+When one reservation has several segments in the *same* tracked
+listing, the segments are kept as **disjoint intervals**; they are not
+merged into one continuous span. Merging would be wrong for an
+A → B → A stay: the merged span would cover the guest's time in B and
+the temporal rule would report A as `checked_in` while the guest is
+elsewhere. One projection per listing is still emitted — no per-segment
+entity is created, which is explicitly out of scope in the spec — and
+the interval it represents is chosen as: the interval containing the
+refresh instant, else the earliest interval still in the future, else
+the latest past interval. An A → B → A fixture covers this.
 
 Projection is what preserves NFR-003 and NFR-004 cheaply: `sensor.py`
 keeps consuming a list of `GuestyReservation` per listing and keeps
@@ -334,8 +349,8 @@ writes stay keyed correctly.
 
 **Segment-aware state (FR-011a).** For a multi-segment reservation whose
 reservation-level status is `confirmed` or `checked_in`, the projection's
-status is derived from that listing's segment against the refresh
-instant: before the segment's check-in it is `confirmed`
+status is derived from the selected interval for that listing against the
+refresh instant: before the segment's check-in it is `confirmed`
 (surfaced as `awaiting_checkin`); between check-in and check-out a
 reservation-level `checked_in` stays `checked_in`; after check-out it is
 `checked_out`. Any other reservation-level status — `canceled`,
@@ -499,10 +514,21 @@ this feature could produce.
 - **Observability**: the first successful v3 refresh logs, at INFO, how
   many previously known identifiers matched (FR-035).
 
-The guard is enforced in the HA service layer
-(`custom_components/guesty/actions.py:183-220`,
-`custom_components/guesty/actions.py:342`), which can see coordinator
-state, so `api/` keeps zero HA imports (NFR-007).
+The guard is enforced in the HA service layer, which can see coordinator
+state, so `api/` keeps zero HA imports (NFR-007). Every reservation-
+targeted write must pass through it:
+
+- `custom_components/guesty/actions.py:183-220` — `add_reservation_note`.
+- `custom_components/guesty/actions.py:342` — the status action.
+- `custom_components/guesty/__init__.py:395-401` — the separate
+  `guesty.set_custom_field` handler, which calls `set_field()` directly.
+  Only its `target_type="reservation"` branch is guarded; listing writes
+  and the HTTP resource itself are unchanged (FR-030).
+
+Omitting the third would leave door-code and other custom-field writes
+unguarded after an identity mismatch, with no baseline, or against a
+reservation with no confirmation code — precisely the writes most likely
+to matter. Blocked-write tests cover all three entry points.
 
 ### Write actions
 
@@ -514,8 +540,16 @@ state, so `api/` keeps zero HA imports (NFR-007).
   (`api/const.py:185-188`) (FR-028).
 
 Whether the notes resource replaces or merges the note set is OQ-002 and
-**[UNVERIFIED]**; the read-before-write is the safe assumption and can be
-dropped — saving one request — once live verification settles it. The
+**[UNVERIFIED]**, so the read-before-write stays until live verification
+settles it. Two consequences follow. First, the fresh read captures
+**every** writable note field, not just `notes.other`, and the `PUT`
+sends them all back, because a replacing resource would otherwise delete
+`notes.guest` and any sibling field; a multi-category fixture asserts
+this. Second, even a resource that merges note *objects* may still
+replace the `notes.other` *string*, so the read/append/write sequence is
+not dropped on the strength of merge semantics alone — only evidence of
+server-side text append with the required separator would justify that.
+The
 coordinator's cached copy is deliberately *not* used as the read source:
 it can be up to one poll interval stale and would silently discard a note
 added in Guesty meanwhile, which is exactly the class of silent data loss

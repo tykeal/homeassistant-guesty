@@ -30,7 +30,7 @@ target reservation has no confirmation code (FR-031c, FR-032, FR-033).
 | --- | --- |
 | Resource | `GET /v1/reservations-v3?reservationIds={id}` |
 | Parameters | `reservationIds` only; form-exploded |
-| Consumed | `[0].notes.other` |
+| Consumed | `[0].notes` — the whole object, not just `other` |
 
 The coordinator's cached copy is deliberately not used: it can be a full
 poll interval stale, and writing it back would silently discard a note
@@ -41,14 +41,27 @@ added in Guesty meanwhile.
 | Item | Value |
 | --- | --- |
 | Resource | `PUT /v1/reservations-v3/{reservationId}/notes` |
-| Body | `{"other": "<existing>\n---\n<new>"}` |
+| Body | every note field read in §1.1, with `other` appended to |
 | Separator | `NOTE_SEPARATOR` (`api/const.py:190-191`), unchanged |
 | Validation | unchanged (`api/actions.py:418-440`) |
 
 The legacy single `note` field is assumed to map to `notes.other`
 (**[UNVERIFIED]**). Whether the resource replaces or merges the note set
-is OQ-002: if it merges, the read in §1.1 is dropped and the action costs
-one request fewer.
+is OQ-002, and both answers are handled conservatively:
+
+- The body echoes **every** writable note field captured by the read, so
+  a replacing resource cannot delete `notes.guest` or any sibling field.
+  A multi-category fixture — a reservation carrying both `other` and
+  `guest` notes — asserts that both survive the write.
+- The read in §1.1 is **not** dropped on the strength of merge semantics
+  alone: merging note *objects* is compatible with replacing the
+  `notes.other` *string*, which would erase the existing note text.
+  Dropping the read requires evidence that the server appends text with
+  the required separator; absent that, the read stays.
+
+If live verification instead shows that the resource neither merges
+fields nor preserves text, and the full-object echo above is rejected by
+the API, the action refuses rather than writing a partial note set.
 
 ### 1.3 Outcomes
 

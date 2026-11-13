@@ -235,10 +235,15 @@ drops anything whose listing id is not in the listings coordinator's data
   has more than one segment, keeps the reservation `id` so custom-field
   writes stay keyed correctly, and is byte-identical to the reservation
   for the single-segment case (FR-011).
-- Merge multiple segments in the *same* tracked listing into one
-  projection (earliest check-in, latest check-out, maximum guest count).
-  The bridge's `#n` per-interval identities are **not** adopted: they
-  exist to key database rows, and creating a second entity-visible
+- Emit one projection per tracked listing even when a reservation has
+  several segments there, but keep those segments as **disjoint
+  intervals** rather than collapsing them into one span. An A → B → A
+  stay collapsed to earliest-in/latest-out would cover the guest's time
+  in B, and the temporal rule would then report A as `checked_in` while
+  the guest is in B. The projected interval is the one containing the
+  refresh instant, else the earliest future interval, else the latest
+  past one. The bridge's `#n` per-interval identities are still **not**
+  adopted: they exist to key database rows, and a second entity-visible
   reservation for one listing would change the published attribute
   surface.
 - Send **no** server-side listing filter (FR-015). The first-segment-only
@@ -453,8 +458,15 @@ detail and is never reported as success.
 
 - Whether the notes resource replaces or merges the note set is OQ-002
   and unverified. Reading first is correct under both answers; not
-  reading is correct only under one. If verification shows a merge, the
-  read is dropped and the action gets one request cheaper.
+  reading is correct only under one.
+- Because a replacing resource would delete any field omitted from the
+  body, the read captures **every** writable note field and the write
+  sends them all back, not just `other`.
+- Merging note *objects* would still not justify dropping the read: the
+  endpoint can preserve `notes.guest` while replacing the `notes.other`
+  string. Only evidence that the server appends text with the required
+  separator would make the read droppable, and that is not something the
+  documentation states.
 - The coordinator's cached reservation is **not** used as the read
   source: it can be a full poll interval stale, and writing a stale note
   back would silently destroy a note added in Guesty meanwhile.
@@ -498,6 +510,10 @@ by a decision in this document.
 
 1. A legacy reservation `_id` equals the v3 `reservationId` for the same
    stay, and the FR-031 guard never trips on a real account.
+   **Acceptance**: at least one confirmation code appears on both paths
+   for the same stay, and every such code maps to the same identifier on
+   both. An empty or non-overlapping comparison does not confirm this
+   item.
 2. The confirmation code is stable across both APIs and unique enough
    among an account's active reservations to serve as the cross-check.
 3. Reservation custom-field ids and values returned by the already
@@ -590,8 +606,12 @@ without a test account: pages per resource, counts by raw status, the
 stay-segment histogram, attribution and skip counts, guest cache
 behaviour, and the identity match count. Items 2 and 3 of "Write
 resources" need a deliberate action invocation on a real account. Item 1
-of "Identity and continuity" is confirmed the moment a real installation
-runs one refresh on each path without the guard tripping.
+of "Identity and continuity" is **not** confirmed merely by two
+successful refreshes: if the legacy and v3 results share no confirmation
+codes, or either is empty, the guard compares nothing and cannot trip.
+Confirmation requires a non-zero overlap of confirmation codes covering
+the same stays on both paths, and equality of the reservation
+identifiers those codes map to.
 
 [guesty-migration]: https://open-api-docs.guesty.com/docs/reservation-migration
 [guesty-changelog]: https://open-api-docs.guesty.com/changelog/2026-11-05

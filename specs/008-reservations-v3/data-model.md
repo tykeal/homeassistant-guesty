@@ -72,10 +72,11 @@ Everything else needs a decision:
   is derived as `check_out_local − check_in_local` in whole days, and is
   `None` when the dates cannot be parsed.
 - **`guests_count`** (legacy `guestsCount`): taken from
-  `stay[].guestsCount` for the listing being projected, taking the
-  maximum when segments merge.
+  `stay[].guestsCount` for the interval being projected.
 - **`note`** (legacy `note`): assumed to be `notes.other`
-  (**[UNVERIFIED]**, R11); `None` when absent.
+  (**[UNVERIFIED]**, R11); `None` when absent. The note write echoes
+  every note field back, so sibling fields such as `notes.guest` cannot
+  be lost.
 - **`guest`** (legacy embedded `guest`): not present in v3; built from
   the guest cache keyed by `guestId`. Guest attributes publish `None`
   when no record is available.
@@ -176,15 +177,18 @@ A single-segment reservation projects to itself, field for field. With
 more than one segment, the projection for a tracked listing substitutes:
 
 - `listing_id` — the tracked listing this projection is for.
-- `check_in`, `check_out` — the listing's segment; when two segments in
-  the same listing merge, the earliest check-in and the latest
-  check-out.
-- `check_in_local`, `check_out_local` — the listing's segment.
-- `guests_count` — the listing's segment, taking the maximum when
-  segments merge.
-- `nights_count` — derived from the segment's localized dates.
+- `check_in`, `check_out` — the selected interval for that listing.
+  Segments in the same listing stay **disjoint**; they are never
+  collapsed into one span, because an A → B → A stay would then cover
+  the guest's time in B. The selected interval is the one containing the
+  refresh instant, else the earliest future interval, else the latest
+  past one.
+- `check_in_local`, `check_out_local` — the selected interval.
+- `guests_count` — the selected interval's segment.
+- `nights_count` — derived from the selected interval's localized
+  dates.
 - `status` — temporal, per FR-011a, and only for `confirmed` and
-  `checked_in`.
+  `checked_in`, evaluated against the selected interval.
 
 `id`, `confirmation_code`, `source`, `guest` and `custom_fields` are
 always the reservation's own values, and `stay` is always empty on a
