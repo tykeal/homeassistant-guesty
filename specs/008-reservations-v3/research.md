@@ -7,8 +7,9 @@ SPDX-License-Identifier: Apache-2.0
 
 **Feature Branch**: `008-reservations-v3` | **Date**: 2026-11-13
 **Status**: Complete; amended at the analyze stage (R5 corrected, R13 to
-R15 added). Documentation-derived; live confirmation is now **available
-and deferred** to the
+R15 added) and again for the owner's OQ-010 decision (R16 added).
+Documentation-derived; live confirmation is now **available and
+deferred** to the
 [pre-release checklist](#pre-release-live-verification-checklist)
 
 ## Sources and their standing
@@ -65,6 +66,9 @@ Retiring 2027-03-01, and replaced:
   (`api/actions.py:115-120`) → `PUT /reservations-v3/{id}/notes`.
 - `PUT /reservations/{id}` for the status write
   (`api/actions.py:364-369`) → `PUT /reservations-v3/{id}/status`.
+- The same three legacy requests remain reachable, for a
+  **fallback-sourced** reservation only, as the legacy write routing of
+  R16 — permitted exception 3 of FR-001, not routine operation.
 - The embedded `money` block — **not replaced**; the financial sensors
   deprecate (R9).
 
@@ -73,8 +77,11 @@ New on the v3 path: `GET /guests-crud/{id}` for guest details.
 ### Decision
 
 On the v3 path the integration calls no resource the migration guide
-marks deprecated (FR-001, SC-001). On the legacy path it calls exactly
-what the previous release called, unchanged (FR-040).
+marks deprecated for routine operation, with the three enumerated and
+individually bounded exceptions of FR-001: the bootstrap sweep, the
+not-found fallback (R13) and the legacy write routing (R16) (FR-001,
+SC-001). On the legacy path it calls exactly what the previous release
+called, unchanged (FR-040).
 
 ---
 
@@ -492,6 +499,9 @@ detail and is never reported as success.
   back would silently destroy a note added in Guesty meanwhile.
 - The mapping from legacy `note` to the v3 `notes` object's field is
   **[UNVERIFIED]**; `notes.other` is the assumed target.
+- A write whose target is fallback-sourced goes to the legacy resource
+  instead, by the owner's OQ-010 decision (R16). The v3 decisions above
+  are unaffected: they describe the path every other reservation takes.
 
 ---
 
@@ -545,13 +555,14 @@ Add a `ReservationFallbackSource` collaborator **inside** the
 `ReservationSource` seam, used only by the v3 source. For each
 previously known reservation that is absent from a v3 result and whose
 stay still overlaps the window, look it up by identifier on the legacy
-resource; publish a successful result as a **fallback-sourced**,
-read-only reservation; treat a legacy not-found as confirmed absence and
-retire the candidate; bound the work with a per-refresh cap of 20 and a
-per-candidate re-check interval of 3600 seconds; self-disable for the
+resource; publish a successful result as a **fallback-sourced**
+reservation whose writes route to the legacy resource (R16); treat a
+legacy not-found as confirmed absence and retire the candidate; bound
+the work with a per-refresh cap of 20 and a per-candidate re-check
+interval of 3600 seconds; self-disable for the
 session on a retirement-shaped answer. The full design, including error
-handling, caching and the write refusal, is in `plan.md`
-§"Legacy not-found fallback".
+handling, caching and the write routing, is in `plan.md`
+§"Legacy not-found fallback" and §"Write actions".
 
 ### R13 rationale
 
@@ -562,8 +573,9 @@ live booking is worse than any cost this adds. The design is constrained
 so the cure cannot be worse than the disease: by-identifier only (never
 a legacy search), only for reservations already known, bounded per
 refresh, negatively cached so a genuinely deleted reservation is looked
-up once and then dropped, and read-only so no write is ever issued
-against an identifier that did not come from v3.
+up once and then dropped, and never writing an identifier that did not
+come from v3 to a v3 resource — such writes go to the legacy resource
+instead (R16).
 
 ### R13 alternatives considered
 
@@ -642,6 +654,81 @@ both deleted with the sensors under FR-048. Dismissal is acceptable
 because the notice is informational — the sensors remain `unavailable`
 whether or not it is dismissed. This resolves OQ-009 and unblocks the
 deprecation tasks.
+
+---
+
+## R16: Legacy write routing for fallback-sourced reservations (OQ-010)
+
+### R16 findings
+
+R13 restores a missing reservation's *visibility*, but the reservation
+that motivated it is the subject of a door-lock automation on
+[#223][issue-223] that writes a four-digit access code to a reservation
+custom field. The merged artifacts refused every write against a
+fallback-sourced reservation, so that automation would fail — loudly,
+but it would still leave the arriving guest without a code. Reservation
+custom fields are already a v3 resource
+(`/reservations-v3/{id}/custom-fields`, `api/const.py:142-143`) with no
+legacy counterpart in this codebase, while the note and status writes
+used the legacy catch-all `PUT /v1/reservations/{id}` in the previous
+release (`api/actions.py:84-91`, `115-120`, `364-369`).
+
+### R16 decision
+
+**Owner decision, 2026-11-13**: route a write whose target is
+fallback-sourced to the **legacy** write resource for as long as that
+resource exists, rather than refusing it. This is permitted exception 3
+of FR-001 and is specified by FR-058 to FR-063:
+
+- it applies only to a target that is fallback-sourced at write time,
+  never to a reservation v3 returns;
+- it covers the three write operations the integration offers — note,
+  status and the reservation branch of the custom-field service;
+- the identity guard runs first and unchanged, and the confirmation code
+  remains a cross-check, never a lookup key on either generation of
+  resource;
+- it self-disables with the fallback, refusing with an error that names
+  the 2027-03-01 retirement;
+- every routed write is logged once and counted by operation and outcome
+  in both diagnostics surfaces;
+- a failure raises the usual actionable error, is never reported as
+  success, and is retried neither automatically nor against v3.
+
+For the note and status operations the legacy branch is the previous
+release's request, which FR-040 already requires to stay working and
+tested. For custom fields there is no legacy counterpart to return to,
+so the legacy catch-all is assumed to carry the field value; the body
+shape is **[UNVERIFIED]** and is spec OQ-011.
+
+### R16 rationale
+
+The condition is transient and entirely vendor-side: Guesty's own
+backfill. During that window the legacy resource is expected to answer —
+it is the same window that makes R13's read fallback work at all — so
+refusing the write trades a working door lock for a shorter exception
+list. The routing does not weaken Support's rule, which is about calling
+*v3* with a non-v3 identifier: a legacy identifier is used only against
+a legacy resource. The exposure is bounded by the same mechanisms R13
+already has, because the set of legacy-writable reservations is exactly
+the set the fallback is serving.
+
+### R16 alternatives considered
+
+- **Refuse the write** (the previous specification, FR-055 as merged).
+  Rejected by the owner: a loud refusal is honest but still leaves the
+  guest locked out, and the whole point of the fallback is that
+  automation.
+- **Refuse only the custom-field write, route notes and status.**
+  Rejected: the custom-field write is the door-lock case, so it is the
+  one that matters most; and splitting the rule would make the exception
+  list harder to state and to test.
+- **Write to v3 anyway and tolerate the error.** Rejected outright: it
+  violates Support's rule, produces "Reservation not found" and risks
+  writing against a wrong identity, which is risk R-001.
+- **Queue the write and replay it when the reservation appears in v3.**
+  Rejected: a persisted write queue is new durable state carrying user
+  data, with no bound on how long a backfill takes, and a door code
+  delivered an unknown time later is not a working door code.
 
 ---
 
@@ -752,6 +839,25 @@ merely what it checks:
 4. `PUT /reservations-v3/{reservationId}/status` accepts `checked_in` and
    `checked_out` as this integration uses them today.
 
+### Legacy write routing (R16)
+
+1. The legacy catch-all `PUT /v1/reservations/{reservationId}` still
+   accepts a note write and a status write for a reservation that is
+   absent from v3, up to the 2027-03-01 retirement. **Acceptance**: a
+   fallback case from "Legacy not-found fallback" item 1 accepts both
+   writes, or the item is recorded as "not observed".
+2. Which legacy resource and request body carries a **reservation
+   custom-field** write, given that the custom-field resource this
+   integration uses is v3-only (spec OQ-011). **Acceptance**: a value
+   written through the assumed legacy body is read back unchanged,
+   including a leading zero on a numeric-looking code. If it is refuted,
+   FR-059's recorded fallback applies: the custom-field branch reverts
+   to a loud refusal.
+3. A write accepted by the legacy resource for a not-yet-backfilled
+   reservation is carried into v3 by the backfill rather than lost
+   (spec R-013). **Acceptance**: the written value is still present once
+   the same reservation appears in the v3 result.
+
 ### Financials
 
 1. **Not applicable.** The guest-folio assumption recorded in the
@@ -793,7 +899,10 @@ without a test account: pages per resource, counts by raw status, the
 stay-segment histogram, attribution and skip counts, guest cache
 behaviour, the identity match count, the per-exception counts of
 permitted legacy calls, and the fallback counters. Items 2 and 3 of
-"Write resources" need a deliberate action invocation on a real account.
+"Write resources", and all three items of "Legacy write routing", need a
+deliberate action invocation on a real account; the last two also need a
+reservation that is genuinely mid-backfill, so "not observed" is a valid
+recorded outcome for them as well.
 Items 1 and 3 of "Legacy not-found fallback" need a real account **mid
 backfill**: a reservation genuinely missing from v3 cannot be
 conjured, so "not observed" is a valid recorded outcome for those two,

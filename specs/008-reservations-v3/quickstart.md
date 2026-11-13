@@ -66,7 +66,7 @@ prek run --all-files
 | `api/guest_cache.py` | guest lookups and their TTL/LRU cache |
 | `api/models.py` | `GuestyStaySegment`, `GuestyReservation.stay` |
 | `api/const.py` | v3 resources, status maps, budget constants |
-| `api/actions.py` | the two v3 write resources |
+| `api/actions.py` | the two v3 write resources, and the legacy route |
 | `identity.py` | confirmation-code baseline, `Store`-backed |
 | `coordinator.py` | trim, attribution, projection, diagnostics |
 | `diagnostics.py` | the config-entry diagnostics download |
@@ -130,9 +130,10 @@ diagnostics download. The block carries the active path, pages fetched,
 reservations received, trimmed and skipped, the raw status histogram,
 the segment-count histogram, unknown-listing counts, guest lookups
 issued, cache hits and failures, whether an identity mismatch aborted
-the last refresh, the bootstrap-sweep page count, and the fallback
-counters and the ids currently served from the fallback. No guest
-details and no confirmation code values appear there.
+the last refresh, the bootstrap-sweep page count, the fallback counters
+and the ids currently served from the fallback, and the legacy-routed
+write counts by operation and outcome (FR-062). No guest details and no
+confirmation code values appear there.
 
 ## Things that will bite you
 
@@ -151,9 +152,15 @@ details and no confirmation code values appear there.
   Guesty's backfill is still running, so a previously known reservation
   that vanishes is looked up on the legacy resource by id before it is
   allowed to disappear (FR-050 to FR-057). Do not "simplify" that away.
-- **A fallback-sourced reservation is read-only.** Its id came from a
-  legacy response, and Guesty rejects such ids on v3 resources, so every
-  write against it is refused loudly (FR-055).
+- **A fallback-sourced reservation is written through legacy.** Its id
+  came from a legacy response and Guesty rejects such ids on v3
+  resources, so all three write actions — note, status and the
+  reservation branch of the custom-field service — route to the legacy
+  write resource while it exists, and refuse loudly naming the
+  retirement once it does not (FR-055, FR-058 to FR-063). Routing is
+  decided at write time from the fallback's current served set, never
+  from anything the caller supplies, and never for a reservation v3
+  returns.
 - **Never use a confirmation code, `originId` or any other external
   reference as a v3 lookup key.** v3 answers "Reservation not found".
   The confirmation code is a cross-check and a sensor attribute only
