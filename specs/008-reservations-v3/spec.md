@@ -807,11 +807,12 @@ sensors are deprecated rather than re-sourced
 - **SC-007**: An ambiguous-identity fixture causes zero writes and zero
   published changes, and produces exactly one actionable error.
 - **SC-008**: Toggling the reservation API path setting and reloading an
-  installation whose entities are all already registered produces zero entity
-  registry changes. The only permitted registry addition anywhere in this
-  feature is the first-time registration of the three financial sensors on an
-  installation that has never run the legacy path and is then switched to it
-  (FR-045).
+  otherwise unchanged installation whose entities are all already registered
+  produces zero entity registry changes. The only registry change this toggle
+  may cause is the first-time registration of the three financial sensors on
+  an installation that has never run the legacy path and is then switched to
+  it (FR-045). Normal first-time setup and the discovery of new listings or
+  custom fields are unaffected and continue to register entities as today.
 - **SC-009**: A guest-lookup outage lasting one full refresh leaves every
   reservation published and every previously known guest attribute intact.
 - **SC-010**: Each distinct guest is fetched at most once per refresh; a
