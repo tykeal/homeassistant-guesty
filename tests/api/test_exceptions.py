@@ -8,12 +8,14 @@ from datetime import UTC, datetime
 
 import pytest
 
+from custom_components.guesty.api.const import MAX_ERROR_BODY_EXCERPT
 from custom_components.guesty.api.exceptions import (
     GuestyActionError,
     GuestyApiError,
     GuestyAuthError,
     GuestyConnectionError,
     GuestyCustomFieldError,
+    GuestyFilterRejectedError,
     GuestyMessageError,
     GuestyRateLimitError,
     GuestyResponseError,
@@ -268,3 +270,58 @@ class TestGuestyActionError:
         """GuestyActionError can be caught as GuestyApiError."""
         with pytest.raises(GuestyApiError):
             raise GuestyActionError("test")
+
+
+class TestGuestyFilterRejectedError:
+    """Tests for the GuestyFilterRejectedError exception."""
+
+    def test_inherits_from_response_error(self) -> None:
+        """GuestyFilterRejectedError is a GuestyResponseError."""
+        assert issubclass(GuestyFilterRejectedError, GuestyResponseError)
+
+    def test_construction_with_context(self) -> None:
+        """The endpoint, status and excerpt are stored."""
+        error = GuestyFilterRejectedError(
+            "search filters rejected",
+            endpoint="/reservations-v3/search",
+            status_code=400,
+            body_excerpt="unsupported filter",
+        )
+        assert error.endpoint == "/reservations-v3/search"
+        assert error.status_code == 400
+        assert error.body_excerpt == "unsupported filter"
+
+    def test_message_carries_the_detail(self) -> None:
+        """The message embeds the endpoint, status and excerpt."""
+        error = GuestyFilterRejectedError(
+            "search filters rejected",
+            endpoint="/reservations-v3/search",
+            status_code=400,
+            body_excerpt="unsupported filter",
+        )
+        assert "search filters rejected" in error.message
+        assert "/reservations-v3/search" in error.message
+        assert "400" in error.message
+        assert "unsupported filter" in error.message
+
+    def test_long_body_is_truncated(self) -> None:
+        """A long response body is truncated in the excerpt."""
+        error = GuestyFilterRejectedError(
+            "search filters rejected",
+            body_excerpt="x" * (MAX_ERROR_BODY_EXCERPT + 500),
+        )
+        assert error.body_excerpt is not None
+        assert len(error.body_excerpt) == MAX_ERROR_BODY_EXCERPT + 3
+        assert error.body_excerpt.endswith("...")
+
+    def test_defaults_are_none(self) -> None:
+        """Context attributes default to None."""
+        error = GuestyFilterRejectedError("rejected")
+        assert error.endpoint is None
+        assert error.status_code is None
+        assert error.body_excerpt is None
+
+    def test_caught_as_base(self) -> None:
+        """GuestyFilterRejectedError can be caught as GuestyApiError."""
+        with pytest.raises(GuestyApiError):
+            raise GuestyFilterRejectedError("rejected")

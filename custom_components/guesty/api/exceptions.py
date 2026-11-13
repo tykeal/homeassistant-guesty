@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from custom_components.guesty.api.const import MAX_ERROR_BODY_EXCERPT
+
 
 class GuestyApiError(Exception):
     """Base exception for all Guesty API errors.
@@ -61,6 +63,65 @@ class GuestyConnectionError(GuestyApiError):
 
 class GuestyResponseError(GuestyApiError):
     """Unexpected response format: missing fields, invalid JSON."""
+
+
+class GuestyFilterRejectedError(GuestyResponseError):
+    """Guesty rejected the query filters of a search request.
+
+    Raised on HTTP 400 from the reservations v3 search. The request
+    is never retried with the filters removed: an unfiltered retry
+    would silently return the wrong reservations (issue #204).
+
+    Attributes:
+        endpoint: API path that rejected the request.
+        status_code: HTTP status returned by the API.
+        body_excerpt: Truncated excerpt of the response body.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        endpoint: str | None = None,
+        status_code: int | None = None,
+        body_excerpt: str | None = None,
+    ) -> None:
+        """Initialize GuestyFilterRejectedError.
+
+        Args:
+            message: Human-readable error description.
+            endpoint: API path that rejected the request.
+            status_code: HTTP status returned by the API.
+            body_excerpt: Response body, truncated when oversized.
+        """
+        self.endpoint = endpoint
+        self.status_code = status_code
+        self.body_excerpt = _truncate_excerpt(body_excerpt)
+
+        detail = [message]
+        if endpoint is not None:
+            detail.append(f"endpoint={endpoint}")
+        if status_code is not None:
+            detail.append(f"status={status_code}")
+        if self.body_excerpt:
+            detail.append(f"body={self.body_excerpt}")
+        super().__init__("; ".join(detail))
+
+
+def _truncate_excerpt(body: str | None) -> str | None:
+    """Truncate a response body to the error excerpt limit.
+
+    Args:
+        body: The response body, or None when unavailable.
+
+    Returns:
+        The body unchanged, an ellipsis-suffixed excerpt, or None.
+    """
+    if body is None:
+        return None
+    if len(body) <= MAX_ERROR_BODY_EXCERPT:
+        return body
+    return f"{body[:MAX_ERROR_BODY_EXCERPT]}..."
 
 
 class GuestyMessageError(GuestyApiError):

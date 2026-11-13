@@ -22,6 +22,7 @@ from custom_components.guesty.api.exceptions import (
     GuestyAuthError,
     GuestyConnectionError,
     GuestyCustomFieldError,
+    GuestyFilterRejectedError,
     GuestyMessageError,
     GuestyRateLimitError,
     GuestyResponseError,
@@ -53,6 +54,9 @@ from custom_components.guesty.api.models import (
 from custom_components.guesty.api.reservations_legacy import (
     LegacyReservationSource,
 )
+from custom_components.guesty.api.reservations_v3 import (
+    V3ReservationSource,
+)
 
 __all__ = [
     "BASE_URL",
@@ -72,6 +76,7 @@ __all__ = [
     "GuestyCustomFieldResult",
     "GuestyCustomFieldUpdate",
     "GuestyCustomFieldsClient",
+    "GuestyFilterRejectedError",
     "GuestyGuest",
     "GuestyListing",
     "GuestyListingsResponse",
@@ -90,4 +95,5 @@ __all__ = [
     "ReservationFetchResult",
     "ReservationSource",
     "TokenStorage",
+    "V3ReservationSource",
 ]
