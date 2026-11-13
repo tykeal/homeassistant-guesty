@@ -18,25 +18,29 @@ corresponding implementation task (Green). The repository currently
 has **883 passing tests**; no phase may reduce that count or the
 docstring coverage.
 
-**Fixtures**: there are **no live Guesty payloads and no live Guesty
-access**. Reservation fixtures in this repository are Python dict
+**Fixtures**: there are **no live Guesty payloads**, and this project
+has no Guesty account of its own; an external user has offered theirs
+for pre-release verification only (`research.md` R14), so every task
+here is still developed against synthetic fixtures. Reservation
+fixtures in this repository are Python dict
 builders, not JSON files (`tests/conftest.py:535-660`,
 `tests/api/test_client.py:834-909`). Every v3 fixture added by this
 feature MUST be a synthetic dict builder in the same style (NFR-008).
 
-**Organization**: tasks follow the eight implementation phases of
-`plan.md` rather than one phase per user story, matching the precedent
-set by `specs/003-reservations/tasks.md`. User stories are labelled on
-the tasks that deliver them. Three extra phases bracket the plan's
-eight: Phase 0 carries blocking decisions, Phase 9 carries the
+**Organization**: tasks follow the implementation phases of `plan.md`
+rather than one phase per user story, matching the precedent set by
+`specs/003-reservations/tasks.md`. User stories are labelled on the
+tasks that deliver them. Three extra phases bracket the plan's own:
+Phase 0 carries the stage decisions, Phase 9 carries the
 pre-stable-release live-verification gates, and Phase 10 carries the
-quality gates.
+quality gates. Phase 6a was added by the analyze stage for the legacy
+not-found fallback.
 
 ## Format: `[ID] [P?] [Story?] Description`
 
 - **\[P]**: can run in parallel (different files, no dependencies on
   an incomplete task)
-- **\[US#]**: the user story the task delivers (US1–US7); omitted for
+- **\[US#]**: the user story the task delivers (US1–US8); omitted for
   gate, foundational and polish tasks
 - **\[GATE]**: a release gate, not a code change
 - Exact file paths appear in every task description
@@ -66,19 +70,25 @@ Never bundle a checkbox tick into a code commit, even though both are
 "documentation" by some readings. Use `git commit -s` with a
 `Co-authored-by` trailer on every commit.
 
-## Deferred contradiction — carried forward, NOT resolved here
+## Resolved contradiction — settled by the analyze stage
 
-`plan.md` § "Complexity Tracking" records that the identity guard's
+`plan.md` § "Complexity Tracking" recorded that the identity guard's
 **one-time legacy bootstrap sweep calls a legacy resource while the v3
-path is active**. FR-001, SC-001 and FR-034 are written as absolutes
-(no deprecated resource on the v3 path; no additional request for the
-guard), so the plan contradicts the specification as written.
+path is active**, contradicting FR-001, SC-001 and FR-034, which were
+written as absolutes.
 
-This is **deliberately deferred to the analyze stage** for a
-specification amendment. It is **not** resolved by this task list.
-T001 records it and T002 is the amendment; every bootstrap-sweep task
-(T067, T073, T074) is **blocked on T002 landing**. Do not implement a
-bootstrap sweep before the amendment exists.
+**This is now resolved.** The analyze stage
+(`specs/008-reservations-v3/analysis.md`, findings A1 and A3) restated
+FR-001, SC-001 and FR-034 so that the prohibition covers the legacy
+*path* for routine operation while enumerating **exactly two**
+permitted legacy calls: the bootstrap sweep (FR-031d) and the new
+not-found fallback (FR-050). Both are individually bounded, counted in
+diagnostics and asserted by test. T067, T073 and T074 are therefore
+**no longer blocked**, and Phase 6a implements the fallback.
+
+Nothing beyond those two calls is permitted. A task that would issue
+any other legacy request on the v3 path is a specification violation,
+not an optimisation.
 
 Similarly, **listing-id filter chunking is designed but deliberately
 not built**. FR-015 forbids a server-side listing filter, and chunking
@@ -103,13 +113,17 @@ change; each task produces a recorded decision.
   first v3 setup of an upgrading entry, which contradicts FR-001,
   SC-001 and FR-034 as written in `specs/008-reservations-v3/spec.md`.
   Produce the finding in the analyze stage's output; do **not** edit
-  `spec.md` in this task. Blocks T002.
+  `spec.md` in this task. Blocks T002. **Satisfied by `analysis.md`
+  finding A1; tick this box in the implementation pull request.**
 - [ ] T002 Land the specification amendment arising from T001 in
   `specs/008-reservations-v3/spec.md`: scope FR-001 and SC-001 to
   steady-state **refreshes** and FR-034 to **per-refresh** cost, and
   record the bootstrap sweep as a bounded, one-time, pre-publication
-  exception. Depends on T001. **Blocks T067, T073 and T074** — no
-  bootstrap-sweep code may be written until this amendment is merged.
+  exception. Depends on T001. **Landed by the analyze stage**: FR-001
+  now enumerates the two permitted legacy calls, SC-001 asserts each
+  bound separately, FR-034 is scoped to the per-refresh comparison and
+  the sweep is specified as FR-031d. T067, T073 and T074 are
+  unblocked. Tick this box in the implementation pull request.
 - [ ] T003 Decide OQ-009, the delivery mechanism for the FR-046
   financial-sensor deprecation notice, and record the decision and
   rationale in `specs/008-reservations-v3/research.md` as a new
@@ -128,7 +142,10 @@ change; each task produces a recorded decision.
   legacy path under FR-048, so the surface is explicitly temporary.
   The log line is retained alongside it because the repairs issue is
   dismissible and because `FR-046` requires a logged warning
-  regardless. **Blocks T087, T094 and T095**; also informs T075.
+  regardless. **Decided by the analyze stage in favour of that
+  recommendation** — both surfaces — and recorded in `research.md` R15
+  and spec OQ-009. T087, T094 and T095 are unblocked and T075 uses the
+  same mechanism. Tick this box in the implementation pull request.
 - [ ] T004 Record for the analyze stage a **new, minor discrepancy**
   found while writing this task list: `plan.md` § "Diagnostics
   (FR-042)" specifies DEBUG log lines only, while
@@ -138,11 +155,16 @@ change; each task produces a recorded decision.
   FR-042 itself only requires a debug log, so this is an additive
   gap rather than a conflict. This task list implements both (T052,
   T091, T096); record the decision so the surface is deliberate.
+  **Recorded by the analyze stage as finding A9**, and FR-042 now
+  requires **both** surfaces explicitly, so the download is a
+  requirement rather than an undocumented extra. Tick this box in the
+  implementation pull request.
 
-**Checkpoint**: the bootstrap-sweep amendment is merged, the OQ-009
-mechanism is decided and recorded, and the diagnostics surface is
-agreed. Phases 1–5, 7 and 8 may proceed without T002; Phase 6's
-bootstrap tasks may not.
+**Checkpoint**: reached. The bootstrap-sweep amendment is merged, the
+OQ-009 mechanism is decided and recorded, and the diagnostics surface
+is agreed. No phase is gated on Phase 0 any longer; the boxes above
+are ticked by the first implementation pull request that depends on
+them.
 
 ---
 
@@ -682,7 +704,7 @@ real account, the user sets `reservations_api=legacy` and reloads.
   T066a runs first creates the module and the other extends it;
   neither depends on the other. Deferred here from T057 because the
   abort path does not exist until T070 (FR-021, NFR-009).
-- [ ] T067 [US5] **BLOCKED on T002.** Write bootstrap-sweep tests in
+- [ ] T067 [US5] Write bootstrap-sweep tests in
   `tests/test_identity.py`: a fresh install (no baseline, no
   reservation entities) is `not_applicable` and permits writes; an
   upgrade (no baseline, reservation entities present) performs one
@@ -725,16 +747,17 @@ real account, the user sets `reservations_api=legacy` and reloads.
   handler in `custom_components/guesty/__init__.py`; listing writes
   and the HTTP resource itself are unchanged (FR-030, FR-031c).
   Depends on T071.
-- [ ] T073 [US5] **BLOCKED on T002.** Implement the one-time legacy
+- [ ] T073 [US5] Implement the one-time legacy
   bootstrap sweep for an upgrading entry in
   `custom_components/guesty/identity.py` and
   `custom_components/guesty/__init__.py`: one legacy page sequence,
   before any v3 data is published, once per entry and never again,
   stored as `bootstrap_codes` with `path: "legacy"`. Continuity
   becomes `verified` only when the comparison is **informative** — at
-  least one shared confirmation code and no conflict. Depends on
-  T068, T067.
-- [ ] T074 [US5] **BLOCKED on T002.** Implement bootstrap retention
+  least one shared confirmation code and no conflict. This is
+  permitted legacy call 1 of FR-001 and is specified by FR-031d.
+  Depends on T068, T067.
+- [ ] T074 [US5] Implement bootstrap retention
   and **individual** retirement in
   `custom_components/guesty/identity.py`: a successful refresh
   replaces `codes` but never `bootstrap_codes`; a covered,
@@ -743,11 +766,12 @@ real account, the user sets `reservations_api=legacy` and reloads.
   unchecked entry is retired only under the safe policy that its
   reservation checked out more than `past_days` ago. Depends on T073.
 - [ ] T075 [US5] Surface an "identity continuity unconfirmed" notice
-  through the mechanism chosen in T003 when the bootstrap is
-  unavailable or uninformative, explaining that writes are refused and
-  how to proceed, in `custom_components/guesty/__init__.py` plus
+  through the mechanism decided in T003 — a non-fixable repairs issue
+  plus a warning log — when the bootstrap is unavailable or
+  uninformative, explaining that writes are refused and how to
+  proceed, in `custom_components/guesty/__init__.py` plus
   `strings.json` and `translations/en.json` (FR-031c). Depends on
-  T003, T073.
+  T073.
 - [ ] T076 [US5] Log the FR-035 identity match count at INFO once per
   path activation and add it, plus an
   "ambiguous identity aborted the last refresh" flag, to the FR-042
@@ -758,6 +782,131 @@ real account, the user sets `reservations_api=legacy` and reloads.
 zero published changes and exactly one actionable error; writes are
 refused until continuity is established; the baseline survives a
 reload.
+
+---
+
+## Phase 6a: Legacy Not-Found Fallback (US8)
+
+**Purpose**: stop a reservation that Guesty has not yet backfilled
+into v3 from silently vanishing. Guesty Support states that a v3
+not-found may mean "not migrated yet" rather than "gone", and advised
+retrieving such a reservation from the legacy resource by identifier
+([#223][issue-223]). Implements FR-050 to FR-057, SC-015 to SC-018 and
+User Story 8, and is permitted legacy call 2 of FR-001.
+
+**Depends on Phase 6**: the candidate set is drawn partly from the
+identity baseline, and the fallback writes `fallback_codes` into it.
+
+**Rollback**: v3 path only. Deleting
+`api/reservations_fallback.py` and its wiring restores plain v3
+behaviour; no entity, option or stored shape depends on it.
+
+**Scope discipline**: this phase adds **no** legacy *search* and **no**
+legacy *write*. A fallback lookup is always
+`GET /v1/reservations/{reservationId}` for one previously known
+reservation. Anything wider violates FR-001.
+
+### Phase 6a Tests (Red) — write first, verify they FAIL
+
+- [ ] T114 [US8] Add fallback fixtures to `tests/conftest.py`:
+  `make_legacy_reservation_by_id()` returning a single legacy
+  reservation document for a given id, a not-found response builder,
+  and a retirement-shaped response builder, all synthetic dict
+  builders in the existing style (NFR-008). Blocks T115–T120.
+- [ ] T115 [US8] Write candidate-selection tests in a new
+  `tests/api/test_reservations_fallback.py`: a reservation published
+  by an earlier refresh and absent from the current v3 result is a
+  candidate; a never-seen id is not; a candidate whose last known
+  stay no longer overlaps the configured window is dropped without a
+  request; a candidate already confirmed absent is not retried
+  (FR-050, FR-051, FR-052). Depends on T114.
+- [ ] T116 [P] [US8] Write republication tests in
+  `tests/api/test_reservations_fallback.py`: a successful legacy
+  by-id lookup yields a reservation flagged fallback-sourced whose
+  mapped fields match what the v3 path would publish, and the
+  reservation reappearing in a later v3 result drops it from the
+  served map (FR-050, SC-015). Depends on T114.
+- [ ] T117 [P] [US8] Write budget tests in
+  `tests/api/test_reservations_fallback.py` using respx request
+  counting: zero legacy requests when nothing is missing; exactly
+  `MAX_LEGACY_FALLBACK_LOOKUPS_PER_REFRESH` when more candidates than
+  the cap are missing, with the remainder counted as deferred; and at
+  most one lookup per candidate per `LEGACY_FALLBACK_RECHECK_SECONDS`
+  across repeated refreshes (FR-053, SC-017, NFR-001). Depends on
+  T114.
+- [ ] T118 [P] [US8] Write failure-mode tests in
+  `tests/api/test_reservations_fallback.py`: a timeout, a 5xx and a
+  malformed body each degrade only that reservation, retain the last
+  served record where one exists, are counted as failures and never
+  raise out of the fetch (FR-054, NFR-005). Depends on T114.
+- [ ] T119 [P] [US8] Write retirement tests in
+  `tests/api/test_reservations_fallback.py`: a retirement-shaped
+  answer disables the fallback for the session, logs exactly one
+  WARNING naming 2027-03-01, leaves the refresh successful, and
+  issues no further lookups; and an answer the code cannot classify
+  is treated as retirement rather than as absence (FR-056, SC-018).
+  Depends on T114.
+- [ ] T120 [P] [US8] Write privacy and observability tests in
+  `tests/api/test_reservations_fallback.py` and
+  `tests/test_diagnostics.py`: the fallback counters and served ids
+  appear in both FR-042 surfaces, and no guest name, phone, email or
+  confirmation code value appears in any record at any level (FR-057,
+  FR-021, NFR-009). Depends on T114.
+- [ ] T121 [P] [US8] Write an identifier-provenance regression test in
+  `tests/api/test_reservations_fallback.py` and
+  `tests/api/test_actions.py`: no request built anywhere on the v3
+  path uses a confirmation code, an `originId` or any other external
+  reference as a path parameter or an id filter value; every v3
+  identifier used came from a v3 response or, for a write, was
+  validated against one (FR-031e). Depends on T114.
+- [ ] T122 [P] [US8] Write fallback-sourced write-refusal tests in
+  `tests/api/test_actions.py` and `tests/test_init.py`: the note
+  action, the status action and the `target_type="reservation"`
+  branch of `guesty.set_custom_field` each refuse a fallback-sourced
+  target with an error naming the cause, and a request counter
+  asserts that no write request was issued (FR-055, SC-016). Depends
+  on T114.
+- [ ] T123 [P] [US8] Write an identity-isolation test in
+  `tests/test_identity.py`: a fallback-sourced reservation's
+  confirmation code lands in `fallback_codes` and never in `codes`,
+  cannot promote continuity to `verified` on its own, and a fallback
+  code mapping to an identifier different from the baseline's aborts
+  the refresh exactly as FR-032 requires. Depends on T114.
+
+### Phase 6a Implementation (Green)
+
+- [ ] T124 [US8] Add the fallback constants to
+  `custom_components/guesty/api/const.py`:
+  `RESERVATION_BY_ID_LEGACY_PATH`,
+  `MAX_LEGACY_FALLBACK_LOOKUPS_PER_REFRESH` (20) and
+  `LEGACY_FALLBACK_RECHECK_SECONDS` (3600), with the FR-053 bound
+  documented on each (data-model.md §6). Depends on T117.
+- [ ] T125 [US8] Implement `ReservationFallbackSource` in a new
+  `custom_components/guesty/api/reservations_fallback.py` and wire it
+  into `custom_components/guesty/api/reservations_v3.py`: candidate
+  selection, the bounded by-id lookups, the served-record map with
+  its re-check interval, the confirmed-absent set, the deferred list,
+  retirement self-disabling and the `FallbackCounters` on
+  `ReservationFetchResult` (FR-050 to FR-054, FR-056, FR-057;
+  data-model.md §9). Zero Home Assistant imports (NFR-007). Depends
+  on T115–T121, T124.
+- [ ] T126 [US8] Enforce the fallback-sourced write refusal alongside
+  the identity guard in `custom_components/guesty/actions.py` and
+  `custom_components/guesty/__init__.py`, add the refusal's translated
+  strings where the existing guard errors live, carry the
+  fallback-sourced flag and the `fallback_codes` isolation through
+  `custom_components/guesty/coordinator.py` and
+  `custom_components/guesty/identity.py`, and surface the fallback
+  counters and served ids in both FR-042 diagnostics surfaces
+  (FR-055, FR-057). The flag MUST NOT become a sensor attribute
+  (SC-002, NFR-004). Depends on T122, T123, T125.
+
+**Checkpoint**: a fixture in which a previously published reservation
+disappears from v3 but remains in legacy keeps that reservation's
+entity state and attribute values unchanged, marks it fallback-sourced
+in diagnostics only, refuses every write against it, and stops looking
+it up as soon as legacy confirms it is gone — with the request counts
+pinned by T117.
 
 ---
 
@@ -867,7 +1016,7 @@ resume reporting values.
   registry; it is **not** raised when none exists; it names the three
   sensors, the reason and the FR-048 removal timeline; and a WARNING
   is logged in the same case, in `tests/test_init.py` (FR-046,
-  SC-014). Depends on T003.
+  SC-014). The mechanism is **both** surfaces, decided in T003.
 - [ ] T088 [P] [US7] Write a test asserting **no request is made to
   any guest-folio or payments resource on either path**, over a full
   refresh, in `tests/test_coordinator.py` (FR-043, SC-014).
@@ -919,7 +1068,8 @@ resume reporting values.
   only when the v3 path is active and at least one of the three
   entities exists, naming the three sensors, the reason, the rollback
   option and the removal timeline, with a matching WARNING log line.
-  Depends on T003, T087.
+  The repairs issue **is** adopted, alongside the log line (T003).
+  Depends on T087.
 - [ ] T095 [US7] Add the notice's translated strings to
   `custom_components/guesty/strings.json` and
   `custom_components/guesty/translations/en.json` under
@@ -1095,20 +1245,21 @@ green; the feature is complete except for the Phase 9 release gates.
 
 | Phase | Depends on | Notes |
 | --- | --- | --- |
-| 0 Gates | — | T002 blocks T067/T073/T074; T003 blocks T087/T094/T095 |
+| 0 Gates | — | settled by the analyze stage; nothing is blocked |
 | 1 Toggle | — | pure refactor plus a new option |
 | 2 Models | 1 | needs `ReservationFetchResult` |
 | 3 Search | 1, 2 | needs the v3 parse and constants |
 | 4 Attribution | 2, 3 | needs `stay[]` and a fetch result |
 | 5 Guest cache | 3, 4 | lookups only for attributed listings |
-| 6 Identity | 3, 4 | bootstrap tasks also need T002 |
-| 7 Writes | 1, 6 | every write passes the guard |
-| 8 Flip & docs | 1–7, T003 | makes the migration user-visible |
+| 6 Identity | 3, 4 | includes the bootstrap sweep (FR-031d) |
+| 6a Fallback | 6 | needs the baseline for candidate selection |
+| 7 Writes | 1, 6, 6a | guard plus the fallback-sourced refusal |
+| 8 Flip & docs | 1–7 | makes the migration user-visible |
 | 9 Live gates | 8 | release gates; not merge blockers |
 | 10 Quality | per phase | run on every phase's PR |
 
-The graph is acyclic: 0 → 1 → 2 → 3 → 4 → {5, 6} → 7 → 8 → 9, with
-Phase 10 run against each phase.
+The graph is acyclic: 0 → 1 → 2 → 3 → 4 → {5, 6 → 6a} → 7 → 8 → 9,
+with Phase 10 run against each phase.
 
 ### User story coverage
 
@@ -1121,16 +1272,21 @@ Phase 10 run against each phase.
 | US5 no wrong-identity write | P1 | Phase 6 |
 | US6 rollback without losing a release | P2 | Phases 1, 8 |
 | US7 financial sensors deprecate cleanly | P2 | Phase 8 |
+| US8 a migrating reservation must not vanish | P1 | Phase 6a |
 
 ### Blocking relationships to watch
 
-- **T002 blocks T067, T073, T074.** No bootstrap-sweep code before the
-  specification amendment lands. Phase 6 can otherwise be completed in
-  full: the guard, the persisted baseline and fail-closed writes do
-  not depend on the sweep.
-- **T003 blocks T087, T094, T095 and informs T075.** Both the
-  financial-sensor notice and the identity-continuity notice use the
-  mechanism OQ-009 settles.
+- **Phase 0 no longer blocks anything.** The T002 amendment and the
+  T003 decision both landed in the analyze stage; T067, T073, T074,
+  T087, T094, T095 and T075 are free to proceed. The Phase 0 boxes are
+  ticked by the first implementation pull request that relies on them.
+- **Phase 6a depends on Phase 6, and T126 depends on Phase 6a.** The
+  fallback draws candidates from the identity baseline and writes
+  `fallback_codes` into it, and the write refusal needs the
+  fallback-sourced flag to exist.
+- **T125 must land before T126 and before Phase 7's write tests are
+  taken as complete.** A write refusal cannot be tested against a flag
+  nothing sets.
 - **T092 must be the last functional change of Phase 8.** Flipping the
   default before Phases 2–7 are green would ship a half-migrated
   default.
@@ -1162,8 +1318,11 @@ Phase 10 run against each phase.
   `coordinator.py`.
 - **Phase 5 tests**: T054–T058 are parallel with T053; T060
   (`api/const.py`) is parallel with T059.
-- **Phase 6 tests**: T064–T066a are parallel with T063; T067 waits on
-  T002.
+- **Phase 6 tests**: T064–T066a are parallel with T063; T067 depends
+  only on the baseline tasks.
+- **Phase 6a tests**: T116–T123 are parallel with T115 once T114's
+  fixtures exist; T124 (`api/const.py`) is parallel with all of them;
+  T125 → T126 is a sequential chain.
 - **Phase 7 tests**: T078–T081 are parallel with T077.
 - **Phase 8 tests**: T086–T091 are parallel with T085.
 - **Phase 10**: T107, T108, T110 and T112 are parallel; T109 and T111
@@ -1181,7 +1340,7 @@ requirement is unmapped.**
 
 | Requirement | Tasks |
 | --- | --- |
-| FR-001 | T033, T037, T040 (+T002 for the bootstrap exception) |
+| FR-001 | T033, T037, T040, T073, T117 (two permitted calls) |
 | FR-002 | T029, T032, T037, T113 |
 | FR-002a | T044, T051 |
 | FR-003 | T029, T037, T113 |
@@ -1218,9 +1377,11 @@ requirement is unmapped.**
 | FR-031a | T063, T068 |
 | FR-031b | T063, T068, T073 |
 | FR-031c | T065, T071, T072, T075 |
+| FR-031d | T067, T073, T074 |
+| FR-031e | T121 |
 | FR-032 | T064, T067, T069, T070 |
 | FR-033 | T064, T065, T071 |
-| FR-034 | T064, T069 (+T002 for the bootstrap exception) |
+| FR-034 | T064, T069, T073 (the sweep is the only request) |
 | FR-035 | T066, T076 |
 | FR-036 | T005, T010, T013, T014, T015 |
 | FR-037 | T085, T092 |
@@ -1228,7 +1389,7 @@ requirement is unmapped.**
 | FR-039 | T008, T014, T019 |
 | FR-040 | T007, T012, T080 |
 | FR-041 | T099–T106 |
-| FR-042 | T009, T034, T052, T061, T076, T091, T096 |
+| FR-042 | T009, T034, T052, T061, T076, T091, T096, T120 |
 | FR-043 | T088 (a prohibition; verified by test, no code) |
 | FR-044 | T086, T093 |
 | FR-045 | T086, T089, T093 |
@@ -1236,6 +1397,14 @@ requirement is unmapped.**
 | FR-047 | T097, T098 |
 | FR-048 | T094, T097, T098 (see the note below) |
 | FR-049 | T086, T090, T093 |
+| FR-050 | T115, T116, T125 |
+| FR-051 | T115, T125 |
+| FR-052 | T115, T125 |
+| FR-053 | T117, T124, T125 |
+| FR-054 | T118, T125 |
+| FR-055 | T122, T126 |
+| FR-056 | T119, T125 |
+| FR-057 | T120, T125, T126 |
 
 **FR-048 note**: this feature implements only the *first half* of the
 removal timeline — the three sensors become unavailable on the v3 path
@@ -1250,22 +1419,22 @@ follow-up issue during T106.
 
 | Requirement | Tasks |
 | --- | --- |
-| NFR-001 request volume | T055, T056, T059, T061 |
+| NFR-001 request volume | T055, T056, T059, T061, T117 |
 | NFR-002 rate limiting | T053, T059 |
 | NFR-003 entity compatibility | T047, T089, T090 |
 | NFR-004 attribute compatibility | T047, T058, T090, T097, T101 |
-| NFR-005 graceful degradation | T030, T040, T054 |
+| NFR-005 graceful degradation | T030, T040, T054, T118 |
 | NFR-006 event loop | T053, T059, T108 |
-| NFR-007 library isolation | T011, T059, T071, T108 |
+| NFR-007 library isolation | T011, T059, T071, T108, T125 |
 | NFR-008 testability | T020, T056 |
-| NFR-009 privacy | T052, T057, T059, T066a, T091 |
+| NFR-009 privacy | T052, T057, T059, T066a, T091, T120 |
 
 ### Success criteria
 
 | Criterion | Tasks |
 | --- | --- |
-| SC-001 no deprecated resource called | T033 (+T002) |
-| SC-002 differential entity/state/attribute parity | T090 |
+| SC-001 no deprecated resource called | T033, T067, T117 |
+| SC-002 differential entity/state/attribute parity | T090, T126 |
 | SC-003 request budget, warm and cold | T056 |
 | SC-004 out-of-window excluded (#204) | T032, T044 |
 | SC-005 200-day in-progress stay found | T032 |
@@ -1278,6 +1447,10 @@ follow-up issue during T106.
 | SC-012 mid-stay move states | T043 |
 | SC-013 no baseline, writes refused | T063, T065 |
 | SC-014 financial deprecation behaviour | T086, T087, T088 |
+| SC-015 fallback republishes, absence confirmed | T115, T116 |
+| SC-016 writes refused on fallback-sourced | T122, T126 |
+| SC-017 fallback request budget | T117 |
+| SC-018 retirement self-disables the fallback | T119 |
 
 ### Requirements that need no implementation task
 
@@ -1304,17 +1477,18 @@ follow-up issue during T106.
 5. **PR 5** — Phase 5 (T053–T062). Guest cache.
 6. **PR 6** — Phase 6 (T063–T066a, T068–T072, T076). Identity
    guard.
-7. **PR 7** — Phase 6 bootstrap (T067, T073–T075), **after** the T002
-   amendment has merged.
-8. **PR 8** — Phase 7 (T077–T084). v3 write actions.
-9. **PR 9** — Phase 8 (T085–T098). Default flip, deprecation, docs.
-   Labelled `breaking-change`; closes [#223][issue-223] and
-   [#204][issue-204].
+7. **PR 7** — Phase 6 bootstrap (T067, T073–T075).
+8. **PR 8** — Phase 6a (T114–T126). Legacy not-found fallback.
+9. **PR 9** — Phase 7 (T077–T084). v3 write actions.
+10. **PR 10** — Phase 8 (T085–T098). Default flip, deprecation, docs.
+    Labelled `breaking-change`; closes [#223][issue-223] and
+    [#204][issue-204].
 
-Phase 0 (T001–T004) is analyze-stage work and precedes PR 1 except for
-T002, which need only precede PR 7. Phase 9 (T099–T106) is tracked as
-release gates on the milestone, not as a pull request. Phase 10
-(T107–T113) runs on every pull request above.
+Phase 0 (T001–T004) was completed by the analyze stage; its checkboxes
+are ticked by the first implementation pull request that relies on
+them. Phase 9 (T099–T106) is tracked as release gates on the
+milestone, not as a pull request. Phase 10 (T107–T113) runs on every
+pull request above.
 
 ### Incremental delivery
 
@@ -1332,6 +1506,7 @@ the suite green, satisfying constitution principle IX.
 | 4 | The option stays `legacy`; the trim only narrows |
 | 5 | v3 path only |
 | 6 | v3 path only; set `reservations_api=legacy` |
+| 6a | v3 path only; delete the fallback source and its wiring |
 | 7 | The option stays `legacy` |
 | 8 | Set `reservations_api=legacy` and reload |
 | 9 | Apply the recorded `research.md` fallback, or advise `legacy` |
