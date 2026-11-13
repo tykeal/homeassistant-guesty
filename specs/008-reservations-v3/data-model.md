@@ -232,7 +232,7 @@ Persisted with `homeassistant.helpers.storage.Store`, key
 | `codes` | `dict[str, str]` | confirmation code → reservation id |
 | `bootstrap_codes` | `dict[str, str] \| None` | retained legacy map |
 | `fallback_codes` | `dict[str, str] \| None` | fallback-sourced map |
-| `window_hints` | `dict[str, str]` | reservation id → ISO check-out |
+| `candidates` | `dict[str, CandidateHint]` | id → stay dates, see §4.1 |
 
 | Rule | Behaviour |
 | --- | --- |
@@ -269,13 +269,32 @@ part of the previously-known union the fallback draws candidates from,
 so a reservation that has only ever been seen through the fallback is
 still a candidate after a restart.
 
-`window_hints` records the check-out date of every identifier held in
-the three code maps. It is the durable window metadata the fallback
-needs to drop a candidate whose stay no longer overlaps the configured
-window without issuing a request, and it is also what makes the
-"earliest check-out evicted first" size bound computable. It holds
-dates and identifiers only — no guest data — and an identifier is
-removed from it when it leaves every code map.
+### 4.1 Fallback candidate hints
+
+`candidates` maps a **reservation identifier** to a `CandidateHint`, a
+frozen dataclass of `check_in` and `check_out` (both ISO-8601 UTC). It
+is the durable fallback candidacy record and is written for **every**
+reservation the last successful refresh published, plus every
+identifier still held in the three code maps.
+
+Two things follow deliberately from that definition. First, it is keyed
+by identifier and populated independently of confirmation-code
+evidence, because FR-033 allows a reservation to have **no**
+confirmation code: a candidacy record derived from the code maps alone
+would silently drop those reservations on reload and they would vanish
+if still missing from v3, defeating FR-050's restart guarantee.
+Second, it stores **both** stay endpoints, because the window predicate
+is `check_out >= now - past_days` **and**
+`check_in <= now + future_days`; a check-out date alone cannot tell an
+overlapping stay from a future stay once `future_days` is narrowed, so
+FR-051's prohibition on out-of-window lookups would not be enforceable
+after a reload.
+
+It holds identifiers and dates only — no guest data. An entry is
+removed when its reservation is confirmed absent, when its stay can no
+longer overlap any configured window, or under the same 5,000-entry,
+earliest-check-out-first bound as the code maps, which this map is also
+what makes computable.
 
 A write is permitted only when the baseline is usable, its `continuity`
 is not `unconfirmed`, the last refresh was not aborted as ambiguous, the

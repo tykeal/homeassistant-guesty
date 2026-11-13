@@ -364,7 +364,7 @@ Full design in `plan.md` § "Legacy not-found fallback"; data in
 
 | Metric | Before | After |
 | --- | --- | --- |
-| Functional requirements | 55 | 66 |
+| Functional requirements | 55 | 67 |
 | Non-functional requirements | 9 | 9 (NFR-001 extended) |
 | Success criteria | 14 | 18 |
 | User stories | 7 | 8 |

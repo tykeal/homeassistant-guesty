@@ -749,6 +749,12 @@ been backfilled yet, and advised retrieving it from the legacy resource in
 that case ([#223][issue-223], recorded above). Without this, a live
 reservation would silently vanish from sensors and calendars mid-migration.
 
+- **FR-049a**: The fallback's record of which reservations are candidates
+  MUST survive a restart and MUST NOT depend on confirmation-code
+  evidence, because FR-033 permits a reservation to have no confirmation
+  code. The retained record MUST carry **both** stay endpoints, since the
+  window test needs the check-in as well as the check-out, and MUST hold
+  identifiers and dates only — never guest data.
 - **FR-050**: When the v3 path is active and a reservation that was
   **previously known** — published by an earlier successful refresh, or
   recorded in the identity baseline or its bootstrap map — is **absent** from
@@ -767,10 +773,14 @@ reservation would silently vanish from sensors and calendars mid-migration.
   listing and tag selection of Feature 007 (FR-014). A reservation that
   disappeared from the v3 result because its status moved outside the
   configured set MUST NOT be reintroduced by the fallback, even though its
-  legacy lookup succeeds. Attribution of a fallback-sourced reservation
-  MUST use the legacy rules, because a legacy document carries no stay
-  segments; the v3 requirement to skip a reservation with no stay segments
-  (FR-013) applies to v3-sourced records only.
+  legacy lookup succeeds. Attribution MUST follow the **provenance of the
+  payload**, which is distinct from the read-only fallback marker: a record
+  whose payload came from a legacy document is attributed by its listing
+  identifier under the legacy rules, while a record retained from an
+  earlier v3 payload keeps its stay-segment attribution and every listing
+  it projects onto, even though it is published read-only. The requirement
+  to skip a reservation with no stay segments (FR-013) applies to v3
+  payloads only.
 - **FR-051**: The fallback MUST NOT be attempted for a reservation the
   integration has never seen, for a reservation whose stay no longer overlaps
   the configured window, or for an identifier that did not come from a prior
@@ -802,8 +812,15 @@ reservation would silently vanish from sensors and calendars mid-migration.
   fallback lookup or from the v3 path before the reservation went missing,
   the reservation stays read-only, the refresh still publishes, and the
   failure is logged without personal data. This MUST hold on the **first**
-  failed lookup for a candidate, when no fallback record exists yet. A
-  fallback failure MUST NOT fail a refresh.
+  failed lookup for a candidate, when no fallback record exists yet, so
+  long as the integration still holds values for it in the current
+  session. It MUST NOT hold on a **cold start**: after a restart or
+  reload, a candidate reconstructed from storage has no retained values
+  and no guest data may be persisted to create them, so a transient
+  failure leaves that reservation absent for that refresh only; the
+  failure is counted and logged and the candidate is retried on the next
+  refresh. A fallback failure MUST NOT fail a refresh, and a transient
+  failure MUST NOT retire a candidate.
 - **FR-055**: A fallback-sourced reservation MUST be published **read-only**.
   Every reservation write action targeting it — the note action, the status
   action and the reservation branch of the custom-field service — MUST abort

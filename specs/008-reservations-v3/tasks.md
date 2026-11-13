@@ -821,8 +821,12 @@ reservation. Anything wider violates FR-001.
   request; a candidate already confirmed absent is not retried; and a
   reservation known only from a previous fallback lookup is still a
   candidate after a reload, reconstructed from `fallback_codes` and
-  `window_hints` with the in-memory caches cleared (FR-050, FR-051,
-  FR-052). Depends on T114.
+  the persisted `candidates` map with the in-memory caches cleared;
+  a reservation **without a confirmation code** survives that same
+  reload as a candidate; and after a reload with a narrowed
+  `future_days` a candidate whose stay now starts beyond the window is
+  dropped without a request (FR-049a, FR-050, FR-051, FR-052). Depends
+  on T114.
 - [ ] T116 [P] [US8] Write republication tests in
   `tests/api/test_reservations_fallback.py`: a successful legacy
   by-id lookup yields a reservation flagged fallback-sourced whose
@@ -852,8 +856,11 @@ reservation. Anything wider violates FR-001.
   reservation's last successfully published values read-only —
   including when the **first** lookup for a candidate fails and no
   served record exists yet, where the values come from the last v3
-  refresh — are counted as failures and never raise out of the fetch
-  (FR-054, NFR-005). Depends on T114.
+  refresh and a multi-segment reservation retains **every** listing it
+  projected onto through the coordinator; that a cold start with no
+  retained values leaves the reservation absent for that refresh only
+  and retries it on the next one without retiring it; and that none of
+  these raise out of the fetch (FR-054, NFR-005). Depends on T114.
 - [ ] T119 [P] [US8] Write retirement tests in
   `tests/api/test_reservations_fallback.py`: a retirement-shaped
   answer disables the fallback for the session, logs exactly one
@@ -1421,6 +1428,7 @@ requirement is unmapped.**
 | FR-047 | T097, T098 |
 | FR-048 | T094, T097, T098 (see the note below) |
 | FR-049 | T086, T090, T093 |
+| FR-049a | T115, T125 |
 | FR-050 | T115, T116, T125 |
 | FR-050a | T116, T125 |
 | FR-051 | T115, T125 |

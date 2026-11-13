@@ -652,11 +652,17 @@ identifier to look up (FR-051).
 
 **Normalization and attribution.** A legacy document maps through the
 existing legacy mapper, which leaves `stay` empty and populates
-`listing_id` directly (`data-model.md` §1.3). Attribution is therefore
-**source-aware**: a v3-sourced record is attributed from its stay
-segments and a record with no segments is still skipped as malformed
-(FR-013), while a fallback-sourced record is attributed from
-`listing_id` under the Feature 003 rules the legacy path already uses.
+`listing_id` directly (`data-model.md` §1.3). Attribution therefore
+follows the **payload's provenance**, which is a different thing from
+the fallback-sourced marker that makes a record read-only: a record
+*retained* from an earlier v3 payload is still a v3 payload and keeps
+its segment-based attribution and all its multi-listing projections,
+even though it is published read-only; only a record whose payload came
+from a legacy document uses legacy attribution. Concretely, a
+v3-payload record is attributed from its stay segments and one with no
+segments is still skipped as malformed (FR-013), while a legacy-payload
+record is attributed from `listing_id` under the Feature 003 rules the
+legacy path already uses.
 Without that distinction the segment-based attribution would discard
 every fallback record before it reached a sensor, so the fallback would
 buy nothing. The skip-on-no-segments validation of the v3 path is not
@@ -696,8 +702,13 @@ however, so the previously-known union includes the baseline's
 otherwise a reservation that only ever arrived through the fallback
 would lose its candidacy on reload and vanish. The window filter needs
 durable stay data that a code-to-identifier map does not carry, so the
-baseline also persists `window_hints`, an identifier-to-check-out map
-covering every identifier in the three code maps (`data-model.md` §4).
+baseline also persists `candidates`, an identifier-to-stay-dates map
+covering every reservation the last successful refresh published as
+well as every identifier in the three code maps (`data-model.md` §4.1).
+It is deliberately **not** derived from the code maps, which would drop
+a reservation that has no confirmation code (FR-033), and it stores
+both stay endpoints, since the window predicate needs `check_in` as
+well as `check_out`.
 A restart therefore costs at most one bounded round of lookups, and
 confirmed absence is re-established by that round rather than carried
 across the restart.
@@ -735,7 +746,20 @@ a served fallback record would drop a reservation on the *first* failed
 lookup, recreating exactly the disappearance the fallback exists to
 prevent. Retention is bounded by the same window trim and re-attempted
 on the next refresh; a confirmed absence or a retirement answer still
-ends it immediately. A fallback failure can never raise `UpdateFailed`.
+ends it immediately.
+
+One case has no values to retain: a **cold start**. After a reload the
+candidate's identifier and stay dates are reconstructed from the
+baseline, but neither the served cache nor the previous published
+record exists, so a first lookup that fails transiently leaves nothing
+to republish. Reconstructing guest-bearing records from storage is not
+an acceptable price for this, so FR-054 takes an explicit, bounded
+exception: on a cold start with no in-session values, the reservation
+is simply absent for that refresh, the failure is counted and logged,
+and the candidate is retried on the next refresh under the normal
+attempt interval. The gap closes as soon as one lookup succeeds, and
+the candidate is never retired by a transient failure. A fallback
+failure can never raise `UpdateFailed`.
 
 Distinguishing "this reservation does not exist" from "this resource is
 retired" is **[UNVERIFIED]**; the implementation treats a 404 carrying a
