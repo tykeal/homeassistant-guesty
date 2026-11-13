@@ -491,10 +491,12 @@ legacy write resource rather than to v3.
   note and status writes (FR-059). It is never sent to the v3 custom-fields
   resource, and it is never silently dropped.
 - **A write against a reservation the fallback is republishing from
-  retained values after a failed lookup.** No legacy identifier has been
-  validated for it in this session, so there is no safe route: the write is
-  refused as not currently reachable in either API, with the suggestion to
-  retry after the next successful refresh (FR-054, FR-058).
+  retained values whose lookup has never succeeded in this session.** No
+  legacy identifier has been validated for it, so there is no safe route:
+  the write is refused as not currently reachable in either API, with the
+  suggestion to retry after the next successful refresh. A reservation that
+  was served successfully and whose later re-check failed keeps its
+  validated identifier and is still routed to legacy (FR-054, FR-058).
 - **A legacy-routed write while the legacy path is retired or
   self-disabled.** There is no second route to try, so the write is refused
   with an error naming the retirement rather than being sent to v3 with an
@@ -873,9 +875,12 @@ reservation would silently vanish from sensors and calendars mid-migration.
   and the per-refresh cap allows it — so the absence MUST NOT be
   described as lasting a single refresh. A fallback failure MUST NOT fail
   a refresh, and a transient failure MUST NOT retire a candidate. A
-  reservation in this retained-values state has no identifier a legacy
-  lookup has validated in the current session, so a write targeting it is
-  refused rather than routed to either generation (FR-058).
+  reservation in this retained-values state whose lookup has **never**
+  succeeded in the current session — a failed first attempt, or a candidate
+  reconstructed after a reload — has no identifier a legacy lookup has
+  validated, so a write targeting it is refused rather than routed to either
+  generation. A reservation whose earlier lookup succeeded keeps its served
+  record across a failed re-check and stays routable (FR-058).
 - **FR-055**: A fallback-sourced reservation MUST NOT have any write sent to
   a **v3** write resource. Its identifier came from a legacy response, so by
   FR-031e it may not be used as a v3 lookup key, and v3 does not recognise an
@@ -885,9 +890,10 @@ reservation would silently vanish from sensors and calendars mid-migration.
   write resource under FR-058 to FR-063 for as long as that resource exists
   and the fallback is currently serving that reservation, and MUST be refused
   loudly otherwise — once the legacy resource is gone (FR-061), or while the
-  reservation is only being republished from retained values (FR-054,
-  FR-058). A write MUST never be reported as successful unless it succeeded,
-  and MUST never be silently dropped.
+  reservation is only being republished from retained values and has never
+  been served in this session (FR-054, FR-058). A write MUST never be
+  reported as successful unless it succeeded, and MUST never be silently
+  dropped.
 - **FR-056**: If the legacy resource answers a fallback lookup in a way
   consistent with retirement rather than with that specific reservation being
   absent, system MUST disable the fallback for the remainder of that
@@ -1298,8 +1304,10 @@ sensors are deprecated rather than re-sourced
   write resource, with a request counter asserting exactly one legacy write
   request and zero requests to any v3 write resource; each of the same three
   actions targeting a v3-sourced reservation issues zero legacy requests; and
-  each targeting a reservation republished from retained values after a
-  failed lookup is refused with zero requests of either generation.
+  each targeting a reservation republished from retained values whose
+  lookup has never succeeded is refused with zero requests of either
+  generation, while one whose earlier lookup succeeded and whose re-check
+  then failed is still routed to legacy.
 - **SC-017**: Over a refresh in which no previously known reservation is
   missing, the count of legacy requests is zero; over a refresh with more
   missing reservations than the FR-053 per-refresh cap, the count of legacy

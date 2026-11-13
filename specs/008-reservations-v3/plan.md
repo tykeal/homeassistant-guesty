@@ -785,7 +785,8 @@ against it may go to a v3 resource. All three write entry points instead
 route to the legacy write resource while it exists and the fallback is
 currently serving that reservation, and refuse loudly otherwise — once
 legacy is gone, or while the reservation is only republished from
-retained values (FR-055, FR-058 to FR-063); see
+retained values and has never been served in this session (FR-055,
+FR-058 to FR-063); see
 [Write actions](#write-actions). This honours Support's instruction that
 an identifier used against v3 must have come from a v3 response: a
 legacy identifier is only ever used against a legacy resource.
@@ -1055,7 +1056,9 @@ what makes the differential test possible.
 - **Legacy write routing** — unit and integration: provenance is read at
   write time from the served set, so a target a refresh found in v3
   between action scheduling and execution is written through v3, and a
-  target republished from retained values is refused (FR-054, FR-058);
+  target republished from retained values whose lookup never succeeded
+  is refused, while one whose re-check failed after an earlier success
+  is still routed (FR-054, FR-058);
   the identity guard refuses before routing is even considered
   (FR-060); a disabled or retired fallback turns every
   such write into a refusal naming the retirement with no request of

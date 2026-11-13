@@ -302,9 +302,11 @@ the target reservation carries a confirmation code. Those four conjuncts
 are evaluated **before** anything about provenance: a permitted write is
 then routed to v3, or — if the fallback is currently serving its target
 — to the legacy write resource (FR-055, FR-058 to FR-063). A target
-that is fallback-sourced but only republished from retained values
-(FR-054) has no validated legacy identifier, so its write is refused
-rather than routed. A refused write is refused whatever the route would
+that is fallback-sourced but only republished from retained values and
+never served in this session (FR-054) has no validated legacy
+identifier, so its write is refused rather than routed; one whose
+re-check failed after an earlier success keeps its record and is still
+routed. A refused write is refused whatever the route would
 have been.
 
 Confirmation code **values** are persisted (they are the key of the
