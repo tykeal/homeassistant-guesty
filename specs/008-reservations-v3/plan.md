@@ -497,6 +497,35 @@ this feature could produce.
   unambiguous refresh, from whichever path produced it (FR-031b). Entries
   are capped at 5,000 codes, oldest check-out first, so storage stays
   bounded.
+- **Bootstrap on upgrade**: because no release ships between phases, an
+  existing installation meets v3 with no stored baseline at all. A
+  baseline built from the first v3 refresh alone would then be
+  self-consistent by construction, so swapped legacy and v3 identifiers
+  would pass unexamined. The baseline therefore records a `continuity`
+  state as well as its `path`, and the two are not conflated:
+  - *No baseline and no pre-existing reservation entities* — a fresh
+    install. Continuity is `not_applicable`: there is no earlier
+    identity to contradict. The first v3 refresh establishes the
+    baseline and writes are permitted.
+  - *No baseline but reservation entities already in the registry* — an
+    upgrade. Setup performs a **one-time legacy bootstrap sweep** over
+    the same window, using the still-live legacy resource, and stores
+    its code-to-id map with `path: "legacy"`. The first v3 refresh is
+    then checked against it exactly as any later refresh would be; on
+    agreement continuity becomes `verified` and writes are permitted.
+  - *Bootstrap sweep unavailable* — the legacy resource is retired,
+    rate-limited or errors. Continuity stays `unconfirmed`: reservations
+    publish normally, but every reservation write is refused with an
+    explanatory error and a repair issue explains that cross-path
+    identity could not be confirmed (FR-031c).
+  - *Bootstrap disagrees with the first v3 refresh* — treated exactly
+    as FR-032: the refresh aborts, writes stay blocked, and the error
+    names both ids.
+
+  The sweep costs one extra legacy page sequence, once per entry, and
+  only for installations that actually have something to contradict.
+  Tests cover the upgrade path with no Store, the fresh-install path,
+  an unavailable bootstrap, and a disagreeing bootstrap.
 - **Check**: before publishing a refresh, every reservation carrying a
   confirmation code is compared with the baseline. Any code whose mapping
   *differs* makes the identity ambiguous — including the swap case where

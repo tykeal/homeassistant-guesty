@@ -221,6 +221,7 @@ Persisted with `homeassistant.helpers.storage.Store`, key
 | --- | --- | --- |
 | `version` | `int` | storage schema version |
 | `path` | `"v3" \| "legacy"` | which path produced the baseline (FR-031b) |
+| `continuity` | `verified`, `unconfirmed` or `not_applicable` | cross-path |
 | `updated` | `str` | ISO timestamp of the last successful refresh |
 | `codes` | `dict[str, str]` | confirmation code → reservation id |
 
@@ -230,6 +231,9 @@ Persisted with `homeassistant.helpers.storage.Store`, key
 | Write | after each successful, unambiguous refresh, replacing the map |
 | Read | once per setup, into the coordinator |
 | Missing | writes fail closed; reservations still publish (FR-031c) |
+| Missing on upgrade | a one-time legacy bootstrap sweep seeds the map |
+| Bootstrap impossible | `continuity` is `unconfirmed`; writes stay refused |
+| Fresh install | `continuity` is `not_applicable`; writes permitted |
 | Mismatch | refresh aborts; last-known-good retained; writes blocked (FR-032) |
 | Removal | deleted with the config entry |
 
