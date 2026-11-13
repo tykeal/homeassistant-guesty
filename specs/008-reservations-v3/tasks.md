@@ -289,7 +289,7 @@ state value.
 **Rollback**: the v3 parser is unreachable until Phase 3 wires a
 source to it; revert the phase's commits.
 
-- [ ] T020 Add synthetic v3 dict fixture builders
+- [x] T020 Add synthetic v3 dict fixture builders
   `make_v3_segment(**overrides)`, `make_v3_reservation(reservation_id,
   *, status, segments, guest_id, **overrides)` and
   `make_v3_search_page(results, *, skip, limit, has_more)` to
@@ -301,12 +301,12 @@ source to it; revert the phase's commits.
 
 ### Phase 2 Tests (Red) — write first, verify they FAIL
 
-- [ ] T021 [US1] Write tests for `GuestyStaySegment.from_api_dict`:
+- [x] T021 [US1] Write tests for `GuestyStaySegment.from_api_dict`:
   full segment parses, `parentListingId` optional, a segment missing
   `listingId`, `checkIn` or `checkOut` is dropped with a debug log,
   and localized dates and `guestsCount` are preserved, in
   `tests/api/test_models.py` (data-model.md §1.1, FR-009, FR-012).
-- [ ] T022 [P] [US1] Write tests for the v3 reservation parse:
+- [x] T022 [P] [US1] Write tests for the v3 reservation parse:
   `reservationId` → `id`, `listing_id` populated from `stay[0]`,
   `money` always `None`, `stay` populated and chronological,
   `nights_count` derived from the localized dates when absent,
@@ -318,7 +318,7 @@ source to it; revert the phase's commits.
   verbatim at parse time for the coordinator to drop, unknown values
   passed through with an INFO log) in `tests/api/test_models.py`
   (FR-022 to FR-026, data-model.md §1.3, §1.4).
-- [ ] T023 [P] [US1] Write tests for the FR-003a status **filter**
+- [x] T023 [P] [US1] Write tests for the FR-003a status **filter**
   translation: `checked_out` additionally requests `completed`, every
   other configured status requests itself, the configured set in
   `api/const.py:116-124` is unchanged, and the output is sorted and
@@ -327,7 +327,7 @@ source to it; revert the phase's commits.
 
 ### Phase 2 Implementation (Green)
 
-- [ ] T024 [P] [US1] Add the v3 constants to
+- [x] T024 [P] [US1] Add the v3 constants to
   `custom_components/guesty/api/const.py`:
   `RESERVATIONS_V3_SEARCH_ENDPOINT`, `RESERVATIONS_V3_ENDPOINT`,
   `RESERVATION_NOTES_PATH`, `RESERVATION_STATUS_PATH`,
@@ -336,20 +336,20 @@ source to it; revert the phase's commits.
   `HOLD_STATUSES = frozenset({"alteration"})`. Do **not** add
   `MAX_LISTING_IDS_PER_SEARCH`: FR-015 forbids a listing filter and
   chunking is not built (data-model.md §6).
-- [ ] T025 [US1] Implement the `GuestyStaySegment` frozen dataclass
+- [x] T025 [US1] Implement the `GuestyStaySegment` frozen dataclass
   and its `from_api_dict` factory in
   `custom_components/guesty/api/models.py` (data-model.md §1.1).
   Depends on T021.
-- [ ] T026 [US1] Add `stay: tuple[GuestyStaySegment, ...] = ()` to
+- [x] T026 [US1] Add `stay: tuple[GuestyStaySegment, ...] = ()` to
   `GuestyReservation` and implement the v3 parse factory, including
   the `nights_count` derivation and the `money is None` invariant, in
   `custom_components/guesty/api/models.py` (FR-022, data-model.md
   §1.2, §1.3). Depends on T025.
-- [ ] T027 [US1] Implement the parse-time status map and the FR-003a
+- [x] T027 [US1] Implement the parse-time status map and the FR-003a
   status-filter translation helper in
   `custom_components/guesty/api/models.py`, driven by the T024
   constants (FR-023 to FR-026, FR-003a). Depends on T024, T026.
-- [ ] T028 [P] [US1] Export `GuestyStaySegment` from
+- [x] T028 [P] [US1] Export `GuestyStaySegment` from
   `custom_components/guesty/api/__init__.py`.
 
 **Checkpoint**: a v3 payload parses into today's model shape with
