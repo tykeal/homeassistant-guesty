@@ -2,6 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """API constants for the Guesty client library."""
 
+from collections.abc import Mapping
+from types import MappingProxyType
+
 # Guesty OAuth 2.0 token endpoint URL.
 TOKEN_URL: str = "https://open-api.guesty.com/oauth2/token"
 
@@ -200,3 +203,49 @@ RESERVATIONS_API_LEGACY: str = "legacy"
 
 # Date Guesty retires the legacy Open API reservation resources.
 LEGACY_RESERVATIONS_RETIREMENT_DATE: str = "2027-03-01"
+
+# ── Reservations v3 (Feature 008) ─────────────────────────────
+
+# Reservations v3 search endpoint path.
+RESERVATIONS_V3_SEARCH_ENDPOINT: str = "/reservations-v3/search"
+
+# Reservations v3 resource base path.
+RESERVATIONS_V3_ENDPOINT: str = "/reservations-v3"
+
+# Reservations v3 notes write path.
+RESERVATION_NOTES_PATH: str = "/reservations-v3/{reservation_id}/notes"
+
+# Reservations v3 status write path.
+RESERVATION_STATUS_PATH: str = "/reservations-v3/{reservation_id}/status"
+
+# Maximum v3 search pages fetched in a single refresh.
+MAX_V3_RESERVATION_PAGES: int = 200
+
+# Days of padding applied to the localized v3 date filters.
+V3_DATE_PAD_DAYS: int = 1
+
+# Documented v3 status values mapped to the model vocabulary.
+V3_STATUS_MAP: Mapping[str, str] = MappingProxyType(
+    {
+        "confirmed": "confirmed",
+        "checked_in": "checked_in",
+        "checked_out": "checked_out",
+        "completed": "checked_out",
+        "canceled": "canceled",
+        "cancelled": "canceled",
+        "alteration": "alteration",
+    }
+)
+
+# Configured status values mapped to the v3 statuses requested.
+V3_STATUS_FILTER_MAP: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        "confirmed": ("confirmed",),
+        "checked_in": ("checked_in",),
+        "checked_out": ("checked_out", "completed"),
+        "canceled": ("canceled",),
+    }
+)
+
+# Statuses representing a proposed change rather than a stay.
+HOLD_STATUSES: frozenset[str] = frozenset({"alteration"})

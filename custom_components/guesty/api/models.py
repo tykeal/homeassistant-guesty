@@ -5,15 +5,17 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 
 from custom_components.guesty.api.const import (
     KNOWN_CHANNEL_TYPES,
     MAX_MESSAGE_LENGTH,
+    V3_STATUS_FILTER_MAP,
+    V3_STATUS_MAP,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -607,6 +609,84 @@ class GuestyMoney:
 
 
 @dataclass(frozen=True)
+class GuestyStaySegment:
+    """One listing interval of a Guesty v3 reservation stay.
+
+    A v3 reservation carries its listing attribution in ``stay[]``
+    rather than at the top level, and a stay may move between
+    listings. Each segment is one listing for one interval.
+
+    Attributes:
+        listing_id: Listing the interval belongs to.
+        parent_listing_id: Parent listing for a multi-unit sub-unit.
+        check_in: UTC check-in datetime of the interval.
+        check_out: UTC check-out datetime of the interval.
+        check_in_local: Localized check-in date string.
+        check_out_local: Localized check-out date string.
+        guests_count: Party size for the interval.
+    """
+
+    listing_id: str
+    check_in: datetime
+    check_out: datetime
+    parent_listing_id: str | None = None
+    check_in_local: str | None = None
+    check_out_local: str | None = None
+    guests_count: int | None = None
+
+    @classmethod
+    def from_api_dict(
+        cls,
+        data: Any,
+    ) -> GuestyStaySegment | None:
+        """Create a GuestyStaySegment from a v3 ``stay[]`` entry.
+
+        A segment missing ``listingId``, ``checkIn`` or ``checkOut``
+        is dropped with a debug log.
+
+        Args:
+            data: Stay segment dictionary from the v3 API.
+
+        Returns:
+            A GuestyStaySegment instance, or None if unusable.
+        """
+        if not isinstance(data, dict):
+            _LOGGER.debug("Dropping non-dict stay segment")
+            return None
+
+        listing_id = data.get("listingId") or ""
+        if not listing_id:
+            _LOGGER.debug("Dropping stay segment with missing listingId")
+            return None
+
+        check_in = _parse_iso_datetime(data.get("checkIn"))
+        if check_in is None:
+            _LOGGER.debug(
+                "Dropping stay segment for listing %s with unparsable checkIn",
+                listing_id,
+            )
+            return None
+
+        check_out = _parse_iso_datetime(data.get("checkOut"))
+        if check_out is None:
+            _LOGGER.debug(
+                "Dropping stay segment for listing %s with unparsable checkOut",
+                listing_id,
+            )
+            return None
+
+        return cls(
+            listing_id=listing_id,
+            check_in=check_in,
+            check_out=check_out,
+            parent_listing_id=data.get("parentListingId"),
+            check_in_local=data.get("checkInDateLocalized"),
+            check_out_local=data.get("checkOutDateLocalized"),
+            guests_count=data.get("guestsCount"),
+        )
+
+
+@dataclass(frozen=True)
 class GuestyReservation:
     """A Guesty reservation/booking record.
 
@@ -633,6 +713,7 @@ class GuestyReservation:
         guest: Guest contact information.
         money: Financial summary.
         custom_fields: Immutable mapping of field IDs to values.
+        stay: Per-listing intervals; populated on the v3 path only.
     """
 
     id: str
@@ -654,6 +735,7 @@ class GuestyReservation:
     custom_fields: MappingProxyType[str, str] = field(
         default_factory=lambda: MappingProxyType({}),
     )
+    stay: tuple[GuestyStaySegment, ...] = ()
 
     @classmethod
     def from_api_dict(
@@ -733,6 +815,164 @@ class GuestyReservation:
             money=GuestyMoney.from_api_dict(data.get("money")),
             custom_fields=custom_fields,
         )
+
+    @classmethod
+    def from_v3_api_dict(
+        cls,
+        data: dict[str, Any],
+    ) -> GuestyReservation | None:
+        """Create a GuestyReservation from a v3 search result.
+
+        Returns None when ``reservationId`` or ``status`` is missing,
+        or when no usable ``stay`` segment remains. ``money`` is
+        always None on the v3 path, and ``nights_count`` is derived
+        from the localized dates.
+
+        Args:
+            data: Reservation dictionary from the v3 search response.
+
+        Returns:
+            A GuestyReservation instance, or None if invalid.
+        """
+        reservation_id = data.get("reservationId") or ""
+        if not reservation_id:
+            _LOGGER.warning(
+                "Skipping v3 reservation with missing reservationId",
+            )
+            return None
+
+        raw_status = data.get("status") or ""
+        if not raw_status:
+            _LOGGER.warning(
+                "Skipping v3 reservation %s with missing status",
+                reservation_id,
+            )
+            return None
+
+        raw_stay = data.get("stay")
+        if not isinstance(raw_stay, list):
+            raw_stay = []
+        stay = tuple(
+            segment
+            for item in raw_stay
+            if (segment := GuestyStaySegment.from_api_dict(item)) is not None
+        )
+        if not stay:
+            _LOGGER.warning(
+                "Skipping v3 reservation %s with no usable stay segment",
+                reservation_id,
+            )
+            return None
+
+        check_in = _parse_iso_datetime(data.get("checkIn")) or stay[0].check_in
+        check_out = _parse_iso_datetime(data.get("checkOut")) or stay[-1].check_out
+
+        check_in_local = data.get("checkInDateLocalized") or stay[0].check_in_local
+        check_out_local = data.get("checkOutDateLocalized") or stay[-1].check_out_local
+
+        nights_count = data.get("nightsCount")
+        if not isinstance(nights_count, int):
+            nights_count = _derive_nights_count(
+                check_in_local,
+                check_out_local,
+            )
+
+        notes = data.get("notes")
+        note = notes.get("other") if isinstance(notes, dict) else None
+
+        guest_id = data.get("guestId")
+        guest = GuestyGuest(guest_id=guest_id) if guest_id else None
+
+        custom_fields = MappingProxyType(
+            _parse_custom_fields_array(data.get("customFields", [])),
+        )
+
+        return cls(
+            id=reservation_id,
+            listing_id=stay[0].listing_id,
+            status=map_v3_status(raw_status, reservation_id),
+            check_in=check_in,
+            check_out=check_out,
+            confirmation_code=data.get("confirmationCode"),
+            check_in_local=check_in_local,
+            check_out_local=check_out_local,
+            planned_arrival=data.get("plannedArrival"),
+            planned_departure=data.get("plannedDeparture"),
+            nights_count=nights_count,
+            guests_count=stay[0].guests_count,
+            source=data.get("source"),
+            note=note,
+            guest=guest,
+            money=None,
+            custom_fields=custom_fields,
+            stay=stay,
+        )
+
+
+def map_v3_status(raw_status: str, reservation_id: str = "") -> str:
+    """Map a v3 status value to the model status vocabulary.
+
+    Comparison is case-insensitive. Unrecognized values pass through
+    verbatim with an informational log (FR-026).
+
+    Args:
+        raw_status: The status value from the v3 payload.
+        reservation_id: Reservation id used for logging context.
+
+    Returns:
+        The mapped model status, or the raw value when unrecognized.
+    """
+    mapped = V3_STATUS_MAP.get(raw_status.strip().lower())
+    if mapped is None:
+        _LOGGER.info(
+            "Unrecognized v3 reservation status %s on reservation %s",
+            raw_status,
+            reservation_id,
+        )
+        return raw_status
+    return mapped
+
+
+def translate_v3_status_filter(statuses: Iterable[str]) -> str:
+    """Translate configured statuses into a v3 status filter value.
+
+    Each configured status is requested together with its v3
+    equivalents, so ``checked_out`` additionally requests
+    ``completed`` (FR-003a). The configured set is never modified.
+
+    Args:
+        statuses: The configured status values.
+
+    Returns:
+        The sorted, comma-joined status filter value.
+    """
+    requested: set[str] = set()
+    for status in statuses:
+        requested.update(V3_STATUS_FILTER_MAP.get(status, (status,)))
+    return ",".join(sorted(requested))
+
+
+def _derive_nights_count(
+    check_in_local: str | None,
+    check_out_local: str | None,
+) -> int | None:
+    """Derive a night count from two localized date strings.
+
+    Args:
+        check_in_local: Localized check-in date (``YYYY-MM-DD``).
+        check_out_local: Localized check-out date (``YYYY-MM-DD``).
+
+    Returns:
+        Whole nights between the dates, or None if unparsable.
+    """
+    if not isinstance(check_in_local, str) or not isinstance(check_out_local, str):
+        return None
+    try:
+        start = date.fromisoformat(check_in_local)
+        end = date.fromisoformat(check_out_local)
+    except ValueError:
+        return None
+    return (end - start).days
 
 
 def _parse_iso_datetime(value: Any) -> datetime | None:

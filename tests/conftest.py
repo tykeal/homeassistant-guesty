@@ -603,6 +603,101 @@ def make_reservation_dict(**overrides: Any) -> dict[str, Any]:
     return defaults
 
 
+def make_v3_segment(**overrides: Any) -> dict[str, Any]:
+    """Create a Guesty v3 stay segment dict with defaults.
+
+    Args:
+        **overrides: Fields to override on the defaults.
+
+    Returns:
+        Dictionary matching a ``stay[]`` entry of the v3 search.
+    """
+    defaults: dict[str, Any] = {
+        "listingId": "listing-001",
+        "checkIn": "2025-08-01T15:00:00+00:00",
+        "checkOut": "2025-08-05T11:00:00+00:00",
+        "checkInDateLocalized": "2025-08-01",
+        "checkOutDateLocalized": "2025-08-05",
+        "guestsCount": 2,
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+def make_v3_reservation(
+    reservation_id: str = "res-001",
+    *,
+    status: str = "confirmed",
+    segments: list[dict[str, Any]] | None = None,
+    guest_id: str | None = "guest-001",
+    **overrides: Any,
+) -> dict[str, Any]:
+    """Create a Guesty v3 reservation dict with defaults.
+
+    ``reservation_id`` values must be unique and sortable because the
+    v3 page guard requires strictly ascending identifiers.
+
+    Args:
+        reservation_id: The ``reservationId`` value.
+        status: The v3 status value.
+        segments: The ``stay`` segments; one default segment if None.
+        guest_id: The ``guestId`` value, omitted when None.
+        **overrides: Fields to override on the defaults.
+
+    Returns:
+        Dictionary matching a v3 search ``results[]`` entry.
+    """
+    stay = segments if segments is not None else [make_v3_segment()]
+    first = stay[0] if stay else {}
+    last = stay[-1] if stay else {}
+    defaults: dict[str, Any] = {
+        "reservationId": reservation_id,
+        "status": status,
+        "confirmationCode": "CONF-ABC",
+        "source": "airbnb",
+        "checkIn": first.get("checkIn"),
+        "checkOut": last.get("checkOut"),
+        "checkInDateLocalized": first.get("checkInDateLocalized"),
+        "checkOutDateLocalized": last.get("checkOutDateLocalized"),
+        "plannedArrival": "15:00",
+        "plannedDeparture": "11:00",
+        "notes": {"other": "Late arrival"},
+        "stay": stay,
+    }
+    if guest_id is not None:
+        defaults["guestId"] = guest_id
+    defaults.update(overrides)
+    return defaults
+
+
+def make_v3_search_page(
+    results: list[dict[str, Any]],
+    *,
+    skip: int = 0,
+    limit: int = 100,
+    has_more: bool = False,
+) -> dict[str, Any]:
+    """Create a Guesty v3 search page response dict.
+
+    Args:
+        results: The reservation dicts for this page.
+        skip: The pagination offset echoed by the server.
+        limit: The pagination page size echoed by the server.
+        has_more: Whether a further page follows.
+
+    Returns:
+        Dictionary matching the v3 search response envelope.
+    """
+    return {
+        "results": results,
+        "pagination": {
+            "skip": skip,
+            "limit": limit,
+            "hasMore": has_more,
+        },
+    }
+
+
 @pytest.fixture
 def sample_reservation() -> GuestyReservation:
     """Provide a valid GuestyReservation instance for tests.

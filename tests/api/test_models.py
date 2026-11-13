@@ -4,13 +4,17 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
-from custom_components.guesty.api.const import MAX_MESSAGE_LENGTH
+from custom_components.guesty.api.const import (
+    ACTIONABLE_STATUSES,
+    MAX_MESSAGE_LENGTH,
+)
 from custom_components.guesty.api.models import (
     ActionResult,
     CachedToken,
@@ -25,12 +29,20 @@ from custom_components.guesty.api.models import (
     GuestyMoney,
     GuestyReservation,
     GuestyReservationsResponse,
+    GuestyStaySegment,
     MessageDeliveryResult,
     MessageRequest,
     ReservationFetchResult,
     ReservationSource,
     TokenStorage,
     _parse_custom_fields_array,
+    translate_v3_status_filter,
+)
+from tests.conftest import (
+    make_money_dict,
+    make_reservation_dict,
+    make_v3_reservation,
+    make_v3_segment,
 )
 
 
@@ -2066,3 +2078,401 @@ class TestReservationSourceProtocol:
             """A class that is not a reservation source."""
 
         assert not isinstance(NotASource(), ReservationSource)
+
+
+class TestGuestyStaySegmentFromApiDict:
+    """Tests for GuestyStaySegment.from_api_dict (Feature 008)."""
+
+    def test_full_segment_parses(self) -> None:
+        """A complete segment parses every documented field."""
+        segment = GuestyStaySegment.from_api_dict(
+            make_v3_segment(parentListingId="parent-001"),
+        )
+
+        assert segment is not None
+        assert segment.listing_id == "listing-001"
+        assert segment.parent_listing_id == "parent-001"
+        assert segment.check_in == datetime(2025, 8, 1, 15, 0, tzinfo=UTC)
+        assert segment.check_out == datetime(2025, 8, 5, 11, 0, tzinfo=UTC)
+        assert segment.check_in_local == "2025-08-01"
+        assert segment.check_out_local == "2025-08-05"
+        assert segment.guests_count == 2
+
+    def test_parent_listing_id_optional(self) -> None:
+        """A segment without parentListingId parses with None."""
+        segment = GuestyStaySegment.from_api_dict(make_v3_segment())
+
+        assert segment is not None
+        assert segment.parent_listing_id is None
+
+    @pytest.mark.parametrize(
+        "missing",
+        ["listingId", "checkIn", "checkOut"],
+    )
+    def test_missing_required_field_dropped(
+        self,
+        missing: str,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A segment missing a required field is dropped with a debug log.
+
+        Args:
+            missing: The required field to remove.
+            caplog: Log capture fixture.
+        """
+        data = make_v3_segment()
+        del data[missing]
+
+        with caplog.at_level(logging.DEBUG):
+            segment = GuestyStaySegment.from_api_dict(data)
+
+        assert segment is None
+        assert caplog.records
+        assert all(r.levelno == logging.DEBUG for r in caplog.records)
+
+    def test_non_dict_dropped(self) -> None:
+        """A non-dict segment is dropped."""
+        assert GuestyStaySegment.from_api_dict(None) is None
+
+    def test_localized_dates_and_guests_preserved(self) -> None:
+        """Localized dates and guestsCount survive parsing verbatim."""
+        segment = GuestyStaySegment.from_api_dict(
+            make_v3_segment(
+                checkInDateLocalized="2026-01-02",
+                checkOutDateLocalized="2026-01-09",
+                guestsCount=5,
+            ),
+        )
+
+        assert segment is not None
+        assert segment.check_in_local == "2026-01-02"
+        assert segment.check_out_local == "2026-01-09"
+        assert segment.guests_count == 5
+
+
+class TestGuestyReservationFromV3ApiDict:
+    """Tests for the v3 reservation parse (Feature 008)."""
+
+    def test_identity_and_listing_from_first_segment(self) -> None:
+        """reservationId maps to id and stay[0] gives listing_id."""
+        reservation = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(
+                "res-100",
+                segments=[
+                    make_v3_segment(listingId="listing-aaa"),
+                    make_v3_segment(
+                        listingId="listing-bbb",
+                        checkIn="2025-08-05T15:00:00+00:00",
+                        checkOut="2025-08-07T11:00:00+00:00",
+                        checkInDateLocalized="2025-08-05",
+                        checkOutDateLocalized="2025-08-07",
+                    ),
+                ],
+            ),
+        )
+
+        assert reservation is not None
+        assert reservation.id == "res-100"
+        assert reservation.listing_id == "listing-aaa"
+
+    def test_money_always_none(self) -> None:
+        """The v3 parse never produces a money summary."""
+        reservation = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(money=make_money_dict()),
+        )
+
+        assert reservation is not None
+        assert reservation.money is None
+
+    def test_stay_populated_and_chronological(self) -> None:
+        """Segments are preserved in payload (chronological) order."""
+        reservation = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(
+                segments=[
+                    make_v3_segment(listingId="listing-aaa"),
+                    make_v3_segment(
+                        listingId="listing-bbb",
+                        checkIn="2025-08-05T15:00:00+00:00",
+                        checkOut="2025-08-07T11:00:00+00:00",
+                    ),
+                ],
+            ),
+        )
+
+        assert reservation is not None
+        assert [s.listing_id for s in reservation.stay] == [
+            "listing-aaa",
+            "listing-bbb",
+        ]
+        assert reservation.stay[0].check_in < reservation.stay[1].check_in
+
+    def test_unusable_segment_dropped_from_stay(self) -> None:
+        """An unusable segment is dropped while the rest survive."""
+        bad = make_v3_segment()
+        del bad["listingId"]
+        reservation = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(segments=[bad, make_v3_segment()]),
+        )
+
+        assert reservation is not None
+        assert len(reservation.stay) == 1
+
+    def test_nights_count_derived_when_absent(self) -> None:
+        """nights_count is derived from the localized dates."""
+        reservation = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(),
+        )
+
+        assert reservation is not None
+        assert reservation.nights_count == 4
+
+    def test_nights_count_none_when_dates_unparsable(self) -> None:
+        """nights_count is None when the localized dates are unusable."""
+        reservation = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(
+                checkInDateLocalized=None,
+                checkOutDateLocalized=None,
+                segments=[
+                    make_v3_segment(
+                        checkInDateLocalized=None,
+                        checkOutDateLocalized=None,
+                    ),
+                ],
+            ),
+        )
+
+        assert reservation is not None
+        assert reservation.nights_count is None
+
+    def test_planned_times_none_when_absent(self) -> None:
+        """Planned arrival/departure publish None when absent (OQ-003)."""
+        data = make_v3_reservation()
+        del data["plannedArrival"]
+        del data["plannedDeparture"]
+
+        reservation = GuestyReservation.from_v3_api_dict(data)
+
+        assert reservation is not None
+        assert reservation.planned_arrival is None
+        assert reservation.planned_departure is None
+
+    def test_custom_fields_absent_is_empty(self) -> None:
+        """An absent customFields array yields an empty mapping."""
+        reservation = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(),
+        )
+
+        assert reservation is not None
+        assert dict(reservation.custom_fields) == {}
+
+    def test_custom_fields_parsed(self) -> None:
+        """A present customFields array is parsed into the mapping."""
+        reservation = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(
+                customFields=[{"fieldId": "cf-1", "value": "yes"}],
+            ),
+        )
+
+        assert reservation is not None
+        assert dict(reservation.custom_fields) == {"cf-1": "yes"}
+
+    def test_note_from_notes_other(self) -> None:
+        """The note is sourced from notes.other."""
+        reservation = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(notes={"other": "Gate code 1234"}),
+        )
+
+        assert reservation is not None
+        assert reservation.note == "Gate code 1234"
+
+    def test_guest_id_preserved_without_guest_details(self) -> None:
+        """guestId is retained; no embedded guest exists in v3."""
+        reservation = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(guest_id="guest-xyz"),
+        )
+
+        assert reservation is not None
+        assert reservation.guest is not None
+        assert reservation.guest.guest_id == "guest-xyz"
+        assert reservation.guest.full_name is None
+
+    def test_no_guest_id_yields_no_guest(self) -> None:
+        """A reservation without guestId has no guest record."""
+        reservation = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(guest_id=None),
+        )
+
+        assert reservation is not None
+        assert reservation.guest is None
+
+    def test_guests_count_from_first_segment(self) -> None:
+        """guests_count comes from the first usable segment."""
+        reservation = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(segments=[make_v3_segment(guestsCount=7)]),
+        )
+
+        assert reservation is not None
+        assert reservation.guests_count == 7
+
+    def test_missing_reservation_id_returns_none(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A payload without reservationId is skipped with a warning.
+
+        Args:
+            caplog: Log capture fixture.
+        """
+        data = make_v3_reservation()
+        del data["reservationId"]
+
+        with caplog.at_level(logging.WARNING):
+            assert GuestyReservation.from_v3_api_dict(data) is None
+
+        assert "reservationId" in caplog.text
+
+    def test_missing_status_returns_none(self) -> None:
+        """A payload without a status is skipped."""
+        data = make_v3_reservation()
+        del data["status"]
+
+        assert GuestyReservation.from_v3_api_dict(data) is None
+
+    def test_no_usable_segment_returns_none(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A reservation with no usable segment warns and is skipped.
+
+        Args:
+            caplog: Log capture fixture.
+        """
+        bad = make_v3_segment()
+        del bad["listingId"]
+
+        with caplog.at_level(logging.WARNING):
+            result = GuestyReservation.from_v3_api_dict(
+                make_v3_reservation("res-200", segments=[bad]),
+            )
+
+        assert result is None
+        assert "res-200" in caplog.text
+
+    def test_check_in_out_fall_back_to_segments(self) -> None:
+        """Missing top-level dates fall back to the stay span."""
+        data = make_v3_reservation(
+            segments=[
+                make_v3_segment(),
+                make_v3_segment(
+                    checkIn="2025-08-05T11:00:00+00:00",
+                    checkOut="2025-08-09T11:00:00+00:00",
+                ),
+            ],
+        )
+        del data["checkIn"]
+        del data["checkOut"]
+
+        reservation = GuestyReservation.from_v3_api_dict(data)
+
+        assert reservation is not None
+        assert reservation.check_in == datetime(2025, 8, 1, 15, 0, tzinfo=UTC)
+        assert reservation.check_out == datetime(2025, 8, 9, 11, 0, tzinfo=UTC)
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("confirmed", "confirmed"),
+            ("checked_in", "checked_in"),
+            ("checked_out", "checked_out"),
+            ("completed", "checked_out"),
+            ("COMPLETED", "checked_out"),
+            ("canceled", "canceled"),
+            ("cancelled", "canceled"),
+            ("alteration", "alteration"),
+        ],
+    )
+    def test_status_mapping(self, raw: str, expected: str) -> None:
+        """Documented v3 statuses map to the model vocabulary.
+
+        Args:
+            raw: The v3 status value.
+            expected: The expected model status.
+        """
+        reservation = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(status=raw),
+        )
+
+        assert reservation is not None
+        assert reservation.status == expected
+
+    def test_unknown_status_passed_through_with_info_log(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An unrecognized status is kept verbatim with an INFO log.
+
+        Args:
+            caplog: Log capture fixture.
+        """
+        with caplog.at_level(logging.INFO):
+            reservation = GuestyReservation.from_v3_api_dict(
+                make_v3_reservation(status="inquiry"),
+            )
+
+        assert reservation is not None
+        assert reservation.status == "inquiry"
+        assert "inquiry" in caplog.text
+
+    def test_legacy_parse_leaves_stay_empty(self) -> None:
+        """The legacy parse still produces an empty stay tuple."""
+        reservation = GuestyReservation.from_api_dict(
+            make_reservation_dict(),
+        )
+
+        assert reservation is not None
+        assert reservation.stay == ()
+
+
+class TestV3StatusFilterTranslation:
+    """Tests for the FR-003a status filter translation."""
+
+    def test_checked_out_also_requests_completed(self) -> None:
+        """Requesting checked_out additionally requests completed."""
+        assert translate_v3_status_filter({"checked_out"}) == ("checked_out,completed")
+
+    @pytest.mark.parametrize(
+        "status",
+        ["confirmed", "checked_in", "canceled"],
+    )
+    def test_other_statuses_request_themselves(self, status: str) -> None:
+        """Every other configured status requests only itself.
+
+        Args:
+            status: The configured status value.
+        """
+        assert translate_v3_status_filter({status}) == status
+
+    def test_unknown_status_requests_itself(self) -> None:
+        """An unmapped status is requested verbatim."""
+        assert translate_v3_status_filter({"inquiry"}) == "inquiry"
+
+    def test_default_set_sorted_and_joined(self) -> None:
+        """The default configured set translates sorted and joined."""
+        assert translate_v3_status_filter(ACTIONABLE_STATUSES) == (
+            "canceled,checked_in,checked_out,completed,confirmed"
+        )
+
+    def test_configured_status_set_unchanged(self) -> None:
+        """The user-visible configured status set is untouched."""
+        translate_v3_status_filter(ACTIONABLE_STATUSES)
+
+        assert sorted(ACTIONABLE_STATUSES) == [
+            "canceled",
+            "checked_in",
+            "checked_out",
+            "confirmed",
+        ]
+
+    def test_empty_set_translates_to_empty_string(self) -> None:
+        """An empty configured set produces an empty filter value."""
+        assert translate_v3_status_filter(frozenset()) == ""
