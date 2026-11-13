@@ -297,9 +297,17 @@ earliest-check-out-first bound as the code maps, which this map is also
 what makes computable.
 
 A write is permitted only when the baseline is usable, its `continuity`
-is not `unconfirmed`, the last refresh was not aborted as ambiguous, the
-target reservation carries a confirmation code, and the target is not
-fallback-sourced (FR-055).
+is not `unconfirmed`, the last refresh was not aborted as ambiguous, and
+the target reservation carries a confirmation code. Those four conjuncts
+are evaluated **before** anything about provenance: a permitted write is
+then routed to v3, or — if the fallback is currently serving its target
+— to the legacy write resource (FR-055, FR-058 to FR-063). A target
+that is fallback-sourced but only republished from retained values and
+never served in this session (FR-054) has no validated legacy
+identifier, so its write is refused rather than routed; one whose
+re-check failed after an earlier success keeps its record and is still
+routed. A refused write is refused whatever the route would
+have been.
 
 Confirmation code **values** are persisted (they are the key of the
 check) but never logged (FR-021, NFR-009).
@@ -336,6 +344,13 @@ existing options listener and changes no entity (FR-038, SC-008).
 | `RESERVATION_BY_ID_LEGACY_PATH` | `/reservations/{reservation_id}` |
 | `MAX_LEGACY_FALLBACK_LOOKUPS_PER_REFRESH` | `20` |
 | `LEGACY_FALLBACK_RECHECK_SECONDS` | `3600` |
+
+`RESERVATION_BY_ID_LEGACY_PATH` carries both legacy requests of the
+fallback: the `GET` of the not-found lookup and, for a fallback-sourced
+target, the `PUT` of the legacy write routing and the note action's
+legacy read-before-write (FR-058 to FR-063). No further constant is
+added for it, because the previous release's legacy write already used
+this path.
 
 No `MAX_LISTING_IDS_PER_SEARCH` constant is added. A chunk size of 50 is
 recorded in `research.md` R6 as a design parameter for OQ-008 only, and
@@ -390,6 +405,15 @@ identity baseline after a restart.
 (`GuestyReservation`) and `fetched_at` (`datetime`), and is dropped the
 moment its reservation reappears in a v3 result.
 
+A `ServedRecord` is created only by a successful lookup and is removed
+only when the reservation reappears in a v3 result or is confirmed
+absent; a failed re-check updates `last_attempt` and leaves the record
+in place. Write eligibility is exactly "has a `ServedRecord`", so a
+transient re-check failure does not cost the user a write, while a
+candidate that has never been served in this session — a failed first
+attempt, or one reconstructed after a reload — has no record and its
+write is refused (FR-054, FR-058).
+
 `last_attempt` is recorded for **every** lookup, successful or not, and
 is what the re-check interval is measured from. A success also updates
 `ServedRecord.fetched_at`, but eligibility never reads that field: a
@@ -406,7 +430,32 @@ carried on `ReservationFetchResult` and surfaced in both diagnostics
 surfaces (FR-042, FR-057). It carries counts and identifiers only, never
 guest data.
 
-Every reservation published from `served` is flagged fallback-sourced
-for the coordinator, which uses the flag for the write refusal (FR-055)
-and the diagnostics listing — never for a sensor attribute, which would
-break attribute-key parity (SC-002, NFR-004).
+Every reservation the coordinator publishes from the fallback is
+flagged fallback-sourced for the diagnostics listing — never as a
+sensor attribute, which would break attribute-key parity (SC-002,
+NFR-004). **Routing is not keyed on that flag.** It is keyed on the
+`served` map itself, which holds only reservations a legacy lookup has
+actually returned in this session, because only those have a legacy
+identifier the write can use (FR-058, FR-060). A reservation
+republished from retained values whose lookup has never succeeded in
+this session is fallback-sourced but absent from `served`: its write is
+refused, not routed to either generation. A reservation whose re-check
+failed still has its record, so it stays routable. The `served` keys
+are read at write time,
+so a reservation a completed refresh has since found in v3 — and which
+is therefore no longer served — is written through v3 at the next
+write.
+
+`LegacyWriteCounters` is a frozen dataclass counting legacy-routed
+writes by operation (`note`, `status`, `custom_field`) and outcome
+(`succeeded`, `failed`, `refused`). Unlike `FallbackCounters` it is
+action-scoped rather than per-refresh, so it accumulates on the config
+entry's runtime data for the session and is surfaced in both
+diagnostics surfaces alongside the fallback counters (FR-042, FR-062).
+It carries counts and reservation identifiers only, never guest data.
+`disabled` doubles as the routing's self-disable flag: once it is set,
+a write against a reservation that was fallback-sourced is refused with
+an error naming the 2027-03-01 retirement (FR-061). The legacy write
+request itself is issued in the single-attempt mode FR-063 requires,
+so the shared client's transient, rate-limit and token retries do not
+turn one invocation into several writes.

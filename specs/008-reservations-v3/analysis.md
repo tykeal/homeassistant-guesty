@@ -117,11 +117,17 @@ the already-migrated custom-field write has the same exposure with **no**
 legacy equivalent in scope. The merged artifacts do not distinguish the
 two cases.
 
-*Resolution*: FR-055 makes a write against a fallback-sourced or
+*Resolution*: FR-055 made a write against a fallback-sourced or
 v3-absent reservation **refuse loudly** with a cause-naming error, and
 the writes contract defines the read-404 semantics. Whether writes
-should additionally route to the legacy write resources is a **scope
-change** and is raised as **OQ-010 for the owner**, not decided here.
+should additionally route to the legacy write resources was raised as
+**OQ-010 for the owner**, not decided here.
+
+> **Superseded 2026-11-13.** The repository owner decided OQ-010 in
+> favour of **routing** such a write to the legacy write resource while
+> it exists. FR-055 now routes rather than refuses, and FR-058 to
+> FR-063 specify the routing. See `spec.md` § OQ-010. This section is
+> retained as the analyze stage's historical record.
 
 ### A5 — MAJOR — inconsistency
 
@@ -243,7 +249,7 @@ Says the spec is "ready for `/speckit.clarify` or `/speckit.plan`" and
 records nine open questions.
 
 *Resolution*: updated for the analyze stage, OQ-009's resolution and
-OQ-010.
+OQ-010 — and again for OQ-010's owner decision and OQ-011.
 
 ### A16 — MINOR — stale content
 
@@ -369,20 +375,23 @@ Full design in `plan.md` § "Legacy not-found fallback"; data in
 | Success criteria | 14 | 18 |
 | User stories | 7 | 8 |
 | Risks | 10 | 12 |
-| Open questions | 9 (1 decided) | 10 (2 decided, 1 new for the owner) |
-| Tasks | 114 | 128 |
+| Open questions | 9 (1 decided) | 11 (3 decided; OQ-010 by owner) |
+| Tasks | 114 | 136 |
 | Requirements with ≥1 task | 100% | 100% |
 | Findings: CRITICAL / MAJOR / MINOR | — | 3 / 8 / 5 |
 
 ## 7. Needs an owner decision
 
 - **OQ-010 — should a write fall back to the legacy write resources
-  when its target is not yet in v3?** This analysis specifies a loud
-  refusal (FR-055), which is within the five recorded decisions. Routing
-  writes to `PUT /v1/reservations/{id}` as well would be a **scope
-  change** beyond owner decision 1 (which covers retrieval), and would
-  need its own identity reasoning, so it is recorded rather than
-  decided.
+  when its target is not yet in v3?** This analysis specified a loud
+  refusal (FR-055) and recorded the routing alternative as a scope
+  change for the owner. **Decided 2026-11-13 by the repository owner in
+  favour of routing**, because refusing the write leaves a door-lock
+  automation unable to publish a guest access code during Guesty's
+  backfill window. FR-001 now enumerates three permitted legacy calls
+  and FR-058 to FR-063 specify the routing. Nothing here needs an owner
+  decision any longer; OQ-011 (the legacy custom-field body shape) is a
+  live-verification item, not a decision.
 
 Everything else in this report is either a direct application of the
 five owner decisions or a documentation correction.
@@ -397,6 +406,8 @@ five owner decisions or a documentation correction.
 3. The concrete, numbered test plan for the external user is written **once an
    implementation exists**, per owner decision 4, and is posted on
    [#223][issue-223]. It is deliberately not written here.
-4. OQ-010 goes to the owner before Phase 7 is implemented.
+4. OQ-010 went to the owner and was decided on 2026-11-13 in favour of
+   routing a fallback-sourced write to legacy; Phase 7 therefore also
+   carries T128 to T134, and Phase 9 carries T135.
 
 [issue-223]: https://github.com/tykeal/homeassistant-guesty/issues/223

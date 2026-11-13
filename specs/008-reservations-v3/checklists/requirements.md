@@ -74,18 +74,22 @@ to planning
   favour of deprecating the three sensors; the decision is in OQ-001 and
   specified by FR-043 to FR-049, so the "No [NEEDS CLARIFICATION]
   markers remain" item is now checked.
-- Ten open questions (OQ-001 to OQ-010) are recorded. OQ-001 (financial
-  sensors) is decided and closed. OQ-009 (which deprecation-notice
-  mechanism to use) was decided at the analyze stage in favour of
-  shipping both a non-fixable repairs issue and a warning log. OQ-008
-  (whether a server-side listing filter may trade coverage for request
-  budget) remains an open scope decision. OQ-010 (whether a write to a
-  reservation that is not yet in v3 should be routed to the legacy write
-  resource) is new at the analyze stage and needs an owner decision; it
-  does not block implementation, because FR-055 specifies a loud
-  refusal meanwhile. The remainder are live-verification items that the
-  implementation stage must either answer from the vendor reference or
-  carry as defensive handling.
+- Eleven open questions (OQ-001 to OQ-011) are recorded. OQ-001
+  (financial sensors) is decided and closed. OQ-009 (which
+  deprecation-notice mechanism to use) was decided at the analyze stage
+  in favour of shipping both a non-fixable repairs issue and a warning
+  log. OQ-008 (whether a server-side listing filter may trade coverage
+  for request budget) remains an open scope decision. OQ-010 (whether a
+  write to a reservation that is not yet in v3 should be routed to the
+  legacy write resource) was raised at the analyze stage and decided by
+  the repository owner on 2026-11-13 **in favour of routing**, reversing
+  the refusal the analyze stage had specified; it is now specified by
+  FR-055 and FR-058 to FR-063. OQ-011 (which legacy resource and body
+  shape takes a reservation custom-field write) follows from that
+  decision and is a live-verification item gated by T135, with a
+  recorded fallback if it is refuted. The remainder are
+  live-verification items that the implementation stage must either
+  answer from the vendor reference or carry as defensive handling.
 - Scope decisions already settled by the repository owner and not
   re-opened here: no live API access, write actions in scope, cached
   guest lookups, a configuration toggle rather than a hard cutover,
