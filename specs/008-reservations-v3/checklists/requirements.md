@@ -65,25 +65,36 @@ to planning
 - The `[UNVERIFIED]` markers in the Assumptions section are **not**
   `[NEEDS CLARIFICATION]` markers. They are deliberate, permanent
   records of documentation-derived claims that no one can resolve
-  without live Guesty API access, and FR-041 carries them forward into
-  the plan's pre-release checklist. The one item that was genuinely
-  unresolved and blocked planning was OQ-001 (financial sensors). The
-  repository owner decided it on 2026-11-13 in favour of deprecating
-  the three sensors, and the decision is recorded in OQ-001 and
+  without live Guesty API access. FR-041 carries them forward into the
+  plan's pre-release checklist, which is now executable: an external
+  user has offered account access for pre-release verification, so the
+  markers are resolvable at that gate rather than permanently. The one
+  item that was genuinely unresolved and blocked planning was OQ-001
+  (financial sensors). The repository owner decided it on 2026-11-13 in
+  favour of deprecating the three sensors; the decision is in OQ-001 and
   specified by FR-043 to FR-049, so the "No [NEEDS CLARIFICATION]
   markers remain" item is now checked.
-- Nine open questions (OQ-001 to OQ-009) are recorded. OQ-001 (financial
-  sensors) is decided and closed. OQ-008 (whether a server-side listing
-  filter may trade coverage for request budget) remains an open scope
-  decision, and OQ-009 (which deprecation-notice mechanism to use for the
-  financial sensors) is a plan-stage design choice arising from the OQ-001
-  decision; the remainder are live-verification items that the plan stage
-  must either answer from the vendor reference or carry as defensive
-  handling.
+- Ten open questions (OQ-001 to OQ-010) are recorded. OQ-001 (financial
+  sensors) is decided and closed. OQ-009 (which deprecation-notice
+  mechanism to use) was decided at the analyze stage in favour of
+  shipping both a non-fixable repairs issue and a warning log. OQ-008
+  (whether a server-side listing filter may trade coverage for request
+  budget) remains an open scope decision. OQ-010 (whether a write to a
+  reservation that is not yet in v3 should be routed to the legacy write
+  resource) is new at the analyze stage and needs an owner decision; it
+  does not block implementation, because FR-055 specifies a loud
+  refusal meanwhile. The remainder are live-verification items that the
+  implementation stage must either answer from the vendor reference or
+  carry as defensive handling.
 - Scope decisions already settled by the repository owner and not
   re-opened here: no live API access, write actions in scope, cached
   guest lookups, a configuration toggle rather than a hard cutover,
   #204 resolved by this migration, and the deprecation of the three
   reservation financial sensors (OQ-001).
-- Spec ready for `/speckit.clarify` or `/speckit.plan`: OQ-001 is
-  decided.
+- Pipeline position: spec, plan and tasks are merged and the analyze
+  stage has landed its corrective amendments (`analysis.md`). The spec
+  is ready for implementation; no item in this checklist regressed.
+  The amendments added FR-031d, FR-031e, FR-050 to FR-057, SC-015 to
+  SC-018, User Story 8 and risks R-011 and R-012, all of which this
+  checklist's criteria cover in the same way as the original
+  requirements.

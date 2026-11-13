@@ -39,12 +39,25 @@ padded server window is a **superset**; the client trim is authoritative
 - any parameter the vendor reference does not document
 
 **MUST NOT be requested**: `GET /v1/reservations` or any other resource
-the migration guide marks deprecated, while the v3 path is active
-(SC-001). The single exception is the one-time identity bootstrap sweep
-at the first v3 setup of an upgrading entry (plan.md, "Identity guard"),
-which runs before any v3 data is published and never again; it requires
-the specification amendment recorded there. No *refresh* ever targets a
-legacy resource on the v3 path.
+the migration guide marks deprecated, while the v3 path is active, with
+**exactly two** enumerated exceptions (FR-001, SC-001). The list is
+exhaustive; any other deprecated request is a test failure.
+
+1. **The one-time identity bootstrap sweep** (FR-031d):
+   `GET /v1/reservations`, paginated over the same window. Bound: once
+   per config entry, at the first v3 setup of an *upgrading* entry,
+   before any v3 data is published, never repeated.
+2. **The not-found fallback** (FR-050):
+   `GET /v1/reservations/{reservationId}`. Bound: by identifier only,
+   only for a previously known reservation absent from the v3 result,
+   at most `MAX_LEGACY_FALLBACK_LOOKUPS_PER_REFRESH` per refresh and at
+   most once per candidate per `LEGACY_FALLBACK_RECHECK_SECONDS`
+   (FR-053).
+
+Neither exception is a **search** against the legacy path other than the
+bootstrap sweep itself: a refresh never issues a legacy *search*, and
+the fallback never sweeps. Each exception is counted separately in
+diagnostics (FR-042) so a test can assert the exact permitted set.
 
 Example (unencoded for readability):
 

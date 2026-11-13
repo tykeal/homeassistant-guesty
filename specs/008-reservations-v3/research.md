@@ -6,8 +6,10 @@ SPDX-License-Identifier: Apache-2.0
 # Research: Reservations v3 API Migration
 
 **Feature Branch**: `008-reservations-v3` | **Date**: 2026-11-13
-**Status**: Complete (documentation-derived; live confirmation deferred
-to the [pre-release checklist](#pre-release-live-verification-checklist))
+**Status**: Complete; amended at the analyze stage (R5 corrected, R13 to
+R15 added). Documentation-derived; live confirmation is now **available
+and deferred** to the
+[pre-release checklist](#pre-release-live-verification-checklist)
 
 ## Sources and their standing
 
@@ -17,6 +19,11 @@ to the [pre-release checklist](#pre-release-live-verification-checklist))
 - [Guesty changelog, 2026-11-05][guesty-changelog] — vendor
   documentation.
 - Issue [#223][issue-223], "Agreed scope decisions" — owner decisions.
+- Issue [#223][issue-223], Guesty Support's written reply of 2026-11-13,
+  obtained and posted by an external user — **vendor statement, still
+  not evidence this project has reproduced**. It supplies the v3
+  identifier rule (R14) and the not-found semantics that R13 is built
+  on, and it contradicts the vendor's own retirement date (spec R-011).
 - `tykeal/homeassistant-rentalsync-bridge`,
   `specs/004-guesty-reservations-v3/` — **corroborating documentation,
   not evidence**: its own `research.md:11` records that no live Guesty
@@ -24,11 +31,15 @@ to the [pre-release checklist](#pre-release-live-verification-checklist))
 - This repository's source — read directly; every citation below is a
   real file and line range.
 
-**No live Guesty v3 access exists for this project either.** Every
+**This project has no live Guesty v3 access of its own.** Every
 statement about v3 request shapes, filters, response fields, statuses and
-error behaviour is a hypothesis. The design is therefore built so that a
-wrong hypothesis produces a loud, diagnosable failure rather than wrong
-published data (FR-006, FR-008, FR-032).
+error behaviour is a hypothesis. Live verification has since been
+*offered* by an external user, against their own account and starting
+with test reservations (R14); it is deferred to the pre-release gate
+because there is nothing to exercise until an implementation exists, and
+until it happens no hypothesis below is promoted to fact. The design is
+therefore built so that a wrong hypothesis produces a loud, diagnosable
+failure rather than wrong published data (FR-006, FR-008, FR-032).
 
 The sibling bridge is a FastAPI add-on with its own database, scheduler
 and sync machinery. **None of its architecture is transferable.** Only
@@ -186,14 +197,23 @@ after the cursor and cannot disturb a page already read. A reservation
 moving *into* the filtered set behind the cursor shifts later records
 forward and shows up as a duplicate (check 6) or an order violation
 (check 7). A reservation leaving the set behind the cursor shifts later
-records back and is undetectable by any paging check — which matters far
-less here than in the bridge, because this integration never deletes or
-retires anything on absence: a listing whose reservations vanish simply
-reports `no_reservation` on the next refresh, and the one after that
-re-reads the full window. The bridge's confirmed-absence machinery
-(`GET /reservations-v3?reservationIds=…` with a control id) is therefore
-**not** adopted; it exists to protect a persistent database this
-integration does not have.
+records back and is undetectable by any paging check.
+
+**Corrected at the analyze stage.** This section previously concluded
+that absence was harmless here — "a listing whose reservations vanish
+simply reports `no_reservation`" — and on that basis declined the
+bridge's confirmed-absence machinery. Guesty Support has since stated
+that a reservation missing from v3 may simply not have been backfilled
+yet (R13), so absence is **not** proof of deletion and silently
+reporting `no_reservation` would drop a live booking. The conclusion now
+is: a paging-induced or backfill-induced absence is caught by the
+not-found fallback (FR-050 to FR-057), which confirms the absence
+against the legacy resource by identifier before letting a previously
+known reservation disappear. The bridge's own confirmed-absence
+machinery (`GET /reservations-v3?reservationIds=…` with a control id) is
+still **not** adopted — it exists to protect a persistent database this
+integration does not have, and it cannot distinguish "not backfilled"
+from "deleted", which is the distinction that actually matters here.
 
 The 200-page cap bounds a pathological account at 20,000 in-window
 reservations before the refresh fails loudly. It is lower than the
@@ -496,6 +516,133 @@ ten, which SC-003 asserts as a pinned number rather than a comparison.
 With a 24-hour TTL and a 15-minute poll, the steady-state amortised cost
 is one lookup per guest per 96 refreshes.
 
+Fallback lookups (R13) are outside this table: a steady state has no
+missing reservations, so their steady-state cost is zero. When
+reservations *are* missing, they add at most
+`MAX_LEGACY_FALLBACK_LOOKUPS_PER_REFRESH` (20) requests to a refresh, and
+at most one per candidate per `LEGACY_FALLBACK_RECHECK_SECONDS` (3600)
+thereafter — one per candidate per four refreshes on a 15-minute poll.
+Spec FR-053 bounds them and NFR-001 excludes them from the warm-cache
+comparison.
+
+---
+
+## R13: Legacy not-found fallback (FR-050 to FR-057)
+
+### R13 findings
+
+Guesty Support, replying to an external user on [#223][issue-223],
+stated that their migration is still backfilling reservations into v3,
+that a reservation absent from v3 may therefore simply not be there yet,
+and that `GET /v1/reservations/{reservationId}` should be used to
+retrieve it in that case. This post-dates the merged spec, plan and
+tasks, all of which treated a v3 absence as equivalent to deletion
+(R5, now corrected).
+
+### R13 decision
+
+Add a `ReservationFallbackSource` collaborator **inside** the
+`ReservationSource` seam, used only by the v3 source. For each
+previously known reservation that is absent from a v3 result and whose
+stay still overlaps the window, look it up by identifier on the legacy
+resource; publish a successful result as a **fallback-sourced**,
+read-only reservation; treat a legacy not-found as confirmed absence and
+retire the candidate; bound the work with a per-refresh cap of 20 and a
+per-candidate re-check interval of 3600 seconds; self-disable for the
+session on a retirement-shaped answer. The full design, including error
+handling, caching and the write refusal, is in `plan.md`
+§"Legacy not-found fallback".
+
+### R13 rationale
+
+Without it, a live reservation Guesty has not finished migrating
+disappears from calendars and sensors with no error anywhere, and a
+door-lock automation that depends on it never fires. Silent loss of a
+live booking is worse than any cost this adds. The design is constrained
+so the cure cannot be worse than the disease: by-identifier only (never
+a legacy search), only for reservations already known, bounded per
+refresh, negatively cached so a genuinely deleted reservation is looked
+up once and then dropped, and read-only so no write is ever issued
+against an identifier that did not come from v3.
+
+### R13 alternatives considered
+
+- **Treat absence as deletion** (the previous position, and the sibling
+  bridge's). Rejected: contradicted by Guesty Support and silently
+  lossy.
+- **Fall back to a legacy *search* when the v3 result looks short.**
+  Rejected: unbounded, defeats the whole migration, and cannot tell
+  which reservation is missing.
+- **Keep publishing the last known reservation on any absence, with no
+  legacy check.** Rejected: masks genuine cancellations indefinitely,
+  which is the symmetric failure FR-052 exists to prevent.
+- **Persist the confirmed-absent set.** Rejected: a stale persisted
+  absence would permanently hide a reservation that returns; re-learning
+  from the identity baseline after a restart costs at most one bounded
+  round.
+
+---
+
+## R14: Live verification is available and deferred (FR-041)
+
+### R14 findings
+
+The external user who obtained Support's reply has offered to exercise
+the migration against their own Guesty account, beginning with test
+reservations rather than live bookings ([#223][issue-223]). Support's
+reply additionally supplies two rules this project cannot derive from
+the public documentation:
+
+1. The identifier used against a v3 resource **must come from a v3
+   response**. A channel confirmation code, an `originId` or another
+   external reference returns "Reservation not found" (spec FR-031e).
+2. A v3 not-found is **not** proof of deletion while the backfill runs
+   (R13).
+
+Support also tested exactly **one** reservation whose legacy and v3
+`_id` matched and explicitly declined to confirm that this holds for
+every reservation — which is precisely the gap the identity guard
+exists to cover, and is why R10 is unchanged by this news.
+
+### R14 decision
+
+Change the posture of this document and of the specification from "live
+verification is impossible" to "**available, deferred to the pre-release
+gate**". Do not write the test plan yet: there is nothing to exercise
+until an implementation exists, and a test plan written against a design
+rather than an implementation would be rewritten anyway. Nothing in the
+checklist below is downgraded or removed on the strength of
+availability; the checklist is the test plan's input.
+
+An audit at the analyze stage confirms the integration never uses a
+confirmation code as a lookup key anywhere in this design — it appears
+only as a sensor attribute and as the identity baseline's map key, both
+cross-checks — so rule 1 is a guard-rail to keep, not a defect to fix.
+
+---
+
+## R15: Deprecation-notice mechanism (OQ-009)
+
+### R15 decision
+
+Ship **both** surfaces: a non-fixable Home Assistant repairs issue
+(`is_fixable=False`, severity `warning`, translation key
+`financial_sensors_deprecated`) raised exactly once when the v3 path
+starts with the three entities present, **and** a WARNING log line
+carrying the same information.
+
+### R15 rationale
+
+FR-046 calls the notice *user-visible*, and a log line is not visible to
+the dashboard-only user that risk R-010 is about; the repairs issue is
+the only Home Assistant surface that reaches them. The log line costs
+nothing and is what a support request will quote. The objection to new
+surface is bounded: one non-fixable issue and one translation string,
+both deleted with the sensors under FR-048. Dismissal is acceptable
+because the notice is informational — the sensors remain `unavailable`
+whether or not it is dismissed. This resolves OQ-009 and unblocks the
+deprecation tasks.
+
 ---
 
 ## Pre-release live-verification checklist
@@ -505,6 +652,26 @@ live Guesty account before this feature is declared stable, and SC-011
 requires every assumption in the specification to appear here. Each item
 below is reproduced from the specification's Assumptions section or added
 by a decision in this document.
+
+**Status: this checklist is now executable.** An external user has
+offered their Guesty account, starting with test reservations (R14), so
+these items are no longer hypothetical exercises — they are the input to
+a concrete pre-release test plan that is written once an implementation
+exists. Until that run happens, every item remains unverified.
+
+Two rules from Guesty Support govern how the run is performed, not
+merely what it checks:
+
+- Always take the reservation identifier used for a v3 call from a **v3
+  response**; never a confirmation code, an `originId` or any other
+  legacy or external reference (FR-031e). A tester seeing "Reservation
+  not found" after using a channel code is observing this rule, not a
+  bug in the integration.
+- Before exercising `PUT /v1/reservations-v3/{reservationId}/notes`, do
+  a v3 GET for the same identifier first. If that GET says not found,
+  the reservation may simply not be backfilled yet — retrieve it with
+  `GET /v1/reservations/{reservationId}` and record it as a fallback
+  case (R13), not as a failure.
 
 ### Identity and continuity
 
@@ -599,13 +766,44 @@ by a decision in this document.
    listings or several reservations under a group id (OQ-006). Either is
    handled; the answer only needs documenting.
 
+### Legacy not-found fallback
+
+1. A reservation present on the legacy path is genuinely absent from v3
+   on a real account — that is, the backfill gap Support describes is
+   observable at all. **Acceptance**: at least one identifier returns a
+   result from `GET /v1/reservations/{id}` and not-found from the v3
+   search and by-id read, or the item is recorded as "not observed".
+2. `GET /v1/reservations/{reservationId}` accepts an identifier that was
+   originally learned from a v3 response. Support's rule constrains the
+   v3 direction only; the reverse is assumed, not stated.
+3. A reservation that does not exist and a resource that has been
+   retired are distinguishable from the legacy response alone (FR-056).
+   If they are not, confirm that the implementation's
+   bias toward self-disabling is the behaviour observed.
+4. A reservation retrieved through the fallback maps to the same
+   attribute values the v3 path would produce, so a fallback-sourced
+   reservation is not observably different on the sensor.
+5. Guesty's backfill actually completes for the observed reservations,
+   rather than leaving them permanently absent from v3 (spec R-012).
+
 ### How the checklist is exercised
 
 FR-042 diagnostics make most items checkable from a user's debug log
 without a test account: pages per resource, counts by raw status, the
 stay-segment histogram, attribution and skip counts, guest cache
-behaviour, and the identity match count. Items 2 and 3 of "Write
-resources" need a deliberate action invocation on a real account. Item 1
+behaviour, the identity match count, the per-exception counts of
+permitted legacy calls, and the fallback counters. Items 2 and 3 of
+"Write resources" need a deliberate action invocation on a real account.
+Items 1 and 3 of "Legacy not-found fallback" need a real account **mid
+backfill**: a reservation genuinely missing from v3 cannot be
+conjured, so "not observed" is a valid recorded outcome for those two,
+and item 5 can only be answered by watching an observed case over
+time. Items 2 and 4 are **not** exempt. Both can be checked with any
+reservation present in both APIs — item 2 by confirming a v3
+identifier is accepted by the legacy by-id resource, item 4 by
+comparing the attributes produced from the legacy document with those
+produced from the v3 document for the same reservation — so both are
+release gates with a pass or fail outcome (T127). Item 1
 of "Identity and continuity" is **not** confirmed merely by two
 successful refreshes: if the legacy and v3 results share no confirmation
 codes, or either is empty, the guard compares nothing and cannot trip.

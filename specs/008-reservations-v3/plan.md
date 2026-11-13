@@ -27,7 +27,7 @@ retiring catch-all `PUT /v1/reservations/{id}`
 `PUT /v1/reservations-v3/{id}/notes` and
 `PUT /v1/reservations-v3/{id}/status`.
 
-Four consequences drive the rest of the design:
+Five consequences drive the rest of the design:
 
 1. v3 embeds no guest object, so guest name, phone and email are
    re-sourced from the `/guests` family through a bounded, deduplicated,
@@ -39,11 +39,20 @@ Four consequences drive the rest of the design:
 3. v3 carries no top-level listing id, so attribution is derived from
    `stay[]` segments, with per-listing projections that keep the sensor
    layer's inputs shaped exactly as they are today.
-4. Nothing about v3 can be verified without a live Guesty account, which
-   this project does not have. The design therefore fails safe
+4. Nothing about v3 is verified yet. This project has no live Guesty
+   account of its own; an external user has offered theirs, starting with
+   test reservations, so live verification is **available but deferred to
+   the pre-release gate** — there is nothing to exercise until an
+   implementation exists (spec FR-041). Until then the design fails safe
    everywhere: loud errors instead of empty results, aborted refreshes
    instead of ambiguous publishes, and refused writes instead of writes
    to an unconfirmed identity.
+5. Guesty's backfill into v3 is still running, so a reservation missing
+   from a v3 response may simply not be there *yet*. A **legacy
+   not-found fallback** (spec FR-050 to FR-057, designed in
+   [Legacy not-found fallback](#legacy-not-found-fallback)) retrieves
+   such a reservation by identifier from the legacy resource so that a
+   live booking cannot silently vanish mid-migration.
 
 A `reservations_api` configuration option (`v3` | `legacy`, default `v3`)
 keeps the legacy code path alive, verbatim, as a rollback target until it
@@ -102,6 +111,7 @@ the deprecation repair issue are HA-layer concerns and stay there.
 ```text
 specs/008-reservations-v3/
 ├── plan.md              # This file
+├── analysis.md          # Analyze: cross-artifact findings
 ├── research.md          # Phase 0: decisions and rationale
 ├── data-model.md        # Phase 1: entities and field mapping
 ├── quickstart.md        # Phase 1: developer orientation
@@ -128,12 +138,14 @@ custom_components/guesty/
 │   ├── actions.py               # (modify) v3 note/status writes
 │   ├── guest_cache.py           # (new) TTL + LRU guest cache
 │   ├── reservations_legacy.py   # (new) verbatim legacy source
+│   ├── reservations_fallback.py # (new) not-found fallback source
 │   └── reservations_v3.py       # (new) v3 search source
 ├── actions.py                   # (modify) identity-guard writes
 ├── config_flow.py               # (modify) reservations_api option
 ├── const.py                     # (modify) option key and default
 ├── coordinator.py               # (modify) attribution, guard, diag
 ├── identity.py                  # (new) persisted identity baseline
+├── diagnostics.py               # (new) config entry diagnostics
 ├── sensor.py                    # (modify) status map, deprecation
 ├── strings.json                 # (modify) option + repair strings
 ├── translations/en.json         # (modify) same keys
@@ -146,8 +158,10 @@ tests/
 │   ├── test_models.py           # (modify) v3 mapping
 │   ├── test_reservations_v3.py  # (new) search, paging, guards
 │   ├── test_guest_cache.py      # (new) TTL, LRU, failures
+│   ├── test_reservations_fallback.py  # (new) not-found fallback
 │   └── test_actions.py          # (modify) v3 write paths
 ├── test_coordinator.py          # (modify) attribution, trim
+├── test_diagnostics.py          # (new) diagnostics download
 ├── test_identity.py             # (new) baseline and guard
 ├── test_reservation_sensor.py   # (modify) statuses, segments
 ├── test_reservations_parity.py  # (new) legacy/v3 differential
@@ -549,21 +563,21 @@ this feature could produce.
   an unavailable bootstrap, a disagreeing bootstrap, and the empty and
   disjoint comparisons.
 
-  **This is a narrowly scoped exception to FR-001, SC-001 and FR-034**,
-  all of which are written as absolutes: no legacy request while v3 is
-  active, and no additional request for the guard. The exception is
-  bounded to one legacy page sequence, at the first v3 setup of an
-  upgrading entry, before any v3 data is published, and never again.
-  The alternative — enabling writes on an identity that nothing has
-  ever cross-checked — is strictly worse. Because the plan may not
-  silently contradict the specification, this requires a **specification
-  amendment** in the analyze stage: FR-001 and SC-001 scoped to steady
-  state, and FR-034 scoped to per-refresh cost. Until that amendment
-  lands, the assertion "no request targets `/v1/reservations` while the
-  v3 path is active" holds for every refresh but is qualified for the
-  bootstrap (contracts/guesty-reservations-v3-search.md), and the
-  request-budget test asserts the bootstrap sequence exactly once for an
-  upgrading entry and zero times otherwise.
+  **The sweep is permitted exception 1 of FR-001**, and is specified in
+  its own right as FR-031d. The specification amendment this plan asked
+  for landed in the analyze stage: FR-001 now prohibits the legacy
+  *path* for routine operation while enumerating exactly two permitted
+  legacy calls — this sweep and the not-found fallback below — SC-001
+  asserts each one's bound separately, and FR-034 scopes zero-cost to
+  the per-refresh comparison, naming this sweep as the only request the
+  guard may ever issue. The exception remains bounded to one legacy page
+  sequence, at the first v3 setup of an upgrading entry, before any v3
+  data is published, and never again. The assertion "no request targets
+  `/v1/reservations` while the v3 path is active" therefore reads: no
+  such request in any refresh, exactly one bootstrap sequence for an
+  upgrading entry's first setup and zero otherwise, and at most the
+  per-refresh fallback cap of by-identifier lookups
+  (contracts/guesty-reservations-v3-search.md).
 - **Check**: before publishing a refresh, every reservation carrying a
   confirmation code is compared with the baseline. Any code whose mapping
   *differs* makes the identity ambiguous — including the swap case where
@@ -603,6 +617,181 @@ unguarded after an identity mismatch, with no baseline, or against a
 reservation with no confirmation code — precisely the writes most likely
 to matter. Blocked-write tests cover all three entry points.
 
+### Legacy not-found fallback
+
+Guesty Support states that a reservation missing from a v3 response may
+simply not have been backfilled into v3 yet, and advised retrieving it
+with `GET /v1/reservations/{reservationId}` in that case
+([#223][issue-223]). Without that, a live booking would silently vanish
+from calendars and sensors mid-migration, and a door-lock automation
+would never fire. Spec FR-050 to FR-057 require the fallback; this is its
+design.
+
+**Where it sits.** Inside the `ReservationSource` seam, not above it. A
+`ReservationFallbackSource` collaborator — a thin wrapper over the
+existing legacy by-identifier retrieval in
+`api/reservations_legacy.py` — is held by `V3ReservationSource` only.
+The coordinator still awaits one `fetch()` and still receives one
+`ReservationFetchResult`, so attribution, projection, the client-side
+trim and the whole sensor layer are untouched. The legacy source does
+not hold a fallback at all: under `reservations_api="legacy"` the legacy
+resource is already primary, so the fallback is inert (FR-056) and needs
+no separate switch. Keeping the fallback below the seam also keeps
+`api/` free of Home Assistant imports (NFR-007).
+
+**Candidate set.** The fallback is **never** a sweep. After a v3 search
+completes, `V3ReservationSource` computes
+`missing = previously_known - returned_v3_ids`, where
+`previously_known` is the union of the identifiers published by the last
+successful refresh and the identifiers in the identity baseline's active
+and `bootstrap_codes` maps (FR-050). A candidate is dropped before any
+request if its last known stay no longer overlaps the configured window
+— it would be trimmed anyway — or if it has already been confirmed
+absent. A reservation never seen before is not a candidate: there is no
+identifier to look up (FR-051).
+
+**Normalization and attribution.** A legacy document maps through the
+existing legacy mapper, which leaves `stay` empty and populates
+`listing_id` directly (`data-model.md` §1.3). Attribution therefore
+follows the **payload's provenance**, which is a different thing from
+the fallback-sourced marker that makes a record read-only: a record
+*retained* from an earlier v3 payload is still a v3 payload and keeps
+its segment-based attribution and all its multi-listing projections,
+even though it is published read-only; only a record whose payload came
+from a legacy document uses legacy attribution. Concretely, a
+v3-payload record is attributed from its stay segments and one with no
+segments is still skipped as malformed (FR-013), while a legacy-payload
+record is attributed from `listing_id` under the Feature 003 rules the
+legacy path already uses.
+Without that distinction the segment-based attribution would discard
+every fallback record before it reached a sensor, so the fallback would
+buy nothing. The skip-on-no-segments validation of the v3 path is not
+weakened: it simply does not apply to a record that never had segments.
+A fallback record is also subject to the same window trim and the same
+configured status filter as any other reservation (FR-050a).
+
+**Interaction with the identity guard.** A fallback record is
+legacy-sourced, so it may not be allowed to confirm itself. Its
+confirmation code is written to a separate `fallback_codes` map, never
+merged into the active `codes` map, exactly as `bootstrap_codes` is kept
+separate. The guard compares fallback records against the baseline as it
+does any other: a code mapping to a different identifier is ambiguous
+and aborts the refresh under FR-032. Continuity is never promoted to
+`verified` on fallback evidence alone, because the fallback record and
+the baseline entry can share a common legacy ancestor.
+
+**Caching and negative caching.** Per config entry, in memory:
+
+- A **confirmed-absent** set. A legacy not-found answer is proof the
+  reservation is gone; the candidate is retired, never looked up again
+  in that session, and disappears from the sensors exactly as today
+  (FR-052). This is what stops the fallback masking a real deletion.
+- A **served-record** map from identifier to `(reservation, fetched_at)`.
+  Between re-checks the stored record is republished without a request.
+  A candidate is re-looked-up at most once per
+  `LEGACY_FALLBACK_RECHECK_SECONDS` (3600), so a 15-minute poll costs at
+  most one lookup per candidate per hour rather than four, while a
+  reservation that finally lands in v3 is picked up within the hour with
+  no restart. A record that reappears in the v3 result is dropped from
+  the map immediately and reverts to being a normal v3 reservation.
+
+Neither cache is persisted — a persisted absence could permanently hide
+a reservation that returns. Candidacy itself must survive a restart,
+however, so the previously-known union includes the baseline's
+`fallback_codes` map as well as `codes` and `bootstrap_codes`:
+otherwise a reservation that only ever arrived through the fallback
+would lose its candidacy on reload and vanish. The window filter needs
+durable stay data that a code-to-identifier map does not carry, so the
+baseline also persists `candidates`, an identifier-to-stay-dates map
+covering every reservation the last successful refresh published as
+well as every identifier in the three code maps (`data-model.md` §4.1).
+It is deliberately **not** derived from the code maps, which would drop
+a reservation that has no confirmation code (FR-033), and it stores
+both stay endpoints, since the window predicate needs `check_in` as
+well as `check_out`.
+A restart therefore costs at most one bounded round of lookups, and
+confirmed absence is re-established by that round rather than carried
+across the restart.
+
+**Request budget.** `MAX_LEGACY_FALLBACK_LOOKUPS_PER_REFRESH` (20) caps
+the lookups a single refresh may issue; candidates over the cap are
+deferred to the next refresh and counted as deferred in diagnostics.
+Ordering is **fair**, not by check-out date: never-attempted candidates
+come first, then the least-recently-attempted, breaking ties by
+earliest check-out. Ordering by check-out alone would let the same
+early candidates consume the cap, and a re-check becoming due would
+displace a candidate that has never been looked up at all — with 100
+missing reservations, a cap of 20, hourly re-checks and a 15-minute
+poll the backlog would never drain. Fair ordering guarantees every
+candidate is attempted within a bounded number of refreshes. Lookups
+run through the existing
+rate-limit-aware client with the same bounded concurrency as the guest
+lookups, so they cannot exhaust the rate budget (NFR-002). Spec NFR-001
+excludes them from the warm-cache steady-state comparison — a steady
+state has no missing reservations — and FR-053 bounds them instead. The
+request-budget test asserts zero legacy requests when nothing is
+missing, exactly the cap when more than the cap are missing, and one
+lookup per candidate per re-check interval (SC-017).
+
+**Error handling.** A not-found answer is the confirmed-absence case
+above. A retirement-shaped answer self-disables the fallback for the
+session with one WARNING naming 2027-03-01 (FR-056). Anything else —
+timeout, 5xx, rate limit, malformed body — degrades only that
+reservation: the **last successfully published record for that
+identifier is retained and republished read-only, whatever its source**
+— a served fallback record if there is one, otherwise the values the v3
+path last published — the failure is counted and logged without
+personal data, and the refresh still publishes (FR-054). Retaining only
+a served fallback record would drop a reservation on the *first* failed
+lookup, recreating exactly the disappearance the fallback exists to
+prevent. Retention is bounded by the same window trim and re-attempted
+on the next refresh; a confirmed absence or a retirement answer still
+ends it immediately.
+
+One case has no values to retain: a **cold start**. After a reload the
+candidate's identifier and stay dates are reconstructed from the
+baseline, but neither the served cache nor the previous published
+record exists, so a first lookup that fails transiently leaves nothing
+to republish. Reconstructing guest-bearing records from storage is not
+an acceptable price for this, so FR-054 takes an explicit, bounded
+exception: on a cold start with no in-session values, the reservation
+is simply not published, the failure is counted and logged, and the
+candidate is retried at the next refresh for which it is eligible. That
+is governed by the same rules as any other candidate — the re-check
+interval runs from the last *attempt*, so a failed cold-start lookup is
+not retried on the next 15-minute poll but once
+`LEGACY_FALLBACK_RECHECK_SECONDS` has elapsed and the cap allows it.
+The gap therefore lasts until a lookup succeeds rather than a single
+refresh, which is the honest statement of the trade: the alternative is
+persisting guest data. The candidate is never retired by a transient
+failure. A fallback
+failure can never raise `UpdateFailed`.
+
+Distinguishing "this reservation does not exist" from "this resource is
+retired" is **[UNVERIFIED]**; the implementation treats a 404 carrying a
+reservation-scoped error body as absence and a 404/410 on the collection
+or a retirement-signalling body as retirement, and when it cannot tell,
+it chooses *retirement* — self-disabling is the safer error, since it
+degrades to today's behaviour rather than erasing a reservation.
+
+**Writes.** Fallback-sourced reservations are published read-only. All
+three write entry points refuse them with an error naming the cause
+(FR-055); see [Write actions](#write-actions). This honours Support's
+instruction that an identifier used against v3 must have come from a v3
+response.
+
+**Observability.** `ReservationFetchResult` gains fallback counters —
+attempted, served-from-cache, succeeded, confirmed-absent, failed,
+deferred — plus the identifiers currently served from the fallback.
+These surface in both diagnostics surfaces of FR-042. They are
+deliberately **not** exposed as a sensor attribute: a v3-only attribute
+key would break SC-002's attribute-key parity and NFR-004 (FR-057).
+
+**When legacy is gone.** After 2027-03-01 the fallback self-disables on
+first use (FR-056) and is deleted with the rest of the legacy path
+(FR-040) — `ReservationFallbackSource`, its constants, its counters and
+its tests, leaving `V3ReservationSource` with the plain v3 result.
+
 ### Write actions
 
 - `add_reservation_note` → `PUT /reservations-v3/{id}/notes`, preceded
@@ -627,6 +816,18 @@ coordinator's cached copy is deliberately *not* used as the read source:
 it can be up to one poll interval stale and would silently discard a note
 added in Guesty meanwhile, which is exactly the class of silent data loss
 the constitution prohibits.
+
+Both actions, and the `target_type="reservation"` branch of
+`guesty.set_custom_field`, additionally refuse a **fallback-sourced**
+target: a reservation currently served from the legacy not-found
+fallback is not in v3, its identifier did not come from a v3 response,
+and a v3 write against it would return "Reservation not found". The
+refusal happens in the HA service layer alongside the identity guard,
+before any request is constructed, and names the cause — the reservation
+is not yet available in v3 — so it can never be mistaken for success
+(FR-055, SC-016). Whether such a write should instead be routed to the
+legacy write resource is spec OQ-010 and needs an owner decision; until
+it is taken, the refusal stands.
 
 Both actions keep today's validation (`api/actions.py:418-470`) and
 today's error shape (`api/actions.py:389-414`), so a rejection names the
@@ -669,14 +870,28 @@ tolerated by a loose comparison.
 
 ### Diagnostics (FR-042)
 
-Per refresh, at DEBUG, with no personal data: pages fetched per resource;
-reservation count by raw v3 status; a histogram of stay-segment counts;
-counts of reservations attributed, partially attributed and skipped;
-guest cache hits, lookups, failures and deferrals; `alteration` drops;
-trim drops. At INFO, once per path activation: the identity match count
-(FR-035) and the active reservation path. These are exactly the numbers a
-user's log must contain for a maintainer to confirm or refute each
-assumption on a real account without ever seeing a guest's details
+FR-042 requires **two** surfaces, carrying the same numbers, and the plan
+provides both. The repository ships no `diagnostics.py` today, so the
+download surface is new; quickstart.md already documents it.
+
+1. **Per-refresh DEBUG log**, with no personal data: pages fetched per
+   resource; reservation count by raw v3 status; a histogram of
+   stay-segment counts; counts of reservations attributed, partially
+   attributed and skipped; guest cache hits, lookups, failures and
+   deferrals; `alteration` drops; trim drops; the per-exception counts of
+   permitted legacy calls required by FR-001 (bootstrap sweep pages,
+   fallback lookups); and the fallback counters of FR-057.
+2. **A `reservations` block in the config entry's diagnostics download**
+   (`async_get_config_entry_diagnostics`), carrying the same counters
+   plus the active reservation path, the identity baseline's
+   `continuity` state and the identifiers currently served from the
+   fallback. Nothing in the block is personal data: identifiers only,
+   never names, contacts or confirmation code values.
+
+At INFO, once per path activation: the identity match count (FR-035) and
+the active reservation path. Together these are exactly the numbers a
+user's log or download must contain for a maintainer to confirm or refute
+each assumption on a real account without ever seeing a guest's details
 (FR-021).
 
 ## Test Strategy
@@ -731,6 +946,18 @@ what makes the differential test possible.
   in DEBUG records (FR-021, NFR-009).
 - **Deprecation** — integration: the repair issue is raised only when
   the entities already exist and v3 is active.
+- **Not-found fallback** — unit and integration: a previously published
+  reservation missing from v3 but present in legacy keeps its state and
+  attributes and is counted as fallback-sourced (SC-015); a legacy
+  not-found retires it and stops further lookups (SC-015, FR-052); every
+  write entry point refuses a fallback-sourced target with no request
+  issued (SC-016); the per-refresh cap, the zero-legacy-request
+  steady state and the re-check interval are asserted by a
+  request-counting test (SC-017); a retirement-shaped answer
+  self-disables the fallback with one warning while the refresh still
+  succeeds (SC-018); and the differential test asserts that no sensor
+  attribute key differs for a fallback-sourced reservation (FR-057,
+  SC-002).
 
 The identity guard and the toggle are both tested through the
 coordinator and service layers rather than in isolation, because both
@@ -759,12 +986,18 @@ between phases.
    FR-009 to FR-015). *Rollback*: the option stays `legacy`.
 5. **Guest cache** — the cache module, its wiring, and the budget and
    privacy tests (FR-016 to FR-021). *Rollback*: v3 path only.
-6. **Identity guard** — the persisted baseline, the refresh check,
-   fail-closed writes and match logging (FR-031 to FR-035).
-   *Rollback*: v3 path only.
+6. **Identity guard** — the persisted baseline, the bootstrap sweep, the
+   refresh check, fail-closed writes and match logging (FR-031 to
+   FR-035, FR-031d, FR-031e). *Rollback*: v3 path only.
+6a. **Legacy not-found fallback** — the fallback source, candidate
+   selection, negative caching, the re-check interval, the per-refresh
+   cap, retirement self-disable and the fallback counters (FR-050 to
+   FR-054, FR-056, FR-057). Depends on Phase 6 for the baseline it
+   draws candidates from. *Rollback*: v3 path only; removing the
+   collaborator restores plain v3 behaviour.
 7. **v3 write actions** — the notes and status resources, guard
-   enforcement and errors (FR-027 to FR-029). *Rollback*: the option
-   stays `legacy`.
+   enforcement, the fallback-sourced write refusal (FR-055) and errors
+   (FR-027 to FR-029). *Rollback*: the option stays `legacy`.
 8. **Default flip, deprecation and docs** — default `v3`, the
    financial-sensor repair issue and strings, the differential and
    toggle tests, and the published pre-release checklist. *Rollback*:
@@ -809,19 +1042,28 @@ from becoming permanent by accident.
 | FR-022 to FR-026 | status handling; data-model.md §1.4 |
 | FR-027 to FR-030 | contracts/guesty-reservation-writes-v3.md |
 | FR-031 to FR-035 | identity guard |
+| FR-031d, FR-031e | identity guard; bootstrap sweep and id provenance |
 | FR-036 to FR-040 | contracts/options-flow-reservations-api.md |
 | FR-041 | research.md pre-release checklist |
-| FR-042 | diagnostics |
+| FR-042 | diagnostics (both surfaces) |
+| FR-050 to FR-054 | legacy not-found fallback |
+| FR-055 | write actions; fallback-sourced refusal |
+| FR-056, FR-057 | legacy not-found fallback; diagnostics |
 | NFR-001 to NFR-002 | request volume and cache bounds |
 | NFR-003, NFR-004 | the backwards-compatibility section |
 | NFR-005 | guest failures degrade attributes only |
 | NFR-006 to NFR-009 | technical context and test strategy |
-| SC-001 to SC-013 | the test strategy |
+| SC-001 to SC-014 | the test strategy |
+| SC-015 to SC-018 | the test strategy; fallback tests |
 
-OQ-001 is settled by the owner (deprecate). OQ-002, OQ-003, OQ-004 and
-OQ-005 are given a working decision plus a recorded fallback in
-research.md. OQ-006 needs no code change either way. OQ-007 and OQ-008
-remain deferred and unimplemented by FR-015.
+OQ-001 is settled by the owner (deprecate) and OQ-009 is settled at the
+analyze stage (both surfaces). OQ-002, OQ-003, OQ-004 and OQ-005 are
+given a working decision plus a recorded fallback in research.md. OQ-006
+needs no code change either way. OQ-007 and OQ-008 remain deferred and
+unimplemented by FR-015. OQ-010 — whether a write to a reservation that
+is not yet in v3 should be routed to the legacy write resource — is open
+and needs an owner decision; FR-055's refusal is implemented meanwhile
+and routing would be purely additive.
 
 ## Complexity Tracking
 
@@ -843,11 +1085,24 @@ attribute name at risk, directly against NFR-004.
 **A one-time legacy bootstrap sweep on the v3 path.** Needed because an
 upgrading installation has no baseline to compare the first v3 refresh
 against, and a baseline built from v3 alone is self-consistent by
-construction. It is a bounded exception to FR-001, SC-001 and FR-034 and
-requires the specification amendment recorded under "Identity guard".
-Enabling writes on a never-cross-checked identity is rejected as the
-simpler alternative because reservation custom-field writes carry
-door-lock codes.
+construction. It is permitted exception 1 of the restated FR-001, is
+specified as FR-031d, and is bounded by the restated SC-001 and FR-034;
+the specification amendment this previously depended on landed in the
+analyze stage. Enabling writes on a never-cross-checked identity is
+rejected as the simpler alternative because reservation custom-field
+writes carry door-lock codes.
+
+**A second legacy call on the v3 path: the not-found fallback.** Needed
+because Guesty's backfill is still running, so a v3 not-found may mean
+"not migrated yet"; without the fallback a live reservation silently
+disappears from calendars and sensors and a door-lock automation never
+fires. It is permitted exception 2 of the restated FR-001, is bounded by
+FR-053 and self-disables at retirement under FR-056. The simpler
+alternative — treating absence as deletion, as the sibling project does
+— is rejected because silent loss of a live booking is the worst
+non-write outcome this feature can produce. The cost is one extra
+collaborator, two in-memory caches and a read-only publication mode,
+all deleted with the legacy path.
 
 **A persisted identity baseline.** Needed because the guard must survive
 restarts and the coordinator is rebuilt on every setup

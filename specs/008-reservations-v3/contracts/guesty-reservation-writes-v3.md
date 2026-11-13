@@ -22,7 +22,19 @@ A write proceeds only when **every** one of these holds:
    bootstrap leaves behind, blocks writes even though a baseline exists;
 3. the refresh that produced the current data was not aborted as
    ambiguous;
-4. the target reservation carries a confirmation code.
+4. the target reservation carries a confirmation code;
+5. the target reservation is **not fallback-sourced** — that is, it is
+   not currently being served from the legacy not-found fallback
+   (FR-055). Its identifier would then have come from a legacy
+   response, and Guesty Support states that an identifier that did not
+   come from v3 returns "Reservation not found" on v3 resources
+   (FR-031e). The refusal names the cause — the reservation is not yet
+   available in v3 — and no request is sent (SC-016).
+
+The confirmation code in condition 4 is a **cross-check only**. It is
+never sent as, or used to derive, the `{reservationId}` path parameter
+of any resource below; that identifier always comes from a v3
+response.
 
 Otherwise the action is refused with an explanatory error and no request
 is sent (FR-031c, FR-032, FR-033). The predicate is re-evaluated from
@@ -46,6 +58,17 @@ conjunct, including after a reload.
 The coordinator's cached copy is deliberately not used: it can be a full
 poll interval stale, and writing it back would silently discard a note
 added in Guesty meanwhile.
+
+**Not found on this read**: if the v3 read reports the reservation does
+not exist, the write MUST be abandoned with an explanatory error, never
+retried against a legacy write resource, and never reported as success.
+Guesty Support advises that a v3 not-found may mean the reservation has
+not been backfilled into v3 yet rather than that it is gone; condition 5
+above is intended to catch that case before the read is even attempted,
+and this read is the backstop for a reservation that disappeared from v3
+between the last refresh and the write. Whether such a write should
+instead be routed to the legacy write resource is spec OQ-010 and awaits
+an owner decision.
 
 ### 1.2 Write
 

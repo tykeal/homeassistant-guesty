@@ -59,7 +59,7 @@ defect that produced #204 becomes loud rather than silent.
 
 ### Verification status of v3 behaviour
 
-**No live Guesty v3 API access is available to this project.** Every statement
+**This project has no live Guesty v3 API access of its own.** Every statement
 in this specification about v3 request shapes, response fields, filter
 semantics, status values and error behaviour is **documentation-derived**:
 taken from the vendor migration guide, the vendor reference pages linked from
@@ -70,8 +70,41 @@ it, issue [#223][issue-223], and the sibling project
 That sibling specification states in its own research notes that no live
 Guesty API calls were ever made during its development. It is therefore
 corroborating documentation, **not** evidence. Nothing in this specification
-may be treated as verified. Every such claim is recorded in
-[Assumptions](#assumptions) and governed by FR-041.
+may be treated as verified on documentation alone. Every such claim is
+recorded in [Assumptions](#assumptions) and governed by FR-041.
+
+**Live verification is, however, now available and deliberately deferred.**
+An external user of this integration has offered to exercise the migration
+against their own Guesty account, beginning with test reservations rather
+than live bookings ([#223][issue-223]). Live verification is therefore no
+longer impossible — it is **scheduled for the pre-release gate**, because
+there is nothing to exercise until an implementation exists. The posture of
+this specification is unchanged in substance: no claim here is verified
+*yet*, and FR-041 still requires each one to be confirmed before the feature
+is declared stable.
+
+### Guesty Support guidance (2026-11-13)
+
+The same user obtained a written reply from Guesty Support, recorded on
+[#223][issue-223]. Three points bind this specification:
+
+1. Support tested **one** reservation whose legacy `_id` and v3 `_id`
+   matched, and **could not confirm** that this holds for every reservation.
+   This is why the identity guard (FR-031 to FR-035) exists.
+2. The reservation identifier used for a v3 call **must come from a v3
+   response**. A channel confirmation code, `originId` or any other legacy or
+   external reference returns "Reservation not found" on v3 endpoints
+   (FR-031e).
+3. **A v3 not-found does not mean the reservation is gone.** Guesty's own
+   migration is still backfilling, so a reservation may simply not be in v3
+   yet; Support advised retrieving it with
+   `GET /v1/reservations/{reservationId}` in that case. This is the basis of
+   the legacy not-found fallback (FR-050 to FR-057).
+
+Support additionally stated that legacy resources retire "at the end of
+2026", which conflicts with Guesty's formal 2026-11-09 announcement of
+**2027-03-01**. This specification proceeds on 2027-03-01; the discrepancy is
+recorded as risk R-011.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -340,7 +373,52 @@ is surfaced exactly once on the v3 path.
 
 ---
 
-### Edge Cases
+### User Story 8 - A migrating reservation must not vanish (Priority: P1)
+
+As a property manager whose door-lock automation depends on a reservation
+being present, I want a reservation that Guesty has not yet backfilled into
+v3 to keep appearing on my sensors and calendars, so that an arriving guest
+is never silently dropped while Guesty's own migration catches up.
+
+**Why this priority**: Guesty Support has stated that a v3 not-found may mean
+"not in v3 yet" rather than "cancelled or deleted". Treating the two the same
+way would make a live reservation disappear with no error anywhere — the
+reservation would go missing from the calendar, and the lock-code automation
+would never fire. Silent loss of a live booking is the worst non-write
+outcome this feature can produce.
+
+**Independent Test**: Can be fully tested by serving a v3 result set from
+which a previously seen reservation is absent while a legacy by-id response
+still returns it, and asserting that the reservation is still published, is
+marked fallback-sourced in diagnostics, and is not a valid write target.
+
+**Acceptance Scenarios**:
+
+1. **Given** a reservation published by an earlier successful refresh,
+   **When** a later v3 refresh no longer returns it and the legacy resource
+   still returns it by identifier, **Then** the reservation is published from
+   the legacy record, the sensor state and attributes are unchanged, and the
+   fallback is recorded in diagnostics and logged without personal data.
+2. **Given** the same reservation, **When** the legacy resource reports it as
+   not found, **Then** the absence is treated as confirmed, no further
+   fallback lookup is issued for it, and it disappears from the sensors
+   exactly as it does today.
+3. **Given** a fallback-sourced reservation, **When** any reservation write
+   action targets it, **Then** the write aborts with an error stating that
+   the reservation is not yet available in v3, and no request is sent to any
+   write resource.
+4. **Given** a refresh in which no previously known reservation is missing,
+   **When** the refresh runs, **Then** no legacy request is made at all.
+5. **Given** a reservation that remains absent from v3 across many refreshes,
+   **When** those refreshes run, **Then** the legacy resource is consulted at
+   most once per re-check interval for that reservation, not once per
+   refresh.
+6. **Given** the legacy resource itself answers in a way consistent with
+   retirement, **When** a fallback lookup is attempted, **Then** the fallback
+   self-disables for that session with a single warning and the refresh still
+   succeeds on v3 alone.
+
+---
 
 - **A reservation whose stay spans more than one listing (mid-stay move).**
   v3 newly supports this. The reservation is attributed to every known listing
@@ -377,6 +455,21 @@ is surfaced exactly once on the v3 path.
   created.
 - **A reservation returned with no stay segments at all.** It is skipped with
   a warning rather than published with no listing.
+- **A reservation absent from the v3 result that the legacy resource still
+  returns.** Guesty's backfill is still running, so absence is not deletion.
+  The reservation is republished from the legacy record, marked
+  fallback-sourced in diagnostics, and refused as a write target
+  (FR-050 to FR-057).
+- **A reservation absent from both v3 and legacy.** Absence is confirmed.
+  The candidate is retired, no further fallback lookup is issued, and the
+  listing reports `no_reservation` exactly as it does today.
+- **A reservation that has never been seen before and is absent from v3.**
+  There is nothing to fall back on: the fallback is only ever a by-identifier
+  lookup for a previously known reservation, never a speculative legacy
+  sweep.
+- **The legacy resource answers a fallback lookup in a retirement-shaped
+  way.** The fallback self-disables for that session with one warning; the
+  refresh still succeeds on v3 alone and nothing else degrades.
 - **A page that claims more results while returning fewer than requested.**
   The refresh fails rather than silently truncating, because v3 provides no
   total count to cross-check against.
@@ -400,8 +493,23 @@ is surfaced exactly once on the v3 path.
 
 - **FR-001**: System MUST retrieve reservations from the Guesty Reservations
   v3 curated search resource (`GET /reservations-v3/search`) when the v3 path
-  is active, and MUST NOT call any resource the vendor migration guide lists
-  as deprecated.
+  is active, and the **legacy reservation path MUST NOT be used for routine
+  operation** under v3: no legacy search, no legacy write, and no call to any
+  resource the vendor migration guide lists as deprecated — **except** for
+  the following two narrowly scoped, individually bounded legacy calls, which
+  are an **exhaustive** list:
+  1. **the one-time identity bootstrap sweep** (FR-031d): at most one
+     paginated legacy reservation sequence, performed once per config entry,
+     at the first v3 setup of an *upgrading* entry, before any v3 data is
+     published, and never repeated;
+  2. **the not-found fallback lookup** (FR-050 to FR-057):
+     `GET /v1/reservations/{reservationId}` for one specific, previously
+     known reservation that is absent from the v3 result, bounded by FR-053.
+
+  No other legacy request is permitted on the v3 path under any
+  circumstances. Each permitted call MUST be individually counted in
+  diagnostics (FR-042) so that a test can assert the exact permitted set
+  rather than an open-ended exception.
 - **FR-002**: System MUST send the configured past/future day window as v3
   date filters in the documented bracketed form, and MUST verify by test that
   reservations outside the window are not returned. This resolves
@@ -593,7 +701,26 @@ is surfaced exactly once on the v3 path.
   writes: reservations are still published, but any reservation write action
   MUST abort with an explanatory error rather than proceed on an empty
   comparison. An empty baseline MUST NOT be read as "no conflict found".
+- **FR-031d**: For an installation upgrading from a legacy-only release,
+  which by definition has no baseline to compare a first v3 refresh against,
+  system MUST perform a **one-time legacy bootstrap sweep** before any v3
+  data is published: at most one paginated legacy reservation sequence over
+  the same window, stored as cross-path evidence, performed once per config
+  entry and never repeated. This is permitted exception 1 of FR-001. A
+  baseline built from a v3 refresh alone is self-consistent by construction
+  and MUST NOT be treated as cross-path evidence. Where the sweep is
+  unavailable or its comparison is uninformative, continuity stays
+  unconfirmed and writes stay blocked under FR-031c.
+- **FR-031e**: Every reservation identifier used in a v3 request MUST
+  originate from a v3 response, or — for a write target named by the user —
+  MUST be validated against a v3 response before the write. A confirmation
+  code, an `originId`, a channel reference or any other legacy or external
+  reference MUST NOT be used as a lookup key for any v3 resource; Guesty
+  Support states such values return "Reservation not found". The
+  confirmation code is used **only** as the identity cross-check of FR-031
+  and as an existing sensor attribute, never as a key.
 - **FR-032**: If any confirmation code's mapping to a reservation identifier
+
   differs from the baseline, system MUST treat the identity as ambiguous,
   MUST abort the refresh, MUST retain last-known-good data, MUST perform no
   write, and MUST log an error naming both identifiers and the rollback
@@ -605,10 +732,121 @@ is surfaced exactly once on the v3 path.
 - **FR-033**: A reservation with no confirmation code MUST be publishable but
   MUST NOT be a valid target for a write action; a write targeting it MUST
   abort with an explanatory error.
-- **FR-034**: The identity guard MUST cost no additional API requests.
+- **FR-034**: The identity guard's **per-refresh** comparison MUST cost zero
+  additional API requests: it runs only on data the refresh has already
+  fetched. The **only** request the guard may ever issue is the one-time
+  bootstrap sweep of FR-031d, which is performed once per config entry
+  outside any refresh and is permitted exception 1 of FR-001. No other guard
+  activity, in any refresh or write, may add a request.
 - **FR-035**: On the first successful v3 refresh, system MUST log at
   informational level how many previously known reservation identifiers were
   matched, so a user can confirm identity continuity on their own account.
+
+#### Legacy not-found fallback
+
+Guesty Support states that a reservation missing from v3 may simply not have
+been backfilled yet, and advised retrieving it from the legacy resource in
+that case ([#223][issue-223], recorded above). Without this, a live
+reservation would silently vanish from sensors and calendars mid-migration.
+
+- **FR-049a**: The fallback's record of which reservations are candidates
+  MUST survive a restart and MUST NOT depend on confirmation-code
+  evidence, because FR-033 permits a reservation to have no confirmation
+  code. The retained record MUST carry **both** stay endpoints, since the
+  window test needs the check-in as well as the check-out, and MUST hold
+  identifiers and dates only — never guest data.
+- **FR-050**: When the v3 path is active and a reservation that was
+  **previously known** — published by an earlier successful refresh, or
+  recorded in the identity baseline or its bootstrap map — is **absent** from
+  the current v3 result while its stay still overlaps the configured window,
+  system MUST attempt to retrieve that reservation from the legacy resource
+  by identifier (`GET /v1/reservations/{reservationId}`) and, on success,
+  MUST publish it as a **fallback-sourced** reservation with the same entity,
+  state and attribute behaviour as any other reservation. The fallback MUST
+  be a by-identifier lookup only; a legacy **search** or any speculative
+  legacy sweep is forbidden by FR-001. "Previously known" MUST survive a
+  restart: the identifiers retained for fallback candidacy include those
+  learned from earlier fallback-sourced reservations.
+- **FR-050a**: A fallback-sourced reservation MUST satisfy the same
+  configured filters as a v3-sourced one before it is published: the
+  configured date window, the configured status set (FR-003) and the
+  listing and tag selection of Feature 007 (FR-014). A reservation that
+  disappeared from the v3 result because its status moved outside the
+  configured set MUST NOT be reintroduced by the fallback, even though its
+  legacy lookup succeeds. Attribution MUST follow the **provenance of the
+  payload**, which is distinct from the read-only fallback marker: a record
+  whose payload came from a legacy document is attributed by its listing
+  identifier under the legacy rules, while a record retained from an
+  earlier v3 payload keeps its stay-segment attribution and every listing
+  it projects onto, even though it is published read-only. The requirement
+  to skip a reservation with no stay segments (FR-013) applies to v3
+  payloads only.
+- **FR-051**: The fallback MUST NOT be attempted for a reservation the
+  integration has never seen, for a reservation whose stay no longer overlaps
+  the configured window, or for an identifier that did not come from a prior
+  successful retrieval. A reservation absent from v3 that has never been
+  known is simply not published.
+- **FR-052**: A legacy response stating the reservation does not exist MUST
+  be treated as **confirmed absence**: the candidate is retired, no further
+  fallback lookup is issued for it, and the reservation disappears from the
+  sensors exactly as it does today. The fallback MUST NOT keep republishing a
+  reservation that both APIs agree is gone, and MUST NOT mask a genuine
+  cancellation or deletion.
+- **FR-053**: Fallback lookups MUST be bounded. Candidates over the
+  per-refresh cap MUST be selected fairly — never-attempted candidates
+  before previously-attempted ones, then least-recently-attempted first —
+  so that no candidate can be starved indefinitely by candidates whose
+  re-check keeps falling due, and the re-check interval MUST be measured
+  from the last **attempt**, including a failed one, not from the last
+  success. System MUST issue at most a
+  defined maximum number of fallback lookups per refresh, and at most one
+  lookup per candidate per a defined re-check interval that is longer than
+  the poll interval, serving the previously retrieved record in between. Both
+  bounds MUST be stated in the implementation plan and asserted by test, so
+  that a long-running Guesty backfill cannot cause the integration to hammer
+  the legacy resource on every poll.
+- **FR-054**: A fallback lookup that fails for any reason other than
+  confirmed absence or retirement MUST degrade only the affected
+  reservation: the reservation's **last successfully published values MUST
+  be retained and republished**, whether those values came from an earlier
+  fallback lookup or from the v3 path before the reservation went missing,
+  the reservation stays read-only, the refresh still publishes, and the
+  failure is logged without personal data. This MUST hold on the **first**
+  failed lookup for a candidate, when no fallback record exists yet, so
+  long as the integration still holds values for it in the current
+  session. It MUST NOT hold on a **cold start**: after a restart or
+  reload, a candidate reconstructed from storage has no retained values
+  and no guest data may be persisted to create them, so a transient
+  failure leaves that reservation unpublished until a later lookup
+  succeeds. The failure is counted and logged, and the candidate is
+  retried at the next refresh for which it is **eligible** under FR-053 —
+  that is, once the re-check interval since its last attempt has elapsed
+  and the per-refresh cap allows it — so the absence MUST NOT be
+  described as lasting a single refresh. A fallback failure MUST NOT fail
+  a refresh, and a transient failure MUST NOT retire a candidate.
+- **FR-055**: A fallback-sourced reservation MUST be published **read-only**.
+  Every reservation write action targeting it — the note action, the status
+  action and the reservation branch of the custom-field service — MUST abort
+  with an error that names the cause (the reservation is not yet available in
+  v3) and MUST send no request. This follows FR-031e: the identifier of a
+  fallback-sourced reservation came from a legacy response, so it may not be
+  used as a v3 lookup key. The refusal MUST be loud; a write MUST never be
+  reported as successful, and MUST never be silently dropped.
+- **FR-056**: If the legacy resource answers a fallback lookup in a way
+  consistent with retirement rather than with that specific reservation being
+  absent, system MUST disable the fallback for the remainder of that
+  configuration entry's session, MUST log a single warning naming the
+  2027-03-01 retirement, and MUST continue refreshing on v3 alone. The
+  fallback has no separate configuration switch: it is intrinsic to the v3
+  path, and under the legacy path (FR-036) it is inert because the legacy
+  resource is already the primary source.
+- **FR-057**: Fallback-sourced reservations MUST be clearly distinguishable
+  in diagnostics (FR-042) and in logs: at minimum the count of fallback
+  lookups issued, succeeded, confirmed-absent, failed and deferred per
+  refresh, and the identifiers currently being served from the fallback. This
+  distinction MUST NOT be expressed as a new or changed **sensor attribute**,
+  because a v3-only attribute key would break the attribute-key parity of
+  SC-002 and NFR-004.
 
 #### Rollout toggle
 
@@ -664,10 +902,12 @@ sensors are deprecated rather than re-sourced
   FR-048. The notice MUST be raised at most once per config entry per Home
   Assistant start and MUST NOT be raised on an installation where none of the
   three entities exists. A deprecation warning MUST additionally be logged at
-  warning level in that same case. The delivery mechanism — a Home Assistant
-  repairs issue, a logged warning alone, or both — is
-  [OQ-009](#oq-009-which-deprecation-notice-mechanism); the repository has no
-  existing repairs-platform precedent.
+  warning level in that same case. The delivery mechanism is **both** a
+  non-fixable Home Assistant repairs issue and the logged warning, decided in
+  [OQ-009](#oq-009-which-deprecation-notice-mechanism--resolved-both); the
+  repository has no existing repairs-platform precedent, so the issue and its
+  translated string are new surface, introduced and later removed with the
+  sensors under FR-048.
 - **FR-047**: The deprecation MUST be documented as a breaking change in the
   release notes of the release that ships this feature and in the
   integration's user documentation, naming the three entities, stating that
@@ -693,12 +933,23 @@ sensors are deprecated rather than re-sourced
   verified without live API access MUST be recorded as an explicit assumption
   in this specification, and MUST be confirmed against a live Guesty account
   before the feature is declared stable. The list MUST be reproduced in the
-  implementation plan as a pre-release checklist.
+  implementation plan as a pre-release checklist. Live verification is
+  **available** — an external user has offered their own Guesty account,
+  starting with test reservations ([#223][issue-223]) — and is **deferred to
+  the pre-release gate**, because there is nothing to exercise until an
+  implementation exists. The concrete test plan is produced then, not now;
+  availability does not downgrade any assumption to a verified fact.
 - **FR-042**: System MUST emit diagnostics sufficient to confirm each
-  assumption from a user's debug log without exposing personal data: at
-  minimum, per refresh, the number of pages fetched per resource, the
-  reservation count by status, a histogram of stay-segment counts, and the
-  identity-match count from FR-035.
+  assumption from a user's debug log without exposing personal data, through
+  **both** of the following surfaces:
+  1. a per-refresh DEBUG log line, and
+  2. a `reservations` block in the configuration entry's diagnostics
+     download.
+
+  Both MUST carry, per refresh: the number of pages fetched per resource, the
+  reservation count by status, a histogram of stay-segment counts, the
+  identity-match count from FR-035, the per-exception counts of permitted
+  legacy calls required by FR-001, and the fallback counters of FR-057.
 
 ### Non-Functional Requirements
 
@@ -718,7 +969,10 @@ sensors are deprecated rather than re-sourced
   requests MUST be issued only for reservations attributed to a tracked
   listing, so that untracked reservations returned by the search cost nothing
   beyond the page they arrive on. No folio lookups exist, because FR-043
-  forbids them.
+  forbids them. **Fallback lookups (FR-050) are excluded from the warm-cache
+  steady-state comparison**, because a steady state has no missing
+  reservations by definition; they are instead bounded independently by
+  FR-053, and that bound MUST be stated in the plan and asserted by test.
 - **NFR-002 (Rate limiting)**: The additional guest lookups MUST go through
   the existing rate-limit-aware client with backoff, and MUST NOT be able to
   exhaust the account's rate budget on a 15-minute poll
@@ -776,15 +1030,32 @@ sensors are deprecated rather than re-sourced
   The three sensors fed by it are deprecated (FR-043 to FR-049).
 - **Reservation API Path Setting**: The rollout toggle (FR-036 to FR-040).
 - **Identity Record**: The previously known mapping from confirmation code to
-  reservation identifier used by the identity guard (FR-031 to FR-035).
+  reservation identifier used by the identity guard (FR-031 to FR-035). It
+  keeps legacy-sourced mappings — the bootstrap sweep's and the fallback's —
+  separate from v3-sourced ones, so that legacy evidence can never confirm
+  itself.
+- **Fallback Record**: A previously known reservation that is absent from the
+  current v3 result and is being served from the legacy resource (FR-050 to
+  FR-057). It carries the reservation itself, the time of the last lookup
+  (for the FR-053 re-check interval), and its fallback-sourced flag, which
+  makes it read-only for writes and visible in diagnostics but never in a
+  sensor attribute.
 
 ## Success Criteria *(mandatory)*
 
 ### Measurable Outcomes
 
-- **SC-001**: After the migration, zero requests go to any resource the vendor
-  migration guide marks as deprecated, verified by a test that fails if a
-  deprecated path is requested on the v3 path.
+- **SC-001**: After the migration, the only requests that reach a resource the
+  vendor migration guide marks as deprecated are the two exceptions
+  enumerated in FR-001, each within its own bound, verified by a test that
+  asserts all three of the following and fails on any other deprecated
+  request:
+  1. a steady-state v3 refresh issues **zero** deprecated requests;
+  2. an **upgrading** entry's first v3 setup issues **at most one** bootstrap
+     sweep sequence (FR-031d), and a fresh entry issues **none**;
+  3. a refresh with missing previously known reservations issues **at most**
+     the FR-053 per-refresh cap of by-identifier legacy lookups, and no
+     legacy search.
 - **SC-002**: For an equivalent account, every reservation entity's id, state
   and attribute key set is identical between the legacy path and the v3 path,
   verified by a differential test over a shared fixture set. The three
@@ -819,6 +1090,8 @@ sensors are deprecated rather than re-sourced
   steady-state refresh with no reservation changes and a guest cache within
   its freshness period performs zero guest lookups; and a refresh taken after
   the freshness period has elapsed refetches the affected guests.
+- **SC-011**: Every assumption in this specification appears as an item in the
+  plan's pre-release live-verification checklist (FR-041).
 - **SC-012**: A multi-segment reservation that has checked out of listing A
   and into listing B reports `checked_out` on A and `checked_in` on B at the
   same refresh, and before the move reports `checked_in` on A and
@@ -836,8 +1109,24 @@ sensors are deprecated rather than re-sourced
   made to any guest-folio resource on either path; and the deprecation notice
   of FR-046 is raised exactly once when the v3 path starts with those
   entities present and not at all when they are absent.
-- **SC-011**: Every assumption in this specification appears as an item in the
-  plan's pre-release live-verification checklist (FR-041).
+- **SC-015**: A reservation published by an earlier refresh that is absent
+  from the next v3 result, and that the legacy resource still returns by
+  identifier, keeps its entity state and attribute values unchanged, is
+  counted as fallback-sourced in diagnostics, and is reported in no sensor
+  attribute as such. The same reservation, when the legacy resource reports
+  it absent, disappears from the sensors and triggers no further fallback
+  lookup on subsequent refreshes.
+- **SC-016**: Every reservation write action targeting a fallback-sourced
+  reservation fails with an error naming the cause, and a request counter
+  asserts that no write request was issued.
+- **SC-017**: Over a refresh in which no previously known reservation is
+  missing, the count of legacy requests is zero; over a refresh with more
+  missing reservations than the FR-053 per-refresh cap, the count of legacy
+  requests equals that cap; and over repeated refreshes within the FR-053
+  re-check interval, a given candidate is looked up exactly once.
+- **SC-018**: With the legacy resource answering in a retirement-shaped way,
+  the first fallback attempt logs one warning, the refresh still succeeds,
+  and no further fallback lookup is issued for the rest of the session.
 
 ## Assumptions
 
@@ -914,6 +1203,31 @@ confirmed before this feature is declared stable.
   equivalent to today's embedded guest object.
 - **[UNVERIFIED]** A deleted or unknown guest identifier returns a not-found
   response rather than an error that would fail the refresh.
+
+### About the legacy not-found fallback
+
+- **Stated by Guesty Support, not verified by this project**: a reservation
+  missing from a v3 response may simply not have been backfilled into v3 yet,
+  and `GET /v1/reservations/{reservationId}` retrieves it in that case.
+- **[UNVERIFIED]** The legacy by-identifier resource distinguishes "this
+  reservation does not exist" from "this resource is retired" in a way the
+  integration can tell apart from the response alone (FR-056). If it cannot,
+  the fallback self-disables more often than necessary, which degrades
+  gracefully to today's behaviour.
+- **[UNVERIFIED]** The legacy by-identifier resource accepts an identifier
+  that originally came from a v3 response. Support's point that v3 rejects
+  legacy and external references says nothing about the reverse direction.
+  If this is wrong, the fallback can only serve reservations whose identifier
+  was learned from a legacy response — the bootstrap sweep and prior legacy
+  refreshes — and that limitation must be surfaced, not hidden.
+- **[UNVERIFIED]** A reservation retrieved from the legacy resource maps,
+  through the existing legacy mapping path, to the same attribute values the
+  v3 path would produce for it, so that a fallback-sourced reservation is not
+  observably different on the sensor.
+- **[UNVERIFIED]** Guesty's backfill completes rather than leaving a
+  reservation permanently absent from v3. If it does not, affected
+  reservations stay read-only indefinitely and the diagnostics of FR-057 are
+  the only evidence; this is risk R-012.
 
 ### About write resources
 
@@ -1029,6 +1343,37 @@ confirmed before this feature is declared stable.
   and documentation treatment; FR-044 keeps the legacy path working as a
   temporary rollback until FR-048's removal release.
 
+- **R-011 — The legacy retirement date is contradicted by Guesty's own
+  support channel.**
+  *Impact*: medium-high. Guesty Support told an external user that legacy
+  resources retire "at the end of 2026", while Guesty's formal 2026-11-09
+  announcement states 2027-03-01 ([#223][issue-223]). If Support is right,
+  roughly three months of assumed runway do not exist, and both the rollback
+  path (FR-036, FR-040) and the not-found fallback (FR-050) lose their
+  backing resource earlier than planned.
+  *Mitigation*: this specification proceeds on the **formal** 2027-03-01 date
+  and does not reschedule around an informal remark. Nothing depends on
+  legacy being present: FR-056 makes the fallback self-disable the moment
+  legacy answers in a retirement-shaped way, FR-039 already warns on the
+  legacy path, and the v3 path is the default (FR-037). The consequence of
+  the earlier date is therefore a louder warning and a lost safety net, not a
+  broken integration. The discrepancy is to be re-checked against Guesty's
+  published announcement before release and, if confirmed, carried into the
+  release notes.
+
+- **R-012 — The fallback hides a stalled or incomplete Guesty backfill.**
+  *Impact*: medium. A reservation that never arrives in v3 is served from
+  legacy indefinitely, looking normal on the dashboard while being
+  permanently unwritable; when legacy retires it disappears.
+  *Mitigation*: FR-057 requires fallback-sourced reservations and their
+  counts to be visible in diagnostics and logs, so the condition is
+  observable rather than silent; FR-055 makes the read-only consequence loud
+  at the moment a user tries to write; FR-052 prevents the opposite failure
+  of masking a genuine deletion; and FR-053's re-check interval means a
+  reservation that does arrive in v3 is picked up without a restart. The
+  pre-release live verification (FR-041) is the opportunity to measure how
+  often this actually happens.
+
 ## Out of Scope
 
 - Webhook-based updates, including `reservation.updated.v2`. Polling remains
@@ -1057,6 +1402,13 @@ confirmed before this feature is declared stable.
 - Any change to the default window, poll interval or status filter defaults.
 - Removal of the legacy path. That is a follow-up on or after 2027-03-01
   (FR-040, FR-048).
+- **Legacy write fallback.** When a write targets a reservation that is not
+  yet in v3, the write is refused (FR-055), not re-routed to a legacy write
+  resource. Re-routing is a scope question recorded as
+  [OQ-010](#oq-010-should-writes-fall-back-to-legacy-write-resources).
+- **The live-verification test plan** for the external user's account. Live
+  verification is available and deferred (FR-041); the concrete plan is
+  written once an implementation exists, not here.
 
 ## Open Questions
 
@@ -1097,8 +1449,11 @@ acceptance and risk.
 
 **Rationale for the decision**: the Option A safety valve — "fall back to
 Option B if live verification shows the values are not equivalent" — could
-never be exercised, because FR-041 records that no live Guesty access exists
-for this project, so equivalence could not be established before release.
+never be exercised at the time of the decision, because this project had no
+live Guesty access of its own and equivalence could not be established before
+release. Live verification has since been offered by an external user
+(FR-041), but it is deferred to the pre-release gate and the owner has
+confirmed the deprecation independently of it: the sensors are not in use.
 Shipping an unverifiable monetary value under an existing sensor name is a
 worse breach of trust than withdrawing the sensor. Option B also removes a
 whole resource, failure mode and request-budget argument from a migration
@@ -1170,17 +1525,63 @@ record that choice and the gap must be stated in user-facing documentation.
 Until then, completeness wins. Whether the resulting page count is acceptable
 for a large account is itself **[UNVERIFIED]**.
 
-### OQ-009: Which deprecation-notice mechanism?
+### OQ-009: Which deprecation-notice mechanism? — RESOLVED: both
+
+**Status: DECIDED at the analyze stage — ship both surfaces.** Satisfies
+tasks.md T003; see `analysis.md` and `research.md` R15.
 
 FR-046 requires a user-visible deprecation notice for the three financial
-sensors, but does not fix its delivery mechanism, because this repository has
+sensors, but did not fix its delivery mechanism, because this repository has
 no precedent to follow: the integration ships no `repairs` platform and no
-issue translations today. The plan stage must choose between a Home Assistant
-repairs issue (visible in Settings → Repairs, dismissible, but new platform
-surface and new translated strings to add and later remove under FR-048) and
-a logged warning alone (zero new surface, but easily missed by a user who
-never reads the log). This question exists only because Option B was chosen
-in OQ-001; it did not arise under Option A.
+issue translations today. The choice lay between a Home Assistant repairs
+issue (visible in Settings → Repairs, dismissible, but new platform surface
+and new translated strings to add and later remove under FR-048) and a logged
+warning alone (zero new surface, but easily missed by a user who never reads
+the log). This question exists only because Option B was chosen in OQ-001; it
+did not arise under Option A.
+
+**Decision**: implement **both**, as the tasks already assume.
+
+1. A non-fixable repairs issue — `is_fixable=False`, severity `warning`,
+   translation key `financial_sensors_deprecated` — raised exactly once when
+   the v3 path starts with those entities present, as SC-014 asserts.
+2. A WARNING log line carrying the same information.
+
+**Rationale**: FR-046 calls the notice *user-visible*, and a log line alone
+is not user-visible to the dashboard-only user that risk R-010 is about. The
+repairs issue is the only Home Assistant surface that reaches that user. The
+log line costs nothing extra and is what a support request will actually
+quote. The new-surface objection is bounded: one non-fixable issue and one
+translation string, both removed with the sensors under FR-048. Dismissal is
+a feature here, not a leak — the notice is informational and the sensors stay
+`unavailable` regardless.
+
+### OQ-010: Should writes fall back to legacy write resources?
+
+**Status: OPEN — needs an owner decision. Does not block implementation.**
+
+FR-055 specifies that a write targeting a fallback-sourced reservation — one
+that exists in legacy but not yet in v3 — is refused with an explanatory
+error. The alternative is to route that write to the corresponding **legacy**
+write resource, so that, for example, a door-lock automation can still write
+its code to a reservation Guesty has not finished migrating.
+
+Arguments for refusing (the specified behaviour): it keeps the enumerated
+legacy exceptions of FR-001 to two read-only cases, both trivially testable;
+it honours Guesty Support's instruction to use only identifiers that came
+from a v3 response when calling v3; and a loud refusal is never silently
+wrong.
+
+Arguments for routing: the motivating scenario for the whole fallback is a
+door-lock automation, and a fallback that restores *visibility* but not the
+*write* leaves exactly that automation broken — just noisily rather than
+silently.
+
+Deciding this requires an owner call, because it widens the permitted legacy
+surface from reads to writes and changes user-visible behaviour, which is
+beyond the hybrid-fallback decision recorded on [#223][issue-223]. The
+specification proceeds on FR-055 until decided; adopting routing later is
+additive and does not invalidate anything written here.
 
 ## Dependencies
 
