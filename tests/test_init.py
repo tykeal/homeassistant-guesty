@@ -1104,7 +1104,7 @@ class TestReservationsCoordinatorSetup:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=[],
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.test_connection",
@@ -1126,6 +1126,7 @@ class TestReservationsCoordinatorSetup:
         await hass.async_block_till_done()
 
         assert entry.state is ConfigEntryState.SETUP_RETRY
+        mock_reservations.assert_awaited()
 
 
 class TestAsyncSetupEntryCustomFields:
