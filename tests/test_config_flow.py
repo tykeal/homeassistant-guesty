@@ -1870,6 +1870,37 @@ class TestReservationsApiOption:
         "custom_components.guesty.config_flow._validate_credentials",
         new_callable=AsyncMock,
     )
+    async def test_stored_null_resolves_like_the_client(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """A stored null is invalid, not an absent option."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        hass.config_entries.async_update_entry(
+            entry,
+            options={**entry.options, CONF_RESERVATIONS_API: None},
+        )
+        _setup_api_client(hass, entry.entry_id)
+
+        result = await _navigate_to_intervals(hass, entry.entry_id)
+        marker = self._option_marker(result)
+        assert marker.default() == RESERVATIONS_API_V3
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
     async def test_selected_value_is_stored(
         self,
         mock_validate: AsyncMock,

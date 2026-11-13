@@ -619,8 +619,9 @@ def _current_reservations_api(entry: ConfigEntry) -> str:
     """Resolve the reservation API value stored on an entry.
 
     An entry created before this option existed has no stored
-    value and takes the default without any migration step; an
-    unparsable stored value resolves to v3 with a warning.
+    value and takes the default without any migration step; a
+    stored value that is not one of the known selections resolves
+    to v3 with a warning, matching the client.
 
     Args:
         entry: The config entry being configured.
@@ -628,7 +629,6 @@ def _current_reservations_api(entry: ConfigEntry) -> str:
     Returns:
         The reservation API value to offer as the form default.
     """
-    stored = entry.options.get(CONF_RESERVATIONS_API)
-    if stored is None:
+    if CONF_RESERVATIONS_API not in entry.options:
         return DEFAULT_RESERVATIONS_API
-    return resolve_reservations_api(stored)
+    return resolve_reservations_api(entry.options[CONF_RESERVATIONS_API])

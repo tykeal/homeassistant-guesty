@@ -122,7 +122,11 @@ class LegacyReservationSource:
             reservations=tuple(merged),
             pages=primary_pages + secondary_pages,
             status_counts=MappingProxyType(
-                dict(Counter(res.status for res in merged)),
+                dict(
+                    Counter(
+                        res.status for res in merged if isinstance(res.status, str)
+                    ),
+                ),
             ),
         )
 

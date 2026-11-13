@@ -2106,3 +2106,34 @@ class TestReservationSourceDelegation:
             "checked_in": 1,
         }
         assert dict(result.segment_histogram) == {}
+
+    @respx.mock
+    async def test_legacy_source_counters_are_best_effort(self) -> None:
+        """A structured status is served but left uncounted."""
+        _mock_token_endpoint()
+        route = respx.get(f"{BASE_URL}/reservations")
+        route.side_effect = [
+            Response(
+                200,
+                json=_make_reservations_page(
+                    [
+                        _make_reservation_dict(_id="res-0"),
+                        _make_reservation_dict(
+                            _id="res-1",
+                            status={"value": "checked_in"},
+                        ),
+                    ],
+                ),
+            ),
+            Response(200, json=_make_reservations_page([])),
+        ]
+        client, _, _ = _make_client(reservations_api=RESERVATIONS_API_LEGACY)
+        source = LegacyReservationSource(client)
+        result = await source.fetch(
+            past_days=30,
+            future_days=365,
+            statuses=None,
+        )
+
+        assert len(result.reservations) == 2
+        assert dict(result.status_counts) == {"confirmed": 1}
