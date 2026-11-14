@@ -368,7 +368,7 @@ class ReservationsCoordinator(
             return GuestLookupResult()
         try:
             return await self.api_client.resolve_guests(distinct)
-        except GuestyApiError as exc:
+        except Exception as exc:
             _LOGGER.warning(
                 "Guest lookups failed (%s); publishing without them",
                 type(exc).__name__,

@@ -101,8 +101,10 @@ class GuestCache:
         _client: API client issuing the authenticated requests.
         _clock: Monotonic clock the entries are aged against.
         _entries: Cached records, in least-recently-used order.
-        _attempts: Clock reading of the last attempt per guest id,
-            which orders the burst cap oldest-first.
+        _attempts: Sequence number of the last attempt per guest
+            id, which orders the burst cap oldest-first.
+        _attempt_seq: Monotonic counter stamped onto attempts, so
+            ordering never depends on the clock's resolution.
     """
 
     def __init__(
@@ -120,7 +122,8 @@ class GuestCache:
         self._client = client
         self._clock = clock
         self._entries: OrderedDict[str, GuestCacheEntry] = OrderedDict()
-        self._attempts: OrderedDict[str, float] = OrderedDict()
+        self._attempts: OrderedDict[str, int] = OrderedDict()
+        self._attempt_seq = 0
 
     def __len__(self) -> int:
         """Return the number of cached records.
@@ -174,6 +177,8 @@ class GuestCache:
             )
             failures = sum(1 for succeeded in outcomes if not succeeded)
 
+        self._trim_attempts(set(unique))
+
         result = GuestLookupResult(
             guests=MappingProxyType(self._known(unique)),
             hits=hits,
@@ -217,14 +222,21 @@ class GuestCache:
             needed.append(guest_id)
         return hits, needed
 
-    def _priority(self, guest_id: str) -> tuple[int, float]:
+    def _priority(self, guest_id: str) -> tuple[int, int]:
         """Order one candidate id for the burst cap.
 
-        Ids with no record at all come first, because they publish
-        nothing until they are fetched, while an expired record
-        keeps serving its last known values. Within each class the
-        least recently attempted id wins, so a deferred id can
-        never be starved by a crowd that keeps expiring.
+        Scheduling is a strict round robin on the last attempt,
+        which is the only ordering that stays fair when a refresh
+        needs more distinct guests than the cache can hold. An id
+        never attempted sorts first, so a newly seen guest is
+        fetched promptly and an expired record is still guaranteed
+        its turn rather than queueing behind every absent id
+        forever. The attempt log keeps every id still in use, so
+        bounding it cannot reset an id's place in the rotation.
+
+        An id with no record at all breaks a tie, because it
+        publishes nothing until it is fetched while an expired
+        record keeps serving its last known values.
 
         Args:
             guest_id: The candidate id.
@@ -233,7 +245,7 @@ class GuestCache:
             The sort key for that id.
         """
         has_entry = 1 if guest_id in self._entries else 0
-        return has_entry, self._attempts.get(guest_id, 0.0)
+        return self._attempts.get(guest_id, -1), has_entry
 
     def _is_fresh(self, entry: GuestCacheEntry, now: float) -> bool:
         """Test a cached record against its freshness window.
@@ -283,16 +295,16 @@ class GuestCache:
             True when the lookup produced a stored record.
         """
         async with semaphore:
-            self._attempts[guest_id] = self._clock()
+            self._attempt_seq += 1
+            self._attempts[guest_id] = self._attempt_seq
             self._attempts.move_to_end(guest_id)
-            self._trim(self._attempts)
             try:
                 response = await self._client._request(
                     "GET",
                     GUESTS_CRUD_PATH.format(guest_id=guest_id),
                     params={"fields": " ".join(GUEST_FIELDS)},
                 )
-            except GuestyApiError as exc:
+            except (GuestyApiError, httpx.HTTPError) as exc:
                 self._record_failure(guest_id, type(exc).__name__)
                 return False
 
@@ -360,6 +372,31 @@ class GuestCache:
         """
         while len(store) > GUEST_CACHE_MAX_ENTRIES:
             store.popitem(last=False)
+
+    def _trim_attempts(self, in_play: set[str]) -> None:
+        """Bound the attempt log without forgetting live ids.
+
+        Forgetting an id that is still being requested would make
+        it look never attempted and send it back to the front of
+        the queue, so a working set larger than the record bound
+        could cycle forever without the tail ever being served.
+        The log therefore keeps every id this refresh needed and
+        sheds only the oldest ids that have dropped out of use.
+
+        Args:
+            in_play: Ids the current refresh asked for.
+        """
+        excess = len(self._attempts) - max(
+            GUEST_CACHE_MAX_ENTRIES,
+            len(in_play),
+        )
+        if excess <= 0:
+            return
+        stale = [guest_id for guest_id in self._attempts if guest_id not in in_play][
+            :excess
+        ]
+        for guest_id in stale:
+            del self._attempts[guest_id]
 
 
 def _parse_guest(

@@ -518,3 +518,105 @@ class TestGuestCacheContract:
 
         assert "guest-002" not in result.guests
         assert result.failures == 1
+
+
+class TestGuestCacheFairnessAboveTheBound:
+    """Tests that scheduling stays fair past the LRU bound.
+
+    When a refresh needs more distinct guests than the cache can
+    hold, some ids are always absent. The burst cap must still
+    reach every id, or an expired record would keep publishing
+    stale contact details forever.
+    """
+
+    @respx.mock
+    async def test_every_guest_is_refreshed_in_rotation(self) -> None:
+        """Expired records get their share of the lookup budget."""
+        _mock_token()
+        requested: list[str] = []
+
+        def _handler(request: httpx.Request) -> Response:
+            """Record and serve one guest lookup.
+
+            Args:
+                request: The outgoing guest lookup request.
+
+            Returns:
+                A synthetic guests-crud response.
+            """
+            guest_id = request.url.path.rsplit("/", 1)[-1]
+            requested.append(guest_id)
+            return Response(200, json=_guest_body(guest_id))
+
+        respx.get(url__regex=rf"{BASE_URL}/guests-crud/.+").mock(
+            side_effect=_handler,
+        )
+        cache, clock = _make_cache()
+
+        total = GUEST_CACHE_MAX_ENTRIES + 88
+        ids = [f"guest-{index:05d}" for index in range(total)]
+        rounds = -(-total // MAX_GUEST_LOOKUPS_PER_REFRESH)
+        for _ in range(rounds):
+            await cache.resolve(ids)
+
+        assert len(cache) == GUEST_CACHE_MAX_ENTRIES
+        requested.clear()
+
+        # Every record held is now stale and 88 ids have been
+        # evicted, so absent and expired ids compete for the cap.
+        clock.advance(GUEST_CACHE_TTL_SECONDS + 1)
+        for _ in range(rounds):
+            await cache.resolve(ids)
+
+        assert set(requested) == set(ids)
+
+    @respx.mock
+    async def test_failing_lookups_still_rotate(self) -> None:
+        """A failing id cannot hog the budget past the bound."""
+        _mock_token()
+        requested: list[str] = []
+
+        def _handler(request: httpx.Request) -> Response:
+            """Record one guest lookup and fail its transport.
+
+            Args:
+                request: The outgoing guest lookup request.
+
+            Raises:
+                httpx.ReadError: Always, to fail every lookup.
+            """
+            requested.append(request.url.path.rsplit("/", 1)[-1])
+            raise httpx.ReadError("connection reset")
+
+        respx.get(url__regex=rf"{BASE_URL}/guests-crud/.+").mock(
+            side_effect=_handler,
+        )
+        cache, _clock = _make_cache()
+
+        total = GUEST_CACHE_MAX_ENTRIES + 88
+        ids = [f"guest-{index:05d}" for index in range(total)]
+        rounds = -(-total // MAX_GUEST_LOOKUPS_PER_REFRESH)
+        for _ in range(rounds):
+            result = await cache.resolve(ids)
+            assert result.failures == MAX_GUEST_LOOKUPS_PER_REFRESH
+
+        assert set(requested) == set(ids)
+
+    @respx.mock
+    async def test_read_error_never_escapes_a_lookup(self) -> None:
+        """An untranslated HTTPX failure degrades nothing but it."""
+        _mock_token()
+        respx.get(_guest_url("guest-001")).mock(
+            side_effect=[
+                Response(200, json=_guest_body("guest-001")),
+                httpx.ReadError("connection reset"),
+            ],
+        )
+        cache, clock = _make_cache()
+
+        await cache.resolve(["guest-001"])
+        clock.advance(GUEST_CACHE_TTL_SECONDS + 1)
+        result = await cache.resolve(["guest-001"])
+
+        assert result.failures == 1
+        assert result.guests["guest-001"].full_name == "Ada Lovelace"

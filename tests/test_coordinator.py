@@ -11,6 +11,7 @@ from types import MappingProxyType
 from typing import cast
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.core import HomeAssistant
@@ -2696,6 +2697,29 @@ class TestGuestLookupScope:
             [reservation],
             ["listing-001"],
             guest_error=GuestyConnectionError("offline"),
+        )
+
+        data = await coordinator._async_update_data()
+
+        assert [r.id for r in data["listing-001"]] == ["res-1"]
+
+    async def test_untranslated_guest_error_is_contained(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """An error the client never wraps still cannot escape."""
+        freezer.move_to(_NOW)
+        reservation = _v3_res(
+            "res-1",
+            [_seg("listing-001", -1, 3)],
+            guest=GuestyGuest(guest_id="guest-1"),
+        )
+        coordinator = _build_coordinator(
+            hass,
+            [reservation],
+            ["listing-001"],
+            guest_error=httpx.ReadError("connection reset"),
         )
 
         data = await coordinator._async_update_data()
