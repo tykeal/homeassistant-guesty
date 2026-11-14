@@ -2027,7 +2027,9 @@ class TestFallbackCodeIsolation:
             fallback_ids=("res-9",),
         )
 
-        assert comparison.cross_path_conflicts
+        assert comparison.is_ambiguous
+        assert comparison.conflicts
+        assert not comparison.cross_path_conflicts
         assert comparison.cross_path_matched == 0
 
     async def test_confirmed_absence_retires_candidacy(

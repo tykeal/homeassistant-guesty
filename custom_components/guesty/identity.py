@@ -438,12 +438,14 @@ class IdentityBaseline:
             observed: This refresh's code to identifier mapping.
             path: Reservation path that produced the observation.
             fallback_ids: Identifiers this refresh observed through
-                the legacy not-found fallback. They are compared
-                like any other, so a disagreement is still caught,
-                but they can never *confirm* continuity: the
-                observation itself came from the legacy resource,
-                so agreeing with legacy-sourced evidence says
-                nothing about v3 (FR-055).
+                the legacy not-found fallback. Such an observation
+                can never *confirm* continuity, because it came
+                from the legacy resource itself and so agreeing
+                with legacy-sourced evidence says nothing about v3
+                (FR-055). By the same token a disagreement is never
+                merely cross-path: both sides came from legacy, so
+                it can only be a re-key and it aborts the refresh
+                (FR-032).
 
         Returns:
             The comparison outcome.
@@ -471,7 +473,7 @@ class IdentityBaseline:
                     observed_id=observed_id,
                     source=source,
                 )
-                if soft:
+                if soft and observed_id not in from_fallback:
                     cross_path_conflicts.append(conflict)
                 else:
                     conflicts.append(conflict)
