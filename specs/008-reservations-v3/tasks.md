@@ -816,12 +816,12 @@ reservation. Anything wider violates FR-001.
 
 ### Phase 6a Tests (Red) — write first, verify they FAIL
 
-- [ ] T114 [US8] Add fallback fixtures to `tests/conftest.py`:
+- [x] T114 [US8] Add fallback fixtures to `tests/conftest.py`:
   `make_legacy_reservation_by_id()` returning a single legacy
   reservation document for a given id, a not-found response builder,
   and a retirement-shaped response builder, all synthetic dict
   builders in the existing style (NFR-008). Blocks T115–T120.
-- [ ] T115 [US8] Write candidate-selection tests in a new
+- [x] T115 [US8] Write candidate-selection tests in a new
   `tests/api/test_reservations_fallback.py`: a reservation published
   by an earlier refresh and absent from the current v3 result is a
   candidate; a never-seen id is not; a candidate whose last known
@@ -835,7 +835,7 @@ reservation. Anything wider violates FR-001.
   `future_days` a candidate whose stay now starts beyond the window is
   dropped without a request (FR-049a, FR-050, FR-051, FR-052). Depends
   on T114.
-- [ ] T116 [P] [US8] Write republication tests in
+- [x] T116 [P] [US8] Write republication tests in
   `tests/api/test_reservations_fallback.py`: a successful legacy
   by-id lookup yields a reservation flagged fallback-sourced whose
   mapped fields match what the v3 path would publish; the reservation
@@ -846,7 +846,7 @@ reservation. Anything wider violates FR-001.
   falls outside the configured set is **not** published; and the
   reservation reappearing in a later v3 result drops it from the
   served map (FR-050, FR-050a, SC-015). Depends on T114.
-- [ ] T117 [P] [US8] Write budget tests in
+- [x] T117 [P] [US8] Write budget tests in
   `tests/api/test_reservations_fallback.py` using respx request
   counting: zero legacy requests when nothing is missing; exactly
   `MAX_LEGACY_FALLBACK_LOOKUPS_PER_REFRESH` when more candidates than
@@ -858,7 +858,7 @@ reservation. Anything wider violates FR-001.
   candidate is attempted within a bounded number of refreshes even as
   earlier candidates become due for re-check (FR-053, SC-017,
   NFR-001). Depends on T114.
-- [ ] T118 [P] [US8] Write failure-mode tests in
+- [x] T118 [P] [US8] Write failure-mode tests in
   `tests/api/test_reservations_fallback.py`: a timeout, a 5xx and a
   malformed body each degrade only that reservation, republish the
   reservation's last successfully published values read-only —
@@ -870,27 +870,27 @@ reservation. Anything wider violates FR-001.
   the next refresh for which it is eligible under FR-053 — not on the
   next poll — without retiring it; and that none of these raise out of
   the fetch (FR-053, FR-054, NFR-005). Depends on T114.
-- [ ] T119 [P] [US8] Write retirement tests in
+- [x] T119 [P] [US8] Write retirement tests in
   `tests/api/test_reservations_fallback.py`: a retirement-shaped
   answer disables the fallback for the session, logs exactly one
   WARNING naming 2027-03-01, leaves the refresh successful, and
   issues no further lookups; and an answer the code cannot classify
   is treated as retirement rather than as absence (FR-056, SC-018).
   Depends on T114.
-- [ ] T120 [P] [US8] Write privacy and observability tests in
+- [x] T120 [P] [US8] Write privacy and observability tests in
   `tests/api/test_reservations_fallback.py` and
   `tests/test_diagnostics.py`: the fallback counters and served ids
   appear in both FR-042 surfaces, and no guest name, phone, email or
   confirmation code value appears in any record at any level (FR-057,
   FR-021, NFR-009). Depends on T114.
-- [ ] T121 [P] [US8] Write an identifier-provenance regression test in
+- [x] T121 [P] [US8] Write an identifier-provenance regression test in
   `tests/api/test_reservations_fallback.py` and
   `tests/api/test_actions.py`: no request built anywhere on the v3
   path uses a confirmation code, an `originId` or any other external
   reference as a path parameter or an id filter value; every v3
   identifier used came from a v3 response or, for a write, was
   validated against one (FR-031e). Depends on T114.
-- [ ] T122 [P] [US8] Write write-route selection tests in
+- [x] T122 [P] [US8] Write write-route selection tests in
   `tests/api/test_actions.py` and `tests/test_init.py`: the note
   action, the status action and the `target_type="reservation"`
   branch of `guesty.set_custom_field` each select the **legacy** route
@@ -907,7 +907,7 @@ reservation. Anything wider violates FR-001.
   still selects legacy, because its identifier was already validated
   (FR-055, FR-058, SC-016). The requests
   themselves are Phase 7 (T128 to T134). Depends on T114.
-- [ ] T123 [P] [US8] Write an identity-isolation test in
+- [x] T123 [P] [US8] Write an identity-isolation test in
   `tests/test_identity.py`: a fallback-sourced reservation's
   confirmation code lands in `fallback_codes` and never in `codes`,
   cannot promote continuity to `verified` on its own, and a fallback
@@ -916,13 +916,13 @@ reservation. Anything wider violates FR-001.
 
 ### Phase 6a Implementation (Green)
 
-- [ ] T124 [US8] Add the fallback constants to
+- [x] T124 [US8] Add the fallback constants to
   `custom_components/guesty/api/const.py`:
   `RESERVATION_BY_ID_LEGACY_PATH`,
   `MAX_LEGACY_FALLBACK_LOOKUPS_PER_REFRESH` (20) and
   `LEGACY_FALLBACK_RECHECK_SECONDS` (3600), with the FR-053 bound
   documented on each (data-model.md §6). Depends on T117.
-- [ ] T125 [US8] Implement `ReservationFallbackSource` in a new
+- [x] T125 [US8] Implement `ReservationFallbackSource` in a new
   `custom_components/guesty/api/reservations_fallback.py` and wire it
   into `custom_components/guesty/api/reservations_v3.py`: candidate
   selection, the bounded by-id lookups, the served-record map with
@@ -931,7 +931,7 @@ reservation. Anything wider violates FR-001.
   `ReservationFetchResult` (FR-050 to FR-054, FR-056, FR-057;
   data-model.md §9). Zero Home Assistant imports (NFR-007). Depends
   on T115–T121, T124.
-- [ ] T126 [US8] Implement write-route selection alongside the
+- [x] T126 [US8] Implement write-route selection alongside the
   identity guard in `custom_components/guesty/actions.py` and
   `custom_components/guesty/__init__.py` — evaluated **after** the
   guard, reading the fallback's current served set at write time,
