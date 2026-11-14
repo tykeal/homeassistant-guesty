@@ -666,7 +666,7 @@ real account, the user sets `reservations_api=legacy` and reloads.
 
 ### Phase 6 Tests (Red) — write first, verify they FAIL
 
-- [ ] T063 [US5] Write tests for the persisted baseline in a new
+- [x] T063 [US5] Write tests for the persisted baseline in a new
   `tests/test_identity.py`: a `Store` round-trip at
   `guesty.{entry_id}.reservations_identity` version 1 carrying
   `path`, `continuity`, `updated`, `codes` and `bootstrap_codes`;
@@ -674,7 +674,7 @@ real account, the user sets `reservations_api=legacy` and reloads.
   the 5,000-code cap evicting earliest check-out first; and the
   baseline being established from whichever path produced the last
   successful refresh (FR-031a, FR-031b, SC-013, data-model.md §4).
-- [ ] T064 [P] [US5] Write guard comparison tests in
+- [x] T064 [P] [US5] Write guard comparison tests in
   `tests/test_identity.py`: an exact match continues normally; a
   changed code→id mapping aborts the refresh, retains
   last-known-good data, performs no write and logs **one** actionable
@@ -684,7 +684,7 @@ real account, the user sets `reservations_api=legacy` and reloads.
   confirmation code is published but is not a write target; and the
   comparison costs **zero** additional API requests (FR-031, FR-032,
   FR-033, FR-034, SC-007).
-- [ ] T065 [P] [US5] Write fail-closed write tests covering **all
+- [x] T065 [P] [US5] Write fail-closed write tests covering **all
   three** entry points — `add_reservation_note`
   (`custom_components/guesty/actions.py:183-220`), the status action
   (`custom_components/guesty/actions.py:342`) and the separate
@@ -698,12 +698,12 @@ real account, the user sets `reservations_api=legacy` and reloads.
   `Store` after a reload. In `tests/test_actions.py` and
   `tests/test_custom_field_service.py` (FR-031c, FR-032, FR-033,
   SC-013).
-- [ ] T066 [P] [US5] Write a test asserting the first successful v3
+- [x] T066 [P] [US5] Write a test asserting the first successful v3
   refresh logs at INFO how many previously known reservation
   identifiers matched, and that the count appears in diagnostics
   without exposing any confirmation code value, in
   `tests/test_identity.py` (FR-021, FR-035, FR-042).
-- [ ] T066a [P] [US5] Add the identity-guard abort scenario to
+- [x] T066a [P] [US5] Add the identity-guard abort scenario to
   `tests/test_privacy_logging.py`, **creating that module if T057 has
   not already created it**: assert that an aborted refresh emits no
   guest name, phone number, email address or confirmation code at
@@ -728,28 +728,28 @@ real account, the user sets `reservations_api=legacy` and reloads.
 
 ### Phase 6 Implementation (Green)
 
-- [ ] T068 [US5] Implement the `Store`-backed baseline in a new
+- [x] T068 [US5] Implement the `Store`-backed baseline in a new
   `custom_components/guesty/identity.py`: schema version 1, the
   fields and size bound of data-model.md §4, and read-once-per-setup
   into the coordinator. Use `Store` rather than `entry.data` so a
   per-refresh write does not fire the update listener and reload the
   entry every 15 minutes (FR-031a, FR-031b). Depends on T063.
-- [ ] T069 [US5] Implement the per-code comparison, including the
+- [x] T069 [US5] Implement the per-code comparison, including the
   swap case, in `custom_components/guesty/identity.py`, costing zero
   additional requests (FR-031, FR-032, FR-034). Depends on T068.
-- [ ] T070 [US5] Integrate the check into
+- [x] T070 [US5] Integrate the check into
   `custom_components/guesty/coordinator.py` before publication:
   abort via `UpdateFailed`, retain last-known-good data, publish
   nothing, block writes and log one error naming both identifiers and
   the rollback instruction — never a confirmation code value (FR-021,
   FR-032, SC-007). Depends on T069.
-- [ ] T071 [US5] Enforce the four-conjunct write predicate in
+- [x] T071 [US5] Enforce the four-conjunct write predicate in
   `custom_components/guesty/actions.py` for `add_reservation_note` and
   the status action, refusing with an explanatory `GuestyActionError`
   and sending no request. Keep the guard in the HA service layer so
   `api/` retains zero HA imports (FR-031c, FR-033, NFR-007). Depends
   on T069.
-- [ ] T072 [US5] Enforce the same predicate on the
+- [x] T072 [US5] Enforce the same predicate on the
   `target_type="reservation"` branch of the `guesty.set_custom_field`
   handler in `custom_components/guesty/__init__.py`; listing writes
   and the HTTP resource itself are unchanged (FR-030, FR-031c).
@@ -779,7 +779,7 @@ real account, the user sets `reservations_api=legacy` and reloads.
   proceed, in `custom_components/guesty/__init__.py` plus
   `strings.json` and `translations/en.json` (FR-031c). Depends on
   T073.
-- [ ] T076 [US5] Log the FR-035 identity match count at INFO once per
+- [x] T076 [US5] Log the FR-035 identity match count at INFO once per
   path activation and add it, plus an
   "ambiguous identity aborted the last refresh" flag, to the FR-042
   diagnostics, in `custom_components/guesty/coordinator.py` (FR-035,
