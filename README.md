@@ -73,6 +73,12 @@ If v3 misbehaves for you, the rollback is immediate and complete:
 2. Set **Reservations API** to **legacy**
 3. Submit — the entry reloads itself
 
+This works even if the entry failed to start at all. When setup has
+not completed, **Configure** shows only the **Reservations API**
+selector — your listings and intervals are kept exactly as they
+were — so a broken first v3 refresh cannot lock you out of the
+rollback.
+
 Your entity IDs, history and automations are unaffected either way.
 While on `legacy` the integration logs a warning on every start
 naming the retirement date, so a temporary rollback cannot quietly

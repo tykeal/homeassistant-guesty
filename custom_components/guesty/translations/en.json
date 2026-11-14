@@ -51,6 +51,16 @@
                     "tag_filter": "Enter one or more Guesty listing tags. Only listings with matching tags will appear in the selector."
                 }
             },
+           "rollback": {
+             "title": "Reservations API",
+             "description": "This entry has not finished setting up, so only the reservation API selection can be changed. Choosing 'Legacy reservations API' and reloading the entry restores the previous behaviour. The legacy reservations API is retired on 2027-03-01.",
+             "data": {
+               "reservations_api": "Reservations API"
+             },
+             "data_description": {
+               "reservations_api": "Select which Guesty reservation API to use. Your listing selection and polling intervals are left unchanged."
+             }
+           },
             "select_listings": {
                 "title": "Select Listings",
                 "description": "Choose which Guesty listings to track in Home Assistant. At least one listing must be selected.",

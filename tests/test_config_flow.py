@@ -682,6 +682,7 @@ class TestOptionsFlow:
         )
 
         entry = hass.config_entries.async_entries(DOMAIN)[0]
+        _setup_api_client(hass, entry.entry_id)
         result = await hass.config_entries.options.async_init(
             entry.entry_id,
         )
@@ -829,6 +830,7 @@ class TestReservationOptionsFlow:
             data=VALID_INPUT,
         )
         entry = hass.config_entries.async_entries(DOMAIN)[0]
+        _setup_api_client(hass, entry.entry_id)
 
         result = await hass.config_entries.options.async_init(
             entry.entry_id,
@@ -2079,3 +2081,70 @@ class TestReservationsApiDefaultIsV3:
         assert CONF_RESERVATIONS_API not in entry.options
         assert self._option_marker(result).default() == RESERVATIONS_API_V3
         assert entry.version == 1
+
+
+class TestRollbackWithoutASuccessfulSetup:
+    """The rollback stays reachable when setup failed (FR-039)."""
+
+    @staticmethod
+    def _entry(hass: HomeAssistant) -> MockConfigEntry:
+        """Add a configured entry whose setup never completed.
+
+        Args:
+            hass: Home Assistant instance.
+
+        Returns:
+            The entry, with no runtime data registered.
+        """
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data=VALID_INPUT,
+            options={
+                CONF_TAG_FILTER: ["beach"],
+                CONF_SELECTED_LISTINGS: ["listing-1"],
+                CONF_SCAN_INTERVAL: 15,
+                CONF_RESERVATION_SCAN_INTERVAL: 15,
+                CONF_PAST_DAYS: 30,
+                CONF_FUTURE_DAYS: 365,
+                CONF_RESERVATIONS_API: RESERVATIONS_API_V3,
+            },
+        )
+        entry.add_to_hass(hass)
+        return entry
+
+    async def test_the_selector_is_reachable(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A failed first v3 refresh still offers the option."""
+        entry = self._entry(hass)
+
+        result = await hass.config_entries.options.async_init(
+            entry.entry_id,
+        )
+
+        assert result["step_id"] == "rollback"
+        schema = result["data_schema"]
+        assert schema is not None
+        assert CONF_RESERVATIONS_API in dict(schema.schema)
+
+    async def test_switching_back_preserves_the_options(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Rolling back changes nothing but the reservation path."""
+        entry = self._entry(hass)
+
+        result = await hass.config_entries.options.async_init(
+            entry.entry_id,
+        )
+        await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
+        await hass.async_block_till_done()
+
+        assert entry.options[CONF_RESERVATIONS_API] == RESERVATIONS_API_LEGACY
+        assert entry.options[CONF_SELECTED_LISTINGS] == ["listing-1"]
+        assert entry.options[CONF_TAG_FILTER] == ["beach"]
+        assert entry.options[CONF_PAST_DAYS] == 30
