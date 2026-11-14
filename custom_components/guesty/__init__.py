@@ -28,7 +28,10 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.httpx_client import get_async_client
 
-from custom_components.guesty.actions import guard_reservation_write
+from custom_components.guesty.actions import (
+    guard_reservation_write,
+    select_reservation_write_route,
+)
 from custom_components.guesty.api.actions import GuestyActionsClient
 from custom_components.guesty.api.auth import GuestyTokenManager
 from custom_components.guesty.api.client import GuestyApiClient
@@ -519,6 +522,13 @@ async def async_setup_entry(
         if target_type == CF_TARGET_RESERVATION:
             try:
                 guard_reservation_write(
+                    entry_data,
+                    target_id,
+                    SERVICE_SET_CUSTOM_FIELD,
+                )
+                # Phase 6a only selects the route; the legacy
+                # request itself lands in Phase 7 (FR-059).
+                select_reservation_write_route(
                     entry_data,
                     target_id,
                     SERVICE_SET_CUSTOM_FIELD,

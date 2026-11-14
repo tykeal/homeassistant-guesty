@@ -21,6 +21,12 @@ from homeassistant.helpers import entity_registry as er
 from httpx import Response
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.guesty.actions import (
+    _SCHEMA_ADD_NOTE,
+    ROUTE_LEGACY,
+    ROUTE_V3,
+    select_reservation_write_route,
+)
 from custom_components.guesty.api.actions import GuestyActionsClient
 from custom_components.guesty.api.auth import GuestyTokenManager
 from custom_components.guesty.api.client import GuestyApiClient
@@ -1999,3 +2005,202 @@ class TestIdentityWritePredicate:
             "continuity is unconfirmed",
         )
         assert client.mock_calls == []
+
+
+class TestWriteRouteSelection:
+    """Reservation writes pick a resource generation (T122).
+
+    Phase 6a only selects the route and refuses a target neither
+    resource can be shown to hold; the legacy requests themselves
+    land in Phase 7 (FR-058, FR-059).
+    """
+
+    @staticmethod
+    def _coordinator(
+        hass: HomeAssistant,
+        entry: MockConfigEntry,
+        *,
+        served: frozenset[str] = frozenset(),
+        sourced: frozenset[str] = frozenset(),
+    ) -> dict[str, Any]:
+        """Put a fallback state on the entry's coordinator.
+
+        Args:
+            hass: Home Assistant instance.
+            entry: The loaded config entry.
+            served: Identifiers a legacy lookup has validated.
+            sourced: Identifiers the fallback published.
+
+        Returns:
+            The entry's hass.data mapping.
+        """
+        entry_data: dict[str, Any] = hass.data[DOMAIN][entry.entry_id]
+        coordinator = entry_data["reservations_coordinator"]
+        coordinator.fallback_served_ids = served
+        coordinator.fallback_sourced_ids = sourced | served
+        return entry_data
+
+    async def test_fallback_served_target_selects_legacy(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A reservation only legacy holds routes to legacy."""
+        entry = await _setup_entry(hass)
+        entry_data = self._coordinator(
+            hass,
+            entry,
+            served=frozenset({"res-001"}),
+        )
+
+        assert (
+            select_reservation_write_route(
+                entry_data,
+                "res-001",
+                "add_reservation_note",
+            )
+            == ROUTE_LEGACY
+        )
+
+    async def test_every_other_target_selects_v3(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A v3-sourced target can never select legacy."""
+        entry = await _setup_entry(hass)
+        entry_data = self._coordinator(
+            hass,
+            entry,
+            served=frozenset({"res-001"}),
+        )
+
+        assert (
+            select_reservation_write_route(
+                entry_data,
+                "res-002",
+                "add_reservation_note",
+            )
+            == ROUTE_V3
+        )
+
+    async def test_selection_reads_the_served_set_at_write_time(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A target that reappeared in v3 selects v3 again."""
+        entry = await _setup_entry(hass)
+        entry_data = self._coordinator(
+            hass,
+            entry,
+            served=frozenset({"res-001"}),
+        )
+        assert (
+            select_reservation_write_route(
+                entry_data,
+                "res-001",
+                "add_reservation_note",
+            )
+            == ROUTE_LEGACY
+        )
+
+        self._coordinator(hass, entry)
+
+        assert (
+            select_reservation_write_route(
+                entry_data,
+                "res-001",
+                "add_reservation_note",
+            )
+            == ROUTE_V3
+        )
+
+    async def test_sourced_but_never_served_target_is_refused(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Retained values alone validate no identifier."""
+        entry = await _setup_entry(hass)
+        entry_data = self._coordinator(
+            hass,
+            entry,
+            sourced=frozenset({"res-001"}),
+        )
+
+        with pytest.raises(GuestyActionError, match="no write is sent"):
+            select_reservation_write_route(
+                entry_data,
+                "res-001",
+                "add_reservation_note",
+            )
+
+    async def test_served_target_survives_a_failed_recheck(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A validated identifier stays validated."""
+        entry = await _setup_entry(hass)
+        entry_data = self._coordinator(
+            hass,
+            entry,
+            served=frozenset({"res-001"}),
+            sourced=frozenset({"res-001"}),
+        )
+
+        assert (
+            select_reservation_write_route(
+                entry_data,
+                "res-001",
+                "add_reservation_note",
+            )
+            == ROUTE_LEGACY
+        )
+
+    async def test_refusal_reaches_both_reservation_services(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Neither write entry point sends a request."""
+        entry = await _setup_entry(hass)
+        self._coordinator(hass, entry, sourced=frozenset({"res-001"}))
+        client = AsyncMock()
+        hass.data[DOMAIN][entry.entry_id]["actions_client"] = client
+
+        for service, payload in (
+            (
+                "add_reservation_note",
+                {"reservation_id": "res-001", "note_text": "hi"},
+            ),
+            (
+                "set_reservation_status",
+                {"reservation_id": "res-001", "status": "checked_in"},
+            ),
+        ):
+            with pytest.raises(
+                HomeAssistantError,
+                match="no write is sent",
+            ):
+                await hass.services.async_call(
+                    DOMAIN,
+                    service,
+                    payload,
+                    blocking=True,
+                    return_response=True,
+                )
+
+        assert client.mock_calls == []
+
+    async def test_caller_input_cannot_choose_the_route(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A route key in the payload is rejected by the schema."""
+        entry = await _setup_entry(hass)
+        self._coordinator(hass, entry, served=frozenset({"res-001"}))
+
+        with pytest.raises(vol.Invalid):
+            _SCHEMA_ADD_NOTE(
+                {
+                    "reservation_id": "res-001",
+                    "note_text": "hi",
+                    "route": ROUTE_LEGACY,
+                },
+            )

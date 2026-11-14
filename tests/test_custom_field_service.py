@@ -2713,3 +2713,59 @@ class TestSetCustomFieldIdentityGuard:
         assert result is not None
         assert result["result"] == "success"
         set_field.assert_awaited_once()
+
+    async def test_fallback_sourced_target_is_refused(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A target neither resource validates sends nothing.
+
+        Setting a custom field is how a door access code reaches
+        Guesty, so a reservation republished from retained values
+        alone must not be written to (FR-058).
+        """
+        entry = await self._setup(
+            hass,
+            make_identity_reservations(*_WRITE_TARGETS),
+        )
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        coordinator.fallback_sourced_ids = frozenset({"res-456"})
+
+        await self._expect_refusal(
+            hass,
+            "res-456",
+            "no write is sent",
+        )
+
+    async def test_fallback_served_target_is_allowed(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A legacy-validated target still reaches the write."""
+        entry = await self._setup(
+            hass,
+            make_identity_reservations(*_WRITE_TARGETS),
+        )
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        coordinator.fallback_served_ids = frozenset({"res-456"})
+        coordinator.fallback_sourced_ids = frozenset({"res-456"})
+
+        with patch.object(
+            GuestyCustomFieldsClient,
+            "set_field",
+            new_callable=AsyncMock,
+        ) as set_field:
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_CUSTOM_FIELD,
+                {
+                    "target_type": "reservation",
+                    "target_id": "res-456",
+                    "field_id": "cf-door-code",
+                    "value": "1234",
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+        set_field.assert_awaited_once()
