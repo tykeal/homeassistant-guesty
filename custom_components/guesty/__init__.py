@@ -24,12 +24,17 @@ from homeassistant.core import (
 )
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.httpx_client import get_async_client
 
 from custom_components.guesty.actions import guard_reservation_write
 from custom_components.guesty.api.actions import GuestyActionsClient
 from custom_components.guesty.api.auth import GuestyTokenManager
 from custom_components.guesty.api.client import GuestyApiClient
+from custom_components.guesty.api.const import (
+    DEFAULT_FUTURE_DAYS,
+    DEFAULT_PAST_DAYS,
+)
 from custom_components.guesty.api.custom_fields import GuestyCustomFieldsClient
 from custom_components.guesty.api.exceptions import (
     GuestyActionError,
@@ -43,6 +48,8 @@ from custom_components.guesty.const import (
     CONF_CF_SCAN_INTERVAL,
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
+    CONF_FUTURE_DAYS,
+    CONF_PAST_DAYS,
     CONF_RESERVATION_SCAN_INTERVAL,
     CONF_RESERVATIONS_API,
     CONF_SCAN_INTERVAL,
@@ -65,12 +72,19 @@ from custom_components.guesty.coordinator import (
     ListingsCoordinator,
     ReservationsCoordinator,
 )
-from custom_components.guesty.identity import ReservationIdentityGuard
+from custom_components.guesty.identity import (
+    CONTINUITY_UNCONFIRMED,
+    ReservationIdentityGuard,
+    async_bootstrap_identity,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 # Custom field target type that addresses a reservation.
 CF_TARGET_RESERVATION = "reservation"
+
+# Repairs issue and translation key for FR-031c's write refusal.
+ISSUE_IDENTITY_UNCONFIRMED = "identity_continuity_unconfirmed"
 
 SET_CUSTOM_FIELD_SCHEMA = vol.Schema(
     {
@@ -223,6 +237,68 @@ if TYPE_CHECKING:
     _check: TokenStorage = HATokenStorage.__new__(HATokenStorage)
 
 
+def async_notify_identity_continuity(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    guard: ReservationIdentityGuard,
+) -> None:
+    """Surface, or withdraw, the FR-031c continuity notice (T075).
+
+    When the one-time bootstrap sweep is unavailable or its
+    comparison is uninformative, reservations still publish but every
+    reservation write is refused. That is invisible until someone
+    tries to write — typically an automation setting a door code —
+    so it is reported through both surfaces decided in T003: a
+    non-fixable repairs issue, which is the only in-product surface a
+    dashboard-only user sees, and one warning log line.
+
+    The notice is withdrawn as soon as a later refresh produces the
+    overlap the bootstrap could not, so a resolved question does not
+    leave a stale repair behind.
+
+    Args:
+        hass: Home Assistant instance.
+        entry: The config entry being set up.
+        guard: The entry's identity guard, already loaded.
+    """
+    issue_id = f"{ISSUE_IDENTITY_UNCONFIRMED}_{entry.entry_id}"
+    baseline = guard.baseline
+    on_v3 = (
+        entry.options.get(
+            CONF_RESERVATIONS_API,
+            DEFAULT_RESERVATIONS_API,
+        )
+        != RESERVATIONS_API_LEGACY
+    )
+    unconfirmed = (
+        on_v3 and baseline is not None and baseline.continuity == CONTINUITY_UNCONFIRMED
+    )
+    if not unconfirmed:
+        ir.async_delete_issue(hass, DOMAIN, issue_id)
+        return
+
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        issue_id,
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key=ISSUE_IDENTITY_UNCONFIRMED,
+        translation_placeholders={"title": entry.title},
+    )
+    _LOGGER.warning(
+        "Guesty reservation identity continuity is unconfirmed for "
+        "'%s'. Reservations are published normally, but every "
+        "reservation write (notes, status and custom fields) is "
+        "refused until a refresh shares at least one confirmation "
+        "code with the legacy identity evidence. Leave the "
+        "integration running so a shared reservation can appear, or "
+        "set the 'Reservations API' option to 'legacy' and reload "
+        "the entry to roll back",
+        entry.title,
+    )
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -309,7 +385,25 @@ async def async_setup_entry(
         api_client=api_client,
         listings_coordinator=coordinator,
     )
+    # Permitted legacy call 1 of FR-001: one-time, pre-publication,
+    # and only for an entry upgrading from a legacy-only release.
+    await async_bootstrap_identity(
+        hass,
+        entry,
+        guard=reservations_coordinator.identity,
+        api_client=api_client,
+        past_days=entry.options.get(CONF_PAST_DAYS, DEFAULT_PAST_DAYS),
+        future_days=entry.options.get(
+            CONF_FUTURE_DAYS,
+            DEFAULT_FUTURE_DAYS,
+        ),
+    )
     await reservations_coordinator.async_config_entry_first_refresh()
+    async_notify_identity_continuity(
+        hass,
+        entry,
+        reservations_coordinator.identity,
+    )
 
     messaging_client = GuestyMessagingClient(api_client)
     actions_client = GuestyActionsClient(api_client)

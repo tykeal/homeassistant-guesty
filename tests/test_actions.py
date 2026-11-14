@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncGenerator
+from contextlib import ExitStack
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -16,6 +17,7 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry as er
 from httpx import Response
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -91,6 +93,8 @@ _WRITE_TARGETS = ("res-001", "res-bad", "res-e2e", "x")
 async def _setup_entry(
     hass: HomeAssistant,
     reservations: list[GuestyReservation] | None = None,
+    *,
+    upgraded: bool = False,
     **entry_overrides: object,
 ) -> MockConfigEntry:
     """Set up a config entry with all mocks.
@@ -99,6 +103,10 @@ async def _setup_entry(
         hass: Home Assistant instance.
         reservations: Reservations the first refresh returns, which
             seed the identity baseline the write guard consults.
+        upgraded: Present the entry as an upgrade from a legacy-only
+            release, so setup runs the one-time bootstrap sweep. The
+            sweep is stubbed to return nothing, which is the
+            uninformative outcome that leaves continuity unconfirmed.
         **entry_overrides: Fields to override on the config entry.
 
     Returns:
@@ -110,7 +118,25 @@ async def _setup_entry(
     if reservations is None:
         reservations = make_identity_reservations(*_WRITE_TARGETS)
 
+    sweep = ExitStack()
+    if upgraded:
+        er.async_get(hass).async_get_or_create(
+            "sensor",
+            DOMAIN,
+            f"{entry.unique_id}_listing-001_reservation_status",
+            config_entry=entry,
+        )
+        source = AsyncMock()
+        source.fetch = AsyncMock(return_value=make_fetch_result([]))
+        sweep.enter_context(
+            patch(
+                "custom_components.guesty.identity.LegacyReservationSource",
+                return_value=source,
+            ),
+        )
+
     with (
+        sweep,
         patch(
             _PATCH_TEST,
             new_callable=AsyncMock,
@@ -1853,6 +1879,7 @@ class TestIdentityWritePredicate:
         """A v3 baseline without cross-path evidence refuses."""
         entry = await _setup_entry(
             hass,
+            upgraded=True,
             options={CONF_RESERVATIONS_API: RESERVATIONS_API_V3},
         )
         client = self._client(hass, entry)
@@ -1946,6 +1973,7 @@ class TestIdentityWritePredicate:
         """The refusal is read back from the Store on reload."""
         entry = await _setup_entry(
             hass,
+            upgraded=True,
             options={CONF_RESERVATIONS_API: RESERVATIONS_API_V3},
         )
 

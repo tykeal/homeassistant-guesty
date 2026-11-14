@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import time
 from collections.abc import AsyncGenerator, Generator
+from contextlib import ExitStack
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -15,6 +16,7 @@ import pytest
 import respx
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry as er
 from httpx import Response
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -2514,6 +2516,8 @@ class TestSetCustomFieldIdentityGuard:
     async def _setup(
         hass: HomeAssistant,
         reservations: list[GuestyReservation],
+        *,
+        upgraded: bool = False,
         **overrides: object,
     ) -> MockConfigEntry:
         """Load an entry whose first refresh seeds the baseline.
@@ -2521,6 +2525,10 @@ class TestSetCustomFieldIdentityGuard:
         Args:
             hass: Home Assistant instance.
             reservations: Reservations the first refresh returns.
+            upgraded: Present the entry as an upgrade from a
+                legacy-only release, so setup runs the one-time
+                bootstrap sweep. The sweep is stubbed to return
+                nothing, which leaves continuity unconfirmed.
             **overrides: Config entry fields to override.
 
         Returns:
@@ -2528,7 +2536,24 @@ class TestSetCustomFieldIdentityGuard:
         """
         entry = _make_entry(**overrides)
         entry.add_to_hass(hass)
+        sweep = ExitStack()
+        if upgraded:
+            er.async_get(hass).async_get_or_create(
+                "sensor",
+                DOMAIN,
+                f"{entry.unique_id}_listing-001_reservation_status",
+                config_entry=entry,
+            )
+            source = AsyncMock()
+            source.fetch = AsyncMock(return_value=make_fetch_result([]))
+            sweep.enter_context(
+                patch(
+                    "custom_components.guesty.identity.LegacyReservationSource",
+                    return_value=source,
+                ),
+            )
         with (
+            sweep,
             patch(
                 "custom_components.guesty.GuestyApiClient.test_connection",
                 new_callable=AsyncMock,
@@ -2601,6 +2626,7 @@ class TestSetCustomFieldIdentityGuard:
         await self._setup(
             hass,
             make_identity_reservations(*_WRITE_TARGETS),
+            upgraded=True,
             options={CONF_RESERVATIONS_API: RESERVATIONS_API_V3},
         )
         await self._expect_refusal(
