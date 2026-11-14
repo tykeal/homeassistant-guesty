@@ -1139,11 +1139,11 @@ resume reporting values.
 
 ### Phase 8 Tests (Red) — write first, verify they FAIL
 
-- [ ] T085 [US6] Write tests asserting the default is `v3` for both a
+- [x] T085 [US6] Write tests asserting the default is `v3` for both a
   fresh installation and an upgraded entry that stores no value, with
   no migration step and no reconfiguration prompt, in
   `tests/test_config_flow.py` and `tests/test_init.py` (FR-037).
-- [ ] T086 [P] [US7] Write financial-sensor deprecation tests over a
+- [x] T086 [P] [US7] Write financial-sensor deprecation tests over a
   fixture whose **legacy** payload carries `money` values:
   `reservation_total`, `reservation_balance` and
   `reservation_currency` report those values on the legacy path and
@@ -1152,7 +1152,7 @@ resume reporting values.
   placeholder; and their entity ids, unique ids, device assignment and
   entity category are identical on both paths, in
   `tests/test_reservation_sensor.py` (FR-044, FR-045, FR-049, SC-014).
-- [ ] T087 [P] [US7] Write deprecation-notice tests for the mechanism
+- [x] T087 [P] [US7] Write deprecation-notice tests for the mechanism
   chosen in T003: the notice is surfaced **exactly once** per config
   entry per Home Assistant start when the v3 path is active **and** at
   least one of the three entities already exists in the entity
@@ -1160,17 +1160,17 @@ resume reporting values.
   sensors, the reason and the FR-048 removal timeline; and a WARNING
   is logged in the same case, in `tests/test_init.py` (FR-046,
   SC-014). The mechanism is **both** surfaces, decided in T003.
-- [ ] T088 [P] [US7] Write a test asserting **no request is made to
+- [x] T088 [P] [US7] Write a test asserting **no request is made to
   any guest-folio or payments resource on either path**, over a full
   refresh, in `tests/test_coordinator.py` (FR-043, SC-014).
-- [ ] T089 [P] [US6] Write a test asserting that toggling
+- [x] T089 [P] [US6] Write a test asserting that toggling
   `reservations_api` and reloading an installation whose entities are
   all already registered produces **zero** entity-registry changes,
   and that the one permitted change is the first-time registration of
   the three financial sensors on an installation that has never run
   the legacy path and is then switched to it, in `tests/test_init.py`
   (FR-038, FR-045, NFR-003, SC-008).
-- [ ] T090 [P] [US1] Write the legacy/v3 **differential** test in a
+- [x] T090 [P] [US1] Write the legacy/v3 **differential** test in a
   new `tests/test_reservations_parity.py`: one shared fixture account
   expressed in both legacy and v3 shapes produces identical entity
   ids, states and attribute key sets on both paths. List the three
@@ -1178,7 +1178,7 @@ resume reporting values.
   **explicitly** in the test rather than tolerating them with a loose
   comparison; their entity ids are still compared (SC-002, NFR-003,
   NFR-004, FR-049).
-- [ ] T091 [P] Write tests for the config-entry diagnostics download
+- [x] T091 [P] Write tests for the config-entry diagnostics download
   in a new `tests/test_diagnostics.py`: the `reservations` block
   carries the active path, pages fetched, reservations received,
   trimmed and skipped, the raw status histogram, the segment-count
@@ -1189,17 +1189,17 @@ resume reporting values.
 
 ### Phase 8 Implementation (Green)
 
-- [ ] T092 [US6] Flip `DEFAULT_RESERVATIONS_API` to
+- [x] T092 [US6] Flip `DEFAULT_RESERVATIONS_API` to
   `RESERVATIONS_API_V3` in `custom_components/guesty/const.py`
   (FR-037). Depends on T085 and on Phases 1–7 being green.
-- [ ] T093 [US7] Ensure the three financial sensors are **not created**
+- [x] T093 [US7] Ensure the three financial sensors are **not created**
   on the v3 path and publish no carried-over, cached or placeholder
   value, while entity-registry entries created by earlier releases are
   **retained** so Home Assistant reports them `unavailable`, in
   `custom_components/guesty/sensor.py`. No other entity or attribute
   may regress, and the absence of financial data must not fail, delay
   or degrade a refresh (FR-044, FR-045, FR-049). Depends on T086.
-- [ ] T094 [US7] Implement the FR-046 deprecation notice using the
+- [x] T094 [US7] Implement the FR-046 deprecation notice using the
   T003 mechanism in `custom_components/guesty/__init__.py`: if the
   repairs issue is adopted, raise it with
   `homeassistant.helpers.issue_registry.async_create_issue` and add
@@ -1213,24 +1213,24 @@ resume reporting values.
   option and the removal timeline, with a matching WARNING log line.
   The repairs issue **is** adopted, alongside the log line (T003).
   Depends on T087.
-- [ ] T095 [US7] Add the notice's translated strings to
+- [x] T095 [US7] Add the notice's translated strings to
   `custom_components/guesty/strings.json` and
   `custom_components/guesty/translations/en.json` under
   `financial_sensors_deprecated`, so they are removable as a unit
   under FR-048. Depends on T094.
-- [ ] T096 Implement the config-entry diagnostics platform in a new
+- [x] T096 Implement the config-entry diagnostics platform in a new
   `custom_components/guesty/diagnostics.py`, exposing the
   `reservations` block of quickstart.md § "Reading diagnostics" with
   no guest details and no confirmation codes (FR-042). Depends on
   T091.
-- [ ] T097 [US7] Document the migration in `README.md`: the
+- [x] T097 [US7] Document the migration in `README.md`: the
   `reservations_api` option and its values, the 2027-03-01 retirement,
   the identity guard's fail-closed write behaviour, and a
   **Breaking changes** section naming `total_paid`, `balance_due` and
   `currency`, stating that no replacement data source is provided and
   that the legacy rollback itself expires on 2027-03-01 (FR-047,
   NFR-004).
-- [ ] T098 [US7] Prepare the release-notes entry: apply the
+- [x] T098 [US7] Prepare the release-notes entry: apply the
   `breaking-change` label to the implementation pull request so
   release-drafter files it under "💥 Breaking Change 💥"
   (`.github/release-drafter.yml`), and write the draft note body
