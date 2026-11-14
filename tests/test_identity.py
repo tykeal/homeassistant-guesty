@@ -13,13 +13,14 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.guesty import async_remove_entry
 from custom_components.guesty.api.const import (
     RESERVATIONS_API_LEGACY,
     RESERVATIONS_API_V3,
@@ -40,11 +41,15 @@ from custom_components.guesty.identity import (
     CONTINUITY_UNCONFIRMED,
     CONTINUITY_VERIFIED,
     MAX_BASELINE_CODES,
+    REFUSAL_UNSTORED,
     STORAGE_VERSION,
     CandidateHint,
     IdentityBaseline,
+    IdentityComparison,
     ReservationIdentityGuard,
-    observed_code_map,
+    _bounded,
+    _next_continuity,
+    observe_codes,
     storage_key,
 )
 from tests.conftest import make_fetch_result, make_listing_dict
@@ -344,7 +349,7 @@ class TestIdentityComparison:
             path=RESERVATIONS_API_V3,
             codes={CODE_A: "res-1"},
         )
-        comparison = baseline.compare({CODE_A: "res-1"})
+        comparison = baseline.compare({CODE_A: "res-1"}, RESERVATIONS_API_V3)
 
         assert comparison.matched == 1
         assert not comparison.is_ambiguous
@@ -355,7 +360,7 @@ class TestIdentityComparison:
             path=RESERVATIONS_API_V3,
             codes={CODE_A: "res-1"},
         )
-        comparison = baseline.compare({CODE_A: "res-9"})
+        comparison = baseline.compare({CODE_A: "res-9"}, RESERVATIONS_API_V3)
 
         assert comparison.is_ambiguous
         assert comparison.conflicts[0].known_id == "res-1"
@@ -367,7 +372,9 @@ class TestIdentityComparison:
             path=RESERVATIONS_API_V3,
             codes={CODE_A: "res-1", CODE_B: "res-2"},
         )
-        comparison = baseline.compare({CODE_A: "res-2", CODE_B: "res-1"})
+        comparison = baseline.compare(
+            {CODE_A: "res-2", CODE_B: "res-1"}, RESERVATIONS_API_V3
+        )
 
         assert len(comparison.conflicts) == 2
         assert comparison.matched == 0
@@ -378,7 +385,7 @@ class TestIdentityComparison:
             path=RESERVATIONS_API_V3,
             codes={CODE_A: "res-1"},
         )
-        comparison = baseline.compare({})
+        comparison = baseline.compare({}, RESERVATIONS_API_V3)
 
         assert comparison.matched == 0
         assert not comparison.is_ambiguous
@@ -391,14 +398,18 @@ class TestIdentityComparison:
             bootstrap_codes={CODE_A: "res-1"},
             fallback_codes={CODE_B: "res-2"},
         )
-        comparison = baseline.compare({CODE_A: "res-9", CODE_B: "res-8"})
+        comparison = baseline.compare(
+            {CODE_A: "res-9", CODE_B: "res-8"}, RESERVATIONS_API_V3
+        )
 
-        sources = {conflict.source for conflict in comparison.conflicts}
-        assert sources == {"bootstrap_codes", "fallback_codes"}
+        assert {c.source for c in comparison.conflicts} == {"fallback_codes"}
+        assert {c.source for c in comparison.cross_path_conflicts} == {
+            "bootstrap_codes",
+        }
 
     def test_alteration_and_codeless_rows_are_not_evidence(self) -> None:
         """Proposed changes never supply identity evidence."""
-        mapping = observed_code_map(
+        observed = observe_codes(
             [
                 _reservation("res-1", CODE_A),
                 _reservation("res-alt", CODE_A, status="alteration"),
@@ -406,7 +417,8 @@ class TestIdentityComparison:
             ],
         )
 
-        assert mapping == {CODE_A: "res-1"}
+        assert observed.mapping == {CODE_A: "res-1"}
+        assert observed.collisions == ()
 
     def test_fallback_alone_never_verifies_continuity(self) -> None:
         """Legacy-sourced fallback evidence cannot self-confirm."""
@@ -414,7 +426,7 @@ class TestIdentityComparison:
             path=RESERVATIONS_API_V3,
             fallback_codes={CODE_A: "res-1"},
         )
-        comparison = baseline.compare({CODE_A: "res-1"})
+        comparison = baseline.compare({CODE_A: "res-1"}, RESERVATIONS_API_V3)
 
         assert comparison.matched == 1
         assert comparison.cross_path_matched == 0
@@ -660,3 +672,272 @@ class TestIdentityMatchReporting:
         assert "identity_matched=1" in lines[-1]
         assert "identity_ambiguous=False" in lines[-1]
         assert CODE_A not in lines[-1]
+
+
+class TestIdentityReviewHardening:
+    """Behaviours the Phase 6 review surfaced as defects."""
+
+    def test_within_refresh_code_collision_is_ambiguous(self) -> None:
+        """Two live rows sharing a code cannot be collapsed."""
+        observed = observe_codes(
+            [
+                _reservation("res-1", CODE_A),
+                _reservation("res-9", CODE_A),
+            ],
+        )
+
+        assert observed.collisions == (("res-1", "res-9"),)
+        assert observed.mapping == {CODE_A: "res-1"}
+
+    async def test_collision_aborts_even_without_a_baseline(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A colliding code must not establish a first baseline."""
+        guard = ReservationIdentityGuard(hass, "entry-collide")
+        await guard.async_load()
+
+        comparison = guard.compare(
+            [
+                _reservation("res-9", CODE_A),
+                _reservation("res-1", CODE_A),
+            ],
+            RESERVATIONS_API_V3,
+        )
+
+        assert comparison.is_ambiguous
+
+    def test_cross_path_disagreement_does_not_abort(self) -> None:
+        """Rollback must not deadlock on expected divergence."""
+        baseline = IdentityBaseline(
+            path=RESERVATIONS_API_V3,
+            codes={CODE_A: "v3-1"},
+        )
+
+        comparison = baseline.compare(
+            {CODE_A: "legacy-1"},
+            RESERVATIONS_API_LEGACY,
+        )
+
+        assert not comparison.is_ambiguous
+        assert len(comparison.cross_path_conflicts) == 1
+
+    def test_cross_path_disagreement_blocks_writes(self) -> None:
+        """Divergence is still never written through."""
+        baseline = IdentityBaseline(
+            path=RESERVATIONS_API_V3,
+            codes={CODE_A: "v3-1"},
+            continuity=CONTINUITY_VERIFIED,
+        )
+        comparison = baseline.compare(
+            {CODE_A: "legacy-1"},
+            RESERVATIONS_API_LEGACY,
+        )
+
+        assert (
+            _next_continuity(
+                baseline,
+                RESERVATIONS_API_LEGACY,
+                comparison,
+            )
+            == CONTINUITY_UNCONFIRMED
+        )
+
+    async def test_rollback_to_legacy_completes(
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A v3 baseline cannot strand a legacy refresh."""
+        v3_entry = _make_entry()
+        v3_entry.add_to_hass(hass)
+        api_client = _api_client(
+            make_fetch_result([_reservation("v3-1", CODE_A)]),
+        )
+        coordinator = _make_coordinator(hass, v3_entry, api_client)
+        await coordinator.async_refresh()
+        assert coordinator.last_update_success
+
+        hass.config_entries.async_update_entry(
+            v3_entry,
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
+        legacy_client = _api_client(
+            make_fetch_result([_reservation("legacy-1", CODE_A)]),
+            reservations_api=RESERVATIONS_API_LEGACY,
+        )
+        rolled_back = _make_coordinator(hass, v3_entry, legacy_client)
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            await rolled_back.async_refresh()
+
+        assert rolled_back.last_update_success
+        assert any(
+            "differs between the legacy and v3" in record.getMessage()
+            for record in caplog.records
+        )
+        baseline = rolled_back.identity.baseline
+        assert baseline is not None
+        assert baseline.continuity == CONTINUITY_UNCONFIRMED
+        assert rolled_back.identity.write_refusal("legacy-1") is not None
+
+    async def test_unpersisted_baseline_refuses_writes(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A baseline that never reached storage is not trusted."""
+        guard = ReservationIdentityGuard(hass, "entry-unstored")
+        await guard.async_load()
+        await guard.async_record_refresh(
+            path=RESERVATIONS_API_LEGACY,
+            reservations=[_reservation("res-1", CODE_A)],
+            published={},
+            comparison=IdentityComparison(),
+            updated="2026-01-01T00:00:00+00:00",
+        )
+        assert guard.write_refusal("res-1") is None
+
+        with patch.object(
+            guard._store,
+            "async_save",
+            side_effect=OSError("disk full"),
+        ):
+            await guard.async_record_refresh(
+                path=RESERVATIONS_API_LEGACY,
+                reservations=[_reservation("res-1", CODE_A)],
+                published={},
+                comparison=IdentityComparison(),
+                updated="2026-01-02T00:00:00+00:00",
+            )
+
+        assert guard.write_refusal("res-1") == REFUSAL_UNSTORED
+
+    async def test_failed_store_keeps_the_refresh_alive(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Storage must never cost a refresh."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = _api_client(
+            make_fetch_result([_reservation("res-1", CODE_A)]),
+        )
+        coordinator = _make_coordinator(hass, entry, api_client)
+        await coordinator.identity.async_load()
+
+        with patch.object(
+            coordinator.identity._store,
+            "async_save",
+            side_effect=OSError("disk full"),
+        ):
+            await coordinator.async_refresh()
+
+        assert coordinator.last_update_success
+
+    async def test_legacy_evidence_survives_a_disjoint_v3_refresh(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """The only cross-path evidence must not be discarded."""
+        entry = _make_entry(reservations_api=RESERVATIONS_API_LEGACY)
+        entry.add_to_hass(hass)
+        legacy_client = _api_client(
+            make_fetch_result([_reservation("res-1", CODE_A)]),
+            reservations_api=RESERVATIONS_API_LEGACY,
+        )
+        legacy = _make_coordinator(hass, entry, legacy_client)
+        await legacy.async_refresh()
+
+        hass.config_entries.async_update_entry(
+            entry,
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_V3},
+        )
+        v3_client = _api_client(
+            make_fetch_result([_reservation("res-2", CODE_B)]),
+            make_fetch_result(
+                [
+                    _reservation("res-1", CODE_A),
+                    _reservation("res-2", CODE_B),
+                ],
+            ),
+        )
+        upgraded = _make_coordinator(hass, entry, v3_client)
+        await upgraded.async_refresh()
+
+        baseline = upgraded.identity.baseline
+        assert baseline is not None
+        assert baseline.legacy_codes == {CODE_A: "res-1"}
+        assert baseline.continuity == CONTINUITY_UNCONFIRMED
+
+        await upgraded.async_refresh()
+        recovered = upgraded.identity.baseline
+        assert recovered is not None
+        assert recovered.continuity == CONTINUITY_VERIFIED
+
+    async def test_unpublished_reservations_keep_stay_hints(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Retained identifiers need dates for the 6a fallback."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = _api_client(
+            make_fetch_result(
+                [
+                    _reservation("res-1", CODE_A),
+                    _reservation(
+                        "res-untracked",
+                        CODE_B,
+                        listing_id="listing-999",
+                    ),
+                ],
+            ),
+        )
+        coordinator = _make_coordinator(hass, entry, api_client)
+        await coordinator.async_refresh()
+
+        baseline = coordinator.identity.baseline
+        assert baseline is not None
+        assert "res-untracked" in baseline.candidates
+        assert baseline.candidates["res-untracked"].check_out
+
+    def test_eviction_orders_by_instant_not_by_text(self) -> None:
+        """Offsets make ISO text ordering disagree with time."""
+        earlier = "2026-11-14T00:30:00+02:00"
+        later = "2026-11-13T23:00:00+00:00"
+        assert earlier > later
+
+        filler = MAX_BASELINE_CODES - 1
+        codes = {f"CODE-{index}": f"res-{index}" for index in range(filler)}
+        codes["CODE-early"] = "res-early"
+        codes["CODE-late"] = "res-late"
+        check_outs = dict.fromkeys(
+            (f"res-{index}" for index in range(filler)),
+            "2026-11-20T00:00:00+00:00",
+        )
+        check_outs["res-early"] = earlier
+        check_outs["res-late"] = later
+
+        bounded = _bounded(codes, check_outs)
+
+        assert "CODE-early" not in bounded
+        assert "CODE-late" in bounded
+
+    async def test_removing_the_entry_deletes_the_baseline(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Confirmation codes must not outlive their entry."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = _api_client(
+            make_fetch_result([_reservation("res-1", CODE_A)]),
+        )
+        coordinator = _make_coordinator(hass, entry, api_client)
+        await coordinator.async_refresh()
+
+        await async_remove_entry(hass, entry)
+
+        reloaded = ReservationIdentityGuard(hass, entry.entry_id)
+        await reloaded.async_load()
+        assert reloaded.baseline is None

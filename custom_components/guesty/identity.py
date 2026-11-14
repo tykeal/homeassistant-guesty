@@ -18,7 +18,9 @@ key of the check itself.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import logging
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
 
 from homeassistant.helpers.storage import Store
@@ -34,6 +36,8 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
     from custom_components.guesty.api.models import GuestyReservation
+
+_LOGGER = logging.getLogger(__name__)
 
 # Schema version of the persisted identity baseline.
 STORAGE_VERSION: Final[int] = 1
@@ -54,6 +58,8 @@ CONTINUITY_NOT_APPLICABLE: Final[str] = "not_applicable"
 SOURCE_CODES: Final[str] = "codes"
 SOURCE_BOOTSTRAP: Final[str] = "bootstrap_codes"
 SOURCE_FALLBACK: Final[str] = "fallback_codes"
+SOURCE_LEGACY: Final[str] = "legacy_codes"
+SOURCE_OBSERVED: Final[str] = "observed"
 
 # Refusal texts for each conjunct of the write predicate
 # (FR-031c, FR-032, FR-033).
@@ -75,6 +81,12 @@ REFUSAL_AMBIGUOUS: Final[str] = (
     "'Reservations API' option to 'legacy' and reload the entry to "
     "roll back."
 )
+REFUSAL_UNSTORED: Final[str] = (
+    "The Guesty reservation identity baseline could not be written "
+    "to storage, so it cannot be trusted and this write is refused. "
+    "Check the Home Assistant storage directory, then reload the "
+    "entry."
+)
 REFUSAL_NO_CODE: Final[str] = (
     "Reservation '{reservation_id}' has no known confirmation code, "
     "so its identity cannot be cross-checked and the write is "
@@ -94,10 +106,24 @@ def storage_key(entry_id: str) -> str:
     return f"guesty.{entry_id}.reservations_identity"
 
 
-def observed_code_map(
+@dataclass(frozen=True)
+class ObservedCodes:
+    """One refresh's confirmation code evidence.
+
+    Attributes:
+        mapping: Confirmation code to reservation identifier.
+        collisions: Identifier pairs that reported the same
+            confirmation code within this one refresh.
+    """
+
+    mapping: dict[str, str] = field(default_factory=dict)
+    collisions: tuple[tuple[str, str], ...] = ()
+
+
+def observe_codes(
     reservations: Iterable[GuestyReservation],
-) -> dict[str, str]:
-    """Build this refresh's confirmation code to identifier map.
+) -> ObservedCodes:
+    """Read this refresh's confirmation code evidence.
 
     Reservations held at an alteration status are excluded: a
     proposed change is a distinct record that may carry the
@@ -106,20 +132,32 @@ def observed_code_map(
     meant to catch. A reservation without a confirmation code
     contributes nothing (FR-033).
 
+    Two live reservations reporting the same confirmation code are
+    recorded as a collision rather than silently collapsed. The
+    later row would otherwise overwrite the earlier one and could
+    hide a changed mapping entirely, and a code naming two
+    reservations at once is itself an identity the guard cannot
+    trust.
+
     Args:
         reservations: Reservations the refresh retrieved.
 
     Returns:
-        Mapping of confirmation code to reservation identifier.
+        The mapping and any within-refresh collisions.
     """
     mapping: dict[str, str] = {}
+    collisions: list[tuple[str, str]] = []
     for reservation in reservations:
         if reservation.status in HOLD_STATUSES:
             continue
         if not reservation.confirmation_code:
             continue
+        previous = mapping.get(reservation.confirmation_code)
+        if previous is not None and previous != reservation.id:
+            collisions.append((previous, reservation.id))
+            continue
         mapping[reservation.confirmation_code] = reservation.id
-    return mapping
+    return ObservedCodes(mapping=mapping, collisions=tuple(collisions))
 
 
 @dataclass(frozen=True)
@@ -187,20 +225,33 @@ class IdentityComparison:
         cross_path_matched: Matches drawn from legacy-sourced
             evidence, which alone can confirm continuity (FR-031d).
         compared: Confirmation codes the comparison could test.
-        conflicts: Every disagreement found.
+        conflicts: Disagreements within one reservation path, which
+            can only mean a reservation was re-keyed.
+        cross_path_conflicts: Disagreements between evidence from
+            different reservation paths, which is the identifier
+            divergence this migration cannot rule out.
     """
 
     matched: int = 0
     cross_path_matched: int = 0
     compared: int = 0
     conflicts: tuple[IdentityConflict, ...] = ()
+    cross_path_conflicts: tuple[IdentityConflict, ...] = ()
 
     @property
     def is_ambiguous(self) -> bool:
-        """Report whether the comparison found a disagreement.
+        """Report whether the refresh must be aborted.
+
+        Only a same-path disagreement aborts. Evidence from the
+        other path disagreeing is the uncertainty this migration
+        carries rather than a re-key: it means the two paths number
+        the same booking differently, which must block writes but
+        must not strand the integration — otherwise rolling back to
+        the legacy path could never complete, and the setup refresh
+        would leave even the listings unloaded.
 
         Returns:
-            True when at least one mapping changed.
+            True when at least one same-path mapping changed.
         """
         return bool(self.conflicts)
 
@@ -214,6 +265,9 @@ class IdentityBaseline:
         continuity: Cross-path continuity state.
         updated: ISO timestamp of the last successful refresh.
         codes: Confirmation code to reservation identifier.
+        legacy_codes: Legacy-path evidence retained when the entry
+            moved to the v3 path, so one disjoint refresh cannot
+            discard the only cross-path evidence there is.
         bootstrap_codes: Retained legacy bootstrap evidence.
         fallback_codes: Evidence learned through the fallback.
         candidates: Reservation identifier to stay dates.
@@ -223,6 +277,7 @@ class IdentityBaseline:
     continuity: str = CONTINUITY_UNCONFIRMED
     updated: str = ""
     codes: dict[str, str] = field(default_factory=dict)
+    legacy_codes: dict[str, str] | None = None
     bootstrap_codes: dict[str, str] | None = None
     fallback_codes: dict[str, str] | None = None
     candidates: dict[str, CandidateHint] = field(default_factory=dict)
@@ -237,7 +292,12 @@ class IdentityBaseline:
         Returns:
             True when at least one code mapping is known.
         """
-        return bool(self.codes or self.bootstrap_codes or self.fallback_codes)
+        return bool(
+            self.codes
+            or self.legacy_codes
+            or self.bootstrap_codes
+            or self.fallback_codes
+        )
 
     def known_ids(self) -> set[str]:
         """Collect every reservation identifier the maps carry.
@@ -246,33 +306,42 @@ class IdentityBaseline:
             Identifiers known to carry a confirmation code.
         """
         known: set[str] = set(self.codes.values())
+        known.update((self.legacy_codes or {}).values())
         known.update((self.bootstrap_codes or {}).values())
         known.update((self.fallback_codes or {}).values())
         return known
 
-    def _maps(self) -> tuple[tuple[str, dict[str, str], bool], ...]:
+    def _maps(
+        self,
+        path: str,
+    ) -> tuple[tuple[str, dict[str, str], bool], ...]:
         """Enumerate the code maps with their provenance.
 
-        ``fallback_codes`` is legacy-sourced but is never treated as
-        confirming evidence, because a fallback record would let the
-        legacy path confirm itself (data-model.md §4).
+        Provenance is relative to the path now in use: evidence this
+        entry gathered on the other path is what can confirm
+        continuity, and what disagreeing proves nothing about a
+        re-key. ``fallback_codes`` is legacy-sourced but is never
+        treated as confirming evidence, because a fallback record
+        would let the legacy path confirm itself (data-model.md §4).
+
+        Args:
+            path: Reservation path the compared refresh used.
 
         Returns:
-            Tuples of map name, mapping and cross-path eligibility.
+            Tuples of map name, mapping and cross-path provenance.
         """
+        legacy = RESERVATIONS_API_LEGACY
         return (
-            (
-                SOURCE_CODES,
-                self.codes,
-                self.path == RESERVATIONS_API_LEGACY,
-            ),
-            (SOURCE_BOOTSTRAP, self.bootstrap_codes or {}, True),
+            (SOURCE_CODES, self.codes, self.path != path),
+            (SOURCE_LEGACY, self.legacy_codes or {}, path != legacy),
+            (SOURCE_BOOTSTRAP, self.bootstrap_codes or {}, path != legacy),
             (SOURCE_FALLBACK, self.fallback_codes or {}, False),
         )
 
     def compare(
         self,
         observed: Mapping[str, str],
+        path: str,
     ) -> IdentityComparison:
         """Compare an observed code map against every stored map.
 
@@ -283,8 +352,12 @@ class IdentityBaseline:
         identifier is still present, which is the swap case FR-032
         exists to catch.
 
+        Conflicts are separated by provenance; see
+        ``IdentityComparison.is_ambiguous``.
+
         Args:
             observed: This refresh's code to identifier mapping.
+            path: Reservation path that produced the observation.
 
         Returns:
             The comparison outcome.
@@ -292,9 +365,10 @@ class IdentityBaseline:
         matched_ids: set[str] = set()
         cross_path_ids: set[str] = set()
         conflicts: list[IdentityConflict] = []
+        cross_path_conflicts: list[IdentityConflict] = []
         compared = 0
 
-        for source, mapping, is_cross_path in self._maps():
+        for source, mapping, is_cross_path in self._maps(path):
             for code, known_id in mapping.items():
                 observed_id = observed.get(code)
                 if observed_id is None:
@@ -305,19 +379,22 @@ class IdentityBaseline:
                     if is_cross_path:
                         cross_path_ids.add(known_id)
                     continue
-                conflicts.append(
-                    IdentityConflict(
-                        known_id=known_id,
-                        observed_id=observed_id,
-                        source=source,
-                    ),
+                conflict = IdentityConflict(
+                    known_id=known_id,
+                    observed_id=observed_id,
+                    source=source,
                 )
+                if is_cross_path:
+                    cross_path_conflicts.append(conflict)
+                else:
+                    conflicts.append(conflict)
 
         return IdentityComparison(
             matched=len(matched_ids),
             cross_path_matched=len(cross_path_ids),
             compared=compared,
             conflicts=tuple(conflicts),
+            cross_path_conflicts=tuple(cross_path_conflicts),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -332,6 +409,9 @@ class IdentityBaseline:
             "continuity": self.continuity,
             "updated": self.updated,
             "codes": dict(self.codes),
+            "legacy_codes": (
+                dict(self.legacy_codes) if self.legacy_codes is not None else None
+            ),
             "bootstrap_codes": (
                 dict(self.bootstrap_codes) if self.bootstrap_codes is not None else None
             ),
@@ -359,6 +439,7 @@ class IdentityBaseline:
             continuity=str(data.get("continuity", CONTINUITY_UNCONFIRMED)),
             updated=str(data.get("updated", "")),
             codes=dict(data.get("codes") or {}),
+            legacy_codes=_optional_map(data.get("legacy_codes")),
             bootstrap_codes=_optional_map(data.get("bootstrap_codes")),
             fallback_codes=_optional_map(data.get("fallback_codes")),
             candidates={
@@ -405,6 +486,7 @@ class ReservationIdentityGuard:
         self._baseline: IdentityBaseline | None = None
         self._loaded = False
         self._ambiguous = False
+        self._unstored = False
 
     @property
     def loaded(self) -> bool:
@@ -448,13 +530,21 @@ class ReservationIdentityGuard:
         self._loaded = True
 
     async def async_store(self, baseline: IdentityBaseline) -> None:
-        """Persist a baseline and adopt it in memory.
+        """Persist a baseline, adopting it only once it is written.
+
+        An unwritten baseline must not authorize a write: a restart
+        would read the previous one back, so the evidence a write
+        was judged against would silently differ from the evidence
+        that survives.
 
         Args:
             baseline: The baseline to persist.
+
+        Raises:
+            OSError: If the baseline could not be written.
         """
-        self._baseline = baseline
         await self._store.async_save(baseline.to_dict())
+        self._baseline = baseline
 
     async def async_remove(self) -> None:
         """Delete the persisted baseline with its config entry."""
@@ -465,18 +555,39 @@ class ReservationIdentityGuard:
     def compare(
         self,
         reservations: Iterable[GuestyReservation],
+        path: str,
     ) -> IdentityComparison:
         """Compare a refresh against the baseline, free of requests.
 
+        A within-refresh collision is reported even when there is no
+        baseline yet, so a confirmation code naming two reservations
+        at once cannot establish the very first baseline either.
+
         Args:
             reservations: Reservations the refresh retrieved.
+            path: Reservation path that produced the refresh.
 
         Returns:
-            The comparison outcome; empty when no baseline exists.
+            The comparison outcome.
         """
+        observed = observe_codes(reservations)
+        collisions = tuple(
+            IdentityConflict(
+                known_id=first,
+                observed_id=second,
+                source=SOURCE_OBSERVED,
+            )
+            for first, second in observed.collisions
+        )
         if self._baseline is None:
-            return IdentityComparison()
-        return self._baseline.compare(observed_code_map(reservations))
+            return IdentityComparison(conflicts=collisions)
+        comparison = self._baseline.compare(observed.mapping, path)
+        if not collisions:
+            return comparison
+        return replace(
+            comparison,
+            conflicts=collisions + comparison.conflicts,
+        )
 
     def mark_ambiguous(self) -> None:
         """Record that a refresh aborted on an ambiguous identity."""
@@ -493,10 +604,17 @@ class ReservationIdentityGuard:
     ) -> None:
         """Persist the baseline produced by a successful refresh.
 
-        ``codes`` is replaced wholesale while ``bootstrap_codes`` and
-        ``fallback_codes`` are left untouched, so a disjoint refresh
-        can never discard the only cross-path evidence
-        (data-model.md §4).
+        ``codes`` is replaced wholesale while the retained maps are
+        left untouched, so a disjoint refresh can never discard the
+        only cross-path evidence (data-model.md §4). Leaving the
+        legacy path retains its mappings for the same reason: a
+        first v3 refresh that happens not to overlap them would
+        otherwise destroy the evidence that can still confirm
+        continuity once those reservations reappear.
+
+        A storage failure never costs a refresh — the published data
+        is already correct — but it does leave writes refused until
+        the baseline is written.
 
         Args:
             path: Reservation path that produced this refresh.
@@ -508,30 +626,43 @@ class ReservationIdentityGuard:
         """
         previous = self._baseline
         retrieved = tuple(reservations)
+        hints = _retrieved_hints(retrieved)
+        hints.update(published)
         check_outs = {
-            reservation.id: reservation.check_out.isoformat()
-            for reservation in retrieved
+            reservation_id: hint.check_out for reservation_id, hint in hints.items()
         }
         baseline = IdentityBaseline(
             path=path,
             continuity=_next_continuity(previous, path, comparison),
             updated=updated,
-            codes=_bounded(observed_code_map(retrieved), check_outs),
+            codes=_bounded(observe_codes(retrieved).mapping, check_outs),
+            legacy_codes=_retained_legacy(previous, path),
             bootstrap_codes=previous.bootstrap_codes if previous else None,
             fallback_codes=previous.fallback_codes if previous else None,
-            candidates=_bounded_candidates(dict(published), previous),
+            candidates=_bounded_candidates(hints, previous),
         )
+        try:
+            await self.async_store(baseline)
+        except OSError as exc:
+            self._unstored = True
+            _LOGGER.warning(
+                "Could not persist the reservation identity "
+                "baseline (%s); writes stay refused until it is "
+                "stored",
+                type(exc).__name__,
+            )
+            return
+        self._unstored = False
         self._ambiguous = False
-        await self.async_store(baseline)
 
     def write_refusal(self, reservation_id: str) -> str | None:
         """Evaluate the four-conjunct write predicate (FR-031c).
 
         Every conjunct is tested independently so that a refusal can
-        explain itself: a usable baseline must exist, its continuity
-        must not be unconfirmed, the last refresh must not have
-        aborted as ambiguous, and the target must carry a known
-        confirmation code.
+        explain itself: a usable baseline must exist and must have
+        reached storage, its continuity must not be unconfirmed, the
+        last refresh must not have aborted as ambiguous, and the
+        target must carry a known confirmation code.
 
         Args:
             reservation_id: The reservation a write would target.
@@ -543,6 +674,8 @@ class ReservationIdentityGuard:
         baseline = self._baseline
         if baseline is None or not baseline.is_usable:
             return REFUSAL_NO_BASELINE
+        if self._unstored:
+            return REFUSAL_UNSTORED
         if baseline.continuity == CONTINUITY_UNCONFIRMED:
             return REFUSAL_UNCONFIRMED
         if self._ambiguous:
@@ -569,6 +702,11 @@ def _next_continuity(
     uninformative, continuity stays unconfirmed and writes stay
     blocked.
 
+    Evidence from the other path that positively disagrees demotes
+    continuity on either path: the two paths then number the same
+    booking differently, which is the one thing that must never be
+    written through.
+
     Args:
         previous: The baseline this refresh replaces, if any.
         path: Reservation path that produced this refresh.
@@ -577,6 +715,8 @@ def _next_continuity(
     Returns:
         The continuity state to persist.
     """
+    if comparison.cross_path_conflicts:
+        return CONTINUITY_UNCONFIRMED
     if path == RESERVATIONS_API_LEGACY:
         return CONTINUITY_NOT_APPLICABLE
     if previous is not None and previous.continuity == CONTINUITY_VERIFIED:
@@ -584,6 +724,75 @@ def _next_continuity(
     if comparison.cross_path_matched > 0:
         return CONTINUITY_VERIFIED
     return CONTINUITY_UNCONFIRMED
+
+
+def _retained_legacy(
+    previous: IdentityBaseline | None,
+    path: str,
+) -> dict[str, str] | None:
+    """Retain legacy mappings when the entry leaves that path.
+
+    Args:
+        previous: The baseline this refresh replaces, if any.
+        path: Reservation path that produced this refresh.
+
+    Returns:
+        The retained legacy evidence, or None when there is none.
+    """
+    if previous is None:
+        return None
+    retained = dict(previous.legacy_codes or {})
+    if previous.path == RESERVATIONS_API_LEGACY and path != RESERVATIONS_API_LEGACY:
+        retained.update(previous.codes)
+    return retained or None
+
+
+def _retrieved_hints(
+    reservations: Iterable[GuestyReservation],
+) -> dict[str, CandidateHint]:
+    """Record stay dates for every reservation retrieved.
+
+    Hints are taken before attribution and the window trim, so a
+    reservation held back from publication — for an untracked
+    listing, or because its stay fell outside the window — still
+    gains the durable dates the Phase 6a fallback judges eligibility
+    by (data-model.md §4.1).
+
+    Args:
+        reservations: Reservations the refresh retrieved.
+
+    Returns:
+        Stay hints keyed by reservation identifier.
+    """
+    return {
+        reservation.id: CandidateHint(
+            check_in=reservation.check_in.isoformat(),
+            check_out=reservation.check_out.isoformat(),
+        )
+        for reservation in reservations
+    }
+
+
+def _instant(value: str) -> datetime:
+    """Parse a stored ISO instant for ordering.
+
+    Stored instants keep the offset Guesty reported, so ordering
+    them as text would rank a later stay before an earlier one.
+    Anything unparsable sorts earliest, which evicts it first.
+
+    Args:
+        value: The stored ISO-8601 instant.
+
+    Returns:
+        A timezone-aware datetime.
+    """
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return datetime.min.replace(tzinfo=UTC)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed
 
 
 def _bounded(
@@ -603,7 +812,7 @@ def _bounded(
         return codes
     ordered = sorted(
         codes.items(),
-        key=lambda item: check_outs.get(item[1], ""),
+        key=lambda item: _instant(check_outs.get(item[1], "")),
     )
     return dict(ordered[-MAX_BASELINE_CODES:])
 
@@ -629,5 +838,8 @@ def _bounded_candidates(
     merged.update(candidates)
     if len(merged) <= MAX_BASELINE_CODES:
         return merged
-    ordered = sorted(merged.items(), key=lambda item: item[1].check_out)
+    ordered = sorted(
+        merged.items(),
+        key=lambda item: _instant(item[1].check_out),
+    )
     return dict(ordered[-MAX_BASELINE_CODES:])

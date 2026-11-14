@@ -65,6 +65,7 @@ from custom_components.guesty.coordinator import (
     ListingsCoordinator,
     ReservationsCoordinator,
 )
+from custom_components.guesty.identity import ReservationIdentityGuard
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -894,3 +895,22 @@ async def async_unload_entry(
         await async_unload_actions(hass, entry)
 
     return unload_ok
+
+
+async def async_remove_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+) -> None:
+    """Delete entry-scoped storage when the entry is removed.
+
+    Home Assistant calls this on permanent removal only, never on
+    an unload or a reload, so the identity baseline survives a
+    restart but does not outlive the entry it describes
+    (data-model.md section 4). Constructing the guard directly keeps
+    the cleanup working even when setup never completed.
+
+    Args:
+        hass: Home Assistant instance.
+        entry: The config entry being removed.
+    """
+    await ReservationIdentityGuard(hass, entry.entry_id).async_remove()

@@ -219,6 +219,7 @@ class ReservationsCoordinator(
             ),
         )
         self._identity_logged_path: str | None = None
+        self._identity_divergence_logged: str | None = None
         interval_minutes = entry.options.get(
             CONF_RESERVATION_SCAN_INTERVAL,
             DEFAULT_RESERVATION_SCAN_INTERVAL,
@@ -405,7 +406,10 @@ class ReservationsCoordinator(
         if not self.identity.loaded:
             await self.identity.async_load()
 
-        comparison = self.identity.compare(reservations)
+        comparison = self.identity.compare(
+            reservations,
+            self.reservations_path,
+        )
         if comparison.is_ambiguous:
             self.identity.mark_ambiguous()
             _LOGGER.error(
@@ -428,6 +432,7 @@ class ReservationsCoordinator(
             )
 
         self._log_identity_match(comparison)
+        self._log_identity_divergence(comparison)
         return comparison
 
     def _log_identity_match(
@@ -450,6 +455,36 @@ class ReservationsCoordinator(
             path,
         )
 
+    def _log_identity_divergence(
+        self,
+        comparison: IdentityComparison,
+    ) -> None:
+        """Explain a cross-path identifier divergence once.
+
+        Divergence does not abort the refresh — the paths simply
+        number the same booking differently — but it does refuse
+        every reservation write, so it has to be visible.
+
+        Args:
+            comparison: The comparison this refresh ran.
+        """
+        if not comparison.cross_path_conflicts:
+            return
+        if self._identity_divergence_logged == self.reservations_path:
+            return
+        self._identity_divergence_logged = self.reservations_path
+        _LOGGER.warning(
+            "Reservation identity differs between the legacy and v3 "
+            "reservation paths for %d confirmation code(s) (%s). "
+            "Reservations are still published, but no reservation "
+            "write will be performed while the two paths disagree",
+            len(comparison.cross_path_conflicts),
+            ", ".join(
+                f"{conflict.known_id} -> {conflict.observed_id}"
+                for conflict in comparison.cross_path_conflicts[:_MAX_LOGGED_CONFLICTS]
+            ),
+        )
+
     async def _record_identity(
         self,
         reservations: tuple[GuestyReservation, ...],
@@ -460,28 +495,21 @@ class ReservationsCoordinator(
 
         Storage failures must never cost a refresh: the published
         data is already correct, and the next refresh retries the
-        write.
+        write. The guard reports the failure itself and keeps
+        refusing writes until the baseline is stored.
 
         Args:
             reservations: Reservations the refresh retrieved.
             published: Stay hints of the reservations published.
             comparison: The comparison this refresh ran.
         """
-        try:
-            await self.identity.async_record_refresh(
-                path=self.reservations_path,
-                reservations=reservations,
-                published=published,
-                comparison=comparison,
-                updated=datetime.now(UTC).isoformat(),
-            )
-        except OSError as exc:
-            _LOGGER.warning(
-                "Could not persist the reservation identity "
-                "baseline (%s); writes stay refused until it is "
-                "stored",
-                type(exc).__name__,
-            )
+        await self.identity.async_record_refresh(
+            path=self.reservations_path,
+            reservations=reservations,
+            published=published,
+            comparison=comparison,
+            updated=datetime.now(UTC).isoformat(),
+        )
 
     async def _resolve_guests(
         self,
