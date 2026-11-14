@@ -1161,6 +1161,7 @@ class TestWriteConfirmedAbsenceIsReported:
         source.retire_candidate("res-gone")
 
         first = await _resolve(source)
+        source.acknowledge_absent(first.absent)
         second = await _resolve(source)
 
         assert first.absent == ("res-gone",)
@@ -1177,3 +1178,23 @@ class TestWriteConfirmedAbsenceIsReported:
         outcome = await _resolve(source)
 
         assert outcome.absent == ("res-gone",)
+
+    @respx.mock
+    async def test_an_unacknowledged_absence_is_reported_again(
+        self,
+    ) -> None:
+        """A failed baseline save must not lose the deletion."""
+        _mock_token()
+        source = ReservationFallbackSource(_make_client())
+        source.retire_candidate("res-gone")
+
+        first = await _resolve(source)
+        # The refresh could not persist its baseline, so it never
+        # acknowledges the retirement.
+        second = await _resolve(source)
+        source.acknowledge_absent(second.absent)
+        third = await _resolve(source)
+
+        assert first.absent == ("res-gone",)
+        assert second.absent == ("res-gone",)
+        assert third.absent == ()

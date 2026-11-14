@@ -573,7 +573,7 @@ class ReservationsCoordinator(
                 the legacy not-found fallback published and what it
                 confirmed is gone.
         """
-        await self.identity.async_record_refresh(
+        stored = await self.identity.async_record_refresh(
             path=self.reservations_path,
             reservations=reservations,
             published=published,
@@ -583,6 +583,13 @@ class ReservationsCoordinator(
             fallback_ids=fetch_result.fallback_sourced,
             absent_ids=fetch_result.fallback_absent,
         )
+        if stored and fetch_result.fallback_absent:
+            # Only a persisted retirement may clear the fallback's
+            # queue; otherwise the candidate would survive a reload
+            # and be looked up again (FR-052).
+            self.api_client.acknowledge_absent_reservations(
+                fetch_result.fallback_absent,
+            )
 
     def _fallback_candidates(self) -> dict[str, FallbackCandidate]:
         """Build this refresh's legacy fallback candidate hints.

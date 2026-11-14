@@ -69,7 +69,7 @@ from custom_components.guesty.api.models import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Collection, Mapping
 
     from custom_components.guesty.api.client import GuestyApiClient
     from custom_components.guesty.api.models import FallbackCandidate
@@ -540,12 +540,25 @@ class ReservationFallbackSource:
     def _drain_unreported_absent(self) -> tuple[str, ...]:
         """Hand write-discovered absences to this refresh.
 
+        The queue is not cleared here. A refresh that fails to
+        persist its baseline has not retired the candidate, and
+        clearing on report would leave the stored hint eligible for
+        a legacy lookup again after a reload (FR-052). The refresh
+        acknowledges the absence once storage confirms it.
+
         Returns:
-            The queued identifiers, which are reported once.
+            The queued identifiers.
         """
-        queued = tuple(sorted(self._unreported_absent))
-        self._unreported_absent.clear()
-        return queued
+        return tuple(sorted(self._unreported_absent))
+
+    def acknowledge_absent(self, reservation_ids: Collection[str]) -> None:
+        """Accept that these absences are durably retired.
+
+        Args:
+            reservation_ids: Identifiers whose retirement reached
+                the persisted identity baseline.
+        """
+        self._unreported_absent.difference_update(reservation_ids)
 
     def _retire(self, reservation_id: str) -> None:
         """Retire a candidate both APIs agree no longer exists.
@@ -636,8 +649,10 @@ class ReservationFallbackSource:
         for mapping in (self._retained, self._served, self._last_attempt):
             for reservation_id in [res_id for res_id in mapping if res_id not in keep]:
                 del mapping[reservation_id]
-        self._confirmed_absent &= known
-        self._unreported_absent &= self._confirmed_absent
+        # An absence a write discovered is held until the refresh
+        # acknowledges it, even once its hint is gone: dropping it
+        # first would let the deletion go unreported (FR-052).
+        self._confirmed_absent &= known | self._unreported_absent
 
 
 def _overlaps(

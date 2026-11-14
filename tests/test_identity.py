@@ -909,6 +909,37 @@ class TestIdentityReviewHardening:
 
         assert coordinator.last_update_success
 
+    async def test_unstored_absence_is_not_acknowledged(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A failed save leaves the deletion to be reported again."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        absent_result = make_fetch_result(
+            [_reservation("res-1", CODE_A)],
+            fallback_absent=("res-gone",),
+        )
+        api_client = _api_client(absent_result, absent_result)
+        api_client.acknowledge_absent_reservations = MagicMock()
+        coordinator = _make_coordinator(hass, entry, api_client)
+        await coordinator.identity.async_load()
+
+        with patch.object(
+            coordinator.identity._store,
+            "async_save",
+            side_effect=OSError("disk full"),
+        ):
+            await coordinator.async_refresh()
+
+        assert api_client.acknowledge_absent_reservations.call_count == 0
+
+        await coordinator.async_refresh()
+
+        api_client.acknowledge_absent_reservations.assert_called_once_with(
+            ("res-gone",),
+        )
+
     async def test_legacy_evidence_survives_a_disjoint_v3_refresh(
         self,
         hass: HomeAssistant,

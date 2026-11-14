@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 import random
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 
 import httpx
 
@@ -188,6 +188,20 @@ class GuestyApiClient:
         """
         fallback = self._fallback
         return fallback.confirmed_absent if fallback is not None else frozenset()
+
+    def acknowledge_absent_reservations(
+        self,
+        reservation_ids: Collection[str],
+    ) -> None:
+        """Accept that these absences are durably retired.
+
+        Args:
+            reservation_ids: Identifiers whose retirement reached
+                the persisted identity baseline.
+        """
+        fallback = self._fallback
+        if fallback is not None:
+            fallback.acknowledge_absent(reservation_ids)
 
     def _build_reservation_source(self) -> ReservationSource:
         """Select the reservation source for the resolved path.
