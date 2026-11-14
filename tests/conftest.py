@@ -763,6 +763,67 @@ def make_v3_search_page(
     }
 
 
+def make_legacy_reservation_by_id(
+    reservation_id: str = "res-001",
+    **overrides: Any,
+) -> dict[str, Any]:
+    """Build the legacy by-id answer for one reservation.
+
+    ``GET /v1/reservations/{reservationId}`` answers with the
+    reservation document itself rather than a paginated envelope,
+    so this is deliberately not wrapped in ``results``. The payload
+    is synthetic, like every other builder here (NFR-008).
+
+    Args:
+        reservation_id: The ``_id`` the document reports.
+        **overrides: Fields to override on the defaults.
+
+    Returns:
+        Dictionary matching a legacy reservation document.
+    """
+    document = make_reservation_dict(_id=reservation_id)
+    document.update(overrides)
+    return document
+
+
+def make_legacy_not_found_body(
+    reservation_id: str = "res-001",
+) -> dict[str, Any]:
+    """Build a reservation-scoped legacy not-found body.
+
+    This is the shape Guesty Support described on issue #223: the
+    error names the reservation, which is what lets the fallback
+    read it as confirmed absence rather than as retirement.
+
+    Args:
+        reservation_id: The reservation the error names.
+
+    Returns:
+        Dictionary matching a reservation-scoped 404 body.
+    """
+    return {
+        "statusCode": 404,
+        "error": "Not Found",
+        "message": f"Reservation {reservation_id} not found",
+    }
+
+
+def make_legacy_retired_body() -> dict[str, Any]:
+    """Build a retirement-shaped legacy answer body.
+
+    Retirement is about the resource rather than one reservation,
+    so the body names no reservation at all.
+
+    Returns:
+        Dictionary matching a retirement-shaped error body.
+    """
+    return {
+        "statusCode": 410,
+        "error": "Gone",
+        "message": ("This endpoint has been deprecated and is no longer available"),
+    }
+
+
 def _relative_day(days: int, hour: int) -> datetime:
     """Build a datetime offset from now, so fixtures stay in window.
 

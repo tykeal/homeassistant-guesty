@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 import random
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
 import httpx
 
@@ -37,6 +37,7 @@ from custom_components.guesty.api.guest_cache import (
     GuestLookupResult,
 )
 from custom_components.guesty.api.models import (
+    FallbackCandidate,
     GuestyListing,
     GuestyListingsResponse,
     ReservationFetchResult,
@@ -293,6 +294,7 @@ class GuestyApiClient:
         past_days: int = DEFAULT_PAST_DAYS,
         future_days: int = DEFAULT_FUTURE_DAYS,
         statuses: frozenset[str] | None = None,
+        candidates: Mapping[str, FallbackCandidate] | None = None,
     ) -> ReservationFetchResult:
         """Fetch reservations from the selected reservation source.
 
@@ -306,6 +308,11 @@ class GuestyApiClient:
                 date filter window. Default 365.
             statuses: Set of reservation statuses to include.
                 Defaults to the source's own status set if None.
+            candidates: Durable stay dates of every reservation the
+                integration already knows, keyed by identifier.
+                Used by the v3 source alone, to recover a
+                reservation Guesty has not finished backfilling
+                (FR-050); the legacy source ignores them.
 
         Returns:
             The de-duplicated reservations together with the
@@ -321,6 +328,7 @@ class GuestyApiClient:
             past_days=past_days,
             future_days=future_days,
             statuses=statuses,
+            candidates=candidates,
         )
 
     async def resolve_guests(

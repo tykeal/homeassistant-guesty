@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Coroutine, Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 import voluptuous as vol
 from homeassistant.core import (
@@ -60,6 +60,22 @@ _ALL_SERVICES = (
     SERVICE_SET_CALENDAR,
     SERVICE_SET_RESERVATION_STATUS,
 )
+
+# ── Write routing (FR-058) ──────────────────────────────────────────
+
+# The reservation resource generation a write is sent to.
+ROUTE_V3: Final[str] = "v3"
+ROUTE_LEGACY: Final[str] = "legacy"
+
+REFUSAL_NOT_REACHABLE: Final[str] = (
+    "Reservation {reservation_id} is currently being published from "
+    "its last known values because it is missing from the "
+    "reservations v3 results and the legacy lookup for it has not "
+    "succeeded in this session. Its identifier has not been "
+    "validated against either resource, so no write is sent. Retry "
+    "after the next successful refresh."
+)
+
 
 # ── Voluptuous schemas ──────────────────────────────────────────────
 
@@ -207,6 +223,56 @@ def guard_reservation_write(
         )
 
 
+def select_reservation_write_route(
+    entry_data: Mapping[str, Any],
+    reservation_id: str,
+    action_type: str,
+) -> str:
+    """Choose the resource generation a reservation write uses.
+
+    Evaluated **after** ``guard_reservation_write``: identity comes
+    first, and routing is only meaningful once the identifier is
+    trusted (FR-060).
+
+    The decision is read from the fallback's live served set at the
+    moment of the write, never from a value captured at refresh
+    time and never from anything the caller supplied. A reservation
+    the fallback is serving exists only on the legacy resource
+    right now, so a v3 write against it would fail; one that has
+    reappeared in v3 since the last refresh is already out of that
+    set and routes to v3.
+
+    A target the fallback is publishing from retained values but
+    has never successfully looked up in this session selects
+    neither route. Its identifier has not been validated by either
+    resource this session, and guessing a generation would mean
+    writing to whichever one happens to accept the identifier
+    (FR-055, FR-058).
+
+    Args:
+        entry_data: The addressed entry's hass.data mapping.
+        reservation_id: The reservation the write would target.
+        action_type: The action being routed, for the error.
+
+    Returns:
+        ``ROUTE_LEGACY`` or ``ROUTE_V3``.
+
+    Raises:
+        GuestyActionError: When the target is reachable on neither
+            resource.
+    """
+    coordinator: ReservationsCoordinator = entry_data["reservations_coordinator"]
+    if reservation_id in coordinator.fallback_served_ids:
+        return ROUTE_LEGACY
+    if reservation_id in coordinator.fallback_sourced_ids:
+        raise GuestyActionError(
+            REFUSAL_NOT_REACHABLE.format(reservation_id=reservation_id),
+            target_id=reservation_id,
+            action_type=action_type,
+        )
+    return ROUTE_V3
+
+
 def _result_to_dict(result: ActionResult) -> dict[str, Any]:
     """Convert an ActionResult to a service response dictionary.
 
@@ -249,6 +315,13 @@ async def _handle_add_note(
     reservation_id: str = call.data["reservation_id"]
     try:
         guard_reservation_write(
+            entry_data,
+            reservation_id,
+            SERVICE_ADD_NOTE,
+        )
+        # Phase 6a only selects the route; the legacy request
+        # itself lands in Phase 7 (FR-059).
+        select_reservation_write_route(
             entry_data,
             reservation_id,
             SERVICE_ADD_NOTE,
@@ -368,6 +441,13 @@ async def _handle_set_reservation_status(
     reservation_id: str = call.data["reservation_id"]
     try:
         guard_reservation_write(
+            entry_data,
+            reservation_id,
+            SERVICE_SET_RESERVATION_STATUS,
+        )
+        # Phase 6a only selects the route; the legacy request
+        # itself lands in Phase 7 (FR-059).
+        select_reservation_write_route(
             entry_data,
             reservation_id,
             SERVICE_SET_RESERVATION_STATUS,

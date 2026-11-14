@@ -2042,3 +2042,52 @@ class TestLegacyRetirementErrors:
             await http.aclose()
 
         assert LEGACY_RESERVATIONS_RETIREMENT_DATE not in str(exc_info.value)
+
+
+class TestIdentifierProvenance:
+    """Writes address reservations by identifier only (T121).
+
+    Guesty Support confirmed that a confirmation code, an
+    ``originId`` or any other external reference answers
+    "Reservation not found" on a v3 endpoint. A write must
+    therefore never put one in a path or a filter (FR-031e).
+    """
+
+    @respx.mock
+    @pytest.mark.parametrize(
+        "reservations_api",
+        [RESERVATIONS_API_V3, RESERVATIONS_API_LEGACY],
+    )
+    async def test_no_write_url_carries_an_external_reference(
+        self,
+        reservations_api: str,
+    ) -> None:
+        """Every request URL names the Guesty identifier."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        respx.route(host="open-api.guesty.com").mock(
+            return_value=Response(
+                200,
+                json={"_id": "res-001", "status": "confirmed"},
+            ),
+        )
+        http = httpx.AsyncClient()
+        client = _make_actions_client(http, reservations_api)
+        try:
+            await client.add_reservation_note("res-001", "note")
+            await client.set_reservation_status("res-001", "checked_in")
+        finally:
+            await http.aclose()
+
+        urls = [
+            str(call.request.url)
+            for call in respx.calls
+            if "oauth2" not in str(call.request.url)
+        ]
+        assert urls
+        for url in urls:
+            assert "CONF-" not in url
+            assert "originId" not in url
+            assert "confirmationCode" not in url
+        assert any("res-001" in url for url in urls)

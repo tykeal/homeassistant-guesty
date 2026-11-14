@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -29,6 +29,8 @@ from custom_components.guesty.api.exceptions import (
 )
 from custom_components.guesty.api.guest_cache import GuestLookupResult
 from custom_components.guesty.api.models import (
+    FallbackCandidate,
+    FallbackCounters,
     GuestyCustomFieldDefinition,
     GuestyGuest,
     GuestyListing,
@@ -220,6 +222,9 @@ class ReservationsCoordinator(
         )
         self._identity_logged_path: str | None = None
         self._identity_divergence_logged: str | None = None
+        self.fallback_served_ids: frozenset[str] = frozenset()
+        self.fallback_sourced_ids: frozenset[str] = frozenset()
+        self.last_fallback_counters = FallbackCounters()
         interval_minutes = entry.options.get(
             CONF_RESERVATION_SCAN_INTERVAL,
             DEFAULT_RESERVATION_SCAN_INTERVAL,
@@ -266,6 +271,7 @@ class ReservationsCoordinator(
             fetch_result = await self.api_client.get_reservations(
                 past_days=past_days,
                 future_days=future_days,
+                candidates=self._fallback_candidates(),
             )
         except GuestyFilterRejectedError as exc:
             raise UpdateFailed(
@@ -277,9 +283,15 @@ class ReservationsCoordinator(
             ) from exc
 
         reservations = fetch_result.reservations
+        self.fallback_served_ids = frozenset(fetch_result.fallback_served)
+        self.fallback_sourced_ids = frozenset(fetch_result.fallback_sourced)
+        self.last_fallback_counters = fetch_result.fallback
         counters = _RefreshCounters()
 
-        comparison = await self._check_identity(reservations)
+        comparison = await self._check_identity(
+            reservations,
+            self.fallback_sourced_ids,
+        )
         counters.identity_matched = comparison.matched
 
         # Feature 007 decides tracking on the listing side (FR-014).
@@ -297,6 +309,7 @@ class ReservationsCoordinator(
                 {},
                 comparison,
                 past_days,
+                fetch_result,
             )
             _log_refresh_diagnostics(
                 fetch_result,
@@ -374,6 +387,7 @@ class ReservationsCoordinator(
             published,
             comparison,
             past_days,
+            fetch_result,
         )
         _log_refresh_diagnostics(
             fetch_result,
@@ -393,6 +407,7 @@ class ReservationsCoordinator(
     async def _check_identity(
         self,
         reservations: tuple[GuestyReservation, ...],
+        fallback_ids: Collection[str] = (),
     ) -> IdentityComparison:
         """Compare a fetched refresh against the identity baseline.
 
@@ -406,6 +421,10 @@ class ReservationsCoordinator(
 
         Args:
             reservations: Reservations the refresh retrieved.
+            fallback_ids: Identifiers this refresh published from
+                the legacy not-found fallback, which are compared
+                for conflicts but may not confirm continuity
+                (FR-055).
 
         Returns:
             The comparison outcome of a non-ambiguous refresh.
@@ -419,6 +438,7 @@ class ReservationsCoordinator(
         comparison = self.identity.compare(
             reservations,
             self.reservations_path,
+            fallback_ids,
         )
         if comparison.is_ambiguous:
             self.identity.mark_ambiguous()
@@ -501,6 +521,7 @@ class ReservationsCoordinator(
         published: Mapping[str, CandidateHint],
         comparison: IdentityComparison,
         past_days: int,
+        fetch_result: ReservationFetchResult,
     ) -> None:
         """Persist the baseline this successful refresh produced.
 
@@ -515,6 +536,9 @@ class ReservationsCoordinator(
             comparison: The comparison this refresh ran.
             past_days: The configured past-day window, which dates
                 the safe retirement of bootstrap evidence (T074).
+            fetch_result: The retrieval result, which reports what
+                the legacy not-found fallback published and what it
+                confirmed is gone.
         """
         await self.identity.async_record_refresh(
             path=self.reservations_path,
@@ -523,7 +547,37 @@ class ReservationsCoordinator(
             comparison=comparison,
             updated=datetime.now(UTC).isoformat(),
             past_days=past_days,
+            fallback_ids=fetch_result.fallback_sourced,
+            absent_ids=fetch_result.fallback_absent,
         )
+
+    def _fallback_candidates(self) -> dict[str, FallbackCandidate]:
+        """Build this refresh's legacy fallback candidate hints.
+
+        Every reservation the integration already knows is offered;
+        the source itself decides which of them v3 failed to return
+        and which are worth a request (FR-050). Hints that cannot be
+        parsed are dropped rather than failing the refresh, because
+        a corrupt stored date must not stop reservations publishing.
+
+        Returns:
+            Last known stay endpoints, keyed by identifier.
+        """
+        baseline = self.identity.baseline
+        if baseline is None:
+            return {}
+        candidates: dict[str, FallbackCandidate] = {}
+        for reservation_id, hint in baseline.candidates.items():
+            try:
+                check_in = datetime.fromisoformat(hint.check_in)
+                check_out = datetime.fromisoformat(hint.check_out)
+            except TypeError, ValueError:
+                continue
+            candidates[reservation_id] = FallbackCandidate(
+                check_in=_as_utc(check_in),
+                check_out=_as_utc(check_out),
+            )
+        return candidates
 
     async def _resolve_guests(
         self,
@@ -606,7 +660,10 @@ def _log_refresh_diagnostics(
         "attributed=%d partially_attributed=%d skipped=%d "
         "alteration_drops=%d trim_drops=%d guest_hits=%d "
         "guest_lookups=%d guest_failures=%d guest_deferrals=%d "
-        "identity_matched=%d identity_ambiguous=%s",
+        "identity_matched=%d identity_ambiguous=%s "
+        "fallback_attempted=%d fallback_served=%d "
+        "fallback_succeeded=%d fallback_absent=%d "
+        "fallback_failed=%d fallback_deferred=%d",
         fetch_result.pages,
         dict(fetch_result.status_counts),
         dict(fetch_result.segment_histogram),
@@ -621,7 +678,31 @@ def _log_refresh_diagnostics(
         lookup.deferrals,
         counters.identity_matched,
         identity_ambiguous,
+        fetch_result.fallback.attempted,
+        fetch_result.fallback.served,
+        fetch_result.fallback.succeeded,
+        fetch_result.fallback.confirmed_absent,
+        fetch_result.fallback.failed,
+        fetch_result.fallback.deferred,
     )
+
+
+def _as_utc(moment: datetime) -> datetime:
+    """Normalize a stored instant to an aware UTC instant.
+
+    A naive stored date is read as UTC, which is how the hints are
+    written; comparing it against an aware instant would otherwise
+    raise and lose the candidate entirely.
+
+    Args:
+        moment: The parsed instant.
+
+    Returns:
+        The same instant, in UTC and aware.
+    """
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=UTC)
+    return moment.astimezone(UTC)
 
 
 def _with_guest(

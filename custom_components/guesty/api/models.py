@@ -1048,6 +1048,56 @@ class GuestyReservationsResponse:
 
 
 @dataclass(frozen=True)
+class FallbackCandidate:
+    """Durable stay dates of one legacy-fallback candidate.
+
+    Carries identifiers and dates only, never guest data (FR-049a).
+    Both endpoints are kept because the window predicate needs the
+    check-in as well as the check-out: a check-out alone cannot
+    tell an overlapping stay from a future one once ``future_days``
+    is narrowed (data-model.md §4.1).
+
+    It lives here rather than in ``reservations_fallback`` so that
+    the ``ReservationSource`` protocol can name it without that
+    module importing this one back.
+
+    Attributes:
+        check_in: UTC check-in instant of the last known stay.
+        check_out: UTC check-out instant of the last known stay.
+    """
+
+    check_in: datetime
+    check_out: datetime
+
+
+@dataclass(frozen=True)
+class FallbackCounters:
+    """Per-refresh legacy not-found fallback counters (FR-057).
+
+    Counts only; no identifier and no guest data (FR-021,
+    NFR-009). Defined here because ``ReservationFetchResult``
+    carries it and the fallback module imports this one.
+
+    Attributes:
+        attempted: Legacy by-id lookups issued this refresh.
+        served: Reservations published from an existing record or
+            from retained values, costing no request this refresh.
+        succeeded: Lookups that returned a usable document.
+        confirmed_absent: Lookups legacy answered as not found,
+            retiring the candidate for good (FR-052).
+        failed: Lookups that failed for any other reason (FR-054).
+        deferred: Due candidates left over the per-refresh cap.
+    """
+
+    attempted: int = 0
+    served: int = 0
+    succeeded: int = 0
+    confirmed_absent: int = 0
+    failed: int = 0
+    deferred: int = 0
+
+
+@dataclass(frozen=True)
 class ReservationFetchResult:
     """Result of one reservation retrieval, whatever the source.
 
@@ -1062,6 +1112,15 @@ class ReservationFetchResult:
         status_counts: Histogram of raw, pre-mapping statuses.
         segment_histogram: Histogram of stay-segment counts per
             reservation. Empty for sources without stay segments.
+        fallback: Legacy not-found fallback counters (FR-057).
+        fallback_served: Identifiers the fallback is currently
+            serving from a legacy document it retrieved in this
+            session. This is the set a write routes on (FR-058).
+        fallback_sourced: Identifiers published by the fallback
+            this refresh, including those republished from
+            retained values. Diagnostics only (FR-057).
+        fallback_absent: Identifiers legacy confirmed are gone, so
+            the caller can retire their durable candidacy (FR-052).
     """
 
     reservations: tuple[GuestyReservation, ...] = ()
@@ -1072,6 +1131,12 @@ class ReservationFetchResult:
     segment_histogram: Mapping[int, int] = field(
         default_factory=lambda: MappingProxyType({}),
     )
+    fallback: FallbackCounters = field(
+        default_factory=FallbackCounters,
+    )
+    fallback_served: tuple[str, ...] = ()
+    fallback_sourced: tuple[str, ...] = ()
+    fallback_absent: tuple[str, ...] = ()
 
 
 @runtime_checkable
@@ -1088,6 +1153,7 @@ class ReservationSource(Protocol):
         past_days: int,
         future_days: int,
         statuses: frozenset[str] | None = None,
+        candidates: Mapping[str, FallbackCandidate] | None = None,
     ) -> ReservationFetchResult:
         """Fetch reservations for the configured window.
 
@@ -1096,6 +1162,10 @@ class ReservationSource(Protocol):
             future_days: Days in the future to include.
             statuses: Statuses to request, or None for the
                 source's own default set.
+            candidates: Durable stay dates of the reservations the
+                integration already knows, keyed by identifier. Only
+                the v3 source uses them, to decide which absentees
+                are worth a legacy by-id lookup (FR-050).
 
         Returns:
             The reservations and the diagnostics counters.

@@ -39,7 +39,7 @@ from custom_components.guesty.api.reservations_legacy import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Collection, Iterable, Mapping
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
@@ -420,6 +420,7 @@ class IdentityBaseline:
         self,
         observed: Mapping[str, str],
         path: str,
+        fallback_ids: Collection[str] = (),
     ) -> IdentityComparison:
         """Compare an observed code map against every stored map.
 
@@ -436,6 +437,15 @@ class IdentityBaseline:
         Args:
             observed: This refresh's code to identifier mapping.
             path: Reservation path that produced the observation.
+            fallback_ids: Identifiers this refresh observed through
+                the legacy not-found fallback. Such an observation
+                can never *confirm* continuity, because it came
+                from the legacy resource itself and so agreeing
+                with legacy-sourced evidence says nothing about v3
+                (FR-055). By the same token a disagreement is never
+                merely cross-path: both sides came from legacy, so
+                it can only be a re-key and it aborts the refresh
+                (FR-032).
 
         Returns:
             The comparison outcome.
@@ -445,6 +455,7 @@ class IdentityBaseline:
         conflicts: list[IdentityConflict] = []
         cross_path_conflicts: list[IdentityConflict] = []
         compared = 0
+        from_fallback = frozenset(fallback_ids)
 
         for source, mapping, confirms, soft in self._maps(path):
             for code, known_id in mapping.items():
@@ -454,7 +465,7 @@ class IdentityBaseline:
                 compared += 1
                 if observed_id == known_id:
                     matched_ids.add(known_id)
-                    if confirms:
+                    if confirms and observed_id not in from_fallback:
                         cross_path_ids.add(known_id)
                     continue
                 conflict = IdentityConflict(
@@ -462,7 +473,7 @@ class IdentityBaseline:
                     observed_id=observed_id,
                     source=source,
                 )
-                if soft:
+                if soft and observed_id not in from_fallback:
                     cross_path_conflicts.append(conflict)
                 else:
                     conflicts.append(conflict)
@@ -640,6 +651,7 @@ class ReservationIdentityGuard:
         self,
         reservations: Iterable[GuestyReservation],
         path: str,
+        fallback_ids: Collection[str] = (),
     ) -> IdentityComparison:
         """Compare a refresh against the baseline, free of requests.
 
@@ -650,6 +662,9 @@ class ReservationIdentityGuard:
         Args:
             reservations: Reservations the refresh retrieved.
             path: Reservation path that produced the refresh.
+            fallback_ids: Identifiers this refresh published from
+                the legacy not-found fallback, which may not confirm
+                continuity (FR-055).
 
         Returns:
             The comparison outcome.
@@ -665,7 +680,11 @@ class ReservationIdentityGuard:
         )
         if self._baseline is None:
             return IdentityComparison(conflicts=collisions)
-        comparison = self._baseline.compare(observed.mapping, path)
+        comparison = self._baseline.compare(
+            observed.mapping,
+            path,
+            fallback_ids,
+        )
         if not collisions:
             return comparison
         return replace(
@@ -686,6 +705,8 @@ class ReservationIdentityGuard:
         comparison: IdentityComparison,
         updated: str,
         past_days: int = DEFAULT_PAST_DAYS,
+        fallback_ids: Collection[str] = (),
+        absent_ids: Collection[str] = (),
     ) -> None:
         """Persist the baseline produced by a successful refresh.
 
@@ -710,14 +731,38 @@ class ReservationIdentityGuard:
             updated: ISO timestamp of this refresh.
             past_days: The configured past-day window, which dates
                 the safe retirement policy of T074.
+            fallback_ids: Identifiers this refresh published from
+                the legacy not-found fallback rather than from the
+                configured path. Their codes are recorded apart, in
+                ``fallback_codes``, so that evidence retrieved from
+                a legacy resource is never mistaken for evidence the
+                configured path produced (FR-055).
+            absent_ids: Identifiers the legacy resource confirmed no
+                longer exist. Their candidacy is retired for good,
+                which is what stops the fallback resurrecting a
+                genuinely cancelled reservation (FR-052).
         """
         previous = self._baseline
         retrieved = tuple(reservations)
-        observed = observe_codes(retrieved).mapping
+        from_fallback = frozenset(fallback_ids)
+        absent = frozenset(absent_ids)
+        all_observed = observe_codes(retrieved).mapping
+        observed = {
+            code: reservation_id
+            for code, reservation_id in all_observed.items()
+            if reservation_id not in from_fallback
+        }
+        fallback_observed = {
+            code: reservation_id
+            for code, reservation_id in all_observed.items()
+            if reservation_id in from_fallback
+        }
         hints = _retrieved_hints(retrieved)
         hints.update(published)
         merged_hints = dict(previous.candidates) if previous else {}
         merged_hints.update(hints)
+        for reservation_id in absent:
+            merged_hints.pop(reservation_id, None)
         check_outs = {
             reservation_id: hint.check_out
             for reservation_id, hint in merged_hints.items()
@@ -739,7 +784,7 @@ class ReservationIdentityGuard:
                 check_outs,
                 past_days,
             ),
-            fallback_codes=previous.fallback_codes if previous else None,
+            fallback_codes=_bounded(fallback_observed, check_outs),
             candidates=_bounded_candidates(merged_hints),
         )
         try:

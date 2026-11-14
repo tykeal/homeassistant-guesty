@@ -275,3 +275,22 @@ MAX_GUEST_LOOKUPS_PER_REFRESH: int = 50
 
 # Maximum guest lookups in flight at once.
 GUEST_LOOKUP_CONCURRENCY: int = 4
+
+# ── Legacy not-found fallback (Feature 008, FR-050 to FR-057) ───────
+
+# Legacy by-identifier reservation path. Carries the fallback's GET
+# and, from Phase 7, the legacy write routed to a fallback-sourced
+# reservation (data-model.md section 6).
+RESERVATION_BY_ID_LEGACY_PATH: str = "/reservations/{reservation_id}"
+
+# Maximum legacy fallback lookups issued in a single refresh. The
+# FR-053 per-refresh bound: candidates over it are deferred to a
+# later refresh rather than spent now, so a long-running Guesty
+# backfill cannot turn every poll into a burst of legacy requests.
+MAX_LEGACY_FALLBACK_LOOKUPS_PER_REFRESH: int = 20
+
+# Minimum seconds between two lookups of the same candidate. The
+# FR-053 per-candidate bound, measured from the last *attempt* and
+# longer than any supported poll interval, so a permanently missing
+# reservation is re-checked hourly rather than on every refresh.
+LEGACY_FALLBACK_RECHECK_SECONDS: int = 3600
