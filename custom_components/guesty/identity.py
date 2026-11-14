@@ -654,8 +654,11 @@ class ReservationIdentityGuard:
         retrieved = tuple(reservations)
         hints = _retrieved_hints(retrieved)
         hints.update(published)
+        merged_hints = dict(previous.candidates) if previous else {}
+        merged_hints.update(hints)
         check_outs = {
-            reservation_id: hint.check_out for reservation_id, hint in hints.items()
+            reservation_id: hint.check_out
+            for reservation_id, hint in merged_hints.items()
         }
         divergent = bool(comparison.cross_path_conflicts) or bool(
             previous and previous.divergent,
@@ -669,7 +672,7 @@ class ReservationIdentityGuard:
             legacy_codes=_retained_legacy(previous, path, check_outs),
             bootstrap_codes=previous.bootstrap_codes if previous else None,
             fallback_codes=previous.fallback_codes if previous else None,
-            candidates=_bounded_candidates(hints, previous),
+            candidates=_bounded_candidates(merged_hints),
         )
         try:
             await self.async_store(baseline)
@@ -774,7 +777,9 @@ def _retained_legacy(
     of legacy evidence each time, so the merged map takes the same
     bound as every other, evicting the earliest check-out it can
     date. Dates come from the hints this refresh is about to store,
-    which carry the retained hints of earlier refreshes.
+    which merge the retained hints of earlier refreshes over the
+    current ones, so a reservation absent from this refresh is
+    still dated by its stored check-out.
 
     Args:
         previous: The baseline this refresh replaces, if any.
@@ -866,23 +871,21 @@ def _bounded(
 
 def _bounded_candidates(
     candidates: dict[str, CandidateHint],
-    previous: IdentityBaseline | None,
 ) -> dict[str, CandidateHint]:
     """Apply the same size bound to the candidate hints.
 
     Hints retained from the previous baseline keep a reservation
     that has temporarily vanished from a refresh eligible for the
-    Phase 6a fallback (FR-049a).
+    Phase 6a fallback (FR-049a); the caller merges them in before
+    bounding so the stored dates also date code-map eviction.
 
     Args:
-        candidates: Hints for the reservations just published.
-        previous: The baseline this refresh replaces, if any.
+        candidates: Merged hints for every reservation still known.
 
     Returns:
-        The merged hints, trimmed to ``MAX_BASELINE_CODES``.
+        The hints, trimmed to ``MAX_BASELINE_CODES``.
     """
-    merged = dict(previous.candidates) if previous else {}
-    merged.update(candidates)
+    merged = candidates
     if len(merged) <= MAX_BASELINE_CODES:
         return merged
     ordered = sorted(

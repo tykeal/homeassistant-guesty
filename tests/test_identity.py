@@ -1035,6 +1035,46 @@ class TestIdentityReviewHardening:
         assert baseline.divergent
         assert baseline.continuity == CONTINUITY_UNCONFIRMED
 
+    async def test_retention_dates_stored_hints(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Eviction must date absent reservations by stored hints."""
+        guard = ReservationIdentityGuard(hass, "entry-retain")
+        await guard.async_load()
+        total = MAX_BASELINE_CODES + 10
+        await guard.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_LEGACY,
+                codes={f"CODE-{index}": f"res-{index}" for index in range(total)},
+                candidates={
+                    f"res-{index}": CandidateHint(
+                        check_in=_rel(total - index).isoformat(),
+                        check_out=_rel(total - index + 2).isoformat(),
+                    )
+                    for index in range(total)
+                },
+            ),
+        )
+
+        await guard.async_record_refresh(
+            path=RESERVATIONS_API_V3,
+            reservations=[_reservation("res-new", CODE_A)],
+            published={},
+            comparison=IdentityComparison(),
+            updated="2026-01-01T00:00:00+00:00",
+        )
+
+        baseline = guard.baseline
+        assert baseline is not None
+        retained = baseline.legacy_codes
+        assert retained is not None
+        assert len(retained) == MAX_BASELINE_CODES
+        # res-0 checks out latest, so it must survive while the
+        # earliest-dated entries are evicted.
+        assert "CODE-0" in retained
+        assert f"CODE-{total - 1}" not in retained
+
     def test_retained_legacy_evidence_is_bounded(self) -> None:
         """Repeated transitions must not grow the map forever."""
         previous = IdentityBaseline(
