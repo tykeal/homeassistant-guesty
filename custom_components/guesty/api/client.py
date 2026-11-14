@@ -34,7 +34,7 @@ from custom_components.guesty.api.exceptions import (
 from custom_components.guesty.api.models import (
     GuestyListing,
     GuestyListingsResponse,
-    GuestyReservation,
+    ReservationFetchResult,
     ReservationSource,
 )
 from custom_components.guesty.api.reservations_legacy import (
@@ -284,7 +284,7 @@ class GuestyApiClient:
         past_days: int = DEFAULT_PAST_DAYS,
         future_days: int = DEFAULT_FUTURE_DAYS,
         statuses: frozenset[str] | None = None,
-    ) -> list[GuestyReservation]:
+    ) -> ReservationFetchResult:
         """Fetch reservations from the selected reservation source.
 
         Delegates to the source chosen by ``reservations_api``;
@@ -299,7 +299,8 @@ class GuestyApiClient:
                 Defaults to the source's own status set if None.
 
         Returns:
-            De-duplicated list of valid GuestyReservation objects.
+            The de-duplicated reservations together with the
+            per-refresh diagnostics counters (FR-042).
 
         Raises:
             GuestyAuthError: On authentication failure.
@@ -307,12 +308,11 @@ class GuestyApiClient:
             GuestyRateLimitError: On rate limit exhaustion.
             GuestyResponseError: On malformed API response.
         """
-        result = await self._reservation_source.fetch(
+        return await self._reservation_source.fetch(
             past_days=past_days,
             future_days=future_days,
             statuses=statuses,
         )
-        return list(result.reservations)
 
     async def _request(
         self,
