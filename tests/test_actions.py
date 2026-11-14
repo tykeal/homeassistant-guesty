@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import ExitStack
 from typing import Any
@@ -507,6 +508,7 @@ class TestHandleAddReservationNote:
         mock_actions_client.add_reservation_note.assert_awaited_once_with(
             reservation_id="res-001",
             note_text="Test note",
+            route=ROUTE_V3,
         )
         assert result == _result_dict(target_id="res-001")
 
@@ -1616,6 +1618,7 @@ class TestHandleSetReservationStatus:
         mock_actions_client.set_reservation_status.assert_awaited_once_with(
             reservation_id="res-001",
             status="checked_in",
+            route=ROUTE_V3,
         )
         assert result == _result_dict(target_id="res-001")
 
@@ -1642,6 +1645,7 @@ class TestHandleSetReservationStatus:
         mock_actions_client.set_reservation_status.assert_awaited_once_with(
             reservation_id="res-001",
             status="checked_out",
+            route=ROUTE_V3,
         )
         assert result == _result_dict(target_id="res-001")
 
@@ -2204,3 +2208,283 @@ class TestWriteRouteSelection:
                     "route": ROUTE_LEGACY,
                 },
             )
+
+
+# ── Phase 7: routing disabled and counters (T130, T131) ────────────
+
+
+class TestLegacyWriteRoutingDisabled:
+    """A retired legacy generation refuses, never writes (T130)."""
+
+    @staticmethod
+    def _retire(hass: HomeAssistant, entry: MockConfigEntry) -> dict[str, Any]:
+        """Serve res-001 from the fallback, then retire legacy.
+
+        Args:
+            hass: Home Assistant instance.
+            entry: The loaded config entry.
+
+        Returns:
+            The entry's hass.data mapping.
+        """
+        entry_data: dict[str, Any] = hass.data[DOMAIN][entry.entry_id]
+        coordinator = entry_data["reservations_coordinator"]
+        coordinator.fallback_served_ids = frozenset({"res-001"})
+        coordinator.fallback_sourced_ids = frozenset({"res-001"})
+        api_client = entry_data["api_client"]
+        patcher = patch.object(
+            type(api_client),
+            "legacy_write_routing_available",
+            property(lambda _self: False),
+        )
+        patcher.start()
+        return entry_data
+
+    async def test_selection_refuses_and_names_the_date(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """The refusal names the retirement date, not a route."""
+        entry = await _setup_entry(hass)
+        entry_data = self._retire(hass, entry)
+
+        with pytest.raises(GuestyActionError) as exc_info:
+            select_reservation_write_route(
+                entry_data,
+                "res-001",
+                "add_reservation_note",
+            )
+
+        assert "2027-03-01" in str(exc_info.value)
+        patch.stopall()
+
+    async def test_no_request_reaches_either_generation(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """All three operations refuse without writing."""
+        entry = await _setup_entry(hass)
+        entry_data = self._retire(hass, entry)
+        client = AsyncMock()
+        entry_data["actions_client"] = client
+        cf_client = AsyncMock()
+        entry_data["cf_client"] = cf_client
+
+        for service, payload in (
+            (
+                "add_reservation_note",
+                {"reservation_id": "res-001", "note_text": "hi"},
+            ),
+            (
+                "set_reservation_status",
+                {"reservation_id": "res-001", "status": "checked_in"},
+            ),
+        ):
+            with pytest.raises(HomeAssistantError, match="2027-03-01"):
+                await hass.services.async_call(
+                    DOMAIN,
+                    service,
+                    payload,
+                    blocking=True,
+                    return_response=True,
+                )
+
+        assert client.mock_calls == []
+        assert cf_client.mock_calls == []
+        patch.stopall()
+
+    async def test_the_refusal_is_sticky_for_the_session(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A second attempt is refused exactly the same way."""
+        entry = await _setup_entry(hass)
+        entry_data = self._retire(hass, entry)
+
+        for _ in range(2):
+            with pytest.raises(GuestyActionError, match="2027-03-01"):
+                select_reservation_write_route(
+                    entry_data,
+                    "res-001",
+                    "set_reservation_status",
+                )
+        patch.stopall()
+
+
+class TestLegacyWriteCounters:
+    """Routed writes are counted and warned about once (T131)."""
+
+    @staticmethod
+    def _serve(hass: HomeAssistant, entry: MockConfigEntry) -> dict[str, Any]:
+        """Serve res-001 from the fallback.
+
+        Args:
+            hass: Home Assistant instance.
+            entry: The loaded config entry.
+
+        Returns:
+            The entry's hass.data mapping.
+        """
+        entry_data: dict[str, Any] = hass.data[DOMAIN][entry.entry_id]
+        coordinator = entry_data["reservations_coordinator"]
+        coordinator.fallback_served_ids = frozenset({"res-001"})
+        coordinator.fallback_sourced_ids = frozenset({"res-001"})
+        return entry_data
+
+    async def test_routed_note_counts_and_warns_once(
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """One WARNING names the operation and the identifier."""
+        entry = await _setup_entry(hass)
+        entry_data = self._serve(hass, entry)
+        client = AsyncMock()
+        client.add_reservation_note.return_value = ActionResult(
+            success=True,
+            target_id="res-001",
+        )
+        entry_data["actions_client"] = client
+
+        with caplog.at_level(logging.WARNING):
+            await hass.services.async_call(
+                DOMAIN,
+                "add_reservation_note",
+                {"reservation_id": "res-001", "note_text": "hi"},
+                blocking=True,
+                return_response=True,
+            )
+
+        warnings = [
+            record
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+            and "not-found fallback" in record.getMessage()
+        ]
+        assert len(warnings) == 1
+        assert "res-001" in warnings[0].getMessage()
+        assert "add_reservation_note" in warnings[0].getMessage()
+        assert client.add_reservation_note.await_args.kwargs["route"] == ROUTE_LEGACY
+
+        coordinator = entry_data["reservations_coordinator"]
+        counters = coordinator.legacy_write_counters
+        assert counters.note_succeeded == 1
+        assert counters.note_failed == 0
+        assert counters.note_refused == 0
+
+    async def test_a_failed_routed_write_counts_as_failed(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A rejected routed write is counted, not swallowed."""
+        entry = await _setup_entry(hass)
+        entry_data = self._serve(hass, entry)
+        client = AsyncMock()
+        client.set_reservation_status.side_effect = GuestyActionError(
+            "Failed to set reservation status via /reservations/res-001",
+            target_id="res-001",
+            action_type="set_reservation_status",
+        )
+        entry_data["actions_client"] = client
+
+        with pytest.raises(HomeAssistantError):
+            await hass.services.async_call(
+                DOMAIN,
+                "set_reservation_status",
+                {"reservation_id": "res-001", "status": "checked_in"},
+                blocking=True,
+                return_response=True,
+            )
+
+        counters = entry_data["reservations_coordinator"].legacy_write_counters
+        assert counters.status_failed == 1
+        assert counters.status_succeeded == 0
+
+    async def test_a_refused_write_counts_as_refused(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A route refusal is counted against the operation."""
+        entry = await _setup_entry(hass)
+        entry_data: dict[str, Any] = hass.data[DOMAIN][entry.entry_id]
+        coordinator = entry_data["reservations_coordinator"]
+        coordinator.fallback_sourced_ids = frozenset({"res-001"})
+        coordinator.fallback_served_ids = frozenset()
+        client = AsyncMock()
+        entry_data["actions_client"] = client
+
+        with pytest.raises(HomeAssistantError):
+            await hass.services.async_call(
+                DOMAIN,
+                "add_reservation_note",
+                {"reservation_id": "res-001", "note_text": "hi"},
+                blocking=True,
+                return_response=True,
+            )
+
+        assert client.mock_calls == []
+        assert coordinator.legacy_write_counters.note_refused == 1
+
+    async def test_a_v3_write_is_not_counted_or_warned(
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Routine v3 writes stay silent and uncounted."""
+        entry = await _setup_entry(hass)
+        entry_data: dict[str, Any] = hass.data[DOMAIN][entry.entry_id]
+        client = AsyncMock()
+        client.add_reservation_note.return_value = ActionResult(
+            success=True,
+            target_id="res-001",
+        )
+        entry_data["actions_client"] = client
+
+        with caplog.at_level(logging.WARNING):
+            await hass.services.async_call(
+                DOMAIN,
+                "add_reservation_note",
+                {"reservation_id": "res-001", "note_text": "hi"},
+                blocking=True,
+                return_response=True,
+            )
+
+        assert client.add_reservation_note.await_args.kwargs["route"] == ROUTE_V3
+        coordinator = entry_data["reservations_coordinator"]
+        assert coordinator.legacy_write_counters.total == 0
+        assert not [
+            record
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+            and "not-found fallback" in record.getMessage()
+        ]
+
+
+class TestIdentityGuardPrecedesRouting:
+    """Identity is settled before a route exists (T132)."""
+
+    async def test_unconfirmed_identity_refuses_a_served_target(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """No route is chosen and no legacy count is taken."""
+        entry = await _setup_entry(hass)
+        entry_data: dict[str, Any] = hass.data[DOMAIN][entry.entry_id]
+        coordinator = entry_data["reservations_coordinator"]
+        coordinator.fallback_served_ids = frozenset({"res-unknown"})
+        coordinator.fallback_sourced_ids = frozenset({"res-unknown"})
+        client = AsyncMock()
+        entry_data["actions_client"] = client
+
+        with pytest.raises(HomeAssistantError) as exc_info:
+            await hass.services.async_call(
+                DOMAIN,
+                "add_reservation_note",
+                {"reservation_id": "res-unknown", "note_text": "hi"},
+                blocking=True,
+                return_response=True,
+            )
+
+        assert "2027-03-01" not in str(exc_info.value)
+        assert client.mock_calls == []
+        assert coordinator.legacy_write_counters.total == 0

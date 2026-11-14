@@ -130,6 +130,31 @@ _MESSAGE_FIELDS: tuple[str, ...] = (
 )
 
 
+def is_absent(verdict: str) -> bool:
+    """Report whether a verdict is confirmed absence (FR-052).
+
+    Args:
+        verdict: One of the module's verdict constants.
+
+    Returns:
+        True when legacy stated this reservation does not exist.
+    """
+    return verdict == _ABSENT
+
+
+def is_retired(verdict: str) -> bool:
+    """Report whether a verdict is retirement-shaped (FR-056).
+
+    Args:
+        verdict: One of the module's verdict constants.
+
+    Returns:
+        True when the answer was about the resource, not the
+        reservation.
+    """
+    return verdict == _RETIRED
+
+
 @dataclass(frozen=True)
 class ServedRecord:
     """One reservation a legacy by-id lookup actually returned.
@@ -216,6 +241,35 @@ class ReservationFallbackSource:
             True once a retirement-shaped answer was seen.
         """
         return self._disabled
+
+    @property
+    def confirmed_absent(self) -> frozenset[str]:
+        """Return the identifiers legacy says no longer exist.
+
+        Returns:
+            The retired candidates of this session.
+        """
+        return frozenset(self._confirmed_absent)
+
+    def note_retirement(self) -> None:
+        """Self-disable after a retirement-shaped write answer.
+
+        A legacy *write* can meet the retirement before any lookup
+        does, and the same flag governs both (FR-056, FR-061).
+        """
+        if self._disabled:
+            return
+        self._disable()
+        self._served.clear()
+        self._retained.clear()
+
+    def retire_candidate(self, reservation_id: str) -> None:
+        """Retire a candidate a legacy write reported is gone.
+
+        Args:
+            reservation_id: The reservation legacy denied.
+        """
+        self._retire(reservation_id)
 
     async def resolve(
         self,
@@ -424,7 +478,7 @@ class ReservationFallbackSource:
             )
             return _FAILED
 
-        verdict = _classify(response, reservation_id)
+        verdict = classify_legacy_response(response, reservation_id)
         if verdict == _ABSENT:
             self._retire(reservation_id)
             return _ABSENT
@@ -617,7 +671,7 @@ def _in_window(
     )
 
 
-def _classify(
+def classify_legacy_response(
     response: httpx.Response,
     reservation_id: str,
 ) -> str:

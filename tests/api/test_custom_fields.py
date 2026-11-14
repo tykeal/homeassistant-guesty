@@ -18,7 +18,9 @@ from custom_components.guesty.api.const import (
     BASE_URL,
     RESERVATION_BY_ID_LEGACY_PATH,
     RESERVATION_CUSTOM_FIELDS_PATH,
+    RESERVATIONS_API_V3,
     TOKEN_URL,
+    WRITE_ROUTE_LEGACY,
 )
 from custom_components.guesty.api.custom_fields import (
     GuestyCustomFieldsClient,
@@ -1044,3 +1046,207 @@ class TestReservationCustomFieldsResourceUnchanged:
         assert json.loads(route.calls.last.request.content) == {
             "customFields": [{"fieldId": "cf-a", "value": "0042"}],
         }
+
+
+# ── Phase 7: legacy-routed custom field writes (T129) ──────────────
+
+
+def _v3_custom_fields_client(
+    http: httpx.AsyncClient,
+) -> GuestyCustomFieldsClient:
+    """Build a custom fields client on the v3 reservation path.
+
+    Args:
+        http: Async HTTP client to use.
+
+    Returns:
+        A GuestyCustomFieldsClient whose API client has a fallback.
+    """
+    token_manager = GuestyTokenManager(
+        client_id="test-client-id",
+        client_secret="test-client-secret",
+        http_client=http,
+        storage=FakeTokenStorage(),
+        refresh_buffer=0,
+    )
+    api_client = GuestyApiClient(
+        token_manager=token_manager,
+        http_client=http,
+        reservations_api=RESERVATIONS_API_V3,
+    )
+    return GuestyCustomFieldsClient(
+        api_client=api_client,
+        account_id=_FAKE_ACCOUNT_ID,
+    )
+
+
+def _legacy_custom_field_url(reservation_id: str = "res-777") -> str:
+    """Build the legacy catch-all URL for a reservation.
+
+    Args:
+        reservation_id: The reservation addressed.
+
+    Returns:
+        The absolute legacy reservation URL.
+    """
+    path = RESERVATION_BY_ID_LEGACY_PATH.format(
+        reservation_id=reservation_id,
+    )
+    return f"{BASE_URL}{path}"
+
+
+class TestLegacyRoutedCustomFieldWrites:
+    """Routed custom field writes use the catch-all (T129)."""
+
+    @respx.mock
+    async def test_routed_write_uses_the_legacy_catch_all(
+        self,
+    ) -> None:
+        """One legacy PUT, no v3 request, OQ-011 body shape."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        legacy = respx.put(_legacy_custom_field_url()).mock(
+            return_value=Response(200, json={}),
+        )
+        v3 = respx.put(
+            f"{BASE_URL}"
+            + RESERVATION_CUSTOM_FIELDS_PATH.format(
+                reservation_id="res-777",
+            ),
+        ).mock(return_value=Response(200, json={}))
+
+        http = httpx.AsyncClient()
+        try:
+            result = await _v3_custom_fields_client(http).set_field(
+                target_type="reservation",
+                target_id="res-777",
+                field_id="cf-a",
+                value="0042",
+                route=WRITE_ROUTE_LEGACY,
+            )
+        finally:
+            await http.aclose()
+
+        assert result.success is True
+        assert not v3.called
+        assert len(legacy.calls) == 1
+        assert json.loads(legacy.calls[0].request.content) == {
+            "customFields": [{"fieldId": "cf-a", "value": "0042"}],
+        }
+
+    @respx.mock
+    async def test_routed_write_preserves_leading_zeros(self) -> None:
+        """A door code keeps every character it was given."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        legacy = respx.put(_legacy_custom_field_url()).mock(
+            return_value=Response(200, json={}),
+        )
+
+        http = httpx.AsyncClient()
+        try:
+            await _v3_custom_fields_client(http).set_field(
+                target_type="reservation",
+                target_id="res-777",
+                field_id="cf-a",
+                value="000420",
+                route=WRITE_ROUTE_LEGACY,
+            )
+        finally:
+            await http.aclose()
+
+        body = json.loads(legacy.calls[0].request.content)
+        assert body["customFields"][0]["value"] == "000420"
+
+    @respx.mock
+    async def test_routed_listing_write_is_refused(self) -> None:
+        """Only reservations may be routed to legacy (FR-059)."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        legacy = respx.route(method="PUT").mock(
+            return_value=Response(200, json={}),
+        )
+
+        http = httpx.AsyncClient()
+        try:
+            with pytest.raises(GuestyCustomFieldError) as exc_info:
+                await _v3_custom_fields_client(http).set_field(
+                    target_type="listing",
+                    target_id="lst-1",
+                    field_id="cf-a",
+                    value="x",
+                    route=WRITE_ROUTE_LEGACY,
+                )
+        finally:
+            await http.aclose()
+
+        assert not legacy.called
+        assert "reservation" in str(exc_info.value)
+
+    @respx.mock
+    async def test_routed_write_is_issued_exactly_once(self) -> None:
+        """A rate-limited routed write is never retried (FR-063)."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        legacy = respx.put(_legacy_custom_field_url()).mock(
+            return_value=Response(429, json={"error": "slow down"}),
+        )
+
+        http = httpx.AsyncClient()
+        try:
+            with pytest.raises(GuestyCustomFieldError):
+                await _v3_custom_fields_client(http).set_field(
+                    target_type="reservation",
+                    target_id="res-777",
+                    field_id="cf-a",
+                    value="0042",
+                    route=WRITE_ROUTE_LEGACY,
+                )
+        finally:
+            await http.aclose()
+
+        assert len(legacy.calls) == 1
+
+    @respx.mock
+    async def test_retirement_disables_routing_and_names_date(
+        self,
+    ) -> None:
+        """A 410 self-disables and the refusal names the date."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        legacy = respx.put(_legacy_custom_field_url()).mock(
+            return_value=Response(410, json={"error": "gone"}),
+        )
+
+        http = httpx.AsyncClient()
+        try:
+            client = _v3_custom_fields_client(http)
+            with pytest.raises(GuestyCustomFieldError) as first:
+                await client.set_field(
+                    target_type="reservation",
+                    target_id="res-777",
+                    field_id="cf-a",
+                    value="0042",
+                    route=WRITE_ROUTE_LEGACY,
+                )
+            assert "2027-03-01" in str(first.value)
+            assert client._api_client.legacy_write_routing_available is False
+
+            with pytest.raises(GuestyCustomFieldError) as second:
+                await client.set_field(
+                    target_type="reservation",
+                    target_id="res-777",
+                    field_id="cf-a",
+                    value="0042",
+                    route=WRITE_ROUTE_LEGACY,
+                )
+        finally:
+            await http.aclose()
+
+        assert "2027-03-01" in str(second.value)
+        assert len(legacy.calls) == 1

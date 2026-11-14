@@ -43,6 +43,9 @@ from custom_components.guesty.api.models import (
     ReservationFetchResult,
     ReservationSource,
 )
+from custom_components.guesty.api.reservations_fallback import (
+    ReservationFallbackSource,
+)
 from custom_components.guesty.api.reservations_legacy import (
     LegacyReservationSource,
 )
@@ -129,6 +132,62 @@ class GuestyApiClient:
             Either ``v3`` or ``legacy``.
         """
         return self._reservations_api
+
+    @property
+    def _fallback(self) -> ReservationFallbackSource | None:
+        """Return the not-found fallback, when one exists.
+
+        Returns:
+            The v3 source's fallback, or None on the legacy path
+            where the legacy resource is already primary.
+        """
+        source = self._reservation_source
+        if isinstance(source, V3ReservationSource):
+            return source.fallback
+        return None
+
+    @property
+    def legacy_write_routing_available(self) -> bool:
+        """Report whether a write may still be routed to legacy.
+
+        Routing shares the fallback's self-disable: once a legacy
+        answer is read as retirement, neither reads nor writes use
+        that generation again this session (FR-056, FR-061).
+
+        On the legacy path there is no fallback and the legacy
+        resource is the primary one, so nothing is disabled.
+
+        Returns:
+            True while a legacy-routed write may be issued.
+        """
+        fallback = self._fallback
+        return fallback is None or not fallback.disabled
+
+    def disable_legacy_write_routing(self) -> None:
+        """Self-disable the legacy generation for this session."""
+        fallback = self._fallback
+        if fallback is not None:
+            fallback.note_retirement()
+
+    def retire_fallback_candidate(self, reservation_id: str) -> None:
+        """Retire a candidate a legacy write reported is gone.
+
+        Args:
+            reservation_id: The reservation legacy denied.
+        """
+        fallback = self._fallback
+        if fallback is not None:
+            fallback.retire_candidate(reservation_id)
+
+    @property
+    def confirmed_absent_reservations(self) -> frozenset[str]:
+        """Return the identifiers legacy confirmed no longer exist.
+
+        Returns:
+            The retired fallback candidates of this session.
+        """
+        fallback = self._fallback
+        return fallback.confirmed_absent if fallback is not None else frozenset()
 
     def _build_reservation_source(self) -> ReservationSource:
         """Select the reservation source for the resolved path.
@@ -361,6 +420,7 @@ class GuestyApiClient:
         *,
         params: dict[str, str | int] | None = None,
         json_data: dict[str, object] | list[object] | None = None,
+        single_attempt: bool = False,
         _retried_auth: bool = False,
     ) -> httpx.Response:
         """Make an authenticated API request with retry logic.
@@ -369,11 +429,20 @@ class GuestyApiClient:
         failures (connect/timeout errors, 5xx responses) with
         exponential backoff, and reactively refreshes token on 401.
 
+        ``single_attempt`` is the opt-in mode FR-063 requires of a
+        legacy-routed reservation write: the request is issued once
+        and its answer returned whatever it is, so one invocation
+        can never become several writes against a third-party
+        system. It defaults to off, so no other caller's retry
+        behaviour changes.
+
         Args:
             method: HTTP method (GET, POST, etc.).
             path: API path relative to base URL.
             params: Optional query parameters.
             json_data: Optional JSON body (dict or list).
+            single_attempt: Issue the request exactly once, with no
+                transient, rate-limit or token retry.
             _retried_auth: Internal flag to prevent infinite 401 retry.
 
         Returns:
@@ -389,8 +458,9 @@ class GuestyApiClient:
 
         url = f"{self._base_url}{path}"
         backoff = INITIAL_BACKOFF
+        max_attempts = 0 if single_attempt else MAX_RETRIES
 
-        for attempt in range(MAX_RETRIES + 1):
+        for attempt in range(max_attempts + 1):
             token = await self._token_manager.get_token()
 
             try:
@@ -405,6 +475,10 @@ class GuestyApiClient:
                     },
                 )
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                if single_attempt:
+                    raise GuestyConnectionError(
+                        f"Failed to connect to Guesty API: {exc}",
+                    ) from exc
                 if attempt >= MAX_RETRIES:
                     raise GuestyConnectionError(
                         f"Failed to connect to Guesty API "
@@ -427,6 +501,8 @@ class GuestyApiClient:
                 continue
 
             if response.status_code == 401:
+                if single_attempt:
+                    return response
                 if _retried_auth:
                     raise GuestyAuthError(
                         "Authentication failed after token refresh",
@@ -441,6 +517,8 @@ class GuestyApiClient:
                 )
 
             if response.status_code == 429:
+                if single_attempt:
+                    return response
                 if attempt >= MAX_RETRIES:
                     retry_after = _parse_retry_after(response)
                     raise GuestyRateLimitError(
@@ -471,6 +549,8 @@ class GuestyApiClient:
                 )
 
             if _is_transient_5xx(response.status_code):
+                if single_attempt:
+                    return response
                 if attempt >= MAX_RETRIES:
                     raise GuestyConnectionError(
                         f"Server error {response.status_code} "

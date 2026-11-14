@@ -9,7 +9,9 @@ coordinator.
 A ``reservations`` block is the only thing reported here for now:
 it answers the question the v3 migration actually raises, which is
 why a reservation is or is not being published and which resource
-generation a write against it would use. Reservation identifiers
+generation a write against it would use. The legacy-routed write
+counters of FR-062 are reported here and in the per-refresh DEBUG
+log, and never as a sensor attribute. Reservation identifiers
 appear in it; guest names, contact details and confirmation code
 values never do (FR-021, NFR-009).
 """
@@ -24,6 +26,7 @@ if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
 
+    from custom_components.guesty.api.client import GuestyApiClient
     from custom_components.guesty.coordinator import ReservationsCoordinator
 
 
@@ -45,8 +48,11 @@ async def async_get_config_entry_diagnostics(
         return {"reservations": {"loaded": False}}
 
     coordinator: ReservationsCoordinator = entry_data["reservations_coordinator"]
+    api_client: GuestyApiClient = entry_data["api_client"]
     baseline = coordinator.identity.baseline
     counters = coordinator.last_fallback_counters
+    legacy_writes = coordinator.legacy_write_counters.as_dict()
+    legacy_writes["routing_available"] = api_client.legacy_write_routing_available
     return {
         "reservations": {
             "loaded": True,
@@ -62,5 +68,6 @@ async def async_get_config_entry_diagnostics(
                 "served_ids": sorted(coordinator.fallback_served_ids),
                 "sourced_ids": sorted(coordinator.fallback_sourced_ids),
             },
+            "legacy_writes": legacy_writes,
         },
     }

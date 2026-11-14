@@ -36,6 +36,7 @@ from custom_components.guesty.api.models import (
     GuestyListing,
     GuestyReservation,
     GuestyStaySegment,
+    LegacyWriteCounters,
     ReservationFetchResult,
     derive_nights_count,
 )
@@ -225,6 +226,7 @@ class ReservationsCoordinator(
         self.fallback_served_ids: frozenset[str] = frozenset()
         self.fallback_sourced_ids: frozenset[str] = frozenset()
         self.last_fallback_counters = FallbackCounters()
+        self.legacy_write_counters = LegacyWriteCounters()
         interval_minutes = entry.options.get(
             CONF_RESERVATION_SCAN_INTERVAL,
             DEFAULT_RESERVATION_SCAN_INTERVAL,
@@ -283,8 +285,23 @@ class ReservationsCoordinator(
             ) from exc
 
         reservations = fetch_result.reservations
-        self.fallback_served_ids = frozenset(fetch_result.fallback_served)
-        self.fallback_sourced_ids = frozenset(fetch_result.fallback_sourced)
+        known_fallback_ids = self.fallback_served_ids | self.fallback_sourced_ids
+        retired = (
+            bool(known_fallback_ids)
+            and not self.api_client.legacy_write_routing_available
+        )
+        if not retired:
+            self.fallback_served_ids = frozenset(fetch_result.fallback_served)
+            self.fallback_sourced_ids = frozenset(fetch_result.fallback_sourced)
+        else:
+            # A retired legacy generation stops reporting anything,
+            # so keeping the last known sets is what makes a write
+            # against one of them refuse with the retirement
+            # message instead of silently going to v3 (FR-061). A
+            # reservation that has reappeared in v3 leaves them.
+            returned = {reservation.id for reservation in fetch_result.reservations}
+            self.fallback_served_ids -= returned
+            self.fallback_sourced_ids -= returned
         self.last_fallback_counters = fetch_result.fallback
         counters = _RefreshCounters()
 
@@ -403,6 +420,22 @@ class ReservationsCoordinator(
             )
             for listing_id, projections in grouped.items()
         }
+
+    def record_legacy_write(self, operation: str, outcome: str) -> None:
+        """Count one legacy-routed write outcome (FR-062).
+
+        Args:
+            operation: One of ``LEGACY_WRITE_OPERATIONS``.
+            outcome: One of ``LEGACY_WRITE_OUTCOMES``.
+        """
+        self.legacy_write_counters = self.legacy_write_counters.recorded(
+            operation,
+            outcome,
+        )
+        _LOGGER.debug(
+            "Legacy-routed reservation writes: %s",
+            self.legacy_write_counters.as_dict(),
+        )
 
     async def _check_identity(
         self,

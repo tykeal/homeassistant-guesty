@@ -21,16 +21,22 @@ from custom_components.guesty.api.const import (
     RESERVATION_NOTES_PATH,
     RESERVATION_STATUS_PATH,
     RESERVATIONS_API_LEGACY,
-    RESERVATIONS_ENDPOINT,
     RESERVATIONS_V3_ENDPOINT,
     TASKS_ENDPOINT,
     VALID_CALENDAR_OPS,
     VALID_LISTING_STATUSES,
     VALID_RESERVATION_STATUSES,
+    WRITE_ROUTE_LEGACY,
+    WRITE_ROUTE_V3,
 )
 from custom_components.guesty.api.exceptions import (
     GuestyActionError,
     GuestyResponseError,
+)
+from custom_components.guesty.api.legacy_writes import (
+    legacy_reservation_path,
+    read_legacy_answer,
+    routing_refusal,
 )
 from custom_components.guesty.api.models import ActionResult
 
@@ -62,6 +68,8 @@ class GuestyActionsClient:
         self,
         reservation_id: str,
         note_text: str,
+        *,
+        route: str = WRITE_ROUTE_V3,
     ) -> ActionResult:
         """Add a note to a reservation via read-modify-write.
 
@@ -71,6 +79,10 @@ class GuestyActionsClient:
         Args:
             reservation_id: Target reservation identifier.
             note_text: Note text to append.
+            route: The resource generation chosen for this write.
+                ``WRITE_ROUTE_LEGACY`` is permitted only for a
+                reservation the not-found fallback is currently
+                serving (FR-058).
 
         Returns:
             ActionResult with the reservation identifier.
@@ -86,10 +98,17 @@ class GuestyActionsClient:
         """
         self._validate_reservation_note(reservation_id, note_text)
 
-        if self._writes_legacy():
+        routed = route == WRITE_ROUTE_LEGACY
+        if routed:
+            self._refuse_when_retired(
+                reservation_id,
+                "add_reservation_note",
+            )
+        if routed or self._writes_legacy():
             return await self._add_note_legacy(
                 reservation_id,
                 note_text,
+                routed=routed,
             )
         return await self._add_note_v3(reservation_id, note_text)
 
@@ -245,6 +264,8 @@ class GuestyActionsClient:
         self,
         reservation_id: str,
         note_text: str,
+        *,
+        routed: bool = False,
     ) -> ActionResult:
         """Append a note through the legacy catch-all update.
 
@@ -255,6 +276,9 @@ class GuestyActionsClient:
         Args:
             reservation_id: Target reservation identifier.
             note_text: Note text to append.
+            routed: Whether this is a legacy-routed write for a
+                fallback-served reservation, which is issued once
+                and never retried (FR-063).
 
         Returns:
             ActionResult with the reservation identifier.
@@ -263,16 +287,26 @@ class GuestyActionsClient:
             GuestyActionError: On a rejected read or write.
             GuestyResponseError: If the read is malformed.
         """
-        get_path = f"{RESERVATIONS_ENDPOINT}/{reservation_id}"
+        get_path = legacy_reservation_path(reservation_id)
         get_response = await self._api_client._request(
             "GET",
             get_path,
         )
 
         if not get_response.is_success:
+            if routed:
+                self._raise_routing_verdict(
+                    reservation_id,
+                    get_response,
+                    "add_reservation_note",
+                )
             raise GuestyActionError(
                 self._reservation_error_detail(
-                    "Failed to fetch reservation",
+                    self._resource_prefix(
+                        "Failed to fetch reservation",
+                        get_path,
+                        routed=routed,
+                    ),
                     reservation_id,
                     get_response,
                 ),
@@ -298,17 +332,28 @@ class GuestyActionsClient:
         else:
             combined_note = note_text
 
-        put_path = f"{RESERVATIONS_ENDPOINT}/{reservation_id}"
+        put_path = legacy_reservation_path(reservation_id)
         put_response = await self._api_client._request(
             "PUT",
             put_path,
             json_data={"note": combined_note},
+            single_attempt=routed,
         )
 
         if not put_response.is_success:
+            if routed:
+                self._raise_routing_verdict(
+                    reservation_id,
+                    put_response,
+                    "add_reservation_note",
+                )
             raise GuestyActionError(
                 self._reservation_error_detail(
-                    "Failed to update reservation note",
+                    self._resource_prefix(
+                        "Failed to update reservation note",
+                        put_path,
+                        routed=routed,
+                    ),
                     reservation_id,
                     put_response,
                 ),
@@ -320,6 +365,83 @@ class GuestyActionsClient:
             success=True,
             target_id=reservation_id,
         )
+
+    @staticmethod
+    def _resource_prefix(
+        prefix: str,
+        path: str,
+        *,
+        routed: bool,
+    ) -> str:
+        """Name the resource of a legacy-routed write failure.
+
+        The legacy *path* keeps the previous release's message
+        unchanged (FR-040); only a routed write, which the user did
+        not ask for by configuration, names the resource it chose
+        (FR-029, FR-063).
+
+        Args:
+            prefix: The base error message prefix.
+            path: The resource the request addressed.
+            routed: Whether this was a legacy-routed write.
+
+        Returns:
+            The prefix to build the error detail from.
+        """
+        return f"{prefix} via {path}" if routed else prefix
+
+    def _refuse_when_retired(
+        self,
+        reservation_id: str,
+        action_type: str,
+    ) -> None:
+        """Refuse a routed write the legacy path can no longer take.
+
+        Args:
+            reservation_id: The reservation the write targets.
+            action_type: The action being refused, for the error.
+
+        Raises:
+            GuestyActionError: When routing has self-disabled, with
+                no request sent to either generation (FR-061).
+        """
+        refusal = routing_refusal(self._api_client, reservation_id)
+        if refusal is not None:
+            raise GuestyActionError(
+                refusal,
+                target_id=reservation_id,
+                action_type=action_type,
+            )
+
+    def _raise_routing_verdict(
+        self,
+        reservation_id: str,
+        response: httpx.Response,
+        action_type: str,
+    ) -> None:
+        """Fail a routed write whose answer carries a verdict.
+
+        Args:
+            reservation_id: The reservation that was addressed.
+            response: The non-success legacy answer.
+            action_type: The action being failed, for the error.
+
+        Raises:
+            GuestyActionError: When the answer was retirement or
+                confirmed absence. Otherwise returns, leaving the
+                caller to raise its own rejection error (FR-029).
+        """
+        message = read_legacy_answer(
+            self._api_client,
+            reservation_id,
+            response,
+        )
+        if message is not None:
+            raise GuestyActionError(
+                message,
+                target_id=reservation_id,
+                action_type=action_type,
+            )
 
     def _writes_legacy(self) -> bool:
         """Report whether writes go to the legacy catch-all.
@@ -531,12 +653,18 @@ class GuestyActionsClient:
         self,
         reservation_id: str,
         status: str,
+        *,
+        route: str = WRITE_ROUTE_V3,
     ) -> ActionResult:
         """Set check-in/check-out status on a reservation.
 
         Args:
             reservation_id: Target reservation identifier.
             status: New status ('checked_in' or 'checked_out').
+            route: The resource generation chosen for this write.
+                ``WRITE_ROUTE_LEGACY`` is permitted only for a
+                reservation the not-found fallback is currently
+                serving (FR-058).
 
         Returns:
             ActionResult with the reservation identifier.
@@ -551,8 +679,18 @@ class GuestyActionsClient:
         """
         self._validate_reservation_status(reservation_id, status)
 
-        if self._writes_legacy():
-            return await self._set_status_legacy(reservation_id, status)
+        routed = route == WRITE_ROUTE_LEGACY
+        if routed:
+            self._refuse_when_retired(
+                reservation_id,
+                "set_reservation_status",
+            )
+        if routed or self._writes_legacy():
+            return await self._set_status_legacy(
+                reservation_id,
+                status,
+                routed=routed,
+            )
 
         path = RESERVATION_STATUS_PATH.format(
             reservation_id=reservation_id,
@@ -583,6 +721,8 @@ class GuestyActionsClient:
         self,
         reservation_id: str,
         status: str,
+        *,
+        routed: bool = False,
     ) -> ActionResult:
         """Set a reservation status through the legacy catch-all.
 
@@ -591,6 +731,9 @@ class GuestyActionsClient:
         Args:
             reservation_id: Target reservation identifier.
             status: New status, already validated.
+            routed: Whether this is a legacy-routed write for a
+                fallback-served reservation, which is issued once
+                and never retried (FR-063).
 
         Returns:
             ActionResult with the reservation identifier.
@@ -598,17 +741,28 @@ class GuestyActionsClient:
         Raises:
             GuestyActionError: On a rejected write.
         """
-        path = f"{RESERVATIONS_ENDPOINT}/{reservation_id}"
+        path = legacy_reservation_path(reservation_id)
         response = await self._api_client._request(
             "PUT",
             path,
             json_data={"status": status},
+            single_attempt=routed,
         )
 
         if not response.is_success:
+            if routed:
+                self._raise_routing_verdict(
+                    reservation_id,
+                    response,
+                    "set_reservation_status",
+                )
             raise GuestyActionError(
                 self._reservation_error_detail(
-                    "Failed to set reservation status",
+                    self._resource_prefix(
+                        "Failed to set reservation status",
+                        path,
+                        routed=routed,
+                    ),
                     reservation_id,
                     response,
                 ),

@@ -12,9 +12,16 @@ from custom_components.guesty.api.const import (
     CUSTOM_FIELDS_ENDPOINT,
     LISTING_CUSTOM_FIELDS_PATH,
     RESERVATION_CUSTOM_FIELDS_PATH,
+    WRITE_ROUTE_LEGACY,
+    WRITE_ROUTE_V3,
 )
 from custom_components.guesty.api.exceptions import (
     GuestyCustomFieldError,
+)
+from custom_components.guesty.api.legacy_writes import (
+    legacy_reservation_path,
+    read_legacy_answer,
+    routing_refusal,
 )
 from custom_components.guesty.api.models import (
     GuestyCustomFieldDefinition,
@@ -227,14 +234,24 @@ class GuestyCustomFieldsClient:
         target_id: str,
         field_id: str,
         value: str | int | float | bool,
+        *,
+        route: str = WRITE_ROUTE_V3,
     ) -> GuestyCustomFieldResult:
         """Write a custom field value to a listing or reservation.
+
+        Values are transmitted exactly as given: a text field keeps
+        every character it was validated with, so a door code of
+        '0042' is written as '0042' and never as 42.
 
         Args:
             target_type: Entity type ('listing' or 'reservation').
             target_id: Entity identifier.
             field_id: Custom field identifier.
             value: New value for the custom field.
+            route: The resource generation chosen for this write.
+                ``WRITE_ROUTE_LEGACY`` is permitted only for a
+                reservation the not-found fallback is currently
+                serving (FR-058, FR-059).
 
         Returns:
             GuestyCustomFieldResult indicating success or failure.
@@ -271,7 +288,27 @@ class GuestyCustomFieldsClient:
                 field_id=field_id,
             )
 
-        if target_type == "listing":
+        routed = route == WRITE_ROUTE_LEGACY
+        if routed and target_type != "reservation":
+            raise GuestyCustomFieldError(
+                "Legacy write routing applies only to a reservation "
+                f"the fallback is serving, not to a {target_type}",
+                target_type=target_type,
+                target_id=target_id,
+                field_id=field_id,
+            )
+
+        if routed:
+            refusal = routing_refusal(self._api_client, target_id)
+            if refusal is not None:
+                raise GuestyCustomFieldError(
+                    refusal,
+                    target_type=target_type,
+                    target_id=target_id,
+                    field_id=field_id,
+                )
+            path = legacy_reservation_path(target_id)
+        elif target_type == "listing":
             path = LISTING_CUSTOM_FIELDS_PATH.format(
                 listing_id=target_id,
             )
@@ -280,6 +317,12 @@ class GuestyCustomFieldsClient:
                 reservation_id=target_id,
             )
 
+        # [UNVERIFIED] OQ-011: the legacy catch-all is assumed to
+        # accept the same customFields body as the v3 resource. If
+        # live verification (T135) disproves it, revert the routed
+        # custom field write to a refusal rather than guessing
+        # again: a wrong body could write a door code to the wrong
+        # field.
         body: dict[str, object] = {
             "customFields": [{"fieldId": field_id, "value": value}],
         }
@@ -288,7 +331,22 @@ class GuestyCustomFieldsClient:
             "PUT",
             path,
             json_data=body,
+            single_attempt=routed,
         )
+
+        if routed and not response.is_success:
+            message = read_legacy_answer(
+                self._api_client,
+                target_id,
+                response,
+            )
+            if message is not None:
+                raise GuestyCustomFieldError(
+                    message,
+                    target_type=target_type,
+                    target_id=target_id,
+                    field_id=field_id,
+                )
 
         if response.status_code in (400, 404, 422):
             try:

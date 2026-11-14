@@ -11,7 +11,7 @@ HomeAssistantError for clear automation feedback.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from typing import TYPE_CHECKING, Any, Final
 
 import voluptuous as vol
@@ -23,13 +23,24 @@ from homeassistant.core import (
 from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.guesty.api.const import (
+    LEGACY_RESERVATIONS_RETIREMENT_DATE,
+    LEGACY_WRITE_FAILED,
+    LEGACY_WRITE_NOTE,
+    LEGACY_WRITE_REFUSED,
+    LEGACY_WRITE_STATUS,
+    LEGACY_WRITE_SUCCEEDED,
     VALID_CALENDAR_OPS,
     VALID_LISTING_STATUSES,
     VALID_RESERVATION_STATUSES,
+    WRITE_ROUTE_LEGACY,
+    WRITE_ROUTE_V3,
 )
 from custom_components.guesty.api.exceptions import (
     GuestyActionError,
     GuestyApiError,
+)
+from custom_components.guesty.api.legacy_writes import (
+    REFUSAL_LEGACY_RETIRED,
 )
 from custom_components.guesty.api.models import ActionResult
 from custom_components.guesty.const import DOMAIN
@@ -40,6 +51,7 @@ if TYPE_CHECKING:
     from custom_components.guesty.api.actions import (
         GuestyActionsClient,
     )
+    from custom_components.guesty.api.client import GuestyApiClient
     from custom_components.guesty.coordinator import (
         ReservationsCoordinator,
     )
@@ -63,9 +75,11 @@ _ALL_SERVICES = (
 
 # ── Write routing (FR-058) ──────────────────────────────────────────
 
-# The reservation resource generation a write is sent to.
-ROUTE_V3: Final[str] = "v3"
-ROUTE_LEGACY: Final[str] = "legacy"
+# The reservation resource generation a write is sent to. These
+# are the api/ constants, re-exported so the service layer and the
+# client cannot drift apart on the value they exchange.
+ROUTE_V3: Final[str] = WRITE_ROUTE_V3
+ROUTE_LEGACY: Final[str] = WRITE_ROUTE_LEGACY
 
 REFUSAL_NOT_REACHABLE: Final[str] = (
     "Reservation {reservation_id} is currently being published from "
@@ -259,10 +273,20 @@ def select_reservation_write_route(
 
     Raises:
         GuestyActionError: When the target is reachable on neither
-            resource.
+            resource, or when the legacy generation it would need
+            has retired (FR-061).
     """
     coordinator: ReservationsCoordinator = entry_data["reservations_coordinator"]
     if reservation_id in coordinator.fallback_served_ids:
+        api_client: GuestyApiClient = entry_data["api_client"]
+        if not api_client.legacy_write_routing_available:
+            raise GuestyActionError(
+                REFUSAL_LEGACY_RETIRED.format(
+                    reservation_id=reservation_id,
+                ),
+                target_id=reservation_id,
+                action_type=action_type,
+            )
         return ROUTE_LEGACY
     if reservation_id in coordinator.fallback_sourced_ids:
         raise GuestyActionError(
@@ -271,6 +295,68 @@ def select_reservation_write_route(
             action_type=action_type,
         )
     return ROUTE_V3
+
+
+async def execute_reservation_write[WriteResultT](
+    entry_data: Mapping[str, Any],
+    reservation_id: str,
+    *,
+    operation: str,
+    action_type: str,
+    write: Callable[[str], Awaitable[WriteResultT]],
+) -> WriteResultT:
+    """Guard, route, announce and count one reservation write.
+
+    Every reservation write goes through here so the three FR-001
+    exceptions stay in one place: the identity guard runs first,
+    then the route is chosen, and only a legacy-routed write is
+    announced and counted (FR-060, FR-062).
+
+    Args:
+        entry_data: The addressed entry's hass.data mapping.
+        reservation_id: The reservation the write targets.
+        operation: One of ``LEGACY_WRITE_OPERATIONS``, for counting.
+        action_type: The service name, for error reporting.
+        write: Coroutine function taking the chosen route.
+
+    Returns:
+        Whatever the write returned.
+
+    Raises:
+        GuestyActionError: When the write is refused before it is
+            sent.
+    """
+    coordinator: ReservationsCoordinator = entry_data["reservations_coordinator"]
+    guard_reservation_write(entry_data, reservation_id, action_type)
+    try:
+        route = select_reservation_write_route(
+            entry_data,
+            reservation_id,
+            action_type,
+        )
+    except GuestyActionError:
+        coordinator.record_legacy_write(operation, LEGACY_WRITE_REFUSED)
+        raise
+
+    if route != ROUTE_LEGACY:
+        return await write(route)
+
+    _LOGGER.warning(
+        "Sending %s for reservation %s to the legacy Guesty "
+        "reservation resource: it is missing from the reservations "
+        "v3 results and is currently being served by the "
+        "not-found fallback. The legacy resources retire on %s.",
+        action_type,
+        reservation_id,
+        LEGACY_RESERVATIONS_RETIREMENT_DATE,
+    )
+    try:
+        result = await write(route)
+    except Exception:
+        coordinator.record_legacy_write(operation, LEGACY_WRITE_FAILED)
+        raise
+    coordinator.record_legacy_write(operation, LEGACY_WRITE_SUCCEEDED)
+    return result
 
 
 def _result_to_dict(result: ActionResult) -> dict[str, Any]:
@@ -313,22 +399,18 @@ async def _handle_add_note(
     entry_data = _get_entry_data(hass, call)
     client: GuestyActionsClient = entry_data["actions_client"]
     reservation_id: str = call.data["reservation_id"]
+    note_text: str = call.data["note_text"]
     try:
-        guard_reservation_write(
+        result = await execute_reservation_write(
             entry_data,
             reservation_id,
-            SERVICE_ADD_NOTE,
-        )
-        # Phase 6a only selects the route; the legacy request
-        # itself lands in Phase 7 (FR-059).
-        select_reservation_write_route(
-            entry_data,
-            reservation_id,
-            SERVICE_ADD_NOTE,
-        )
-        result = await client.add_reservation_note(
-            reservation_id=reservation_id,
-            note_text=call.data["note_text"],
+            operation=LEGACY_WRITE_NOTE,
+            action_type=SERVICE_ADD_NOTE,
+            write=lambda route: client.add_reservation_note(
+                reservation_id=reservation_id,
+                note_text=note_text,
+                route=route,
+            ),
         )
     except (GuestyActionError, GuestyApiError, ValueError) as exc:
         raise HomeAssistantError(str(exc)) from exc
@@ -439,22 +521,18 @@ async def _handle_set_reservation_status(
     entry_data = _get_entry_data(hass, call)
     client: GuestyActionsClient = entry_data["actions_client"]
     reservation_id: str = call.data["reservation_id"]
+    status: str = call.data["status"]
     try:
-        guard_reservation_write(
+        result = await execute_reservation_write(
             entry_data,
             reservation_id,
-            SERVICE_SET_RESERVATION_STATUS,
-        )
-        # Phase 6a only selects the route; the legacy request
-        # itself lands in Phase 7 (FR-059).
-        select_reservation_write_route(
-            entry_data,
-            reservation_id,
-            SERVICE_SET_RESERVATION_STATUS,
-        )
-        result = await client.set_reservation_status(
-            reservation_id=reservation_id,
-            status=call.data["status"],
+            operation=LEGACY_WRITE_STATUS,
+            action_type=SERVICE_SET_RESERVATION_STATUS,
+            write=lambda route: client.set_reservation_status(
+                reservation_id=reservation_id,
+                status=status,
+                route=route,
+            ),
         )
     except (GuestyActionError, GuestyApiError, ValueError) as exc:
         raise HomeAssistantError(str(exc)) from exc

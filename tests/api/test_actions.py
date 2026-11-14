@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncGenerator
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -26,6 +26,7 @@ from custom_components.guesty.api.const import (
     MAX_NOTE_LENGTH,
     MAX_TASK_TITLE_LENGTH,
     NOTE_SEPARATOR,
+    RESERVATION_BY_ID_LEGACY_PATH,
     RESERVATION_NOTES_PATH,
     RESERVATION_STATUS_PATH,
     RESERVATIONS_API_LEGACY,
@@ -34,10 +35,14 @@ from custom_components.guesty.api.const import (
     RESERVATIONS_V3_ENDPOINT,
     TASKS_ENDPOINT,
     TOKEN_URL,
+    WRITE_ROUTE_LEGACY,
+    WRITE_ROUTE_V3,
 )
 from custom_components.guesty.api.exceptions import (
     GuestyActionError,
+    GuestyApiError,
     GuestyAuthError,
+    GuestyConnectionError,
     GuestyRateLimitError,
     GuestyResponseError,
 )
@@ -2433,3 +2438,277 @@ class TestLegacyPathWritesUnchanged:
         assert not v3_route.called
         payload = json.loads(write_route.calls[0].request.content)
         assert payload == {"status": "checked_in"}
+
+
+# ── Phase 7: legacy write routing (T128, T132) ──────────────────────
+
+
+def _legacy_url(reservation_id: str = "res-001") -> str:
+    """Build the legacy catch-all URL for a reservation.
+
+    Args:
+        reservation_id: The reservation addressed.
+
+    Returns:
+        The absolute legacy reservation URL.
+    """
+    path = RESERVATION_BY_ID_LEGACY_PATH.format(
+        reservation_id=reservation_id,
+    )
+    return f"{BASE_URL}{path}"
+
+
+class TestLegacyRoutedWrites:
+    """A fallback-served target is written through legacy (T128)."""
+
+    @respx.mock
+    async def test_note_uses_the_legacy_read_before_write(
+        self,
+    ) -> None:
+        """The routed note issues the previous release's requests."""
+        _mock_token()
+        read_route = respx.get(_legacy_url()).mock(
+            return_value=Response(
+                200,
+                json={"_id": "res-001", "note": "Existing"},
+            ),
+        )
+        write_route = respx.put(_legacy_url()).mock(
+            return_value=Response(200, json={}),
+        )
+        v3_notes = respx.put(
+            f"{BASE_URL}{RESERVATION_NOTES_PATH.format(reservation_id='res-001')}",
+        ).mock(return_value=Response(200, json={}))
+        v3_read = respx.get(f"{BASE_URL}{RESERVATIONS_V3_ENDPOINT}").mock(
+            return_value=Response(200, json={"results": []}),
+        )
+
+        http = httpx.AsyncClient()
+        try:
+            result = await _v3_client(http).add_reservation_note(
+                "res-001",
+                "New note",
+                route=WRITE_ROUTE_LEGACY,
+            )
+        finally:
+            await http.aclose()
+
+        assert result.success is True
+        assert read_route.called
+        assert len(write_route.calls) == 1
+        assert not v3_notes.called
+        assert not v3_read.called
+        assert json.loads(write_route.calls[0].request.content) == {
+            "note": f"Existing{NOTE_SEPARATOR}New note",
+        }
+
+    @respx.mock
+    async def test_status_uses_the_legacy_catch_all(self) -> None:
+        """The routed status write is the previous release's."""
+        _mock_token()
+        write_route = respx.put(_legacy_url()).mock(
+            return_value=Response(200, json={}),
+        )
+        v3_status = respx.put(
+            f"{BASE_URL}{RESERVATION_STATUS_PATH.format(reservation_id='res-001')}",
+        ).mock(return_value=Response(200, json={}))
+
+        http = httpx.AsyncClient()
+        try:
+            await _v3_client(http).set_reservation_status(
+                "res-001",
+                "checked_in",
+                route=WRITE_ROUTE_LEGACY,
+            )
+        finally:
+            await http.aclose()
+
+        assert len(write_route.calls) == 1
+        assert not v3_status.called
+        assert json.loads(write_route.calls[0].request.content) == {
+            "status": "checked_in",
+        }
+
+    @respx.mock
+    async def test_v3_route_issues_no_legacy_request(self) -> None:
+        """A v3-sourced target never touches the legacy resource."""
+        _mock_token()
+        respx.put(
+            f"{BASE_URL}{RESERVATION_STATUS_PATH.format(reservation_id='res-001')}",
+        ).mock(return_value=Response(200, json={}))
+        legacy = respx.route(url=_legacy_url()).mock(
+            return_value=Response(200, json={}),
+        )
+
+        http = httpx.AsyncClient()
+        try:
+            await _v3_client(http).set_reservation_status(
+                "res-001",
+                "checked_in",
+                route=WRITE_ROUTE_V3,
+            )
+        finally:
+            await http.aclose()
+
+        assert not legacy.called
+
+
+class TestLegacyRoutedWriteFailures:
+    """A routed write fails loudly and exactly once (T132)."""
+
+    @respx.mock
+    async def test_rejection_names_resource_and_detail(self) -> None:
+        """A non-2xx raises and is never reported as success."""
+        _mock_token()
+        write_route = respx.put(_legacy_url()).mock(
+            return_value=Response(422, json={"error": "nope"}),
+        )
+        v3_status = respx.put(
+            f"{BASE_URL}{RESERVATION_STATUS_PATH.format(reservation_id='res-001')}",
+        ).mock(return_value=Response(200, json={}))
+
+        http = httpx.AsyncClient()
+        try:
+            with pytest.raises(GuestyActionError) as exc_info:
+                await _v3_client(http).set_reservation_status(
+                    "res-001",
+                    "checked_in",
+                    route=WRITE_ROUTE_LEGACY,
+                )
+        finally:
+            await http.aclose()
+
+        message = str(exc_info.value)
+        assert RESERVATIONS_ENDPOINT in message
+        assert "nope" in message
+        assert len(write_route.calls) == 1
+        assert not v3_status.called
+
+    @respx.mock
+    @pytest.mark.parametrize("status_code", [429, 401, 500])
+    async def test_retryable_answers_issue_one_request(
+        self,
+        status_code: int,
+    ) -> None:
+        """Single-attempt mode suppresses the shared retries."""
+        _mock_token()
+        write_route = respx.put(_legacy_url()).mock(
+            return_value=Response(status_code, json={"error": "no"}),
+        )
+
+        http = httpx.AsyncClient()
+        try:
+            with (
+                patch("asyncio.sleep", new_callable=AsyncMock),
+                pytest.raises(GuestyActionError),
+            ):
+                await _v3_client(http).set_reservation_status(
+                    "res-001",
+                    "checked_in",
+                    route=WRITE_ROUTE_LEGACY,
+                )
+        finally:
+            await http.aclose()
+
+        assert len(write_route.calls) == 1
+
+    @respx.mock
+    async def test_transient_failure_issues_one_request(self) -> None:
+        """A connection failure is not retried either."""
+        _mock_token()
+        write_route = respx.put(_legacy_url()).mock(
+            side_effect=httpx.ConnectError("boom"),
+        )
+
+        http = httpx.AsyncClient()
+        try:
+            with (
+                patch("asyncio.sleep", new_callable=AsyncMock),
+                pytest.raises(GuestyConnectionError),
+            ):
+                await _v3_client(http).set_reservation_status(
+                    "res-001",
+                    "checked_in",
+                    route=WRITE_ROUTE_LEGACY,
+                )
+        finally:
+            await http.aclose()
+
+        assert len(write_route.calls) == 1
+
+    @respx.mock
+    async def test_other_callers_keep_their_retries(self) -> None:
+        """The default mode is unchanged for every other caller."""
+        _mock_token()
+        route = respx.put(
+            f"{BASE_URL}{RESERVATION_STATUS_PATH.format(reservation_id='res-001')}",
+        ).mock(return_value=Response(500, json={"error": "no"}))
+
+        http = httpx.AsyncClient()
+        try:
+            with (
+                patch("asyncio.sleep", new_callable=AsyncMock),
+                pytest.raises(GuestyApiError),
+            ):
+                await _v3_client(http).set_reservation_status(
+                    "res-001",
+                    "checked_in",
+                )
+        finally:
+            await http.aclose()
+
+        assert len(route.calls) > 1
+
+    @respx.mock
+    async def test_not_found_retires_the_candidate(self) -> None:
+        """A legacy absence is FR-052 confirmed absence."""
+        _mock_token()
+        respx.put(_legacy_url()).mock(
+            return_value=Response(
+                404,
+                json={"message": "Reservation not found"},
+            ),
+        )
+
+        http = httpx.AsyncClient()
+        client = _v3_client(http)
+        api_client = client._api_client
+        try:
+            with pytest.raises(GuestyActionError) as exc_info:
+                await client.set_reservation_status(
+                    "res-001",
+                    "checked_in",
+                    route=WRITE_ROUTE_LEGACY,
+                )
+        finally:
+            await http.aclose()
+
+        assert "no longer exists" in str(exc_info.value)
+        assert "res-001" in api_client.confirmed_absent_reservations
+
+    @respx.mock
+    async def test_retirement_shaped_answer_disables_routing(
+        self,
+    ) -> None:
+        """A retirement answer self-disables and names the date."""
+        _mock_token()
+        respx.put(_legacy_url()).mock(
+            return_value=Response(410, json={"error": "gone"}),
+        )
+
+        http = httpx.AsyncClient()
+        client = _v3_client(http)
+        api_client = client._api_client
+        assert api_client.legacy_write_routing_available is True
+        try:
+            with pytest.raises(GuestyActionError) as exc_info:
+                await client.set_reservation_status(
+                    "res-001",
+                    "checked_in",
+                    route=WRITE_ROUTE_LEGACY,
+                )
+        finally:
+            await http.aclose()
+
+        assert LEGACY_RESERVATIONS_RETIREMENT_DATE in str(exc_info.value)
+        assert api_client.legacy_write_routing_available is False

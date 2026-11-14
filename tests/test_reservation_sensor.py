@@ -3864,3 +3864,74 @@ def _reservation_attributes(hass: HomeAssistant) -> Mapping[str, Any]:
     state = hass.states.get("sensor.beach_house_reservation_status")
     assert state is not None
     return state.attributes
+
+
+class TestLegacyWriteCountersAreNotAttributes:
+    """Routed writes change no sensor attribute key (T131)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests.
+
+        Yields:
+            None, with the definitions call patched.
+        """
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=make_fetch_result([]),
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_attribute_keys_are_unchanged(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Counters live in diagnostics only, never on an entity."""
+        mock_listings.return_value = [sample_listing]
+        reservation = _make_reservation(
+            res_id="res-fallback",
+            status="checked_in",
+        )
+        mock_reservations.return_value = make_fetch_result([reservation])
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        entity_id = "sensor.beach_house_reservation_status"
+        before = hass.states.get(entity_id)
+        assert before is not None
+        keys_before = set(before.attributes)
+
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        coordinator.fallback_served_ids = frozenset({"res-fallback"})
+        coordinator.fallback_sourced_ids = frozenset({"res-fallback"})
+        coordinator.record_legacy_write("note", "succeeded")
+        coordinator.async_update_listeners()
+        await hass.async_block_till_done()
+
+        after = hass.states.get(entity_id)
+        assert after is not None
+        assert set(after.attributes) == keys_before
+        assert not [key for key in after.attributes if "legacy" in key]
