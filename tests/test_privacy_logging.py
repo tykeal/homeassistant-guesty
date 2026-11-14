@@ -166,3 +166,37 @@ class TestPrivacyLogging:
         assert "guest-001" in caplog.text
         for secret in PII:
             assert secret not in caplog.text
+
+    @respx.mock
+    async def test_transport_error_text_is_never_logged(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A retry logs the failure's class, not its message."""
+        _mock_token()
+        reservation = make_v3_reservation(
+            "res-000001",
+            confirmationCode=CONFIRMATION_CODE,
+        )
+        respx.get(SEARCH_URL).mock(
+            return_value=Response(
+                200,
+                json=make_v3_search_page([reservation], skip=0),
+            ),
+        )
+        respx.get(f"{BASE_URL}/guests-crud/guest-001").mock(
+            side_effect=httpx.ConnectError(
+                f"no route while resolving {GUEST_EMAIL}",
+            ),
+        )
+
+        client = _make_client()
+        with (
+            caplog.at_level(logging.DEBUG),
+            patch("asyncio.sleep", new_callable=AsyncMock),
+        ):
+            await _refresh(client)
+
+        assert "ConnectError" in caplog.text
+        for secret in PII:
+            assert secret not in caplog.text

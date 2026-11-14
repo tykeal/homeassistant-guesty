@@ -409,7 +409,7 @@ class GuestyApiClient:
                     delay,
                     attempt + 1,
                     MAX_RETRIES,
-                    exc,
+                    type(exc).__name__,
                 )
                 await asyncio.sleep(delay)
                 backoff = min(
@@ -423,7 +423,7 @@ class GuestyApiClient:
                     raise GuestyAuthError(
                         "Authentication failed after token refresh",
                     )
-                self._token_manager.invalidate()
+                self._token_manager.invalidate(token)
                 return await self._request(
                     method,
                     path,

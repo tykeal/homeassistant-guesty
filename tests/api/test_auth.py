@@ -214,6 +214,32 @@ class TestProactiveRefresh:
         assert token == "fresh"
         assert route.call_count == 1
 
+    @respx.mock
+    async def test_invalidate_ignores_a_superseded_token(self) -> None:
+        """A late rejection cannot discard a newer token."""
+        from custom_components.guesty.api.models import CachedToken
+
+        route = respx.post(TOKEN_URL).mock(
+            return_value=Response(
+                200,
+                json=make_token_response(access_token="fresh"),
+            ),
+        )
+        manager, _ = _make_manager()
+        manager.seed_token(
+            CachedToken(
+                access_token="current",
+                token_type="Bearer",
+                expires_in=86400,
+                scope="open-api",
+                issued_at=datetime.now(UTC),
+            ),
+        )
+        manager.invalidate("superseded")
+        token = await manager.get_token()
+        assert token == "current"
+        assert route.call_count == 0
+
 
 class TestConcurrentAccess:
     """Tests for concurrent token access with locking."""

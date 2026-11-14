@@ -87,11 +87,26 @@ class GuestyTokenManager:
         """
         self._cached_token = token
 
-    def invalidate(self) -> None:
+    def invalidate(self, token: str | None = None) -> None:
         """Clear the cached token, forcing re-acquisition.
 
         Used when a 401 response indicates the token is invalid.
+        Guesty issues only a handful of tokens per day, so a
+        rejection that names the token it was given clears the
+        cache only while that token is still the cached one. A
+        late 401 from a concurrent request therefore cannot
+        discard the replacement another request already acquired.
+
+        Args:
+            token: The access token that was rejected. Omitted,
+                the cache is cleared unconditionally.
         """
+        if (
+            token is not None
+            and self._cached_token is not None
+            and self._cached_token.access_token != token
+        ):
+            return
         self._cached_token = None
 
     async def get_token(self) -> str:

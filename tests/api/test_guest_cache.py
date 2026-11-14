@@ -620,3 +620,71 @@ class TestGuestCacheFairnessAboveTheBound:
 
         assert result.failures == 1
         assert result.guests["guest-001"].full_name == "Ada Lovelace"
+
+
+class TestGuestCacheTokenUse:
+    """Tests that concurrent lookups spend one token, not four.
+
+    Guesty issues a small number of tokens per day, so a burst of
+    staggered 401 responses must not make each concurrent lookup
+    discard the replacement the previous one acquired.
+    """
+
+    @respx.mock
+    async def test_staggered_401s_acquire_one_token(self) -> None:
+        """A rejected token is replaced exactly once."""
+        issued = 0
+
+        def _token(request: httpx.Request) -> Response:
+            """Issue a distinct token on every acquisition.
+
+            Args:
+                request: The outgoing token request.
+
+            Returns:
+                A token response with a numbered access token.
+            """
+            nonlocal issued
+            issued += 1
+            return Response(
+                200,
+                json=make_token_response(access_token=f"token-{issued}"),
+            )
+
+        token_route = respx.post(TOKEN_URL).mock(side_effect=_token)
+        seen: set[str] = set()
+
+        async def _handler(request: httpx.Request) -> Response:
+            """Reject the first token, with staggered replies.
+
+            Each lookup reads the cached token before any of them
+            is rejected, and the replies are spread out so a late
+            rejection lands after the replacement token is cached.
+
+            Args:
+                request: The outgoing guest lookup request.
+
+            Returns:
+                A 401 for the first token, 200 afterwards.
+            """
+            guest_id = request.url.path.rsplit("/", 1)[-1]
+            await asyncio.sleep(0.01 * int(guest_id.rsplit("-", 1)[-1]))
+            token = request.headers["Authorization"].removeprefix("Bearer ")
+            if token == "token-1":
+                return Response(401, json={"error": "expired"})
+            seen.add(token)
+            return Response(200, json=_guest_body(guest_id))
+
+        respx.get(url__regex=rf"{BASE_URL}/guests-crud/.+").mock(
+            side_effect=_handler,
+        )
+        cache, _clock = _make_cache()
+
+        result = await cache.resolve(
+            [f"guest-{index:05d}" for index in range(4)],
+        )
+
+        assert result.failures == 0
+        assert len(result.guests) == 4
+        assert seen == {"token-2"}
+        assert token_route.call_count == 2
