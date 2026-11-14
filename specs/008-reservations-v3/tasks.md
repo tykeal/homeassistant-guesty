@@ -569,7 +569,7 @@ reservations attributed to a tracked listing).
 
 ### Phase 5 Tests (Red) — write first, verify they FAIL
 
-- [ ] T053 [US2] Write `GuestCache` unit tests in a new
+- [x] T053 [US2] Write `GuestCache` unit tests in a new
   `tests/api/test_guest_cache.py`: a hit within
   `GUEST_CACHE_TTL_SECONDS` issues no request; an expired hit refetches
   and replaces; a 404 stores a negative entry honouring
@@ -580,7 +580,7 @@ reservations attributed to a tracked listing).
   requests; one lookup per distinct guest per refresh; and a changed
   `guest_id` never republishes the previous guest's values (FR-018,
   FR-019, NFR-002, NFR-006, SC-010).
-- [ ] T054 [P] [US2] Write guest-lookup contract tests in
+- [x] T054 [P] [US2] Write guest-lookup contract tests in
   `tests/api/test_guest_cache.py`: the exact path
   `/v1/guests-crud/{guestId}` with `fields=fullName phone email`; a
   200 maps into the existing `GuestyGuest` dataclass with `guest_id`
@@ -589,20 +589,20 @@ reservations attributed to a tracked listing).
   transport error or post-retry 429 **retains the previous value**,
   logs without PII and never fails the refresh (FR-016, FR-020,
   NFR-005, SC-009).
-- [ ] T055 [P] [US2] Write a test asserting lookups are issued
+- [x] T055 [P] [US2] Write a test asserting lookups are issued
   **only** for reservations attributed to a tracked listing, so
   untracked reservations returned by the completeness-preserving
   search cost nothing beyond their page, and none is issued for a
   reservation with no `guestId`, in `tests/test_coordinator.py`
   (NFR-001).
-- [ ] T056 [P] [US2] Write request-budget tests counting transport
+- [x] T056 [P] [US2] Write request-budget tests counting transport
   calls in `tests/api/test_reservations_v3.py`: with a **warm** cache
   and no reservation changes the v3 path issues no more requests than
   the legacy path for the same fixture account; with a **cold** cache
   a fixture of ten reservations for ten distinct guests issues exactly
   the search pages plus ten, asserted as a pinned number (NFR-001,
   SC-003).
-- [ ] T057 [P] [US2] Write a privacy test in
+- [x] T057 [P] [US2] Write a privacy test in
   `tests/test_privacy_logging.py`, **creating that module if T066a has
   not already created it**, asserting that **no** guest name, phone
   number, email address or confirmation code appears in captured log
@@ -611,7 +611,7 @@ reservations attributed to a tracked listing).
   of this task: the abort path does not exist until T070 in Phase 6,
   and Phases 5 and 6 may run independently, so T066a adds that
   scenario to the same module and neither task depends on the other.
-- [ ] T058 [P] [US2] Write tests asserting the sensor publishes
+- [x] T058 [P] [US2] Write tests asserting the sensor publishes
   `guest_name`, `guest_phone` and `guest_email` under their existing
   attribute names from the cache, that the same guest appearing on
   several reservations in one refresh is looked up at most once, and
@@ -620,28 +620,28 @@ reservations attributed to a tracked listing).
 
 ### Phase 5 Implementation (Green)
 
-- [ ] T059 [US2] Implement `GuestCacheEntry` and `GuestCache` in a new
+- [x] T059 [US2] Implement `GuestCacheEntry` and `GuestCache` in a new
   `custom_components/guesty/api/guest_cache.py` with zero HA imports:
   keyed on `guest_id` only so FR-019 holds structurally; TTL, miss
   TTL, LRU bound, per-refresh dedup, burst cap and bounded
   concurrency; failures retain the previous value; nothing but the
   guest id and counts is ever logged (FR-016, FR-018 to FR-021,
   NFR-002, NFR-005 to NFR-007, NFR-009). Depends on T053, T054.
-- [ ] T060 [P] [US2] Add `GUESTS_CRUD_PATH`, `GUEST_FIELDS`,
+- [x] T060 [P] [US2] Add `GUESTS_CRUD_PATH`, `GUEST_FIELDS`,
   `GUEST_CACHE_TTL_SECONDS = 86400`,
   `GUEST_CACHE_MISS_TTL_SECONDS = 3600`,
   `GUEST_CACHE_MAX_ENTRIES = 512`,
   `MAX_GUEST_LOOKUPS_PER_REFRESH = 50` and
   `GUEST_LOOKUP_CONCURRENCY = 4` to
   `custom_components/guesty/api/const.py` (data-model.md §2.2, §6).
-- [ ] T061 [US2] Wire the cache onto the API client instance and
+- [x] T061 [US2] Wire the cache onto the API client instance and
   populate guest attributes for reservations attributed to tracked
   listings, in `custom_components/guesty/api/client.py` and
   `custom_components/guesty/coordinator.py`; add the guest-cache
   diagnostics counters (hits, lookups, failures, deferrals) to the
   FR-042 output (FR-016, FR-017, FR-042, NFR-001). Depends on T059,
   T060.
-- [ ] T062 [P] [US2] Export `GuestCache` from
+- [x] T062 [P] [US2] Export `GuestCache` from
   `custom_components/guesty/api/__init__.py`.
 
 **Checkpoint**: guest attributes are preserved under today's names,
