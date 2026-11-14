@@ -73,15 +73,24 @@ Changing the option reloads the entry.
 If v3 misbehaves for you, the rollback is immediate and complete:
 
 1. Settings → Devices & Services → Guesty → **Configure**
-2. **Filter by Tags** — leave the tags as they are and submit
-3. **Select Listings** — leave the selection as it is and submit
+2. **Filter by Tags** — check the tags, then submit
+3. **Select Listings** — check that every listing you track is
+   still ticked, then submit
 4. **Polling Configuration** — set **Reservations API**, the last
    field on this step, to **Legacy reservations API**
 5. Submit — the entry reloads itself
 
-Steps 2 and 3 do not change anything if you submit them untouched,
-but you do have to pass through them: the selector is not shown
-until the final step.
+You have to pass through steps 2 and 3: the selector is not shown
+until the final step. Review them rather than clicking through
+blindly, because the whole flow is saved on submit:
+
+- A listing that does not match the tag filter is not offered on
+  step 3 and is dropped from the saved selection.
+- An entry that has never been through this flow has no saved
+  selection, so step 3 defaults to every listing currently
+  returned. Submitting pins that list, and listings added in
+  Guesty later will not be picked up until you run the flow again.
+- Any listing left unticked has its devices and entities removed.
 
 This works even if the entry failed to start at all. When setup has
 not completed, the intermediate steps cannot be shown, so
