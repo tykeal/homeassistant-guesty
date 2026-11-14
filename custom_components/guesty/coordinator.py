@@ -16,6 +16,7 @@ from homeassistant.helpers.update_coordinator import (
     UpdateFailed,
 )
 
+from custom_components.guesty.api.client import resolve_reservations_api
 from custom_components.guesty.api.const import (
     DEFAULT_FUTURE_DAYS,
     DEFAULT_PAST_DAYS,
@@ -41,12 +42,19 @@ from custom_components.guesty.const import (
     CONF_FUTURE_DAYS,
     CONF_PAST_DAYS,
     CONF_RESERVATION_SCAN_INTERVAL,
+    CONF_RESERVATIONS_API,
     CONF_SCAN_INTERVAL,
     CONF_SELECTED_LISTINGS,
     DEFAULT_CF_SCAN_INTERVAL,
     DEFAULT_RESERVATION_SCAN_INTERVAL,
+    DEFAULT_RESERVATIONS_API,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+)
+from custom_components.guesty.identity import (
+    CandidateHint,
+    IdentityComparison,
+    ReservationIdentityGuard,
 )
 
 if TYPE_CHECKING:
@@ -62,6 +70,9 @@ _LOGGER = logging.getLogger(__name__)
 
 # Statuses whose per-listing meaning depends on the stay segment.
 _TEMPORAL_STATUSES: frozenset[str] = frozenset({"confirmed", "checked_in"})
+
+# Identifier pairs named in the single FR-032 abort log line.
+_MAX_LOGGED_CONFLICTS: int = 5
 
 
 class ListingsCoordinator(
@@ -176,6 +187,8 @@ class ReservationsCoordinator(
         config_entry: The integration config entry.
         listings_coordinator: Reference to the listings coordinator
             for known listing ID validation.
+        identity: The reservation identity guard for this entry.
+        reservations_path: Reservation path this entry is using.
     """
 
     config_entry: ConfigEntry
@@ -198,6 +211,14 @@ class ReservationsCoordinator(
         """
         self.api_client = api_client
         self.listings_coordinator = listings_coordinator
+        self.identity = ReservationIdentityGuard(hass, entry.entry_id)
+        self.reservations_path = resolve_reservations_api(
+            entry.options.get(
+                CONF_RESERVATIONS_API,
+                DEFAULT_RESERVATIONS_API,
+            ),
+        )
+        self._identity_logged_path: str | None = None
         interval_minutes = entry.options.get(
             CONF_RESERVATION_SCAN_INTERVAL,
             DEFAULT_RESERVATION_SCAN_INTERVAL,
@@ -257,6 +278,9 @@ class ReservationsCoordinator(
         reservations = fetch_result.reservations
         counters = _RefreshCounters()
 
+        comparison = await self._check_identity(reservations)
+        counters.identity_matched = comparison.matched
+
         # Feature 007 decides tracking on the listing side (FR-014).
         known_ids: set[str] = set()
         if self.listings_coordinator.data:
@@ -267,16 +291,19 @@ class ReservationsCoordinator(
                 "No known listings yet; skipping %d reservation(s)",
                 len(reservations),
             )
+            await self._record_identity(reservations, {}, comparison)
             _log_refresh_diagnostics(
                 fetch_result,
                 counters,
                 GuestLookupResult(),
+                identity_ambiguous=self.identity.last_refresh_ambiguous,
             )
             return {}
 
         now = datetime.now(UTC)
         grouped: dict[str, list[GuestyReservation]] = defaultdict(list)
         guest_ids: list[str] = []
+        published: dict[str, CandidateHint] = {}
 
         for reservation in reservations:
             if reservation.status in HOLD_STATUSES:
@@ -315,6 +342,10 @@ class ReservationsCoordinator(
                 continue
 
             counters.attributed += 1
+            published[reservation.id] = CandidateHint(
+                check_in=reservation.check_in.isoformat(),
+                check_out=reservation.check_out.isoformat(),
+            )
             if reservation.guest is not None and reservation.guest.guest_id:
                 guest_ids.append(reservation.guest.guest_id)
             if unknown_ids:
@@ -332,7 +363,13 @@ class ReservationsCoordinator(
                 )
 
         lookup = await self._resolve_guests(guest_ids)
-        _log_refresh_diagnostics(fetch_result, counters, lookup)
+        await self._record_identity(reservations, published, comparison)
+        _log_refresh_diagnostics(
+            fetch_result,
+            counters,
+            lookup,
+            identity_ambiguous=self.identity.last_refresh_ambiguous,
+        )
 
         return {
             listing_id: sorted(
@@ -341,6 +378,110 @@ class ReservationsCoordinator(
             )
             for listing_id, projections in grouped.items()
         }
+
+    async def _check_identity(
+        self,
+        reservations: tuple[GuestyReservation, ...],
+    ) -> IdentityComparison:
+        """Compare a fetched refresh against the identity baseline.
+
+        Runs before publication and costs no request: it reads only
+        the data this refresh already fetched (FR-034). A changed
+        confirmation code to identifier mapping — including a
+        wholesale swap between two identifiers that are both still
+        present — aborts the refresh so the coordinator retains its
+        last-known-good data, publishes nothing and blocks writes
+        (FR-032).
+
+        Args:
+            reservations: Reservations the refresh retrieved.
+
+        Returns:
+            The comparison outcome of a non-ambiguous refresh.
+
+        Raises:
+            UpdateFailed: When the identity is ambiguous.
+        """
+        if not self.identity.loaded:
+            await self.identity.async_load()
+
+        comparison = self.identity.compare(reservations)
+        if comparison.is_ambiguous:
+            self.identity.mark_ambiguous()
+            _LOGGER.error(
+                "Reservation identity is ambiguous: %d confirmation "
+                "code(s) now identify a different reservation (%s). "
+                "The refresh was aborted and the last known "
+                "reservations were retained; no reservation write "
+                "will be performed. Set the 'Reservations API' "
+                "option to 'legacy' and reload the entry to roll "
+                "back",
+                len(comparison.conflicts),
+                ", ".join(
+                    f"{conflict.known_id} -> {conflict.observed_id}"
+                    for conflict in comparison.conflicts[:_MAX_LOGGED_CONFLICTS]
+                ),
+            )
+            raise UpdateFailed(
+                "Reservation identity is ambiguous; refusing to "
+                "publish or write until it is resolved",
+            )
+
+        self._log_identity_match(comparison)
+        return comparison
+
+    def _log_identity_match(
+        self,
+        comparison: IdentityComparison,
+    ) -> None:
+        """Announce the FR-035 match count once per path activation.
+
+        Args:
+            comparison: The comparison this refresh ran.
+        """
+        path = self.reservations_path
+        if self._identity_logged_path == path:
+            return
+        self._identity_logged_path = path
+        _LOGGER.info(
+            "Reservation identity: %d previously known reservation "
+            "identifier(s) matched on the %s path",
+            comparison.matched,
+            path,
+        )
+
+    async def _record_identity(
+        self,
+        reservations: tuple[GuestyReservation, ...],
+        published: Mapping[str, CandidateHint],
+        comparison: IdentityComparison,
+    ) -> None:
+        """Persist the baseline this successful refresh produced.
+
+        Storage failures must never cost a refresh: the published
+        data is already correct, and the next refresh retries the
+        write.
+
+        Args:
+            reservations: Reservations the refresh retrieved.
+            published: Stay hints of the reservations published.
+            comparison: The comparison this refresh ran.
+        """
+        try:
+            await self.identity.async_record_refresh(
+                path=self.reservations_path,
+                reservations=reservations,
+                published=published,
+                comparison=comparison,
+                updated=datetime.now(UTC).isoformat(),
+            )
+        except OSError as exc:
+            _LOGGER.warning(
+                "Could not persist the reservation identity "
+                "baseline (%s); writes stay refused until it is "
+                "stored",
+                type(exc).__name__,
+            )
 
     async def _resolve_guests(
         self,
@@ -387,6 +528,7 @@ class _RefreshCounters:
         skipped: Reservations no tracked listing could claim.
         alteration_drops: Reservations dropped as proposed changes.
         trim_drops: Reservations dropped by the window trim.
+        identity_matched: Previously known identifiers matched.
     """
 
     attributed: int = 0
@@ -394,28 +536,35 @@ class _RefreshCounters:
     skipped: int = 0
     alteration_drops: int = 0
     trim_drops: int = 0
+    identity_matched: int = 0
 
 
 def _log_refresh_diagnostics(
     fetch_result: ReservationFetchResult,
     counters: _RefreshCounters,
     lookup: GuestLookupResult,
+    *,
+    identity_ambiguous: bool = False,
 ) -> None:
     """Emit the per-refresh DEBUG diagnostics line (FR-042).
 
-    The line carries counts only: no reservation identifier and no
-    guest detail ever appears in it (FR-021, NFR-009).
+    The line carries counts only: no reservation identifier, no
+    confirmation code and no guest detail ever appears in it
+    (FR-021, NFR-009).
 
     Args:
         fetch_result: The retrieval result and its source counters.
         counters: The attribution counters of this refresh.
         lookup: The guest cache counters of this refresh.
+        identity_ambiguous: Whether an ambiguous identity aborted
+            the last refresh.
     """
     _LOGGER.debug(
         "Reservation refresh: pages=%d statuses=%s segments=%s "
         "attributed=%d partially_attributed=%d skipped=%d "
         "alteration_drops=%d trim_drops=%d guest_hits=%d "
-        "guest_lookups=%d guest_failures=%d guest_deferrals=%d",
+        "guest_lookups=%d guest_failures=%d guest_deferrals=%d "
+        "identity_matched=%d identity_ambiguous=%s",
         fetch_result.pages,
         dict(fetch_result.status_counts),
         dict(fetch_result.segment_histogram),
@@ -428,6 +577,8 @@ def _log_refresh_diagnostics(
         lookup.lookups,
         lookup.failures,
         lookup.deferrals,
+        counters.identity_matched,
+        identity_ambiguous,
     )
 
 
