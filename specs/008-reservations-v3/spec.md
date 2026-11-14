@@ -529,8 +529,8 @@ legacy write resource rather than to v3.
   call to any resource the vendor migration guide lists as deprecated —
   **except** for the following three narrowly scoped, individually bounded
   legacy calls, which are an **exhaustive** list:
-  1. **the one-time identity bootstrap sweep** (FR-031d): at most one
-     paginated legacy reservation sequence, performed once per config entry,
+  1. **the one-time identity bootstrap sweep** (FR-031d): one legacy
+     reservation retrieval, performed once per config entry,
      at the first v3 setup of an *upgrading* entry, before any v3 data is
      published, and never repeated;
   2. **the not-found fallback lookup** (FR-050 to FR-057):
@@ -752,9 +752,14 @@ legacy write resource rather than to v3.
 - **FR-031d**: For an installation upgrading from a legacy-only release,
   which by definition has no baseline to compare a first v3 refresh against,
   system MUST perform a **one-time legacy bootstrap sweep** before any v3
-  data is published: at most one paginated legacy reservation sequence over
-  the same window, stored as cross-path evidence, performed once per config
-  entry and never repeated. This is permitted exception 1 of FR-001. A
+  data is published: one legacy reservation retrieval over the same window,
+  stored as cross-path evidence, performed once per config entry and never
+  repeated. "One retrieval" is the whole of what the legacy reservation
+  source does for one fetch, which has always been two paginated queries —
+  the window query and a `status=checked_in` query. Halving it would omit
+  checked-in long stays, which are precisely the reservations most likely
+  to carry a door code, so the bound is on the sweep being performed once,
+  not on the query count within it. This is permitted exception 1 of FR-001. A
   baseline built from a v3 refresh alone is self-consistent by construction
   and MUST NOT be treated as cross-path evidence. Where the sweep is
   unavailable or its comparison is uninformative, continuity stays
@@ -828,8 +833,14 @@ reservation would silently vanish from sensors and calendars mid-migration.
   identifier under the legacy rules, while a record retained from an
   earlier v3 payload keeps its stay-segment attribution and every listing
   it projects onto, even though it is marked fallback-sourced. The
-  requirement to skip a reservation with no stay segments (FR-013) applies
-  to v3 payloads only.
+  requirement to skip an unattributable reservation (FR-013) is
+  generation-independent, but the **evidence** it reads is not: a v3
+  payload is attributed from its `stay` segments, and the v3 parser
+  rejects a stay-less v3 payload before the coordinator ever sees it,
+  while a legacy payload carries no `stay` at all and is attributed from
+  its top-level `listingId`. A reservation is skipped, with a warning,
+  when no tracked listing can be resolved from whichever of those the
+  payload carries — never merely because `stay` is absent.
 - **FR-051**: The fallback MUST NOT be attempted for a reservation the
   integration has never seen, for a reservation whose stay no longer overlaps
   the configured window, or for an identifier that did not come from a prior

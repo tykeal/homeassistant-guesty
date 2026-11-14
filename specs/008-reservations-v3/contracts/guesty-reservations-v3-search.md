@@ -139,7 +139,14 @@ nothing is published (FR-006, NFR-005).
 | HTTP 400 | `GuestyFilterRejectedError` (see below) |
 | no segment carries a `listingId` | skip the reservation, warn, continue |
 | unrecognized `status` | publish verbatim with an INFO log (FR-026) |
-| `status` is `alteration` | drop with a debug log (FR-024) |
+| `status` is `alteration` | returned verbatim; see below |
+
+A reservation held at `alteration` is **not** dropped by this source.
+The source returns it verbatim and counts it in the raw status
+histogram; the coordinator drops it before publication, with a debug
+log (FR-024, `data-model.md` §1.4). Dropping it here would hide it
+from the diagnostics counters and would put a publication policy in
+a retrieval component.
 
 An HTTP 400 raises `GuestyFilterRejectedError`, naming the endpoint and
 a truncated body excerpt. It is **never** reported as an empty result

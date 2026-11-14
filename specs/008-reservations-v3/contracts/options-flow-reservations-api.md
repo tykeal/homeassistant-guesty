@@ -19,11 +19,19 @@ reservation paths without reconfiguring anything else (FR-036)
 | Type | selector with two values |
 | Values | `v3`, `legacy` |
 | Default | `v3` (FR-037) |
+| Default before Phase 8 | `legacy`, see the note below |
 | Label | "Reservations API" |
 | Description | legacy is a temporary rollback path, retiring 2027-03-01 |
 
 Both values are localized in `strings.json` and every `translations/*`
 file the repository already ships, so no language regresses.
+
+The `v3` default is the end state of this feature and is what T092
+ships. The option was introduced in Phase 1 (T010) pinned to
+`legacy` on purpose: flipping the default before Phases 2 to 7 were
+green would have shipped a half-migrated default. Both statements
+are therefore correct of their own phase, and from Phase 8 onward
+the default in this contract is the default in `const.py`.
 
 ## Semantics
 

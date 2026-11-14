@@ -405,8 +405,13 @@ selected.
   `/v1/reservations` or any other resource the migration guide marks
   deprecated** while the v3 path is active, over a full refresh, in
   `tests/api/test_reservations_v3.py` (FR-001, SC-001). Note in the
-  test docstring that the one-time identity bootstrap sweep (T073) is
-  the single qualified exception, pending the T002 amendment.
+  test docstring that FR-001 permits exactly three narrowly scoped
+  legacy calls, none of which is a routine refresh: the one-time
+  identity bootstrap sweep (FR-031d, T073), the not-found fallback
+  lookup for one previously known reservation (FR-050 to FR-057,
+  T117), and the legacy write for a reservation that fallback is
+  currently serving (FR-058 to FR-063, T128). The refresh this test
+  exercises issues none of them.
 - [x] T034 [P] [US1] Write tests asserting the diagnostics counters on
   `ReservationFetchResult`: pages fetched, raw (pre-mapping) status
   histogram, and the stay-segment-count histogram, in
@@ -742,7 +747,11 @@ real account, the user sets `reservations_api=legacy` and reloads.
   abort via `UpdateFailed`, retain last-known-good data, publish
   nothing, block writes and log one error naming both identifiers and
   the rollback instruction — never a confirmation code value (FR-021,
-  FR-032, SC-007). Depends on T069.
+  FR-032, SC-007). On an **ambiguous first** refresh Home Assistant
+  translates that `UpdateFailed` into `ConfigEntryNotReady`, because
+  `async_config_entry_first_refresh` is what raises; setup retries and
+  no entity is published. That is the correct HA idiom for a failed
+  initial setup and is what the tests assert. Depends on T069.
 - [x] T071 [US5] Enforce the four-conjunct write predicate in
   `custom_components/guesty/actions.py` for `add_reservation_note` and
   the status action, refusing with an explanatory `GuestyActionError`
