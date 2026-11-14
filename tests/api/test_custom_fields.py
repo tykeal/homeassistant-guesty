@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import httpx
@@ -13,7 +14,12 @@ from httpx import Response
 
 from custom_components.guesty.api.auth import GuestyTokenManager
 from custom_components.guesty.api.client import GuestyApiClient
-from custom_components.guesty.api.const import BASE_URL, TOKEN_URL
+from custom_components.guesty.api.const import (
+    BASE_URL,
+    RESERVATION_BY_ID_LEGACY_PATH,
+    RESERVATION_CUSTOM_FIELDS_PATH,
+    TOKEN_URL,
+)
 from custom_components.guesty.api.custom_fields import (
     GuestyCustomFieldsClient,
 )
@@ -968,3 +974,73 @@ class TestGetFieldValues:
         client = _make_custom_fields_client()
         result = await client.get_field_values("reservation", "res-no-cf")
         assert result == []
+
+
+class TestReservationCustomFieldsResourceUnchanged:
+    """Reservation custom fields stay on v3 (T081, FR-030)."""
+
+    @respx.mock
+    async def test_read_uses_the_v3_custom_fields_resource(
+        self,
+    ) -> None:
+        """The read targets RESERVATION_CUSTOM_FIELDS_PATH."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        path = RESERVATION_CUSTOM_FIELDS_PATH.format(
+            reservation_id="res-777",
+        )
+        route = respx.get(f"{BASE_URL}{path}").mock(
+            return_value=Response(
+                200,
+                json={
+                    "reservationId": "res-777",
+                    "customFields": [
+                        {"fieldId": "cf-a", "value": "0042"},
+                    ],
+                },
+            ),
+        )
+        legacy = respx.route(
+            url=f"{BASE_URL}{RESERVATION_BY_ID_LEGACY_PATH.format(reservation_id='res-777')}",
+        ).mock(return_value=Response(200, json={}))
+
+        client = _make_custom_fields_client()
+        values = await client.get_field_values("reservation", "res-777")
+
+        assert route.called
+        assert not legacy.called
+        assert values == [{"fieldId": "cf-a", "value": "0042"}]
+
+    @respx.mock
+    async def test_write_uses_the_v3_custom_fields_resource(
+        self,
+    ) -> None:
+        """The default write targets the v3 resource verbatim."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        path = RESERVATION_CUSTOM_FIELDS_PATH.format(
+            reservation_id="res-777",
+        )
+        route = respx.put(f"{BASE_URL}{path}").mock(
+            return_value=Response(200, json={}),
+        )
+        legacy = respx.route(
+            url=f"{BASE_URL}{RESERVATION_BY_ID_LEGACY_PATH.format(reservation_id='res-777')}",
+        ).mock(return_value=Response(200, json={}))
+
+        client = _make_custom_fields_client()
+        result = await client.set_field(
+            target_type="reservation",
+            target_id="res-777",
+            field_id="cf-a",
+            value="0042",
+        )
+
+        assert result.success is True
+        assert route.called
+        assert not legacy.called
+        assert json.loads(route.calls.last.request.content) == {
+            "customFields": [{"fieldId": "cf-a", "value": "0042"}],
+        }

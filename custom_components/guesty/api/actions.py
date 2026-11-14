@@ -18,8 +18,11 @@ from custom_components.guesty.api.const import (
     MAX_NOTE_LENGTH,
     MAX_TASK_TITLE_LENGTH,
     NOTE_SEPARATOR,
+    RESERVATION_NOTES_PATH,
+    RESERVATION_STATUS_PATH,
     RESERVATIONS_API_LEGACY,
     RESERVATIONS_ENDPOINT,
+    RESERVATIONS_V3_ENDPOINT,
     TASKS_ENDPOINT,
     VALID_CALENDAR_OPS,
     VALID_LISTING_STATUSES,
@@ -83,6 +86,183 @@ class GuestyActionsClient:
         """
         self._validate_reservation_note(reservation_id, note_text)
 
+        if self._writes_legacy():
+            return await self._add_note_legacy(
+                reservation_id,
+                note_text,
+            )
+        return await self._add_note_v3(reservation_id, note_text)
+
+    async def _add_note_v3(
+        self,
+        reservation_id: str,
+        note_text: str,
+    ) -> ActionResult:
+        """Append a note through the dedicated v3 notes resource.
+
+        The reservation is re-read from v3 rather than from the
+        coordinator's cached copy, which can be a full poll
+        interval stale: writing that back would silently discard a
+        note added in Guesty meanwhile (FR-027).
+
+        Args:
+            reservation_id: Target reservation identifier.
+            note_text: Note text to append.
+
+        Returns:
+            ActionResult with the reservation identifier.
+
+        Raises:
+            GuestyActionError: On a rejected read or write.
+            GuestyResponseError: If the read is malformed.
+        """
+        notes = await self._read_v3_notes(reservation_id)
+
+        existing = notes.get("other")
+        existing_text = existing if isinstance(existing, str) else ""
+        if existing_text:
+            combined = existing_text + NOTE_SEPARATOR + note_text
+        else:
+            combined = note_text
+
+        # Every note field the read captured is echoed back, so a
+        # resource that replaces the note set cannot delete
+        # ``notes.guest`` or any sibling field (OQ-002).
+        body: dict[str, object] = {**notes, "other": combined}
+
+        path = RESERVATION_NOTES_PATH.format(
+            reservation_id=reservation_id,
+        )
+        response = await self._api_client._request(
+            "PUT",
+            path,
+            json_data=body,
+        )
+        if not response.is_success:
+            raise GuestyActionError(
+                self._reservation_error_detail(
+                    f"Failed to update reservation note via {path}",
+                    reservation_id,
+                    response,
+                ),
+                target_id=reservation_id,
+                action_type="add_reservation_note",
+            )
+
+        return ActionResult(success=True, target_id=reservation_id)
+
+    async def _read_v3_notes(
+        self,
+        reservation_id: str,
+    ) -> dict[str, object]:
+        """Read one reservation's whole note object from v3.
+
+        Args:
+            reservation_id: Target reservation identifier.
+
+        Returns:
+            The reservation's ``notes`` object, empty when it
+            carries none.
+
+        Raises:
+            GuestyActionError: On a rejected read, or when v3 does
+                not carry the reservation at all.
+            GuestyResponseError: If the response is malformed.
+        """
+        response = await self._api_client._request(
+            "GET",
+            RESERVATIONS_V3_ENDPOINT,
+            params={"reservationIds": reservation_id},
+        )
+        if not response.is_success:
+            raise GuestyActionError(
+                self._reservation_error_detail(
+                    f"Failed to fetch reservation from {RESERVATIONS_V3_ENDPOINT}",
+                    reservation_id,
+                    response,
+                ),
+                target_id=reservation_id,
+                action_type="add_reservation_note",
+            )
+
+        record = self._v3_record(response, reservation_id)
+        notes = record.get("notes")
+        if not isinstance(notes, dict):
+            return {}
+        return {key: value for key, value in notes.items() if isinstance(key, str)}
+
+    @staticmethod
+    def _v3_record(
+        response: httpx.Response,
+        reservation_id: str,
+    ) -> dict[str, object]:
+        """Extract the single reservation document of a v3 read.
+
+        Args:
+            response: The successful v3 read response.
+            reservation_id: The reservation that was requested.
+
+        Returns:
+            The reservation document.
+
+        Raises:
+            GuestyActionError: When v3 returned no such
+                reservation, which is not retried against v3 and
+                is never reported as a success.
+            GuestyResponseError: If the response is malformed.
+        """
+        try:
+            data = response.json()
+        except Exception as exc:
+            raise GuestyResponseError(
+                "Reservation response is not valid JSON",
+            ) from exc
+
+        if isinstance(data, dict):
+            results = data.get("results")
+            items: list[object] = results if isinstance(results, list) else [data]
+        elif isinstance(data, list):
+            items = list(data)
+        else:
+            raise GuestyResponseError(
+                "Reservation response must be a JSON object",
+            )
+
+        for item in items:
+            if isinstance(item, dict):
+                return item
+
+        raise GuestyActionError(
+            f"Reservation '{reservation_id}' was not found in the "
+            f"reservations v3 result from {RESERVATIONS_V3_ENDPOINT}, "
+            "so no note was written. It may not have been migrated "
+            "into v3 yet; retry after the next successful refresh.",
+            target_id=reservation_id,
+            action_type="add_reservation_note",
+        )
+
+    async def _add_note_legacy(
+        self,
+        reservation_id: str,
+        note_text: str,
+    ) -> ActionResult:
+        """Append a note through the legacy catch-all update.
+
+        This is the previous release's exact read-modify-write,
+        kept byte for byte so the legacy path stays a genuine
+        rollback target (FR-040).
+
+        Args:
+            reservation_id: Target reservation identifier.
+            note_text: Note text to append.
+
+        Returns:
+            ActionResult with the reservation identifier.
+
+        Raises:
+            GuestyActionError: On a rejected read or write.
+            GuestyResponseError: If the read is malformed.
+        """
         get_path = f"{RESERVATIONS_ENDPOINT}/{reservation_id}"
         get_response = await self._api_client._request(
             "GET",
@@ -140,6 +320,14 @@ class GuestyActionsClient:
             success=True,
             target_id=reservation_id,
         )
+
+    def _writes_legacy(self) -> bool:
+        """Report whether writes go to the legacy catch-all.
+
+        Returns:
+            True when the configured reservation path is legacy.
+        """
+        return self._api_client.reservations_api == RESERVATIONS_API_LEGACY
 
     async def set_listing_status(
         self,
@@ -363,6 +551,53 @@ class GuestyActionsClient:
         """
         self._validate_reservation_status(reservation_id, status)
 
+        if self._writes_legacy():
+            return await self._set_status_legacy(reservation_id, status)
+
+        path = RESERVATION_STATUS_PATH.format(
+            reservation_id=reservation_id,
+        )
+        response = await self._api_client._request(
+            "PUT",
+            path,
+            json_data={"status": status},
+        )
+
+        if not response.is_success:
+            raise GuestyActionError(
+                self._reservation_error_detail(
+                    f"Failed to set reservation status via {path}",
+                    reservation_id,
+                    response,
+                ),
+                target_id=reservation_id,
+                action_type="set_reservation_status",
+            )
+
+        return ActionResult(
+            success=True,
+            target_id=reservation_id,
+        )
+
+    async def _set_status_legacy(
+        self,
+        reservation_id: str,
+        status: str,
+    ) -> ActionResult:
+        """Set a reservation status through the legacy catch-all.
+
+        This is the previous release's exact request (FR-040).
+
+        Args:
+            reservation_id: Target reservation identifier.
+            status: New status, already validated.
+
+        Returns:
+            ActionResult with the reservation identifier.
+
+        Raises:
+            GuestyActionError: On a rejected write.
+        """
         path = f"{RESERVATIONS_ENDPOINT}/{reservation_id}"
         response = await self._api_client._request(
             "PUT",
