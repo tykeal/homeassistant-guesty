@@ -11,20 +11,30 @@ in practice — to the wrong booking.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.guesty import async_remove_entry
+from custom_components.guesty import (
+    ISSUE_IDENTITY_UNCONFIRMED,
+    async_notify_identity_continuity,
+    async_remove_entry,
+    async_track_identity_continuity,
+)
 from custom_components.guesty.api.const import (
     RESERVATIONS_API_LEGACY,
     RESERVATIONS_API_V3,
 )
+from custom_components.guesty.api.exceptions import GuestyRateLimitError
 from custom_components.guesty.api.models import GuestyListing, GuestyReservation
 from custom_components.guesty.const import (
     CONF_CLIENT_ID,
@@ -37,11 +47,19 @@ from custom_components.guesty.coordinator import (
     ReservationsCoordinator,
 )
 from custom_components.guesty.identity import (
+    BOOTSTRAP_ALREADY_DONE,
+    BOOTSTRAP_AMBIGUOUS,
+    BOOTSTRAP_FRESH_INSTALL,
+    BOOTSTRAP_LEGACY_PATH,
+    BOOTSTRAP_SWEPT,
+    BOOTSTRAP_UNAVAILABLE,
     CONTINUITY_NOT_APPLICABLE,
     CONTINUITY_UNCONFIRMED,
     CONTINUITY_VERIFIED,
     MAX_BASELINE_CODES,
+    REFUSAL_UNCONFIRMED,
     REFUSAL_UNSTORED,
+    SOURCE_BOOTSTRAP,
     STORAGE_VERSION,
     CandidateHint,
     IdentityBaseline,
@@ -50,6 +68,7 @@ from custom_components.guesty.identity import (
     _bounded,
     _next_continuity,
     _retained_legacy,
+    async_bootstrap_identity,
     observe_codes,
     storage_key,
 )
@@ -192,6 +211,54 @@ def _api_client(
     client.reservations_api = reservations_api
     client.get_reservations = AsyncMock(side_effect=list(results))
     return client
+
+
+def _register_reservation_entity(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+) -> None:
+    """Register a reservation entity so the entry looks upgraded.
+
+    Args:
+        hass: Home Assistant instance.
+        entry: The config entry the entity belongs to.
+    """
+    er.async_get(hass).async_get_or_create(
+        "sensor",
+        DOMAIN,
+        f"{entry.unique_id}_listing-001_reservation_status",
+        config_entry=entry,
+    )
+
+
+@contextmanager
+def _legacy_sweep(
+    reservations: list[GuestyReservation] | None = None,
+    *,
+    error: Exception | None = None,
+    pages: int = 2,
+) -> Iterator[AsyncMock]:
+    """Stand in for the legacy reservation source of the sweep.
+
+    Args:
+        reservations: Reservations the sweep should return.
+        error: Exception the sweep should raise instead.
+        pages: Page count the stubbed retrieval reports.
+
+    Yields:
+        The mocked ``fetch`` coroutine, for call assertions.
+    """
+    fetch = AsyncMock(
+        return_value=make_fetch_result(reservations or [], pages=pages),
+        side_effect=error,
+    )
+    source = AsyncMock()
+    source.fetch = fetch
+    with patch(
+        "custom_components.guesty.identity.LegacyReservationSource",
+        return_value=source,
+    ):
+        yield fetch
 
 
 class TestIdentityBaselineStore:
@@ -392,7 +459,12 @@ class TestIdentityComparison:
         assert not comparison.is_ambiguous
 
     def test_bootstrap_and_fallback_maps_are_compared(self) -> None:
-        """Every retained map takes part in the comparison."""
+        """Every retained map takes part in the comparison.
+
+        A bootstrap disagreement is ambiguity, not drift: the sweep
+        exists to be contradicted, and FR-032 requires the refresh
+        to abort rather than merely demote continuity.
+        """
         baseline = IdentityBaseline(
             path=RESERVATIONS_API_V3,
             codes={},
@@ -403,10 +475,12 @@ class TestIdentityComparison:
             {CODE_A: "res-9", CODE_B: "res-8"}, RESERVATIONS_API_V3
         )
 
-        assert {c.source for c in comparison.conflicts} == {"fallback_codes"}
-        assert {c.source for c in comparison.cross_path_conflicts} == {
+        assert {c.source for c in comparison.conflicts} == {
             "bootstrap_codes",
+            "fallback_codes",
         }
+        assert comparison.cross_path_conflicts == ()
+        assert comparison.is_ambiguous
 
     def test_alteration_and_codeless_rows_are_not_evidence(self) -> None:
         """Proposed changes never supply identity evidence."""
@@ -1094,3 +1168,697 @@ class TestIdentityReviewHardening:
         assert retained is not None
         assert len(retained) == MAX_BASELINE_CODES
         assert "CODE-0" not in retained
+
+
+class TestBootstrapSweep:
+    """The one-time legacy bootstrap sweep (T067, T073-T075)."""
+
+    async def test_fresh_install_is_not_applicable_and_writes(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """No baseline and no entities means nothing to contradict."""
+        entry = _make_entry(entry_id="entry-fresh")
+        entry.add_to_hass(hass)
+        guard = ReservationIdentityGuard(hass, entry.entry_id)
+        api_client = _api_client()
+
+        with patch(
+            "custom_components.guesty.identity.LegacyReservationSource",
+        ) as source:
+            result = await async_bootstrap_identity(
+                hass,
+                entry,
+                guard=guard,
+                api_client=api_client,
+            )
+
+        assert result.reason == BOOTSTRAP_FRESH_INSTALL
+        assert source.call_count == 0
+        baseline = guard.baseline
+        assert baseline is not None
+        assert baseline.continuity == CONTINUITY_NOT_APPLICABLE
+        assert baseline.bootstrap_attempted is True
+
+        await guard.async_record_refresh(
+            path=RESERVATIONS_API_V3,
+            reservations=[_reservation("res-1", CODE_A)],
+            published={},
+            comparison=IdentityComparison(),
+            updated="2026-01-01T00:00:00+00:00",
+        )
+
+        assert guard.baseline is not None
+        assert guard.baseline.continuity == CONTINUITY_NOT_APPLICABLE
+        assert guard.write_refusal("res-1") is None
+
+    async def test_upgrade_sweeps_once_and_stores_bootstrap(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """An upgrading entry records legacy evidence as its own map."""
+        entry = _make_entry(entry_id="entry-upgrade")
+        entry.add_to_hass(hass)
+        _register_reservation_entity(hass, entry)
+        guard = ReservationIdentityGuard(hass, entry.entry_id)
+
+        with _legacy_sweep([_reservation("legacy-1", CODE_A)]) as fetch:
+            result = await async_bootstrap_identity(
+                hass,
+                entry,
+                guard=guard,
+                api_client=_api_client(),
+            )
+
+        assert result.reason == BOOTSTRAP_SWEPT
+        assert fetch.await_count == 1
+        baseline = guard.baseline
+        assert baseline is not None
+        assert baseline.path == RESERVATIONS_API_LEGACY
+        assert baseline.bootstrap_codes == {CODE_A: "legacy-1"}
+        assert baseline.continuity == CONTINUITY_UNCONFIRMED
+        assert baseline.candidates["legacy-1"].check_out != ""
+
+    async def test_sweep_runs_exactly_once_across_a_reload(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """The permitted legacy call must never be repeated."""
+        entry = _make_entry(entry_id="entry-once")
+        entry.add_to_hass(hass)
+        _register_reservation_entity(hass, entry)
+
+        with _legacy_sweep([_reservation("legacy-1", CODE_A)]) as fetch:
+            await async_bootstrap_identity(
+                hass,
+                entry,
+                guard=ReservationIdentityGuard(hass, entry.entry_id),
+                api_client=_api_client(),
+            )
+            reloaded = ReservationIdentityGuard(hass, entry.entry_id)
+            second = await async_bootstrap_identity(
+                hass,
+                entry,
+                guard=reloaded,
+                api_client=_api_client(),
+            )
+
+        assert fetch.await_count == 1
+        assert second.reason == BOOTSTRAP_ALREADY_DONE
+        assert reloaded.baseline is not None
+        assert reloaded.baseline.bootstrap_codes == {CODE_A: "legacy-1"}
+
+    async def test_failed_sweep_is_never_retried(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A failed sweep stays one-time and keeps writes refused."""
+        entry = _make_entry(entry_id="entry-fail")
+        entry.add_to_hass(hass)
+        _register_reservation_entity(hass, entry)
+        guard = ReservationIdentityGuard(hass, entry.entry_id)
+
+        with _legacy_sweep(
+            error=GuestyRateLimitError("rate limited"),
+        ) as fetch:
+            result = await async_bootstrap_identity(
+                hass,
+                entry,
+                guard=guard,
+                api_client=_api_client(),
+            )
+            retried = await async_bootstrap_identity(
+                hass,
+                entry,
+                guard=ReservationIdentityGuard(hass, entry.entry_id),
+                api_client=_api_client(),
+            )
+
+        assert result.reason == BOOTSTRAP_UNAVAILABLE
+        assert retried.reason == BOOTSTRAP_ALREADY_DONE
+        assert fetch.await_count == 1
+
+        await guard.async_record_refresh(
+            path=RESERVATIONS_API_V3,
+            reservations=[_reservation("res-1", CODE_A)],
+            published={},
+            comparison=IdentityComparison(),
+            updated="2026-01-01T00:00:00+00:00",
+        )
+
+        assert guard.baseline is not None
+        assert guard.baseline.continuity == CONTINUITY_UNCONFIRMED
+        assert guard.write_refusal("res-1") == REFUSAL_UNCONFIRMED
+
+    async def test_sweep_is_skipped_on_the_legacy_path(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A legacy entry has no cross-path question to answer."""
+        entry = _make_entry(
+            entry_id="entry-legacy",
+            reservations_api=RESERVATIONS_API_LEGACY,
+        )
+        entry.add_to_hass(hass)
+        _register_reservation_entity(hass, entry)
+
+        with _legacy_sweep([_reservation("legacy-1", CODE_A)]) as fetch:
+            result = await async_bootstrap_identity(
+                hass,
+                entry,
+                guard=ReservationIdentityGuard(hass, entry.entry_id),
+                api_client=_api_client(
+                    reservations_api=RESERVATIONS_API_LEGACY,
+                ),
+            )
+
+        assert result.reason == BOOTSTRAP_LEGACY_PATH
+        assert fetch.await_count == 0
+
+    async def test_disjoint_comparison_retains_and_blocks(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Evidence that never overlaps proves nothing and is kept."""
+        entry = _make_entry(entry_id="entry-disjoint")
+        entry.add_to_hass(hass)
+        _register_reservation_entity(hass, entry)
+        guard = ReservationIdentityGuard(hass, entry.entry_id)
+
+        with _legacy_sweep([_reservation("legacy-1", CODE_A)]):
+            await async_bootstrap_identity(
+                hass,
+                entry,
+                guard=guard,
+                api_client=_api_client(),
+            )
+
+        reservations = [_reservation("v3-2", CODE_B)]
+        comparison = guard.compare(reservations, RESERVATIONS_API_V3)
+        assert not comparison.is_ambiguous
+        await guard.async_record_refresh(
+            path=RESERVATIONS_API_V3,
+            reservations=reservations,
+            published={},
+            comparison=comparison,
+            updated="2026-01-01T00:00:00+00:00",
+        )
+
+        baseline = guard.baseline
+        assert baseline is not None
+        assert baseline.bootstrap_codes == {CODE_A: "legacy-1"}
+        assert baseline.continuity == CONTINUITY_UNCONFIRMED
+        assert guard.write_refusal("v3-2") == REFUSAL_UNCONFIRMED
+
+    async def test_overlap_verifies_continuity_and_permits_writes(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """One agreeing shared code is informative evidence."""
+        entry = _make_entry(entry_id="entry-overlap")
+        entry.add_to_hass(hass)
+        _register_reservation_entity(hass, entry)
+        guard = ReservationIdentityGuard(hass, entry.entry_id)
+
+        with _legacy_sweep([_reservation("shared-1", CODE_A)]):
+            await async_bootstrap_identity(
+                hass,
+                entry,
+                guard=guard,
+                api_client=_api_client(),
+            )
+
+        reservations = [_reservation("shared-1", CODE_A)]
+        comparison = guard.compare(reservations, RESERVATIONS_API_V3)
+        await guard.async_record_refresh(
+            path=RESERVATIONS_API_V3,
+            reservations=reservations,
+            published={},
+            comparison=comparison,
+            updated="2026-01-01T00:00:00+00:00",
+        )
+
+        baseline = guard.baseline
+        assert baseline is not None
+        assert baseline.continuity == CONTINUITY_VERIFIED
+        assert guard.write_refusal("shared-1") is None
+
+    async def test_partial_overlap_retires_only_covered_codes(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A partial overlap must not discharge what it never saw."""
+        entry = _make_entry(entry_id="entry-partial")
+        entry.add_to_hass(hass)
+        _register_reservation_entity(hass, entry)
+        guard = ReservationIdentityGuard(hass, entry.entry_id)
+
+        with _legacy_sweep(
+            [
+                _reservation("shared-1", CODE_A),
+                _reservation("shared-2", CODE_B),
+            ],
+        ):
+            await async_bootstrap_identity(
+                hass,
+                entry,
+                guard=guard,
+                api_client=_api_client(),
+            )
+
+        reservations = [_reservation("shared-1", CODE_A)]
+        comparison = guard.compare(reservations, RESERVATIONS_API_V3)
+        await guard.async_record_refresh(
+            path=RESERVATIONS_API_V3,
+            reservations=reservations,
+            published={},
+            comparison=comparison,
+            updated="2026-01-01T00:00:00+00:00",
+        )
+
+        baseline = guard.baseline
+        assert baseline is not None
+        assert baseline.continuity == CONTINUITY_VERIFIED
+        assert baseline.bootstrap_codes == {CODE_B: "shared-2"}
+
+        # Across a reload, the uncovered code still catches a
+        # conflict it was never checked against.
+        reloaded = ReservationIdentityGuard(hass, entry.entry_id)
+        await reloaded.async_load()
+        later = reloaded.compare(
+            [_reservation("v3-9", CODE_B)],
+            RESERVATIONS_API_V3,
+        )
+
+        assert later.is_ambiguous
+        assert {c.source for c in later.conflicts} == {SOURCE_BOOTSTRAP}
+
+    async def test_disagreeing_bootstrap_aborts_the_refresh(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A bootstrap disagreement is FR-032 ambiguity, not drift."""
+        entry = _make_entry(entry_id="entry-disagree")
+        entry.add_to_hass(hass)
+        _register_reservation_entity(hass, entry)
+        guard = ReservationIdentityGuard(hass, entry.entry_id)
+
+        with _legacy_sweep([_reservation("legacy-1", CODE_A)]):
+            await async_bootstrap_identity(
+                hass,
+                entry,
+                guard=guard,
+                api_client=_api_client(),
+            )
+
+        comparison = guard.compare(
+            [_reservation("v3-1", CODE_A)],
+            RESERVATIONS_API_V3,
+        )
+
+        assert comparison.is_ambiguous
+        assert comparison.conflicts[0].known_id == "legacy-1"
+        assert comparison.conflicts[0].observed_id == "v3-1"
+
+    async def test_unchecked_entry_retires_once_safely_past(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """An entry that can never recur is retired without a check."""
+        guard = ReservationIdentityGuard(hass, "entry-retire")
+        await guard.async_load()
+        await guard.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_LEGACY,
+                bootstrap_attempted=True,
+                bootstrap_codes={CODE_A: "old-1", CODE_B: "recent-1"},
+                candidates={
+                    "old-1": CandidateHint(
+                        check_in=_rel(-120).isoformat(),
+                        check_out=_rel(-119).isoformat(),
+                    ),
+                    "recent-1": CandidateHint(
+                        check_in=_rel(-2).isoformat(),
+                        check_out=_rel(-1).isoformat(),
+                    ),
+                },
+            ),
+        )
+
+        await guard.async_record_refresh(
+            path=RESERVATIONS_API_V3,
+            reservations=[],
+            published={},
+            comparison=IdentityComparison(),
+            updated="2026-01-01T00:00:00+00:00",
+            past_days=30,
+        )
+
+        baseline = guard.baseline
+        assert baseline is not None
+        assert baseline.bootstrap_codes == {CODE_B: "recent-1"}
+
+    async def test_sweep_issues_one_legacy_source_call(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """The permitted exception is bounded to one retrieval."""
+        entry = _make_entry(entry_id="entry-bound")
+        entry.add_to_hass(hass)
+        _register_reservation_entity(hass, entry)
+
+        with _legacy_sweep([_reservation("legacy-1", CODE_A)]) as fetch:
+            result = await async_bootstrap_identity(
+                hass,
+                entry,
+                guard=ReservationIdentityGuard(hass, entry.entry_id),
+                api_client=_api_client(),
+                past_days=11,
+                future_days=22,
+            )
+
+        assert fetch.await_count == 1
+        assert fetch.await_args is not None
+        assert fetch.await_args.kwargs == {
+            "past_days": 11,
+            "future_days": 22,
+        }
+        assert result.pages == 2
+
+    async def test_colliding_sweep_is_unusable_evidence(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """One code naming two legacy rows cannot be a baseline."""
+        entry = _make_entry(entry_id="entry-collide")
+        entry.add_to_hass(hass)
+        _register_reservation_entity(hass, entry)
+        guard = ReservationIdentityGuard(hass, entry.entry_id)
+
+        with _legacy_sweep(
+            [
+                _reservation("legacy-1", CODE_A),
+                _reservation("legacy-2", CODE_A),
+            ],
+        ):
+            result = await async_bootstrap_identity(
+                hass,
+                entry,
+                guard=guard,
+                api_client=_api_client(),
+            )
+
+        assert result.reason == BOOTSTRAP_AMBIGUOUS
+        assert result.informative is False
+        baseline = guard.baseline
+        assert baseline is not None
+        assert baseline.bootstrap_attempted is True
+        assert not baseline.bootstrap_codes
+
+        await guard.async_record_refresh(
+            path=RESERVATIONS_API_V3,
+            reservations=[_reservation("legacy-1", CODE_A)],
+            published={},
+            comparison=guard.compare(
+                [_reservation("legacy-1", CODE_A)],
+                RESERVATIONS_API_V3,
+            ),
+            updated="2026-01-01T00:00:00+00:00",
+        )
+
+        assert guard.baseline is not None
+        assert guard.baseline.continuity == CONTINUITY_UNCONFIRMED
+        assert guard.write_refusal("legacy-1") is not None
+
+    async def test_existing_baseline_is_never_a_fresh_install(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """An entry with no entities may still have a baseline."""
+        entry = _make_entry(entry_id="entry-nolistings")
+        entry.add_to_hass(hass)
+        guard = ReservationIdentityGuard(hass, entry.entry_id)
+        await guard.async_load()
+        await guard.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_V3,
+                continuity=CONTINUITY_UNCONFIRMED,
+            ),
+        )
+
+        with _legacy_sweep([_reservation("legacy-1", CODE_A)]) as fetch:
+            result = await async_bootstrap_identity(
+                hass,
+                entry,
+                guard=guard,
+                api_client=_api_client(),
+            )
+
+        assert fetch.await_count == 1
+        assert result.reason == BOOTSTRAP_SWEPT
+        assert guard.baseline is not None
+        assert guard.baseline.continuity == CONTINUITY_UNCONFIRMED
+        assert guard.write_refusal("legacy-1") is not None
+
+    async def test_unstored_sweep_still_compares_its_evidence(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Lost-to-storage evidence must not be lost to the guard."""
+        entry = _make_entry(entry_id="entry-unstored-sweep")
+        entry.add_to_hass(hass)
+        _register_reservation_entity(hass, entry)
+        guard = ReservationIdentityGuard(hass, entry.entry_id)
+        await guard.async_load()
+        await guard.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_V3,
+                continuity=CONTINUITY_UNCONFIRMED,
+                codes={CODE_B: "shared-2"},
+            ),
+        )
+
+        with (
+            _legacy_sweep([_reservation("legacy-1", CODE_A)]),
+            patch.object(
+                guard._store,
+                "async_save",
+                side_effect=OSError("disk full"),
+            ),
+        ):
+            await async_bootstrap_identity(
+                hass,
+                entry,
+                guard=guard,
+                api_client=_api_client(),
+            )
+
+        assert guard.baseline is not None
+        assert guard.baseline.bootstrap_codes == {CODE_A: "legacy-1"}
+        assert guard.write_refusal("shared-2") == REFUSAL_UNSTORED
+
+        # A later refresh that matches an older code must not be
+        # able to verify continuity past the conflicting sweep.
+        conflicting = [
+            _reservation("shared-2", CODE_B),
+            _reservation("v3-other", CODE_A),
+        ]
+        comparison = guard.compare(conflicting, RESERVATIONS_API_V3)
+
+        assert comparison.is_ambiguous is True
+
+
+class TestContinuityNotice:
+    """The unconfirmed-continuity notice (T075, FR-031c)."""
+
+    async def test_notice_is_raised_when_continuity_unconfirmed(
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An uninformative bootstrap must be visible, not silent."""
+        entry = _make_entry(entry_id="entry-notice")
+        entry.add_to_hass(hass)
+        guard = ReservationIdentityGuard(hass, entry.entry_id)
+        await guard.async_load()
+        await guard.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_LEGACY,
+                continuity=CONTINUITY_UNCONFIRMED,
+                bootstrap_attempted=True,
+            ),
+        )
+
+        with caplog.at_level(logging.WARNING):
+            async_notify_identity_continuity(hass, entry, guard)
+
+        issue = ir.async_get(hass).async_get_issue(
+            DOMAIN,
+            f"{ISSUE_IDENTITY_UNCONFIRMED}_{entry.entry_id}",
+        )
+        assert issue is not None
+        assert issue.is_fixable is False
+        assert issue.severity == ir.IssueSeverity.WARNING
+        assert issue.translation_key == ISSUE_IDENTITY_UNCONFIRMED
+        assert "identity continuity" in caplog.text.lower()
+
+    async def test_notice_is_cleared_once_continuity_holds(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A resolved question must not leave a stale repair."""
+        entry = _make_entry(entry_id="entry-clear")
+        entry.add_to_hass(hass)
+        guard = ReservationIdentityGuard(hass, entry.entry_id)
+        await guard.async_load()
+        await guard.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_LEGACY,
+                continuity=CONTINUITY_UNCONFIRMED,
+                bootstrap_attempted=True,
+            ),
+        )
+        async_notify_identity_continuity(hass, entry, guard)
+
+        await guard.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_V3,
+                continuity=CONTINUITY_VERIFIED,
+                bootstrap_attempted=True,
+                codes={CODE_A: "res-1"},
+            ),
+        )
+        async_notify_identity_continuity(hass, entry, guard)
+
+        assert (
+            ir.async_get(hass).async_get_issue(
+                DOMAIN,
+                f"{ISSUE_IDENTITY_UNCONFIRMED}_{entry.entry_id}",
+            )
+            is None
+        )
+
+    async def test_no_notice_on_the_legacy_path(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A legacy entry has no cross-path question to report."""
+        entry = _make_entry(
+            entry_id="entry-nolegacy",
+            reservations_api=RESERVATIONS_API_LEGACY,
+        )
+        entry.add_to_hass(hass)
+        guard = ReservationIdentityGuard(hass, entry.entry_id)
+        await guard.async_load()
+        await guard.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_LEGACY,
+                continuity=CONTINUITY_UNCONFIRMED,
+            ),
+        )
+
+        async_notify_identity_continuity(hass, entry, guard)
+
+        assert (
+            ir.async_get(hass).async_get_issue(
+                DOMAIN,
+                f"{ISSUE_IDENTITY_UNCONFIRMED}_{entry.entry_id}",
+            )
+            is None
+        )
+
+    async def test_repeated_notice_warns_only_once(
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A standing question must not spam every refresh."""
+        entry = _make_entry(entry_id="entry-once-warn")
+        entry.add_to_hass(hass)
+        guard = ReservationIdentityGuard(hass, entry.entry_id)
+        await guard.async_load()
+        await guard.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_LEGACY,
+                continuity=CONTINUITY_UNCONFIRMED,
+                bootstrap_attempted=True,
+            ),
+        )
+
+        with caplog.at_level(logging.WARNING):
+            async_notify_identity_continuity(hass, entry, guard)
+            caplog.clear()
+            async_notify_identity_continuity(hass, entry, guard)
+
+        assert "identity continuity" not in caplog.text.lower()
+        assert (
+            ir.async_get(hass).async_get_issue(
+                DOMAIN,
+                f"{ISSUE_IDENTITY_UNCONFIRMED}_{entry.entry_id}",
+            )
+            is not None
+        )
+
+    async def test_later_refreshes_update_the_notice(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Continuity transitions after setup must reach the user."""
+        entry = _make_entry(entry_id="entry-listener")
+        entry.add_to_hass(hass)
+        guard = ReservationIdentityGuard(hass, entry.entry_id)
+        await guard.async_load()
+        await guard.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_V3,
+                continuity=CONTINUITY_VERIFIED,
+                bootstrap_attempted=True,
+            ),
+        )
+        coordinator = MagicMock()
+        coordinator.identity = guard
+        unsub = MagicMock()
+        coordinator.async_add_listener = MagicMock(return_value=unsub)
+
+        async_track_identity_continuity(hass, entry, coordinator)
+
+        assert coordinator.async_add_listener.call_count == 1
+        listener = coordinator.async_add_listener.call_args.args[0]
+        issue_id = f"{ISSUE_IDENTITY_UNCONFIRMED}_{entry.entry_id}"
+        registry = ir.async_get(hass)
+        assert registry.async_get_issue(DOMAIN, issue_id) is None
+
+        await guard.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_V3,
+                continuity=CONTINUITY_UNCONFIRMED,
+                bootstrap_attempted=True,
+            ),
+        )
+        listener()
+
+        assert registry.async_get_issue(DOMAIN, issue_id) is not None
+
+    async def test_removing_the_entry_withdraws_the_notice(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A deleted entry must not leave an unclearable repair."""
+        entry = _make_entry(entry_id="entry-removed")
+        entry.add_to_hass(hass)
+        guard = ReservationIdentityGuard(hass, entry.entry_id)
+        await guard.async_load()
+        await guard.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_LEGACY,
+                continuity=CONTINUITY_UNCONFIRMED,
+                bootstrap_attempted=True,
+            ),
+        )
+        async_notify_identity_continuity(hass, entry, guard)
+        issue_id = f"{ISSUE_IDENTITY_UNCONFIRMED}_{entry.entry_id}"
+        assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
+
+        await async_remove_entry(hass, entry)
+
+        assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None

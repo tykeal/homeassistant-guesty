@@ -20,21 +20,31 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 
 from custom_components.guesty.api.const import (
+    DEFAULT_FUTURE_DAYS,
+    DEFAULT_PAST_DAYS,
     HOLD_STATUSES,
     RESERVATIONS_API_LEGACY,
+    RESERVATIONS_API_V3,
+)
+from custom_components.guesty.api.exceptions import GuestyApiError
+from custom_components.guesty.api.reservations_legacy import (
+    LegacyReservationSource,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
+    from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
 
+    from custom_components.guesty.api.client import GuestyApiClient
     from custom_components.guesty.api.models import GuestyReservation
 
 _LOGGER = logging.getLogger(__name__)
@@ -53,6 +63,18 @@ CONTINUITY_UNCONFIRMED: Final[str] = "unconfirmed"
 
 # No cross-path question arises for this baseline.
 CONTINUITY_NOT_APPLICABLE: Final[str] = "not_applicable"
+
+# Outcomes of the one-time bootstrap sweep (FR-031d).
+BOOTSTRAP_SWEPT: Final[str] = "swept"
+BOOTSTRAP_UNAVAILABLE: Final[str] = "unavailable"
+BOOTSTRAP_FRESH_INSTALL: Final[str] = "fresh_install"
+BOOTSTRAP_ALREADY_DONE: Final[str] = "already_done"
+BOOTSTRAP_AMBIGUOUS: Final[str] = "ambiguous"
+BOOTSTRAP_LEGACY_PATH: Final[str] = "legacy_path"
+
+# Unique-id marker of a reservation-backed entity, used to tell an
+# upgrading entry from a fresh install.
+RESERVATION_ENTITY_MARKER: Final[str] = "_reservation"
 
 # Map names, used to report which map a conflict came from.
 SOURCE_CODES: Final[str] = "codes"
@@ -273,6 +295,10 @@ class IdentityBaseline:
         codes: Confirmation code to reservation identifier.
         divergent: Whether the two reservation paths were ever seen
             to number the same booking differently.
+        bootstrap_attempted: Whether the one-time legacy bootstrap
+            sweep has already been decided for this entry, however
+            it turned out. It is what makes the sweep genuinely
+            one-time across restarts and reloads (FR-031d).
         legacy_codes: Legacy-path evidence retained when the entry
             moved to the v3 path, so one disjoint refresh cannot
             discard the only cross-path evidence there is.
@@ -285,6 +311,7 @@ class IdentityBaseline:
     continuity: str = CONTINUITY_UNCONFIRMED
     updated: str = ""
     divergent: bool = False
+    bootstrap_attempted: bool = False
     codes: dict[str, str] = field(default_factory=dict)
     legacy_codes: dict[str, str] | None = None
     bootstrap_codes: dict[str, str] | None = None
@@ -338,28 +365,55 @@ class IdentityBaseline:
     def _maps(
         self,
         path: str,
-    ) -> tuple[tuple[str, dict[str, str], bool], ...]:
+    ) -> tuple[tuple[str, dict[str, str], bool, bool], ...]:
         """Enumerate the code maps with their provenance.
 
-        Provenance is relative to the path now in use: evidence this
-        entry gathered on the other path is what can confirm
-        continuity, and what disagreeing proves nothing about a
-        re-key. ``fallback_codes`` is legacy-sourced but is never
-        treated as confirming evidence, because a fallback record
-        would let the legacy path confirm itself (data-model.md §4).
+        Two independent properties are reported per map, because
+        they are not the same question.
+
+        *Confirms* says whether a match in that map is cross-path
+        evidence, which is the only thing that can establish
+        continuity. ``fallback_codes`` is legacy-sourced but never
+        confirms, because a fallback record would let the legacy
+        path confirm itself (data-model.md §4).
+
+        *Soft* says whether a **conflict** in that map should demote
+        continuity instead of aborting the refresh. Evidence carried
+        over from an earlier path — ``codes`` written by the other
+        path, and ``legacy_codes`` retained across a switch — is
+        soft, so that rolling back to the legacy path can always
+        complete rather than stranding the entry.
+
+        ``bootstrap_codes`` is deliberately **not** soft. The sweep
+        exists precisely to be contradicted, and FR-032, plan.md
+        ("bootstrap disagrees ... treated exactly as FR-032") and
+        T067 all require a disagreeing bootstrap to abort. Rollback
+        still completes, because on the legacy path the bootstrap
+        map is same-path evidence that agrees by construction.
 
         Args:
             path: Reservation path the compared refresh used.
 
         Returns:
-            Tuples of map name, mapping and cross-path provenance.
+            Tuples of map name, mapping, confirms and soft.
         """
         legacy = RESERVATIONS_API_LEGACY
+        carried_over = self.path != path
         return (
-            (SOURCE_CODES, self.codes, self.path != path),
-            (SOURCE_LEGACY, self.legacy_codes or {}, path != legacy),
-            (SOURCE_BOOTSTRAP, self.bootstrap_codes or {}, path != legacy),
-            (SOURCE_FALLBACK, self.fallback_codes or {}, False),
+            (SOURCE_CODES, self.codes, carried_over, carried_over),
+            (
+                SOURCE_LEGACY,
+                self.legacy_codes or {},
+                path != legacy,
+                path != legacy,
+            ),
+            (
+                SOURCE_BOOTSTRAP,
+                self.bootstrap_codes or {},
+                path != legacy,
+                False,
+            ),
+            (SOURCE_FALLBACK, self.fallback_codes or {}, False, False),
         )
 
     def compare(
@@ -392,7 +446,7 @@ class IdentityBaseline:
         cross_path_conflicts: list[IdentityConflict] = []
         compared = 0
 
-        for source, mapping, is_cross_path in self._maps(path):
+        for source, mapping, confirms, soft in self._maps(path):
             for code, known_id in mapping.items():
                 observed_id = observed.get(code)
                 if observed_id is None:
@@ -400,7 +454,7 @@ class IdentityBaseline:
                 compared += 1
                 if observed_id == known_id:
                     matched_ids.add(known_id)
-                    if is_cross_path:
+                    if confirms:
                         cross_path_ids.add(known_id)
                     continue
                 conflict = IdentityConflict(
@@ -408,7 +462,7 @@ class IdentityBaseline:
                     observed_id=observed_id,
                     source=source,
                 )
-                if is_cross_path:
+                if soft:
                     cross_path_conflicts.append(conflict)
                 else:
                     conflicts.append(conflict)
@@ -433,6 +487,7 @@ class IdentityBaseline:
             "continuity": self.continuity,
             "updated": self.updated,
             "divergent": self.divergent,
+            "bootstrap_attempted": self.bootstrap_attempted,
             "codes": dict(self.codes),
             "legacy_codes": (
                 dict(self.legacy_codes) if self.legacy_codes is not None else None
@@ -464,6 +519,9 @@ class IdentityBaseline:
             continuity=str(data.get("continuity", CONTINUITY_UNCONFIRMED)),
             updated=str(data.get("updated", "")),
             divergent=bool(data.get("divergent", False)),
+            bootstrap_attempted=bool(
+                data.get("bootstrap_attempted", False),
+            ),
             codes=dict(data.get("codes") or {}),
             legacy_codes=_optional_map(data.get("legacy_codes")),
             bootstrap_codes=_optional_map(data.get("bootstrap_codes")),
@@ -627,6 +685,7 @@ class ReservationIdentityGuard:
         published: Mapping[str, CandidateHint],
         comparison: IdentityComparison,
         updated: str,
+        past_days: int = DEFAULT_PAST_DAYS,
     ) -> None:
         """Persist the baseline produced by a successful refresh.
 
@@ -649,9 +708,12 @@ class ReservationIdentityGuard:
                 published, keyed by reservation identifier.
             comparison: The comparison this refresh already ran.
             updated: ISO timestamp of this refresh.
+            past_days: The configured past-day window, which dates
+                the safe retirement policy of T074.
         """
         previous = self._baseline
         retrieved = tuple(reservations)
+        observed = observe_codes(retrieved).mapping
         hints = _retrieved_hints(retrieved)
         hints.update(published)
         merged_hints = dict(previous.candidates) if previous else {}
@@ -668,9 +730,15 @@ class ReservationIdentityGuard:
             continuity=_next_continuity(previous, path, comparison, divergent),
             updated=updated,
             divergent=divergent,
-            codes=_bounded(observe_codes(retrieved).mapping, check_outs),
+            bootstrap_attempted=bool(previous and previous.bootstrap_attempted),
+            codes=_bounded(observed, check_outs),
             legacy_codes=_retained_legacy(previous, path, check_outs),
-            bootstrap_codes=previous.bootstrap_codes if previous else None,
+            bootstrap_codes=_retired_bootstrap(
+                previous,
+                observed,
+                check_outs,
+                past_days,
+            ),
             fallback_codes=previous.fallback_codes if previous else None,
             candidates=_bounded_candidates(merged_hints),
         )
@@ -687,6 +755,109 @@ class ReservationIdentityGuard:
             return
         self._unstored = False
         self._ambiguous = False
+
+    async def async_record_fresh_install(self, path: str) -> None:
+        """Settle a fresh install's continuity without a request.
+
+        An entry with no baseline and no reservation entities has no
+        earlier identity to contradict, so there is nothing for a
+        sweep to reconcile and the legacy resource is never touched.
+        The verdict is persisted rather than re-derived, because the
+        entity registry will be populated by the time of the next
+        start and the entry would then look like an upgrade.
+
+        Args:
+            path: Reservation path the entry is using.
+        """
+        current = self._baseline or IdentityBaseline(path=path)
+        await self._store_bootstrap(
+            replace(
+                current,
+                continuity=CONTINUITY_NOT_APPLICABLE,
+                bootstrap_attempted=True,
+            ),
+        )
+
+    async def async_record_bootstrap(
+        self,
+        *,
+        reservations: Iterable[GuestyReservation],
+        failed: bool,
+    ) -> None:
+        """Persist the outcome of the one-time sweep (FR-031d).
+
+        The attempt is recorded whether or not it produced evidence,
+        so that an unavailable legacy resource cannot turn the single
+        permitted legacy call into a standing dependency that retries
+        on every start.
+
+        Stay dates are kept alongside the codes because T074's safe
+        retirement policy needs to know when a swept reservation
+        checked out; they carry identifiers and dates only (FR-049a).
+
+        Args:
+            reservations: Reservations the sweep retrieved.
+            failed: Whether the sweep could not be completed.
+        """
+        if failed:
+            current = self._baseline or IdentityBaseline(
+                path=RESERVATIONS_API_V3,
+            )
+            await self._store_bootstrap(
+                replace(current, bootstrap_attempted=True),
+            )
+            return
+
+        retrieved = tuple(reservations)
+        current = self._baseline or IdentityBaseline(
+            path=RESERVATIONS_API_LEGACY,
+        )
+        merged = dict(current.candidates)
+        merged.update(_retrieved_hints(retrieved))
+        await self._store_bootstrap(
+            replace(
+                current,
+                bootstrap_attempted=True,
+                bootstrap_codes=_bounded(
+                    observe_codes(retrieved).mapping,
+                    {res_id: hint.check_out for res_id, hint in merged.items()},
+                ),
+                candidates=_bounded_candidates(merged),
+            ),
+        )
+
+    async def _store_bootstrap(self, baseline: IdentityBaseline) -> None:
+        """Persist a bootstrap verdict, tolerating a storage failure.
+
+        A failure leaves ``bootstrap_attempted`` unwritten, so the
+        sweep is reattempted at the next start. That is the only
+        honest outcome when nothing can be persisted: the alternative
+        is an in-memory flag that silently forgets itself anyway.
+        Writes stay refused throughout, because an unstored baseline
+        cannot authorize one.
+
+        The verdict is nevertheless adopted in memory. The permitted
+        legacy call has already been made, and discarding what it
+        returned would let a later refresh verify continuity through
+        an older matching code while the swept evidence that
+        contradicts it went unexamined. Held in memory it is still
+        compared, and the first refresh that reaches storage persists
+        it; until then the unstored conjunct keeps writes refused.
+
+        Args:
+            baseline: The baseline to persist.
+        """
+        try:
+            await self.async_store(baseline)
+        except OSError as exc:
+            self._baseline = baseline
+            self._unstored = True
+            _LOGGER.warning(
+                "Could not persist the reservation identity "
+                "bootstrap (%s); its evidence is still compared, but "
+                "writes stay refused until a baseline reaches storage",
+                type(exc).__name__,
+            )
 
     def write_refusal(self, reservation_id: str) -> str | None:
         """Evaluate the four-conjunct write predicate (FR-031c).
@@ -719,6 +890,61 @@ class ReservationIdentityGuard:
         return None
 
 
+def _retired_bootstrap(
+    previous: IdentityBaseline | None,
+    observed: Mapping[str, str],
+    check_outs: Mapping[str, str],
+    past_days: int,
+) -> dict[str, str] | None:
+    """Retire bootstrap evidence one entry at a time (T074).
+
+    A successful refresh replaces ``codes`` but never replaces this
+    map wholesale, because a disjoint refresh would then discard the
+    only cross-path evidence there is. Instead each entry is
+    discharged on its own terms:
+
+    * a code this refresh covered without conflict has done its job
+      and is removed — the comparison that read it ran before this
+      call, so its match is already counted;
+    * a code this refresh never mentioned is retained, so a partial
+      overlap cannot discharge what it did not cover, and reaching
+      ``verified`` does not clear the remainder;
+    * a retained code is retired unchecked only under the safe
+      policy that its reservation checked out more than ``past_days``
+      ago and so can never appear in a future window, which also
+      keeps the map bounded.
+
+    A conflicting code is kept. It cannot normally reach here — a
+    bootstrap conflict aborts the refresh — but keeping it means the
+    disagreement stays derivable from the stored evidence rather
+    than only remembered in a flag.
+
+    Args:
+        previous: The baseline this refresh replaces, if any.
+        observed: This refresh's code to identifier mapping.
+        check_outs: ISO check-out per reservation identifier.
+        past_days: The configured past-day window.
+
+    Returns:
+        The surviving bootstrap evidence, or None when the sweep
+        never ran.
+    """
+    if previous is None or previous.bootstrap_codes is None:
+        return None
+    horizon = datetime.now(UTC) - timedelta(days=past_days)
+    retained: dict[str, str] = {}
+    for code, known_id in previous.bootstrap_codes.items():
+        observed_id = observed.get(code)
+        if observed_id == known_id:
+            continue
+        if observed_id is None:
+            checked_out = check_outs.get(known_id)
+            if checked_out is not None and _instant(checked_out) < horizon:
+                continue
+        retained[code] = known_id
+    return retained
+
+
 def _next_continuity(
     previous: IdentityBaseline | None,
     path: str,
@@ -746,6 +972,13 @@ def _next_continuity(
     Only re-establishing the baseline, or the reconciliation the
     bootstrap sweep performs, can clear it.
 
+    A ``not_applicable`` verdict is carried forward only while it
+    remains true. It records that nothing from the other path exists
+    to contradict, which is a fresh install's permanent situation but
+    stops being true the moment legacy-sourced evidence is recorded —
+    by the bootstrap sweep, or by a legacy refresh the entry later
+    switched away from. See ``_still_not_applicable``.
+
     Args:
         previous: The baseline this refresh replaces, if any.
         path: Reservation path that produced this refresh.
@@ -761,9 +994,38 @@ def _next_continuity(
         return CONTINUITY_NOT_APPLICABLE
     if previous is not None and previous.continuity == CONTINUITY_VERIFIED:
         return CONTINUITY_VERIFIED
+    if previous is not None and _still_not_applicable(previous):
+        return CONTINUITY_NOT_APPLICABLE
     if comparison.cross_path_matched > 0:
         return CONTINUITY_VERIFIED
     return CONTINUITY_UNCONFIRMED
+
+
+def _still_not_applicable(previous: IdentityBaseline) -> bool:
+    """Report whether "nothing to contradict" still holds.
+
+    A fresh install settles at ``not_applicable`` because it has no
+    earlier identity at all, and a later v3 refresh cannot
+    manufacture one — so the verdict must survive, or writes would
+    silently start being refused on the second refresh.
+
+    It must **not** survive once legacy-sourced evidence exists. An
+    entry that ran on the legacy path, or that was swept, does have
+    an earlier identity, and whether the two paths agree about it is
+    exactly the open question the guard carries.
+
+    Args:
+        previous: The baseline this refresh replaces.
+
+    Returns:
+        True when the verdict may be carried forward.
+    """
+    return (
+        previous.continuity == CONTINUITY_NOT_APPLICABLE
+        and previous.path != RESERVATIONS_API_LEGACY
+        and not previous.legacy_codes
+        and not previous.bootstrap_codes
+    )
 
 
 def _retained_legacy(
@@ -893,3 +1155,173 @@ def _bounded_candidates(
         key=lambda item: _instant(item[1].check_out),
     )
     return dict(ordered[-MAX_BASELINE_CODES:])
+
+
+@dataclass(frozen=True)
+class BootstrapResult:
+    """Outcome of deciding the one-time bootstrap sweep.
+
+    Attributes:
+        reason: Which of the six bootstrap outcomes applied.
+        pages: Legacy pages the sweep fetched, zero when it did not
+            run. This is the FR-001 exception-1 counter.
+        codes: Confirmation codes the sweep recorded as evidence.
+        error: Operator-facing reason the sweep was unavailable.
+    """
+
+    reason: str
+    pages: int = 0
+    codes: int = 0
+    error: str | None = None
+
+    @property
+    def informative(self) -> bool:
+        """Report whether the sweep produced usable evidence.
+
+        Returns:
+            True when the sweep ran and recorded at least one code.
+        """
+        return self.reason == BOOTSTRAP_SWEPT and self.codes > 0
+
+
+def has_reservation_entities(hass: HomeAssistant, entry_id: str) -> bool:
+    """Report whether this entry already published reservations.
+
+    This is how an upgrade is told from a fresh install: a release
+    that only ever spoke the legacy reservation API left reservation
+    entities in the registry, and those entities are the identities
+    a first v3 refresh could silently contradict. A fresh install
+    has none, so it has nothing to reconcile and never touches the
+    deprecated resource.
+
+    Args:
+        hass: Home Assistant instance.
+        entry_id: The config entry identifier.
+
+    Returns:
+        True when a reservation-backed entity is registered.
+    """
+    registry = er.async_get(hass)
+    return any(
+        RESERVATION_ENTITY_MARKER in entity.unique_id
+        for entity in er.async_entries_for_config_entry(registry, entry_id)
+    )
+
+
+async def async_bootstrap_identity(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    *,
+    guard: ReservationIdentityGuard,
+    api_client: GuestyApiClient,
+    past_days: int = DEFAULT_PAST_DAYS,
+    future_days: int = DEFAULT_FUTURE_DAYS,
+) -> BootstrapResult:
+    """Decide and, if required, perform the bootstrap sweep.
+
+    This is **permitted legacy call 1 of FR-001** and the only
+    request the identity guard may ever issue (FR-034). It runs at
+    setup, before any v3 data is published, for an upgrading entry
+    only, and the decision is persisted so it is taken once per
+    config entry and never again — across restarts and reloads
+    alike.
+
+    A sweep whose own evidence is ambiguous — one confirmation code
+    naming two legacy reservations — is discarded whole rather than
+    stored with an arbitrary winner, because a v3 refresh returning
+    only that winner would otherwise verify continuity and permit
+    writes on a mapping the legacy side never agreed on. It still
+    counts as attempted: the permitted call has been spent.
+
+    The sweep is a single ``LegacyReservationSource`` retrieval over
+    the configured window. It is not retried here: the HTTP client
+    already retries a rate limit or a transient failure internally,
+    and a sweep that retried on top of that would spend a scarce
+    daily token allowance on an outcome the caller is required to
+    tolerate anyway.
+
+    Args:
+        hass: Home Assistant instance.
+        entry: The config entry being set up.
+        guard: The entry's identity guard.
+        api_client: API client the sweep issues its requests on.
+        past_days: Days in the past for the sweep's window.
+        future_days: Days in the future for the sweep's window.
+
+    Returns:
+        The bootstrap outcome, for logging and the FR-031c notice.
+    """
+    if not guard.loaded:
+        await guard.async_load()
+
+    path = api_client.reservations_api
+    if path != RESERVATIONS_API_V3:
+        return BootstrapResult(reason=BOOTSTRAP_LEGACY_PATH)
+
+    baseline = guard.baseline
+    if baseline is not None and baseline.bootstrap_attempted:
+        return BootstrapResult(reason=BOOTSTRAP_ALREADY_DONE)
+
+    if baseline is None and not has_reservation_entities(hass, entry.entry_id):
+        await guard.async_record_fresh_install(path)
+        _LOGGER.debug(
+            "No baseline and no reservation entities for this entry; "
+            "treating it as a fresh install and skipping the legacy "
+            "identity bootstrap sweep",
+        )
+        return BootstrapResult(reason=BOOTSTRAP_FRESH_INSTALL)
+
+    source = LegacyReservationSource(api_client)
+    try:
+        fetched = await source.fetch(
+            past_days=past_days,
+            future_days=future_days,
+        )
+    except GuestyApiError as exc:
+        await guard.async_record_bootstrap(reservations=(), failed=True)
+        _LOGGER.warning(
+            "The one-time legacy identity bootstrap sweep could not "
+            "be completed (%s); reservation identity continuity "
+            "stays unconfirmed and reservation writes are refused",
+            exc.message,
+        )
+        return BootstrapResult(
+            reason=BOOTSTRAP_UNAVAILABLE,
+            error=exc.message,
+        )
+
+    collisions = observe_codes(fetched.reservations).collisions
+    if collisions:
+        await guard.async_record_bootstrap(reservations=(), failed=True)
+        _LOGGER.warning(
+            "The one-time legacy identity bootstrap sweep returned %d "
+            "confirmation code(s) naming more than one reservation, so "
+            "its evidence cannot establish an identity baseline; "
+            "reservation identity continuity stays unconfirmed and "
+            "reservation writes are refused",
+            len(collisions),
+        )
+        return BootstrapResult(
+            reason=BOOTSTRAP_AMBIGUOUS,
+            pages=fetched.pages,
+        )
+
+    await guard.async_record_bootstrap(
+        reservations=fetched.reservations,
+        failed=False,
+    )
+    recorded = len((guard.baseline.bootstrap_codes or {}) if guard.baseline else {})
+    _LOGGER.info(
+        "One-time legacy identity bootstrap sweep complete: %d page(s), "
+        "%d reservation(s), %d confirmation code(s) recorded as "
+        "cross-path evidence. This is the only legacy reservation "
+        "search this entry will ever perform",
+        fetched.pages,
+        len(fetched.reservations),
+        recorded,
+    )
+    return BootstrapResult(
+        reason=BOOTSTRAP_SWEPT,
+        pages=fetched.pages,
+        codes=recorded,
+    )

@@ -292,7 +292,12 @@ class ReservationsCoordinator(
                 "No known listings yet; skipping %d reservation(s)",
                 len(reservations),
             )
-            await self._record_identity(reservations, {}, comparison)
+            await self._record_identity(
+                reservations,
+                {},
+                comparison,
+                past_days,
+            )
             _log_refresh_diagnostics(
                 fetch_result,
                 counters,
@@ -364,7 +369,12 @@ class ReservationsCoordinator(
                 )
 
         lookup = await self._resolve_guests(guest_ids)
-        await self._record_identity(reservations, published, comparison)
+        await self._record_identity(
+            reservations,
+            published,
+            comparison,
+            past_days,
+        )
         _log_refresh_diagnostics(
             fetch_result,
             counters,
@@ -490,6 +500,7 @@ class ReservationsCoordinator(
         reservations: tuple[GuestyReservation, ...],
         published: Mapping[str, CandidateHint],
         comparison: IdentityComparison,
+        past_days: int,
     ) -> None:
         """Persist the baseline this successful refresh produced.
 
@@ -502,6 +513,8 @@ class ReservationsCoordinator(
             reservations: Reservations the refresh retrieved.
             published: Stay hints of the reservations published.
             comparison: The comparison this refresh ran.
+            past_days: The configured past-day window, which dates
+                the safe retirement of bootstrap evidence (T074).
         """
         await self.identity.async_record_refresh(
             path=self.reservations_path,
@@ -509,6 +522,7 @@ class ReservationsCoordinator(
             published=published,
             comparison=comparison,
             updated=datetime.now(UTC).isoformat(),
+            past_days=past_days,
         )
 
     async def _resolve_guests(
