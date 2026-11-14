@@ -1079,6 +1079,7 @@ class TestReservationsCoordinator:
         api_client.get_reservations.assert_awaited_once_with(
             past_days=7,
             future_days=30,
+            candidates={},
         )
 
     async def test_uses_default_date_range(
@@ -1109,6 +1110,7 @@ class TestReservationsCoordinator:
         api_client.get_reservations.assert_awaited_once_with(
             past_days=DEFAULT_PAST_DAYS,
             future_days=DEFAULT_FUTURE_DAYS,
+            candidates={},
         )
 
     async def test_empty_listings_skips_all_reservations(
@@ -2149,6 +2151,7 @@ class TestSegmentAttribution:
         fetch.assert_awaited_once_with(
             past_days=DEFAULT_PAST_DAYS,
             future_days=DEFAULT_FUTURE_DAYS,
+            candidates={},
         )
 
 

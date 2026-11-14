@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
@@ -46,9 +47,15 @@ from custom_components.guesty.api.models import (
     ReservationFetchResult,
     translate_v3_status_filter,
 )
+from custom_components.guesty.api.reservations_fallback import (
+    ReservationFallbackSource,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from custom_components.guesty.api.client import GuestyApiClient
+    from custom_components.guesty.api.models import FallbackCandidate
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -58,6 +65,9 @@ class V3ReservationSource:
 
     Attributes:
         _client: API client issuing the authenticated requests.
+        _fallback: Legacy not-found fallback owned by this source,
+            so its session state lives exactly as long as the v3
+            path it corrects (FR-050).
     """
 
     def __init__(self, client: GuestyApiClient) -> None:
@@ -67,6 +77,16 @@ class V3ReservationSource:
             client: API client used to issue HTTP requests.
         """
         self._client = client
+        self._fallback = ReservationFallbackSource(client)
+
+    @property
+    def fallback(self) -> ReservationFallbackSource:
+        """Return the fallback this source resolves absentees with.
+
+        Returns:
+            The fallback owned by this source.
+        """
+        return self._fallback
 
     async def fetch(
         self,
@@ -74,6 +94,7 @@ class V3ReservationSource:
         past_days: int = DEFAULT_PAST_DAYS,
         future_days: int = DEFAULT_FUTURE_DAYS,
         statuses: frozenset[str] | None = None,
+        candidates: Mapping[str, FallbackCandidate] | None = None,
     ) -> ReservationFetchResult:
         """Fetch reservations from the v3 search resource.
 
@@ -91,6 +112,12 @@ class V3ReservationSource:
             future_days: Days in the future to include. Default 365.
             statuses: Statuses to request. Defaults to
                 ACTIONABLE_STATUSES if None.
+            candidates: Durable stay dates of every reservation the
+                integration already knows, keyed by identifier.
+                Any that this search does not return is a
+                candidate for a legacy by-id lookup, because
+                Guesty's backfill into v3 is still running and an
+                absence is not yet evidence of deletion (FR-050).
 
         Returns:
             The mapped reservations and the diagnostics counters.
@@ -121,7 +148,26 @@ class V3ReservationSource:
             window_end=window_end,
             status_filter=status_filter,
         )
-        return _map_results(results)
+        result = _map_results(results)
+        # Resolved even with no candidates: the fallback has to see
+        # every v3 result to keep the last known values it
+        # republishes when a reservation later goes missing and its
+        # first lookup fails (FR-054).
+        outcome = await self._fallback.resolve(
+            retrieved=result.reservations,
+            candidates=candidates or {},
+            past_days=past_days,
+            future_days=future_days,
+            statuses=statuses,
+        )
+        return replace(
+            result,
+            reservations=result.reservations + outcome.reservations,
+            fallback=outcome.counters,
+            fallback_served=outcome.served,
+            fallback_sourced=outcome.sourced,
+            fallback_absent=outcome.absent,
+        )
 
     async def _fetch_all_pages(
         self,

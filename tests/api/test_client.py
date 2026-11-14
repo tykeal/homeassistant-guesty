@@ -2031,6 +2031,7 @@ class TestReservationSourceDelegation:
             past_days=7,
             future_days=14,
             statuses=None,
+            candidates=None,
         )
 
     @respx.mock

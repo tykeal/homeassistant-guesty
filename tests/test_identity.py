@@ -1862,3 +1862,121 @@ class TestContinuityNotice:
         await async_remove_entry(hass, entry)
 
         assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
+
+
+class TestFallbackCodeIsolation:
+    """Evidence from the legacy fallback is kept apart (T123)."""
+
+    async def test_fallback_code_never_lands_in_codes(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A fallback-sourced code is recorded separately."""
+        guard = ReservationIdentityGuard(hass, "entry-fb-isolation")
+        await guard.async_load()
+
+        await guard.async_record_refresh(
+            path=RESERVATIONS_API_V3,
+            reservations=[
+                _reservation("res-1", CODE_A),
+                _reservation("res-2", CODE_B),
+            ],
+            published={},
+            comparison=IdentityComparison(),
+            updated="2026-01-01T00:00:00+00:00",
+            fallback_ids=("res-2",),
+        )
+
+        baseline = guard.baseline
+        assert baseline is not None
+        assert baseline.codes == {CODE_A: "res-1"}
+        assert baseline.fallback_codes == {CODE_B: "res-2"}
+        assert baseline.known_ids() == {"res-1", "res-2"}
+        assert baseline.current_ids() == {"res-1", "res-2"}
+
+    async def test_fallback_alone_cannot_verify_continuity(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Fallback evidence is not a v3 confirmation."""
+        guard = ReservationIdentityGuard(hass, "entry-fb-continuity")
+        await guard.async_load()
+        await guard.async_record_refresh(
+            path=RESERVATIONS_API_LEGACY,
+            reservations=[_reservation("res-1", CODE_A)],
+            published={},
+            comparison=IdentityComparison(),
+            updated="2026-01-01T00:00:00+00:00",
+        )
+
+        await guard.async_record_refresh(
+            path=RESERVATIONS_API_V3,
+            reservations=[_reservation("res-1", CODE_A)],
+            published={},
+            comparison=IdentityComparison(),
+            updated="2026-01-02T00:00:00+00:00",
+            fallback_ids=("res-1",),
+        )
+
+        baseline = guard.baseline
+        assert baseline is not None
+        assert baseline.codes == {}
+        assert baseline.continuity != CONTINUITY_VERIFIED
+
+    async def test_conflicting_fallback_code_aborts_the_refresh(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A changed fallback mapping is an identity conflict."""
+        guard = ReservationIdentityGuard(hass, "entry-fb-conflict")
+        await guard.async_load()
+        await guard.async_record_refresh(
+            path=RESERVATIONS_API_V3,
+            reservations=[_reservation("res-1", CODE_A)],
+            published={},
+            comparison=IdentityComparison(),
+            updated="2026-01-01T00:00:00+00:00",
+            fallback_ids=("res-1",),
+        )
+        assert guard.baseline is not None
+        assert guard.baseline.fallback_codes == {CODE_A: "res-1"}
+
+        comparison = guard.compare(
+            [_reservation("res-9", CODE_A)],
+            RESERVATIONS_API_V3,
+        )
+
+        assert comparison.is_ambiguous
+        assert comparison.conflicts
+
+    async def test_confirmed_absence_retires_candidacy(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A reservation legacy denies stops being a candidate."""
+        guard = ReservationIdentityGuard(hass, "entry-fb-absent")
+        await guard.async_load()
+        await guard.async_record_refresh(
+            path=RESERVATIONS_API_V3,
+            reservations=[
+                _reservation("res-1", CODE_A),
+                _reservation("res-2", CODE_B),
+            ],
+            published={},
+            comparison=IdentityComparison(),
+            updated="2026-01-01T00:00:00+00:00",
+        )
+        assert guard.baseline is not None
+        assert "res-2" in guard.baseline.candidates
+
+        await guard.async_record_refresh(
+            path=RESERVATIONS_API_V3,
+            reservations=[_reservation("res-1", CODE_A)],
+            published={},
+            comparison=IdentityComparison(),
+            updated="2026-01-02T00:00:00+00:00",
+            absent_ids=("res-2",),
+        )
+
+        assert guard.baseline is not None
+        assert "res-2" not in guard.baseline.candidates

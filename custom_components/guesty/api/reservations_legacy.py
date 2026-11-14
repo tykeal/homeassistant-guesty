@@ -33,7 +33,10 @@ from custom_components.guesty.api.models import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from custom_components.guesty.api.client import GuestyApiClient
+    from custom_components.guesty.api.models import FallbackCandidate
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -59,6 +62,7 @@ class LegacyReservationSource:
         past_days: int = DEFAULT_PAST_DAYS,
         future_days: int = DEFAULT_FUTURE_DAYS,
         statuses: frozenset[str] | None = None,
+        candidates: Mapping[str, FallbackCandidate] | None = None,
     ) -> ReservationFetchResult:
         """Fetch reservations with date and status filters.
 
@@ -81,6 +85,10 @@ class LegacyReservationSource:
                 date filter window. Default 365.
             statuses: Set of reservation statuses to include.
                 Defaults to ACTIONABLE_STATUSES if None.
+            candidates: Accepted for the source seam and ignored.
+                The not-found fallback corrects the v3 path only;
+                on the legacy path this search already is the
+                legacy resource (FR-050).
 
         Returns:
             The de-duplicated reservations from both requests and

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock
@@ -19,6 +20,7 @@ from custom_components.guesty.api.models import (
     ActionResult,
     CachedToken,
     Conversation,
+    FallbackCandidate,
     GuestyAddress,
     GuestyCustomFieldDefinition,
     GuestyCustomFieldResult,
@@ -2055,6 +2057,7 @@ class TestReservationSourceProtocol:
                 past_days: int,
                 future_days: int,
                 statuses: frozenset[str] | None = None,
+                candidates: Mapping[str, FallbackCandidate] | None = None,
             ) -> ReservationFetchResult:
                 """Return an empty fetch result.
 
@@ -2062,6 +2065,7 @@ class TestReservationSourceProtocol:
                     past_days: Past window in days.
                     future_days: Future window in days.
                     statuses: Statuses to request.
+                    candidates: Legacy fallback candidate hints.
 
                 Returns:
                     An empty ReservationFetchResult.

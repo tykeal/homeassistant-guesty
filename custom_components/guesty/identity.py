@@ -39,7 +39,7 @@ from custom_components.guesty.api.reservations_legacy import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Collection, Iterable, Mapping
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
@@ -686,6 +686,8 @@ class ReservationIdentityGuard:
         comparison: IdentityComparison,
         updated: str,
         past_days: int = DEFAULT_PAST_DAYS,
+        fallback_ids: Collection[str] = (),
+        absent_ids: Collection[str] = (),
     ) -> None:
         """Persist the baseline produced by a successful refresh.
 
@@ -710,14 +712,38 @@ class ReservationIdentityGuard:
             updated: ISO timestamp of this refresh.
             past_days: The configured past-day window, which dates
                 the safe retirement policy of T074.
+            fallback_ids: Identifiers this refresh published from
+                the legacy not-found fallback rather than from the
+                configured path. Their codes are recorded apart, in
+                ``fallback_codes``, so that evidence retrieved from
+                a legacy resource is never mistaken for evidence the
+                configured path produced (FR-055).
+            absent_ids: Identifiers the legacy resource confirmed no
+                longer exist. Their candidacy is retired for good,
+                which is what stops the fallback resurrecting a
+                genuinely cancelled reservation (FR-052).
         """
         previous = self._baseline
         retrieved = tuple(reservations)
-        observed = observe_codes(retrieved).mapping
+        from_fallback = frozenset(fallback_ids)
+        absent = frozenset(absent_ids)
+        all_observed = observe_codes(retrieved).mapping
+        observed = {
+            code: reservation_id
+            for code, reservation_id in all_observed.items()
+            if reservation_id not in from_fallback
+        }
+        fallback_observed = {
+            code: reservation_id
+            for code, reservation_id in all_observed.items()
+            if reservation_id in from_fallback
+        }
         hints = _retrieved_hints(retrieved)
         hints.update(published)
         merged_hints = dict(previous.candidates) if previous else {}
         merged_hints.update(hints)
+        for reservation_id in absent:
+            merged_hints.pop(reservation_id, None)
         check_outs = {
             reservation_id: hint.check_out
             for reservation_id, hint in merged_hints.items()
@@ -739,7 +765,7 @@ class ReservationIdentityGuard:
                 check_outs,
                 past_days,
             ),
-            fallback_codes=previous.fallback_codes if previous else None,
+            fallback_codes=_bounded(fallback_observed, check_outs),
             candidates=_bounded_candidates(merged_hints),
         )
         try:
