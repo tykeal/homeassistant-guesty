@@ -132,6 +132,11 @@ def observe_codes(
     meant to catch. A reservation without a confirmation code
     contributes nothing (FR-033).
 
+    The payload is accepted as evidence only when the code is a
+    non-empty string. Neither parser constrains the field, and a
+    number would change type across JSON storage while a list or
+    object is not a key at all.
+
     Two live reservations reporting the same confirmation code are
     recorded as a collision rather than silently collapsed. The
     later row would otherwise overwrite the earlier one and could
@@ -150,13 +155,14 @@ def observe_codes(
     for reservation in reservations:
         if reservation.status in HOLD_STATUSES:
             continue
-        if not reservation.confirmation_code:
+        code = reservation.confirmation_code
+        if not isinstance(code, str) or not code:
             continue
-        previous = mapping.get(reservation.confirmation_code)
+        previous = mapping.get(code)
         if previous is not None and previous != reservation.id:
             collisions.append((previous, reservation.id))
             continue
-        mapping[reservation.confirmation_code] = reservation.id
+        mapping[code] = reservation.id
     return ObservedCodes(mapping=mapping, collisions=tuple(collisions))
 
 
@@ -265,6 +271,8 @@ class IdentityBaseline:
         continuity: Cross-path continuity state.
         updated: ISO timestamp of the last successful refresh.
         codes: Confirmation code to reservation identifier.
+        divergent: Whether the two reservation paths were ever seen
+            to number the same booking differently.
         legacy_codes: Legacy-path evidence retained when the entry
             moved to the v3 path, so one disjoint refresh cannot
             discard the only cross-path evidence there is.
@@ -276,6 +284,7 @@ class IdentityBaseline:
     path: str
     continuity: str = CONTINUITY_UNCONFIRMED
     updated: str = ""
+    divergent: bool = False
     codes: dict[str, str] = field(default_factory=dict)
     legacy_codes: dict[str, str] | None = None
     bootstrap_codes: dict[str, str] | None = None
@@ -298,6 +307,21 @@ class IdentityBaseline:
             or self.bootstrap_codes
             or self.fallback_codes
         )
+
+    def current_ids(self) -> set[str]:
+        """Collect identifiers that carry a code *right now*.
+
+        Retained evidence proves what a code once named, not that
+        the reservation still reports one, so FR-033 is answered by
+        the current refresh plus any reservation the fallback is
+        actively serving — never by history.
+
+        Returns:
+            Identifiers eligible to be written to.
+        """
+        current: set[str] = set(self.codes.values())
+        current.update((self.fallback_codes or {}).values())
+        return current
 
     def known_ids(self) -> set[str]:
         """Collect every reservation identifier the maps carry.
@@ -408,6 +432,7 @@ class IdentityBaseline:
             "path": self.path,
             "continuity": self.continuity,
             "updated": self.updated,
+            "divergent": self.divergent,
             "codes": dict(self.codes),
             "legacy_codes": (
                 dict(self.legacy_codes) if self.legacy_codes is not None else None
@@ -438,6 +463,7 @@ class IdentityBaseline:
             path=str(data.get("path", RESERVATIONS_API_LEGACY)),
             continuity=str(data.get("continuity", CONTINUITY_UNCONFIRMED)),
             updated=str(data.get("updated", "")),
+            divergent=bool(data.get("divergent", False)),
             codes=dict(data.get("codes") or {}),
             legacy_codes=_optional_map(data.get("legacy_codes")),
             bootstrap_codes=_optional_map(data.get("bootstrap_codes")),
@@ -631,12 +657,16 @@ class ReservationIdentityGuard:
         check_outs = {
             reservation_id: hint.check_out for reservation_id, hint in hints.items()
         }
+        divergent = bool(comparison.cross_path_conflicts) or bool(
+            previous and previous.divergent,
+        )
         baseline = IdentityBaseline(
             path=path,
-            continuity=_next_continuity(previous, path, comparison),
+            continuity=_next_continuity(previous, path, comparison, divergent),
             updated=updated,
+            divergent=divergent,
             codes=_bounded(observe_codes(retrieved).mapping, check_outs),
-            legacy_codes=_retained_legacy(previous, path),
+            legacy_codes=_retained_legacy(previous, path, check_outs),
             bootstrap_codes=previous.bootstrap_codes if previous else None,
             fallback_codes=previous.fallback_codes if previous else None,
             candidates=_bounded_candidates(hints, previous),
@@ -662,7 +692,8 @@ class ReservationIdentityGuard:
         explain itself: a usable baseline must exist and must have
         reached storage, its continuity must not be unconfirmed, the
         last refresh must not have aborted as ambiguous, and the
-        target must carry a known confirmation code.
+        target must carry a confirmation code *now* — historical
+        evidence that it once did is not enough (FR-033).
 
         Args:
             reservation_id: The reservation a write would target.
@@ -680,7 +711,7 @@ class ReservationIdentityGuard:
             return REFUSAL_UNCONFIRMED
         if self._ambiguous:
             return REFUSAL_AMBIGUOUS
-        if reservation_id not in baseline.known_ids():
+        if reservation_id not in baseline.current_ids():
             return REFUSAL_NO_CODE.format(reservation_id=reservation_id)
         return None
 
@@ -689,6 +720,7 @@ def _next_continuity(
     previous: IdentityBaseline | None,
     path: str,
     comparison: IdentityComparison,
+    divergent: bool = False,
 ) -> str:
     """Decide the continuity state a successful refresh leaves.
 
@@ -705,17 +737,22 @@ def _next_continuity(
     Evidence from the other path that positively disagrees demotes
     continuity on either path: the two paths then number the same
     booking differently, which is the one thing that must never be
-    written through.
+    written through. That verdict is sticky, because the next
+    refresh replaces the evidence that produced it and would
+    otherwise re-authorize writes while the disagreement stands.
+    Only re-establishing the baseline, or the reconciliation the
+    bootstrap sweep performs, can clear it.
 
     Args:
         previous: The baseline this refresh replaces, if any.
         path: Reservation path that produced this refresh.
         comparison: The comparison this refresh ran.
+        divergent: Whether a path disagreement was ever recorded.
 
     Returns:
         The continuity state to persist.
     """
-    if comparison.cross_path_conflicts:
+    if divergent or comparison.cross_path_conflicts:
         return CONTINUITY_UNCONFIRMED
     if path == RESERVATIONS_API_LEGACY:
         return CONTINUITY_NOT_APPLICABLE
@@ -729,12 +766,20 @@ def _next_continuity(
 def _retained_legacy(
     previous: IdentityBaseline | None,
     path: str,
+    check_outs: Mapping[str, str],
 ) -> dict[str, str] | None:
     """Retain legacy mappings when the entry leaves that path.
+
+    Repeated transitions would otherwise accumulate one full window
+    of legacy evidence each time, so the merged map takes the same
+    bound as every other, evicting the earliest check-out it can
+    date. Dates come from the hints this refresh is about to store,
+    which carry the retained hints of earlier refreshes.
 
     Args:
         previous: The baseline this refresh replaces, if any.
         path: Reservation path that produced this refresh.
+        check_outs: ISO check-out per reservation identifier.
 
     Returns:
         The retained legacy evidence, or None when there is none.
@@ -744,7 +789,9 @@ def _retained_legacy(
     retained = dict(previous.legacy_codes or {})
     if previous.path == RESERVATIONS_API_LEGACY and path != RESERVATIONS_API_LEGACY:
         retained.update(previous.codes)
-    return retained or None
+    if not retained:
+        return None
+    return _bounded(retained, check_outs)
 
 
 def _retrieved_hints(

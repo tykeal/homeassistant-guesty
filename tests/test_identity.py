@@ -49,6 +49,7 @@ from custom_components.guesty.identity import (
     ReservationIdentityGuard,
     _bounded,
     _next_continuity,
+    _retained_legacy,
     observe_codes,
     storage_key,
 )
@@ -941,3 +942,115 @@ class TestIdentityReviewHardening:
         reloaded = ReservationIdentityGuard(hass, entry.entry_id)
         await reloaded.async_load()
         assert reloaded.baseline is None
+
+    def test_non_string_confirmation_codes_are_not_evidence(self) -> None:
+        """Neither parser constrains the field's type."""
+        bad = _reservation("res-1")
+        object.__setattr__(bad, "confirmation_code", ["CONF-AAA"])
+        numeric = _reservation("res-2")
+        object.__setattr__(numeric, "confirmation_code", 12345)
+
+        observed = observe_codes([bad, numeric, _reservation("res-3", CODE_A)])
+
+        assert observed.mapping == {CODE_A: "res-3"}
+
+    async def test_codeless_target_is_refused_despite_history(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """FR-033 asks what the target reports now, not before."""
+        guard = ReservationIdentityGuard(hass, "entry-codeless")
+        await guard.async_load()
+        await guard.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_V3,
+                continuity=CONTINUITY_VERIFIED,
+                codes={CODE_B: "res-2"},
+                legacy_codes={CODE_A: "res-1"},
+            ),
+        )
+
+        assert guard.write_refusal("res-2") is None
+        assert guard.write_refusal("res-1") is not None
+
+    async def test_divergence_survives_later_refreshes(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Replacing the evidence must not re-authorize writes."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        v3_client = _api_client(
+            make_fetch_result([_reservation("v3-1", CODE_A)]),
+        )
+        await _make_coordinator(hass, entry, v3_client).async_refresh()
+
+        hass.config_entries.async_update_entry(
+            entry,
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
+        legacy_client = _api_client(
+            make_fetch_result([_reservation("legacy-1", CODE_A)]),
+            make_fetch_result([_reservation("legacy-1", CODE_A)]),
+            reservations_api=RESERVATIONS_API_LEGACY,
+        )
+        rolled_back = _make_coordinator(hass, entry, legacy_client)
+        await rolled_back.async_refresh()
+        await rolled_back.async_refresh()
+
+        baseline = rolled_back.identity.baseline
+        assert baseline is not None
+        assert baseline.divergent
+        assert baseline.continuity == CONTINUITY_UNCONFIRMED
+        assert rolled_back.identity.write_refusal("legacy-1") is not None
+
+    async def test_divergence_survives_a_reload(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """The verdict must outlive the process that reached it."""
+        guard = ReservationIdentityGuard(hass, "entry-divergent")
+        await guard.async_load()
+        await guard.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_LEGACY,
+                continuity=CONTINUITY_UNCONFIRMED,
+                divergent=True,
+                codes={CODE_A: "res-1"},
+            ),
+        )
+
+        reloaded = ReservationIdentityGuard(hass, "entry-divergent")
+        await reloaded.async_load()
+        await reloaded.async_record_refresh(
+            path=RESERVATIONS_API_LEGACY,
+            reservations=[_reservation("res-1", CODE_A)],
+            published={},
+            comparison=IdentityComparison(),
+            updated="2026-01-01T00:00:00+00:00",
+        )
+
+        baseline = reloaded.baseline
+        assert baseline is not None
+        assert baseline.divergent
+        assert baseline.continuity == CONTINUITY_UNCONFIRMED
+
+    def test_retained_legacy_evidence_is_bounded(self) -> None:
+        """Repeated transitions must not grow the map forever."""
+        previous = IdentityBaseline(
+            path=RESERVATIONS_API_LEGACY,
+            codes={
+                f"CODE-{index}": f"res-{index}"
+                for index in range(MAX_BASELINE_CODES + 10)
+            },
+        )
+        check_outs = {
+            f"res-{index}": _rel(index).isoformat()
+            for index in range(MAX_BASELINE_CODES + 10)
+        }
+
+        retained = _retained_legacy(previous, RESERVATIONS_API_V3, check_outs)
+
+        assert retained is not None
+        assert len(retained) == MAX_BASELINE_CODES
+        assert "CODE-0" not in retained
