@@ -1949,6 +1949,87 @@ class TestFallbackCodeIsolation:
         assert comparison.is_ambiguous
         assert comparison.conflicts
 
+    async def test_fallback_match_cannot_confirm_continuity(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A legacy-sourced observation is not v3 evidence."""
+        guard = ReservationIdentityGuard(hass, "entry-fb-cross-path")
+        await guard.async_load()
+        await guard.async_record_refresh(
+            path=RESERVATIONS_API_LEGACY,
+            reservations=[_reservation("res-1", CODE_A)],
+            published={},
+            comparison=IdentityComparison(),
+            updated="2026-01-01T00:00:00+00:00",
+        )
+
+        comparison = guard.compare(
+            [_reservation("res-1", CODE_A)],
+            RESERVATIONS_API_V3,
+            fallback_ids=("res-1",),
+        )
+        assert comparison.cross_path_matched == 0
+        assert not comparison.is_ambiguous
+
+        await guard.async_record_refresh(
+            path=RESERVATIONS_API_V3,
+            reservations=[_reservation("res-1", CODE_A)],
+            published={},
+            comparison=comparison,
+            updated="2026-01-02T00:00:00+00:00",
+            fallback_ids=("res-1",),
+        )
+
+        assert guard.baseline is not None
+        assert guard.baseline.continuity != CONTINUITY_VERIFIED
+
+    async def test_v3_match_still_confirms_continuity(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Excluding fallback evidence keeps genuine matches."""
+        guard = ReservationIdentityGuard(hass, "entry-fb-cross-ok")
+        await guard.async_load()
+        await guard.async_record_refresh(
+            path=RESERVATIONS_API_LEGACY,
+            reservations=[_reservation("res-1", CODE_A)],
+            published={},
+            comparison=IdentityComparison(),
+            updated="2026-01-01T00:00:00+00:00",
+        )
+
+        comparison = guard.compare(
+            [_reservation("res-1", CODE_A)],
+            RESERVATIONS_API_V3,
+        )
+
+        assert comparison.cross_path_matched == 1
+
+    async def test_fallback_conflict_is_still_detected(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Excluding confirmation never hides a disagreement."""
+        guard = ReservationIdentityGuard(hass, "entry-fb-cross-conflict")
+        await guard.async_load()
+        await guard.async_record_refresh(
+            path=RESERVATIONS_API_LEGACY,
+            reservations=[_reservation("res-1", CODE_A)],
+            published={},
+            comparison=IdentityComparison(),
+            updated="2026-01-01T00:00:00+00:00",
+        )
+
+        comparison = guard.compare(
+            [_reservation("res-9", CODE_A)],
+            RESERVATIONS_API_V3,
+            fallback_ids=("res-9",),
+        )
+
+        assert comparison.cross_path_conflicts
+        assert comparison.cross_path_matched == 0
+
     async def test_confirmed_absence_retires_candidacy(
         self,
         hass: HomeAssistant,

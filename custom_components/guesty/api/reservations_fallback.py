@@ -101,6 +101,25 @@ _RETIREMENT_MARKERS: tuple[str, ...] = (
     "has been removed",
 )
 
+# Substrings that make a 404 an answer about the HTTP route rather
+# than about a reservation. A framework's own "Cannot GET /v1/..."
+# names both a reservation path and "not found" while establishing
+# nothing whatsoever about the booking, so it is read as
+# retirement.
+_ROUTE_MARKERS: tuple[str, ...] = (
+    "cannot get",
+    "cannot post",
+    "cannot put",
+    "cannot patch",
+    "cannot delete",
+    "endpoint",
+    "route",
+    "://",
+    "/v1/",
+    "/v2/",
+    "/v3/",
+)
+
 # Body fields Guesty puts a human-readable error message in.
 _MESSAGE_FIELDS: tuple[str, ...] = (
     "message",
@@ -266,6 +285,7 @@ class ReservationFallbackSource:
                         succeeded=succeeded,
                         failed=failed,
                     ),
+                    absent=tuple(absent),
                 )
             if verdict == _ABSENT:
                 absent.append(reservation_id)
@@ -625,41 +645,48 @@ def _classify(
     if response.status_code != 404:
         return _FAILED
 
-    text = _message_of(response)
-    if text is None:
+    parts = _message_parts(response)
+    if not parts:
         return _RETIRED
-    lowered = text.lower()
-    if any(marker in lowered for marker in _RETIREMENT_MARKERS):
+    joined = " ".join(parts).lower()
+    if any(marker in joined for marker in _RETIREMENT_MARKERS):
         return _RETIRED
-    names_reservation = "reservation" in lowered or reservation_id.lower() in lowered
-    if names_reservation and any(marker in lowered for marker in _ABSENCE_MARKERS):
-        return _ABSENT
+    if any(marker in joined for marker in _ROUTE_MARKERS):
+        return _RETIRED
+    lowered_id = reservation_id.lower()
+    for part in parts:
+        lowered = part.lower()
+        names_reservation = "reservation" in lowered or lowered_id in lowered
+        if names_reservation and any(marker in lowered for marker in _ABSENCE_MARKERS):
+            return _ABSENT
     return _RETIRED
 
 
-def _message_of(response: httpx.Response) -> str | None:
-    """Extract the human-readable message of an error body.
+def _message_parts(response: httpx.Response) -> tuple[str, ...]:
+    """Extract the human-readable messages of an error body.
+
+    The fields are kept apart rather than joined: a generic
+    ``"error": "Not Found"`` beside an unrelated ``message`` would
+    otherwise lend its absence wording to text that never made a
+    statement about the reservation at all.
 
     Args:
         response: The HTTP response to read.
 
     Returns:
-        The joined message text, or None when there is none.
+        The message strings the body carried, in field order.
     """
     try:
         body: Any = response.json()
     except ValueError:
-        return None
+        return ()
     if not isinstance(body, dict):
-        return None
-    parts = [
+        return ()
+    return tuple(
         value
         for key in _MESSAGE_FIELDS
         if isinstance(value := body.get(key), str) and value
-    ]
-    if not parts:
-        return None
-    return " ".join(parts)
+    )
 
 
 def _parse(
@@ -694,4 +721,17 @@ def _parse(
             reservation_id,
         )
         return None
+    for required in ("status", "listingId"):
+        if not isinstance(body.get(required), str):
+            # ``from_api_dict`` only tests these for truthiness, so a
+            # list or a dict would reach status filtering and listing
+            # attribution and raise there, aborting the whole refresh
+            # over one malformed document (FR-054).
+            _LOGGER.warning(
+                "Legacy fallback answer for reservation %s carries "
+                "a non-textual %s; ignoring it",
+                reservation_id,
+                required,
+            )
+            return None
     return GuestyReservation.from_api_dict(body)

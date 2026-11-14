@@ -420,6 +420,7 @@ class IdentityBaseline:
         self,
         observed: Mapping[str, str],
         path: str,
+        fallback_ids: Collection[str] = (),
     ) -> IdentityComparison:
         """Compare an observed code map against every stored map.
 
@@ -436,6 +437,13 @@ class IdentityBaseline:
         Args:
             observed: This refresh's code to identifier mapping.
             path: Reservation path that produced the observation.
+            fallback_ids: Identifiers this refresh observed through
+                the legacy not-found fallback. They are compared
+                like any other, so a disagreement is still caught,
+                but they can never *confirm* continuity: the
+                observation itself came from the legacy resource,
+                so agreeing with legacy-sourced evidence says
+                nothing about v3 (FR-055).
 
         Returns:
             The comparison outcome.
@@ -445,6 +453,7 @@ class IdentityBaseline:
         conflicts: list[IdentityConflict] = []
         cross_path_conflicts: list[IdentityConflict] = []
         compared = 0
+        from_fallback = frozenset(fallback_ids)
 
         for source, mapping, confirms, soft in self._maps(path):
             for code, known_id in mapping.items():
@@ -454,7 +463,7 @@ class IdentityBaseline:
                 compared += 1
                 if observed_id == known_id:
                     matched_ids.add(known_id)
-                    if confirms:
+                    if confirms and observed_id not in from_fallback:
                         cross_path_ids.add(known_id)
                     continue
                 conflict = IdentityConflict(
@@ -640,6 +649,7 @@ class ReservationIdentityGuard:
         self,
         reservations: Iterable[GuestyReservation],
         path: str,
+        fallback_ids: Collection[str] = (),
     ) -> IdentityComparison:
         """Compare a refresh against the baseline, free of requests.
 
@@ -650,6 +660,9 @@ class ReservationIdentityGuard:
         Args:
             reservations: Reservations the refresh retrieved.
             path: Reservation path that produced the refresh.
+            fallback_ids: Identifiers this refresh published from
+                the legacy not-found fallback, which may not confirm
+                continuity (FR-055).
 
         Returns:
             The comparison outcome.
@@ -665,7 +678,11 @@ class ReservationIdentityGuard:
         )
         if self._baseline is None:
             return IdentityComparison(conflicts=collisions)
-        comparison = self._baseline.compare(observed.mapping, path)
+        comparison = self._baseline.compare(
+            observed.mapping,
+            path,
+            fallback_ids,
+        )
         if not collisions:
             return comparison
         return replace(

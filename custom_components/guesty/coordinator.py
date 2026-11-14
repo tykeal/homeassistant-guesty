@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -288,7 +288,10 @@ class ReservationsCoordinator(
         self.last_fallback_counters = fetch_result.fallback
         counters = _RefreshCounters()
 
-        comparison = await self._check_identity(reservations)
+        comparison = await self._check_identity(
+            reservations,
+            self.fallback_sourced_ids,
+        )
         counters.identity_matched = comparison.matched
 
         # Feature 007 decides tracking on the listing side (FR-014).
@@ -404,6 +407,7 @@ class ReservationsCoordinator(
     async def _check_identity(
         self,
         reservations: tuple[GuestyReservation, ...],
+        fallback_ids: Collection[str] = (),
     ) -> IdentityComparison:
         """Compare a fetched refresh against the identity baseline.
 
@@ -417,6 +421,10 @@ class ReservationsCoordinator(
 
         Args:
             reservations: Reservations the refresh retrieved.
+            fallback_ids: Identifiers this refresh published from
+                the legacy not-found fallback, which are compared
+                for conflicts but may not confirm continuity
+                (FR-055).
 
         Returns:
             The comparison outcome of a non-ambiguous refresh.
@@ -430,6 +438,7 @@ class ReservationsCoordinator(
         comparison = self.identity.compare(
             reservations,
             self.reservations_path,
+            fallback_ids,
         )
         if comparison.is_ambiguous:
             self.identity.mark_ambiguous()

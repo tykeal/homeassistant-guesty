@@ -691,6 +691,41 @@ class TestFailureModes:
         assert outcome.sourced == ("res-1",)
         assert outcome.served == ()
 
+    @pytest.mark.parametrize(
+        "malformed",
+        [
+            {"status": ["confirmed"]},
+            {"listingId": {"_id": "listing-1"}},
+        ],
+    )
+    @respx.mock
+    async def test_malformed_document_degrades_to_a_failed_lookup(
+        self,
+        malformed: dict[str, Any],
+    ) -> None:
+        """A non-string required field never aborts the refresh."""
+        _mock_token()
+        respx.get(by_id_url("res-1")).mock(
+            return_value=Response(
+                200,
+                json=_legacy_document("res-1", **malformed),
+            ),
+        )
+        v3 = GuestyReservation.from_v3_api_dict(
+            _v3_in_window("res-1"),
+        )
+        assert v3 is not None
+        source = ReservationFallbackSource(_make_client())
+        candidates = {"res-1": _candidate()}
+
+        await _resolve(source, retrieved=(v3,), candidates=candidates)
+        outcome = await _resolve(source, candidates=candidates)
+
+        assert outcome.counters.failed == 1
+        assert outcome.counters.succeeded == 0
+        assert [res.id for res in outcome.reservations] == ["res-1"]
+        assert outcome.served == ()
+
     @respx.mock
     async def test_timeout_degrades_only_that_reservation(
         self,
@@ -850,6 +885,62 @@ class TestRetirement:
         assert source.disabled
         assert outcome.absent == ()
         assert outcome.counters.confirmed_absent == 0
+
+    @respx.mock
+    async def test_route_level_not_found_is_treated_as_retirement(
+        self,
+    ) -> None:
+        """A missing route never retires a reservation."""
+        _mock_token()
+        respx.get(by_id_url("res-1")).mock(
+            return_value=Response(
+                404,
+                json={
+                    "statusCode": 404,
+                    "error": "Not Found",
+                    "message": "Cannot GET /v1/reservations/res-1",
+                },
+            ),
+        )
+        source = ReservationFallbackSource(_make_client())
+
+        outcome = await _resolve(
+            source,
+            candidates={"res-1": _candidate()},
+        )
+
+        assert source.disabled
+        assert outcome.absent == ()
+        assert outcome.counters.confirmed_absent == 0
+
+    @respx.mock
+    async def test_retirement_still_reports_earlier_absences(
+        self,
+    ) -> None:
+        """Absences confirmed before retirement are not lost."""
+        _mock_token()
+        respx.get(by_id_url("res-1")).mock(
+            return_value=Response(
+                404,
+                json=make_legacy_not_found_body("res-1"),
+            ),
+        )
+        respx.get(by_id_url("res-2")).mock(
+            return_value=Response(410, json=make_legacy_retired_body()),
+        )
+        source = ReservationFallbackSource(_make_client())
+
+        outcome = await _resolve(
+            source,
+            candidates={
+                "res-1": _candidate(check_out_days=2),
+                "res-2": _candidate(check_out_days=3),
+            },
+        )
+
+        assert source.disabled
+        assert outcome.absent == ("res-1",)
+        assert outcome.counters.confirmed_absent == 1
 
 
 class TestPrivacyAndObservability:
