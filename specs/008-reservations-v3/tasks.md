@@ -711,7 +711,7 @@ real account, the user sets `reservations_api=legacy` and reloads.
   T066a runs first creates the module and the other extends it;
   neither depends on the other. Deferred here from T057 because the
   abort path does not exist until T070 (FR-021, NFR-009).
-- [ ] T067 [US5] Write bootstrap-sweep tests in
+- [x] T067 [US5] Write bootstrap-sweep tests in
   `tests/test_identity.py`: a fresh install (no baseline, no
   reservation entities) is `not_applicable` and permits writes; an
   upgrade (no baseline, reservation entities present) performs one
@@ -754,7 +754,7 @@ real account, the user sets `reservations_api=legacy` and reloads.
   handler in `custom_components/guesty/__init__.py`; listing writes
   and the HTTP resource itself are unchanged (FR-030, FR-031c).
   Depends on T071.
-- [ ] T073 [US5] Implement the one-time legacy
+- [x] T073 [US5] Implement the one-time legacy
   bootstrap sweep for an upgrading entry in
   `custom_components/guesty/identity.py` and
   `custom_components/guesty/__init__.py`: one legacy page sequence,
@@ -764,7 +764,7 @@ real account, the user sets `reservations_api=legacy` and reloads.
   least one shared confirmation code and no conflict. This is
   permitted legacy call 1 of FR-001 and is specified by FR-031d.
   Depends on T068, T067.
-- [ ] T074 [US5] Implement bootstrap retention
+- [x] T074 [US5] Implement bootstrap retention
   and **individual** retirement in
   `custom_components/guesty/identity.py`: a successful refresh
   replaces `codes` but never `bootstrap_codes`; a covered,
@@ -772,7 +772,7 @@ real account, the user sets `reservations_api=legacy` and reloads.
   retained; reaching `verified` does not clear the remainder; and an
   unchecked entry is retired only under the safe policy that its
   reservation checked out more than `past_days` ago. Depends on T073.
-- [ ] T075 [US5] Surface an "identity continuity unconfirmed" notice
+- [x] T075 [US5] Surface an "identity continuity unconfirmed" notice
   through the mechanism decided in T003 — a non-fixable repairs issue
   plus a warning log — when the bootstrap is unavailable or
   uninformative, explaining that writes are refused and how to
