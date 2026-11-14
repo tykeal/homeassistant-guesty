@@ -310,10 +310,22 @@ class ReservationsCoordinator(
         self.last_fallback_counters = fetch_result.fallback
         counters = _RefreshCounters(received=len(reservations))
 
-        comparison = await self._check_identity(
-            reservations,
-            self.fallback_sourced_ids,
-        )
+        try:
+            comparison = await self._check_identity(
+                reservations,
+                self.fallback_sourced_ids,
+            )
+        except UpdateFailed:
+            # An aborted refresh is precisely the one the download
+            # has to explain, so its counters are published before
+            # the abort propagates. Home Assistant retains the last
+            # known good entity data regardless (FR-042, FR-032).
+            self._publish_refresh_diagnostics(
+                fetch_result,
+                counters,
+                GuestLookupResult(),
+            )
+            raise
         counters.identity_matched = comparison.matched
 
         # Feature 007 decides tracking on the listing side (FR-014).

@@ -38,6 +38,10 @@ from custom_components.guesty.const import (
 from custom_components.guesty.diagnostics import (
     async_get_config_entry_diagnostics,
 )
+from custom_components.guesty.identity import (
+    IdentityComparison,
+    IdentityConflict,
+)
 from tests.conftest import (
     FAKE_CLIENT_ID,
     FAKE_CLIENT_SECRET,
@@ -329,6 +333,64 @@ class TestRefreshDiagnostics:
         assert refresh["guest_lookups"] == 2
         assert refresh["guest_failures"] == 1
         assert refresh["identity_ambiguous"] is False
+
+    async def test_an_aborted_refresh_is_what_gets_reported(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """An ambiguous refresh is exactly what needs explaining."""
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data={
+                CONF_CLIENT_ID: FAKE_CLIENT_ID,
+                CONF_CLIENT_SECRET: FAKE_CLIENT_SECRET,
+            },
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_V3},
+            unique_id=FAKE_CLIENT_ID,
+        )
+        entry.add_to_hass(hass)
+        with stub_guesty_network(listings=[sample_listing]):
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+        assert entry.state is ConfigEntryState.LOADED
+
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        with (
+            patch(
+                _PATCH_RESERVATIONS,
+                new_callable=AsyncMock,
+                return_value=make_fetch_result(
+                    [
+                        self._reservation("res-a", "listing-001", days_out=1),
+                        self._reservation("res-b", "listing-001", days_out=2),
+                    ],
+                    pages=3,
+                ),
+            ),
+            patch.object(
+                coordinator.identity,
+                "compare",
+                return_value=IdentityComparison(
+                    conflicts=(
+                        IdentityConflict(
+                            known_id="res-old",
+                            observed_id="res-new",
+                            source="codes",
+                        ),
+                    ),
+                ),
+            ),
+        ):
+            await coordinator.async_refresh()
+
+        refresh = (await async_get_config_entry_diagnostics(hass, entry))[
+            "reservations"
+        ]["refresh"]
+        assert refresh["identity_ambiguous"] is True
+        assert refresh["pages"] == 3
+        assert refresh["received"] == 2
+        assert refresh["attributed"] == 0
 
     async def test_the_counters_carry_no_personal_data(
         self,

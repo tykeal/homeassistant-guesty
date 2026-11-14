@@ -4733,6 +4733,39 @@ class TestFinancialDeprecationNotice:
         assert self._issue(hass, entry) is not None
         assert "total_paid" not in caplog.text
 
+    async def test_a_round_trip_does_not_warn_twice(
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Rolling back and returning is still one warning."""
+        entry = _make_entry(options={CONF_RESERVATIONS_API: RESERVATIONS_API_V3})
+        entry.add_to_hass(hass)
+        _register_financial_entities(hass, entry)
+        await self._setup(hass, entry)
+        caplog.clear()
+
+        with caplog.at_level(
+            logging.WARNING,
+            logger="custom_components.guesty",
+        ):
+            for path in (RESERVATIONS_API_LEGACY, RESERVATIONS_API_V3):
+                with stub_guesty_network():
+                    hass.config_entries.async_update_entry(
+                        entry,
+                        options={
+                            **entry.options,
+                            CONF_RESERVATIONS_API: path,
+                        },
+                    )
+                    await hass.async_block_till_done()
+                    await hass.config_entries.async_reload(entry.entry_id)
+                    await hass.async_block_till_done()
+                assert entry.state is ConfigEntryState.LOADED
+
+        assert self._issue(hass, entry) is not None
+        assert "total_paid" not in caplog.text
+
     async def test_rolling_back_withdraws_the_notice(
         self,
         hass: HomeAssistant,

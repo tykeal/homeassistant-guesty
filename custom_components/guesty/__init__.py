@@ -245,6 +245,14 @@ if TYPE_CHECKING:
     _check: TokenStorage = HATokenStorage.__new__(HATokenStorage)
 
 
+# Entries already warned about the deprecation during this Home
+# Assistant run. It is kept outside ``hass.data[DOMAIN]``, which is
+# torn down with the entry, because the notice is once per entry per
+# *run*: an entry rolled back to legacy and returned to v3 has
+# already been told, even though withdrawing the repair in between
+# discarded the repair-based evidence of it.
+DATA_FINANCIAL_WARNED: Final[str] = f"{DOMAIN}_financial_warned"
+
 FINANCIAL_SENSOR_KEYS: Final[tuple[str, ...]] = (
     "reservation_total",
     "reservation_balance",
@@ -276,6 +284,12 @@ def async_notify_financial_deprecation(
     a fresh v3 install has lost nothing and does not need a repair
     about it.
 
+    The log line is emitted at most once per entry per Home
+    Assistant run, tracked in run-scoped memory rather than by the
+    presence of the repair. Rolling back to legacy withdraws the
+    repair, so reading the repair back would warn a second time on
+    a v3 to legacy to v3 round trip inside one run.
+
     Args:
         hass: Home Assistant instance.
         entry: The config entry being set up.
@@ -292,12 +306,9 @@ def async_notify_financial_deprecation(
         ir.async_delete_issue(hass, DOMAIN, issue_id)
         return
 
-    # A restored non-persistent issue is inactive, so this is
-    # "already reported during this Home Assistant run" rather than
-    # "ever reported", which is what keeps a reload quiet without
-    # silencing the notice forever.
-    issue = ir.async_get(hass).async_get_issue(DOMAIN, issue_id)
-    reported = issue is not None and issue.active
+    warned: set[str] = hass.data.setdefault(DATA_FINANCIAL_WARNED, set())
+    reported = entry.entry_id in warned
+    warned.add(entry.entry_id)
     ir.async_create_issue(
         hass,
         DOMAIN,
@@ -1183,4 +1194,7 @@ async def async_remove_entry(
         DOMAIN,
         f"{ISSUE_FINANCIAL_DEPRECATED}_{entry.entry_id}",
     )
+    warned: set[str] | None = hass.data.get(DATA_FINANCIAL_WARNED)
+    if warned is not None:
+        warned.discard(entry.entry_id)
     await ReservationIdentityGuard(hass, entry.entry_id).async_remove()
