@@ -438,13 +438,22 @@ class GuestyOptionsFlowHandler(OptionsFlow):
             Config flow result (form or entry creation).
         """
         if user_input is not None:
-            return self.async_create_entry(
+            result = self.async_create_entry(
                 title="",
                 data={
                     **self._config_entry.options,
                     CONF_RESERVATIONS_API: user_input[CONF_RESERVATIONS_API],
                 },
             )
+            # A failed setup never registered the update listener,
+            # so nothing else would act on the new option until a
+            # retry or a restart. Recovery has to be immediate.
+            self.hass.async_create_task(
+                self.hass.config_entries.async_reload(
+                    self._config_entry.entry_id,
+                ),
+            )
+            return result
 
         return self.async_show_form(
             step_id="rollback",

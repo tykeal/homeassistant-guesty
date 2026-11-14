@@ -2148,3 +2148,28 @@ class TestRollbackWithoutASuccessfulSetup:
         assert entry.options[CONF_SELECTED_LISTINGS] == ["listing-1"]
         assert entry.options[CONF_TAG_FILTER] == ["beach"]
         assert entry.options[CONF_PAST_DAYS] == 30
+
+    async def test_submitting_reloads_the_entry(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Recovery does not wait for a retry or a restart."""
+        entry = self._entry(hass)
+
+        with patch(
+            "homeassistant.config_entries.ConfigEntries.async_reload",
+            new_callable=AsyncMock,
+        ) as mock_reload:
+            result = await hass.config_entries.options.async_init(
+                entry.entry_id,
+            )
+            await hass.config_entries.options.async_configure(
+                result["flow_id"],
+                user_input={
+                    CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY,
+                },
+            )
+            await hass.async_block_till_done()
+
+        assert entry.options[CONF_RESERVATIONS_API] == RESERVATIONS_API_LEGACY
+        mock_reload.assert_awaited_once_with(entry.entry_id)
