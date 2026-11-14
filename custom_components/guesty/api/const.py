@@ -204,6 +204,36 @@ RESERVATIONS_API_LEGACY: str = "legacy"
 # Date Guesty retires the legacy Open API reservation resources.
 LEGACY_RESERVATIONS_RETIREMENT_DATE: str = "2027-03-01"
 
+# ── Reservation write routing (Feature 008, FR-058 to FR-063) ───────
+
+# Resource generation one reservation write is sent to. These are
+# the *route* of a single write, which is not the same decision as
+# the configured reservation path: a write is routed to legacy only
+# for a reservation the not-found fallback is currently serving.
+WRITE_ROUTE_V3: str = "v3"
+WRITE_ROUTE_LEGACY: str = "legacy"
+
+# The three write operations FR-059 allows to route to legacy. No
+# other operation may be routed, and the list is exhaustive.
+LEGACY_WRITE_NOTE: str = "note"
+LEGACY_WRITE_STATUS: str = "status"
+LEGACY_WRITE_CUSTOM_FIELD: str = "custom_field"
+LEGACY_WRITE_OPERATIONS: tuple[str, ...] = (
+    LEGACY_WRITE_NOTE,
+    LEGACY_WRITE_STATUS,
+    LEGACY_WRITE_CUSTOM_FIELD,
+)
+
+# Outcomes a legacy-routed write is counted under (FR-062).
+LEGACY_WRITE_SUCCEEDED: str = "succeeded"
+LEGACY_WRITE_FAILED: str = "failed"
+LEGACY_WRITE_REFUSED: str = "refused"
+LEGACY_WRITE_OUTCOMES: tuple[str, ...] = (
+    LEGACY_WRITE_SUCCEEDED,
+    LEGACY_WRITE_FAILED,
+    LEGACY_WRITE_REFUSED,
+)
+
 # ── Reservations v3 (Feature 008) ─────────────────────────────
 
 # Reservations v3 search endpoint path.

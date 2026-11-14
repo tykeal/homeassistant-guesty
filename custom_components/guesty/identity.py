@@ -707,7 +707,7 @@ class ReservationIdentityGuard:
         past_days: int = DEFAULT_PAST_DAYS,
         fallback_ids: Collection[str] = (),
         absent_ids: Collection[str] = (),
-    ) -> None:
+    ) -> bool:
         """Persist the baseline produced by a successful refresh.
 
         ``codes`` is replaced wholesale while the retained maps are
@@ -741,6 +741,11 @@ class ReservationIdentityGuard:
                 longer exist. Their candidacy is retired for good,
                 which is what stops the fallback resurrecting a
                 genuinely cancelled reservation (FR-052).
+
+        Returns:
+            True when the baseline reached storage. A False answer
+            means ``absent_ids`` has not been durably retired and
+            must be reported again by the next refresh.
         """
         previous = self._baseline
         retrieved = tuple(reservations)
@@ -797,9 +802,10 @@ class ReservationIdentityGuard:
                 "stored",
                 type(exc).__name__,
             )
-            return
+            return False
         self._unstored = False
         self._ambiguous = False
+        return True
 
     async def async_record_fresh_install(self, path: str) -> None:
         """Settle a fresh install's continuity without a request.

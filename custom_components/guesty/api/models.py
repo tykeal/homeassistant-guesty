@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, replace
 from datetime import UTC, date, datetime, timedelta
 from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
@@ -1095,6 +1095,80 @@ class FallbackCounters:
     confirmed_absent: int = 0
     failed: int = 0
     deferred: int = 0
+
+
+@dataclass(frozen=True)
+class LegacyWriteCounters:
+    """Session counters for legacy-routed writes (FR-062).
+
+    Counted per operation and outcome, for the lifetime of the
+    config entry rather than for one refresh, because a routed
+    write is an exception that an operator should be able to see
+    the whole of. Counts only: no identifier and no written value
+    ever appears here (FR-021, NFR-009).
+
+    Attributes:
+        note_succeeded: Routed note writes the legacy resource
+            accepted.
+        note_failed: Routed note writes it rejected or that failed
+            in transit.
+        note_refused: Note writes refused before anything was sent.
+        status_succeeded: Routed status writes accepted.
+        status_failed: Routed status writes rejected or failed.
+        status_refused: Status writes refused before sending.
+        custom_field_succeeded: Routed custom field writes
+            accepted.
+        custom_field_failed: Routed custom field writes rejected or
+            failed.
+        custom_field_refused: Custom field writes refused before
+            sending.
+    """
+
+    note_succeeded: int = 0
+    note_failed: int = 0
+    note_refused: int = 0
+    status_succeeded: int = 0
+    status_failed: int = 0
+    status_refused: int = 0
+    custom_field_succeeded: int = 0
+    custom_field_failed: int = 0
+    custom_field_refused: int = 0
+
+    @property
+    def total(self) -> int:
+        """Return every counted legacy write outcome.
+
+        Returns:
+            The sum of all operation and outcome counters.
+        """
+        return sum(getattr(self, field.name) for field in fields(self))
+
+    def recorded(self, operation: str, outcome: str) -> LegacyWriteCounters:
+        """Return these counters with one outcome added.
+
+        Args:
+            operation: One of ``LEGACY_WRITE_OPERATIONS``.
+            outcome: One of ``LEGACY_WRITE_OUTCOMES``.
+
+        Returns:
+            A new counters value with the matching counter raised
+            by one, or this value unchanged when the pair names no
+            counter.
+        """
+        name = f"{operation}_{outcome}"
+        if not any(field.name == name for field in fields(self)):
+            return self
+        return replace(self, **{name: getattr(self, name) + 1})
+
+    def as_dict(self) -> dict[str, int]:
+        """Return the counters as a diagnostics mapping.
+
+        Returns:
+            Every counter by name, plus the total.
+        """
+        counts = {field.name: getattr(self, field.name) for field in fields(self)}
+        counts["total"] = self.total
+        return counts
 
 
 @dataclass(frozen=True)

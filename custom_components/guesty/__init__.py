@@ -29,8 +29,7 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.httpx_client import get_async_client
 
 from custom_components.guesty.actions import (
-    guard_reservation_write,
-    select_reservation_write_route,
+    execute_reservation_write,
 )
 from custom_components.guesty.api.actions import GuestyActionsClient
 from custom_components.guesty.api.auth import GuestyTokenManager
@@ -38,6 +37,7 @@ from custom_components.guesty.api.client import GuestyApiClient
 from custom_components.guesty.api.const import (
     DEFAULT_FUTURE_DAYS,
     DEFAULT_PAST_DAYS,
+    LEGACY_WRITE_CUSTOM_FIELD,
 )
 from custom_components.guesty.api.custom_fields import GuestyCustomFieldsClient
 from custom_components.guesty.api.exceptions import (
@@ -519,23 +519,6 @@ async def async_setup_entry(
 
         entry_data = next(iter(domain_data.values()))
 
-        if target_type == CF_TARGET_RESERVATION:
-            try:
-                guard_reservation_write(
-                    entry_data,
-                    target_id,
-                    SERVICE_SET_CUSTOM_FIELD,
-                )
-                # Phase 6a only selects the route; the legacy
-                # request itself lands in Phase 7 (FR-059).
-                select_reservation_write_route(
-                    entry_data,
-                    target_id,
-                    SERVICE_SET_CUSTOM_FIELD,
-                )
-            except GuestyActionError as err:
-                raise HomeAssistantError(str(err)) from err
-
         local_cf_coordinator: CustomFieldsDefinitionCoordinator = entry_data[
             "cf_coordinator"
         ]
@@ -573,12 +556,29 @@ async def async_setup_entry(
             raise HomeAssistantError(str(err)) from err
 
         try:
-            result = await local_cf_client.set_field(
-                target_type=target_type,
-                target_id=target_id,
-                field_id=field_id,
-                value=value,
-            )
+            if target_type == CF_TARGET_RESERVATION:
+                result = await execute_reservation_write(
+                    entry_data,
+                    target_id,
+                    operation=LEGACY_WRITE_CUSTOM_FIELD,
+                    action_type=SERVICE_SET_CUSTOM_FIELD,
+                    write=lambda route: local_cf_client.set_field(
+                        target_type=target_type,
+                        target_id=target_id,
+                        field_id=field_id,
+                        value=value,
+                        route=route,
+                    ),
+                )
+            else:
+                result = await local_cf_client.set_field(
+                    target_type=target_type,
+                    target_id=target_id,
+                    field_id=field_id,
+                    value=value,
+                )
+        except GuestyActionError as err:
+            raise HomeAssistantError(str(err)) from err
         except GuestyCustomFieldError as err:
             _LOGGER.error(
                 "Custom field update failed for %s/%s: %s",

@@ -136,3 +136,43 @@ class TestReservationDiagnostics:
         result = await async_get_config_entry_diagnostics(hass, entry)
 
         assert result == {"reservations": {"loaded": False}}
+
+
+class TestLegacyWriteDiagnostics:
+    """Legacy-routed write counters are downloadable (T131)."""
+
+    async def test_counters_appear_in_the_download(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Every operation and outcome is reported by name."""
+        entry = await _setup_entry(hass)
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        coordinator.record_legacy_write("note", "succeeded")
+        coordinator.record_legacy_write("status", "failed")
+        coordinator.record_legacy_write("custom_field", "refused")
+
+        result = await async_get_config_entry_diagnostics(hass, entry)
+
+        legacy_writes: dict[str, Any] = result["reservations"]["legacy_writes"]
+        assert legacy_writes["note_succeeded"] == 1
+        assert legacy_writes["status_failed"] == 1
+        assert legacy_writes["custom_field_refused"] == 1
+        assert legacy_writes["total"] == 3
+        assert legacy_writes["routing_available"] is True
+
+    async def test_retired_routing_is_reported(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """An operator can see routing has self-disabled."""
+        entry = await _setup_entry(hass)
+        api_client = hass.data[DOMAIN][entry.entry_id]["api_client"]
+        with patch.object(
+            type(api_client),
+            "legacy_write_routing_available",
+            property(lambda _self: False),
+        ):
+            result = await async_get_config_entry_diagnostics(hass, entry)
+
+        assert result["reservations"]["legacy_writes"]["routing_available"] is False

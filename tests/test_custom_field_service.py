@@ -20,11 +20,17 @@ from homeassistant.helpers import entity_registry as er
 from httpx import Response
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.guesty.api.const import BASE_URL, TOKEN_URL
+from custom_components.guesty.api.const import (
+    BASE_URL,
+    TOKEN_URL,
+    WRITE_ROUTE_LEGACY,
+    WRITE_ROUTE_V3,
+)
 from custom_components.guesty.api.custom_fields import (
     GuestyCustomFieldsClient,
 )
 from custom_components.guesty.api.exceptions import (
+    GuestyActionError,
     GuestyAuthError,
     GuestyConnectionError,
     GuestyCustomFieldError,
@@ -675,6 +681,7 @@ class TestReservationCustomFields:
             target_id="res-789",
             field_id="cf-door-code",
             value="5678",
+            route=WRITE_ROUTE_V3,
         )
 
     @patch(
@@ -2769,3 +2776,218 @@ class TestSetCustomFieldIdentityGuard:
             )
 
         set_field.assert_awaited_once()
+
+
+class TestReservationCustomFieldRouting:
+    """The service routes a served reservation to legacy (T129)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests.
+
+        Yields:
+            None, with the definitions call patched.
+        """
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=sample_custom_field_definitions(),
+        ):
+            yield
+
+    @staticmethod
+    async def _loaded_entry(hass: HomeAssistant) -> MockConfigEntry:
+        """Set up an entry with the usual API calls mocked.
+
+        Args:
+            hass: Home Assistant instance.
+
+        Returns:
+            The loaded config entry.
+        """
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        with (
+            patch(
+                "custom_components.guesty.GuestyApiClient.test_connection",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "custom_components.guesty.GuestyApiClient.get_listings",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "custom_components.guesty.GuestyApiClient.get_reservations",
+                new_callable=AsyncMock,
+                return_value=make_fetch_result(
+                    make_identity_reservations(*_WRITE_TARGETS),
+                ),
+            ),
+        ):
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+        return entry
+
+    async def test_served_reservation_routes_to_legacy(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """The door code is sent verbatim on the legacy route."""
+        entry = await self._loaded_entry(hass)
+        entry_data = hass.data[DOMAIN][entry.entry_id]
+        coordinator = entry_data["reservations_coordinator"]
+        coordinator.fallback_served_ids = frozenset({"res-789"})
+        coordinator.fallback_sourced_ids = frozenset({"res-789"})
+
+        with patch.object(
+            GuestyCustomFieldsClient,
+            "set_field",
+            new_callable=AsyncMock,
+            return_value=GuestyCustomFieldResult(
+                success=True,
+                target_type="reservation",
+                target_id="res-789",
+                field_id="cf-door-code",
+            ),
+        ) as mock_set:
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_CUSTOM_FIELD,
+                {
+                    "target_type": "reservation",
+                    "target_id": "res-789",
+                    "field_id": "cf-door-code",
+                    "value": "0042",
+                },
+                blocking=True,
+            )
+
+        mock_set.assert_awaited_once_with(
+            target_type="reservation",
+            target_id="res-789",
+            field_id="cf-door-code",
+            value="0042",
+            route=WRITE_ROUTE_LEGACY,
+        )
+        counters = coordinator.legacy_write_counters
+        assert counters.custom_field_succeeded == 1
+
+    async def test_retired_routing_refuses_the_write(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A retired legacy generation sends nothing at all."""
+        entry = await self._loaded_entry(hass)
+        entry_data = hass.data[DOMAIN][entry.entry_id]
+        coordinator = entry_data["reservations_coordinator"]
+        coordinator.fallback_served_ids = frozenset({"res-789"})
+        coordinator.fallback_sourced_ids = frozenset({"res-789"})
+        api_client = entry_data["api_client"]
+
+        with (
+            patch.object(
+                type(api_client),
+                "legacy_write_routing_available",
+                property(lambda _self: False),
+            ),
+            patch.object(
+                GuestyCustomFieldsClient,
+                "set_field",
+                new_callable=AsyncMock,
+            ) as mock_set,
+            pytest.raises(HomeAssistantError, match="2027-03-01"),
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_CUSTOM_FIELD,
+                {
+                    "target_type": "reservation",
+                    "target_id": "res-789",
+                    "field_id": "cf-door-code",
+                    "value": "0042",
+                },
+                blocking=True,
+            )
+
+        assert mock_set.await_count == 0
+        assert coordinator.legacy_write_counters.custom_field_refused == 1
+
+    async def test_listing_target_is_unaffected(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A listing write never acquires a route."""
+        entry = await self._loaded_entry(hass)
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        coordinator.fallback_served_ids = frozenset({"res-789"})
+
+        with patch.object(
+            GuestyCustomFieldsClient,
+            "set_field",
+            new_callable=AsyncMock,
+            return_value=GuestyCustomFieldResult(
+                success=True,
+                target_type="listing",
+                target_id="lst-123",
+                field_id="cf-region",
+            ),
+        ) as mock_set:
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_CUSTOM_FIELD,
+                {
+                    "target_type": "listing",
+                    "target_id": "lst-123",
+                    "field_id": "cf-region",
+                    "value": "test",
+                },
+                blocking=True,
+            )
+
+        await_args = mock_set.await_args
+        assert await_args is not None
+        assert "route" not in await_args.kwargs
+        assert coordinator.legacy_write_counters.total == 0
+
+    async def test_routing_messages_survive_the_service(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """The retirement explanation is not genericized."""
+        entry = await self._loaded_entry(hass)
+        entry_data = hass.data[DOMAIN][entry.entry_id]
+        coordinator = entry_data["reservations_coordinator"]
+        coordinator.fallback_served_ids = frozenset({"res-789"})
+        coordinator.fallback_sourced_ids = frozenset({"res-789"})
+
+        with (
+            patch.object(
+                GuestyCustomFieldsClient,
+                "set_field",
+                new_callable=AsyncMock,
+                side_effect=GuestyActionError(
+                    "legacy answered /v1/reservations/res-789 with "
+                    "HTTP 410; the legacy resources retire on "
+                    "2027-03-01",
+                    target_id="res-789",
+                    action_type="set_custom_field",
+                ),
+            ),
+            pytest.raises(HomeAssistantError) as exc_info,
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_CUSTOM_FIELD,
+                {
+                    "target_type": "reservation",
+                    "target_id": "res-789",
+                    "field_id": "cf-door-code",
+                    "value": "0042",
+                },
+                blocking=True,
+            )
+
+        assert "2027-03-01" in str(exc_info.value)
+        assert coordinator.legacy_write_counters.custom_field_failed == 1

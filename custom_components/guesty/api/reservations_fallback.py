@@ -69,7 +69,7 @@ from custom_components.guesty.api.models import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Collection, Mapping
 
     from custom_components.guesty.api.client import GuestyApiClient
     from custom_components.guesty.api.models import FallbackCandidate
@@ -130,6 +130,31 @@ _MESSAGE_FIELDS: tuple[str, ...] = (
 )
 
 
+def is_absent(verdict: str) -> bool:
+    """Report whether a verdict is confirmed absence (FR-052).
+
+    Args:
+        verdict: One of the module's verdict constants.
+
+    Returns:
+        True when legacy stated this reservation does not exist.
+    """
+    return verdict == _ABSENT
+
+
+def is_retired(verdict: str) -> bool:
+    """Report whether a verdict is retirement-shaped (FR-056).
+
+    Args:
+        verdict: One of the module's verdict constants.
+
+    Returns:
+        True when the answer was about the resource, not the
+        reservation.
+    """
+    return verdict == _RETIRED
+
+
 @dataclass(frozen=True)
 class ServedRecord:
     """One reservation a legacy by-id lookup actually returned.
@@ -181,6 +206,9 @@ class ReservationFallbackSource:
             successful or not, which the re-check interval is
             measured from (FR-053).
         _confirmed_absent: Identifiers legacy says are gone.
+        _unreported_absent: Confirmed absences a write discovered,
+            waiting to be reported to the refresh so the identity
+            baseline retires them durably (FR-052).
         _disabled: Whether retirement self-disabled the fallback.
         _retirement_logged: Whether the one warning has been made.
     """
@@ -196,6 +224,7 @@ class ReservationFallbackSource:
         self._retained: dict[str, GuestyReservation] = {}
         self._last_attempt: dict[str, datetime] = {}
         self._confirmed_absent: set[str] = set()
+        self._unreported_absent: set[str] = set()
         self._disabled = False
         self._retirement_logged = False
 
@@ -216,6 +245,42 @@ class ReservationFallbackSource:
             True once a retirement-shaped answer was seen.
         """
         return self._disabled
+
+    @property
+    def confirmed_absent(self) -> frozenset[str]:
+        """Return the identifiers legacy says no longer exist.
+
+        Returns:
+            The retired candidates of this session.
+        """
+        return frozenset(self._confirmed_absent)
+
+    def note_retirement(self) -> None:
+        """Self-disable after a retirement-shaped write answer.
+
+        A legacy *write* can meet the retirement before any lookup
+        does, and the same flag governs both (FR-056, FR-061).
+        """
+        if self._disabled:
+            return
+        self._disable()
+        self._served.clear()
+        self._retained.clear()
+
+    def retire_candidate(self, reservation_id: str) -> None:
+        """Retire a candidate a legacy write reported is gone.
+
+        A write can meet a deletion before any lookup does. The
+        absence is queued for the next refresh to report, so it
+        reaches the identity baseline and survives a reload rather
+        than living only in this session's memory (FR-052).
+
+        Args:
+            reservation_id: The reservation legacy denied.
+        """
+        if reservation_id not in self._confirmed_absent:
+            self._unreported_absent.add(reservation_id)
+        self._retire(reservation_id)
 
     async def resolve(
         self,
@@ -248,7 +313,7 @@ class ReservationFallbackSource:
         if self._disabled:
             self._served.clear()
             self._retained.clear()
-            return FallbackOutcome()
+            return FallbackOutcome(absent=self._drain_unreported_absent())
 
         present = {reservation.id for reservation in retrieved}
         eligible = [
@@ -268,7 +333,7 @@ class ReservationFallbackSource:
         batch = due[:MAX_LEGACY_FALLBACK_LOOKUPS_PER_REFRESH]
         deferred = len(due) - len(batch)
 
-        absent: list[str] = []
+        absent: list[str] = list(self._drain_unreported_absent())
         succeeded = 0
         failed = 0
         for reservation_id in batch:
@@ -335,6 +400,7 @@ class ReservationFallbackSource:
             self._served.pop(reservation.id, None)
             self._last_attempt.pop(reservation.id, None)
             self._confirmed_absent.discard(reservation.id)
+            self._unreported_absent.discard(reservation.id)
 
     def _is_due(self, reservation_id: str, now: datetime) -> bool:
         """Report whether a candidate may be looked up again.
@@ -424,7 +490,7 @@ class ReservationFallbackSource:
             )
             return _FAILED
 
-        verdict = _classify(response, reservation_id)
+        verdict = classify_legacy_response(response, reservation_id)
         if verdict == _ABSENT:
             self._retire(reservation_id)
             return _ABSENT
@@ -470,6 +536,29 @@ class ReservationFallbackSource:
         )
         self._retained[reservation_id] = reservation
         return _OK
+
+    def _drain_unreported_absent(self) -> tuple[str, ...]:
+        """Hand write-discovered absences to this refresh.
+
+        The queue is not cleared here. A refresh that fails to
+        persist its baseline has not retired the candidate, and
+        clearing on report would leave the stored hint eligible for
+        a legacy lookup again after a reload (FR-052). The refresh
+        acknowledges the absence once storage confirms it.
+
+        Returns:
+            The queued identifiers.
+        """
+        return tuple(sorted(self._unreported_absent))
+
+    def acknowledge_absent(self, reservation_ids: Collection[str]) -> None:
+        """Accept that these absences are durably retired.
+
+        Args:
+            reservation_ids: Identifiers whose retirement reached
+                the persisted identity baseline.
+        """
+        self._unreported_absent.difference_update(reservation_ids)
 
     def _retire(self, reservation_id: str) -> None:
         """Retire a candidate both APIs agree no longer exists.
@@ -560,7 +649,10 @@ class ReservationFallbackSource:
         for mapping in (self._retained, self._served, self._last_attempt):
             for reservation_id in [res_id for res_id in mapping if res_id not in keep]:
                 del mapping[reservation_id]
-        self._confirmed_absent &= known
+        # An absence a write discovered is held until the refresh
+        # acknowledges it, even once its hint is gone: dropping it
+        # first would let the deletion go unreported (FR-052).
+        self._confirmed_absent &= known | self._unreported_absent
 
 
 def _overlaps(
@@ -617,7 +709,7 @@ def _in_window(
     )
 
 
-def _classify(
+def classify_legacy_response(
     response: httpx.Response,
     reservation_id: str,
 ) -> str:

@@ -972,7 +972,7 @@ restores a v3-only write path with no other change.
 
 ### Phase 7 Tests (Red) — write first, verify they FAIL
 
-- [ ] T077 [US3] Write note-action tests in `tests/api/test_actions.py`
+- [x] T077 [US3] Write note-action tests in `tests/api/test_actions.py`
   using respx: the read targets
   `GET /v1/reservations-v3?reservationIds={id}` (the coordinator's
   cached copy is **not** used as the read source); the write targets
@@ -983,22 +983,22 @@ restores a v3-only write path with no other change.
   unchanged `NOTE_SEPARATOR` (`api/const.py:190-191`); and a non-2xx
   **read** raises without attempting a write (FR-027, FR-029, US3
   scenario 1).
-- [ ] T078 [P] [US3] Write status-action tests asserting
+- [x] T078 [P] [US3] Write status-action tests asserting
   `PUT /v1/reservations-v3/{id}/status` with body
   `{"status": "checked_in"}` or `{"status": "checked_out"}`, accepted
   values unchanged from `VALID_RESERVATION_STATUSES`
   (`api/const.py:185-188`), and validation unchanged
   (`api/actions.py:441-470`), in `tests/api/test_actions.py` (FR-028).
-- [ ] T079 [P] [US3] Write rejection tests asserting a non-2xx write
+- [x] T079 [P] [US3] Write rejection tests asserting a non-2xx write
   raises `GuestyActionError` naming the resource and the rejection
   detail with a truncated body, and is **never** reported as a
   success, for both actions, in `tests/api/test_actions.py` (FR-029,
   US3 scenario 3).
-- [ ] T080 [P] [US3] Write tests asserting that with
+- [x] T080 [P] [US3] Write tests asserting that with
   `reservations_api="legacy"` both actions still target
   `/v1/reservations/{id}` exactly as the previous release did, in
   `tests/api/test_actions.py` (FR-040).
-- [ ] T081 [P] [US3] Write regression tests asserting reservation
+- [x] T081 [P] [US3] Write regression tests asserting reservation
   custom-field reads and writes still use
   `/reservations-v3/{id}/custom-fields` unchanged
   (`api/const.py:142-143`, `api/custom_fields.py:116-141`,
@@ -1007,25 +1007,25 @@ restores a v3-only write path with no other change.
 
 ### Phase 7 Implementation (Green)
 
-- [ ] T082 [US3] Replace the legacy note **read** with
+- [x] T082 [US3] Replace the legacy note **read** with
   `GET /v1/reservations-v3?reservationIds={id}`, capturing the whole
   `notes` object rather than only `other`, in
   `custom_components/guesty/api/actions.py` (FR-027). Depends on T077.
-- [ ] T083 [US3] Replace the legacy note **write** with
+- [x] T083 [US3] Replace the legacy note **write** with
   `PUT /v1/reservations-v3/{id}/notes`, sending every captured note
   field back with `other` appended to using the unchanged separator,
   and keeping today's validation (`api/actions.py:418-440`) and error
   construction (`api/actions.py:389-414`), in
   `custom_components/guesty/api/actions.py` (FR-027, FR-029). Depends
   on T082.
-- [ ] T084 [US3] Replace the legacy status write with
+- [x] T084 [US3] Replace the legacy status write with
   `PUT /v1/reservations-v3/{id}/status`, preserving accepted values
   and validation, in `custom_components/guesty/api/actions.py`
   (FR-028, FR-029). Depends on T078.
 
 ### Phase 7 Legacy Write Routing Tests (Red) — write first
 
-- [ ] T128 [US8] Write legacy note and status routing tests in
+- [x] T128 [US8] Write legacy note and status routing tests in
   `tests/api/test_actions.py` using respx: for a fallback-sourced
   target the note action issues the **legacy** read-before-write
   (`GET /v1/reservations/{id}`) followed by exactly one
@@ -1034,7 +1034,7 @@ restores a v3-only write path with no other change.
   with the previous release's status body; neither issues any request
   to a v3 write resource; and a v3-sourced target issues no legacy
   request at all (FR-055, FR-058, FR-059, SC-016). Depends on T126.
-- [ ] T129 [P] [US8] Write custom-field routing tests in
+- [x] T129 [P] [US8] Write custom-field routing tests in
   `tests/test_init.py` and `tests/api/test_custom_fields.py`: the
   `target_type="reservation"` branch of `guesty.set_custom_field`
   routes a fallback-sourced target to `PUT /v1/reservations/{id}`
@@ -1050,7 +1050,7 @@ restores a v3-only write path with no other change.
   shape is OQ-011; if live verification refutes it, this task's
   expectations and FR-059's recorded fallback change together. Depends
   on T126.
-- [ ] T130 [P] [US8] Write routing-disabled tests in
+- [x] T130 [P] [US8] Write routing-disabled tests in
   `tests/api/test_actions.py` and `tests/test_init.py`: with the
   fallback self-disabled (FR-056), or with a legacy write answering in
   a retirement-shaped way, every one of the three write operations
@@ -1059,7 +1059,7 @@ restores a v3-only write path with no other change.
   either generation after the self-disable, and the routing stays
   disabled for the rest of the session (FR-061, SC-019). Depends on
   T126.
-- [ ] T131 [P] [US8] Write routing observability tests in
+- [x] T131 [P] [US8] Write routing observability tests in
   `tests/api/test_actions.py` and `tests/test_diagnostics.py`: each
   legacy-routed write logs exactly one WARNING naming the operation
   and the reservation identifier; the counts appear by operation and
@@ -1067,7 +1067,7 @@ restores a v3-only write path with no other change.
   confirmation code value appears in any record; and no sensor
   attribute key changes for a fallback-sourced reservation (FR-062,
   SC-020, SC-002, NFR-004, NFR-009). Depends on T126.
-- [ ] T132 [P] [US8] Write routing failure tests in
+- [x] T132 [P] [US8] Write routing failure tests in
   `tests/api/test_actions.py`: a non-2xx legacy write raises
   `GuestyActionError` naming the resource and the rejection detail, is
   never reported as success, issues exactly one request — no automatic
@@ -1083,7 +1083,7 @@ restores a v3-only write path with no other change.
 
 ### Phase 7 Legacy Write Routing Implementation (Green)
 
-- [ ] T133 [US8] Implement the legacy note and status write branch in
+- [x] T133 [US8] Implement the legacy note and status write branch in
   `custom_components/guesty/api/actions.py`, reusing the previous
   release's requests via `RESERVATION_BY_ID_LEGACY_PATH` and the
   legacy read-before-write, add the opt-in single-attempt request mode
@@ -1094,7 +1094,7 @@ restores a v3-only write path with no other change.
   `custom_components/guesty/actions.py` (FR-055, FR-058, FR-059,
   FR-061, FR-063). Zero Home Assistant imports in `api/`
   (NFR-007). Depends on T128, T130, T132, T082, T083, T084.
-- [ ] T134 [US8] Implement the custom-field legacy branch in
+- [x] T134 [US8] Implement the custom-field legacy branch in
   `custom_components/guesty/api/custom_fields.py` and its service
   wiring in `custom_components/guesty/__init__.py`, and add the
   `LegacyWriteCounters` accumulation, the per-write WARNING and their
