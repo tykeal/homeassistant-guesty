@@ -69,6 +69,7 @@ BOOTSTRAP_SWEPT: Final[str] = "swept"
 BOOTSTRAP_UNAVAILABLE: Final[str] = "unavailable"
 BOOTSTRAP_FRESH_INSTALL: Final[str] = "fresh_install"
 BOOTSTRAP_ALREADY_DONE: Final[str] = "already_done"
+BOOTSTRAP_AMBIGUOUS: Final[str] = "ambiguous"
 BOOTSTRAP_LEGACY_PATH: Final[str] = "legacy_path"
 
 # Unique-id marker of a reservation-backed entity, used to tell an
@@ -1152,7 +1153,7 @@ class BootstrapResult:
     """Outcome of deciding the one-time bootstrap sweep.
 
     Attributes:
-        reason: Which of the five bootstrap outcomes applied.
+        reason: Which of the six bootstrap outcomes applied.
         pages: Legacy pages the sweep fetched, zero when it did not
             run. This is the FR-001 exception-1 counter.
         codes: Confirmation codes the sweep recorded as evidence.
@@ -1216,6 +1217,13 @@ async def async_bootstrap_identity(
     config entry and never again — across restarts and reloads
     alike.
 
+    A sweep whose own evidence is ambiguous — one confirmation code
+    naming two legacy reservations — is discarded whole rather than
+    stored with an arbitrary winner, because a v3 refresh returning
+    only that winner would otherwise verify continuity and permit
+    writes on a mapping the legacy side never agreed on. It still
+    counts as attempted: the permitted call has been spent.
+
     The sweep is a single ``LegacyReservationSource`` retrieval over
     the configured window. It is not retried here: the HTTP client
     already retries a rate limit or a transient failure internally,
@@ -1245,12 +1253,12 @@ async def async_bootstrap_identity(
     if baseline is not None and baseline.bootstrap_attempted:
         return BootstrapResult(reason=BOOTSTRAP_ALREADY_DONE)
 
-    if not has_reservation_entities(hass, entry.entry_id):
+    if baseline is None and not has_reservation_entities(hass, entry.entry_id):
         await guard.async_record_fresh_install(path)
         _LOGGER.debug(
-            "No reservation entities for this entry; treating it as "
-            "a fresh install and skipping the legacy identity "
-            "bootstrap sweep",
+            "No baseline and no reservation entities for this entry; "
+            "treating it as a fresh install and skipping the legacy "
+            "identity bootstrap sweep",
         )
         return BootstrapResult(reason=BOOTSTRAP_FRESH_INSTALL)
 
@@ -1271,6 +1279,22 @@ async def async_bootstrap_identity(
         return BootstrapResult(
             reason=BOOTSTRAP_UNAVAILABLE,
             error=exc.message,
+        )
+
+    collisions = observe_codes(fetched.reservations).collisions
+    if collisions:
+        await guard.async_record_bootstrap(reservations=(), failed=True)
+        _LOGGER.warning(
+            "The one-time legacy identity bootstrap sweep returned %d "
+            "confirmation code(s) naming more than one reservation, so "
+            "its evidence cannot establish an identity baseline; "
+            "reservation identity continuity stays unconfirmed and "
+            "reservation writes are refused",
+            len(collisions),
+        )
+        return BootstrapResult(
+            reason=BOOTSTRAP_AMBIGUOUS,
+            pages=fetched.pages,
         )
 
     await guard.async_record_bootstrap(

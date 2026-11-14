@@ -15,7 +15,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.core import HomeAssistant
@@ -28,6 +28,7 @@ from custom_components.guesty import (
     ISSUE_IDENTITY_UNCONFIRMED,
     async_notify_identity_continuity,
     async_remove_entry,
+    async_track_identity_continuity,
 )
 from custom_components.guesty.api.const import (
     RESERVATIONS_API_LEGACY,
@@ -47,6 +48,7 @@ from custom_components.guesty.coordinator import (
 )
 from custom_components.guesty.identity import (
     BOOTSTRAP_ALREADY_DONE,
+    BOOTSTRAP_AMBIGUOUS,
     BOOTSTRAP_FRESH_INSTALL,
     BOOTSTRAP_LEGACY_PATH,
     BOOTSTRAP_SWEPT,
@@ -1543,6 +1545,81 @@ class TestBootstrapSweep:
         }
         assert result.pages == 2
 
+    async def test_colliding_sweep_is_unusable_evidence(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """One code naming two legacy rows cannot be a baseline."""
+        entry = _make_entry(entry_id="entry-collide")
+        entry.add_to_hass(hass)
+        _register_reservation_entity(hass, entry)
+        guard = ReservationIdentityGuard(hass, entry.entry_id)
+
+        with _legacy_sweep(
+            [
+                _reservation("legacy-1", CODE_A),
+                _reservation("legacy-2", CODE_A),
+            ],
+        ):
+            result = await async_bootstrap_identity(
+                hass,
+                entry,
+                guard=guard,
+                api_client=_api_client(),
+            )
+
+        assert result.reason == BOOTSTRAP_AMBIGUOUS
+        assert result.informative is False
+        baseline = guard.baseline
+        assert baseline is not None
+        assert baseline.bootstrap_attempted is True
+        assert not baseline.bootstrap_codes
+
+        await guard.async_record_refresh(
+            path=RESERVATIONS_API_V3,
+            reservations=[_reservation("legacy-1", CODE_A)],
+            published={},
+            comparison=guard.compare(
+                [_reservation("legacy-1", CODE_A)],
+                RESERVATIONS_API_V3,
+            ),
+            updated="2026-01-01T00:00:00+00:00",
+        )
+
+        assert guard.baseline is not None
+        assert guard.baseline.continuity == CONTINUITY_UNCONFIRMED
+        assert guard.write_refusal("legacy-1") is not None
+
+    async def test_existing_baseline_is_never_a_fresh_install(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """An entry with no entities may still have a baseline."""
+        entry = _make_entry(entry_id="entry-nolistings")
+        entry.add_to_hass(hass)
+        guard = ReservationIdentityGuard(hass, entry.entry_id)
+        await guard.async_load()
+        await guard.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_V3,
+                continuity=CONTINUITY_UNCONFIRMED,
+            ),
+        )
+
+        with _legacy_sweep([_reservation("legacy-1", CODE_A)]) as fetch:
+            result = await async_bootstrap_identity(
+                hass,
+                entry,
+                guard=guard,
+                api_client=_api_client(),
+            )
+
+        assert fetch.await_count == 1
+        assert result.reason == BOOTSTRAP_SWEPT
+        assert guard.baseline is not None
+        assert guard.baseline.continuity == CONTINUITY_UNCONFIRMED
+        assert guard.write_refusal("legacy-1") is not None
+
 
 class TestContinuityNotice:
     """The unconfirmed-continuity notice (T075, FR-031c)."""
@@ -1642,3 +1719,75 @@ class TestContinuityNotice:
             )
             is None
         )
+
+    async def test_repeated_notice_warns_only_once(
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A standing question must not spam every refresh."""
+        entry = _make_entry(entry_id="entry-once-warn")
+        entry.add_to_hass(hass)
+        guard = ReservationIdentityGuard(hass, entry.entry_id)
+        await guard.async_load()
+        await guard.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_LEGACY,
+                continuity=CONTINUITY_UNCONFIRMED,
+                bootstrap_attempted=True,
+            ),
+        )
+
+        with caplog.at_level(logging.WARNING):
+            async_notify_identity_continuity(hass, entry, guard)
+            caplog.clear()
+            async_notify_identity_continuity(hass, entry, guard)
+
+        assert "identity continuity" not in caplog.text.lower()
+        assert (
+            ir.async_get(hass).async_get_issue(
+                DOMAIN,
+                f"{ISSUE_IDENTITY_UNCONFIRMED}_{entry.entry_id}",
+            )
+            is not None
+        )
+
+    async def test_later_refreshes_update_the_notice(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Continuity transitions after setup must reach the user."""
+        entry = _make_entry(entry_id="entry-listener")
+        entry.add_to_hass(hass)
+        guard = ReservationIdentityGuard(hass, entry.entry_id)
+        await guard.async_load()
+        await guard.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_V3,
+                continuity=CONTINUITY_VERIFIED,
+                bootstrap_attempted=True,
+            ),
+        )
+        coordinator = MagicMock()
+        coordinator.identity = guard
+        unsub = MagicMock()
+        coordinator.async_add_listener = MagicMock(return_value=unsub)
+
+        async_track_identity_continuity(hass, entry, coordinator)
+
+        assert coordinator.async_add_listener.call_count == 1
+        listener = coordinator.async_add_listener.call_args.args[0]
+        issue_id = f"{ISSUE_IDENTITY_UNCONFIRMED}_{entry.entry_id}"
+        registry = ir.async_get(hass)
+        assert registry.async_get_issue(DOMAIN, issue_id) is None
+
+        await guard.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_V3,
+                continuity=CONTINUITY_UNCONFIRMED,
+                bootstrap_attempted=True,
+            ),
+        )
+        listener()
+
+        assert registry.async_get_issue(DOMAIN, issue_id) is not None

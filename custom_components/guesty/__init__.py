@@ -21,6 +21,7 @@ from homeassistant.core import (
     ServiceCall,
     ServiceResponse,
     SupportsResponse,
+    callback,
 )
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers import device_registry as dr
@@ -256,11 +257,16 @@ def async_notify_identity_continuity(
     overlap the bootstrap could not, so a resolved question does not
     leave a stale repair behind.
 
+    The warning is logged only on a transition into the unconfirmed
+    state. The repairs issue is the standing surface; repeating the
+    log on every refresh would bury it.
+
     Args:
         hass: Home Assistant instance.
         entry: The config entry being set up.
         guard: The entry's identity guard, already loaded.
     """
+    registry = ir.async_get(hass)
     issue_id = f"{ISSUE_IDENTITY_UNCONFIRMED}_{entry.entry_id}"
     baseline = guard.baseline
     on_v3 = (
@@ -277,6 +283,7 @@ def async_notify_identity_continuity(
         ir.async_delete_issue(hass, DOMAIN, issue_id)
         return
 
+    reported = registry.async_get_issue(DOMAIN, issue_id) is not None
     ir.async_create_issue(
         hass,
         DOMAIN,
@@ -286,6 +293,9 @@ def async_notify_identity_continuity(
         translation_key=ISSUE_IDENTITY_UNCONFIRMED,
         translation_placeholders={"title": entry.title},
     )
+    if reported:
+        return
+
     _LOGGER.warning(
         "Guesty reservation identity continuity is unconfirmed for "
         "'%s'. Reservations are published normally, but every "
@@ -297,6 +307,38 @@ def async_notify_identity_continuity(
         "the entry to roll back",
         entry.title,
     )
+
+
+def async_track_identity_continuity(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    coordinator: ReservationsCoordinator,
+) -> None:
+    """Keep the FR-031c notice current after setup (T075).
+
+    Continuity is not settled once at setup: an entry left running
+    reaches ``verified`` the first time a refresh shares a code with
+    the bootstrap evidence, and a later refresh can equally demote a
+    settled baseline. Evaluating only at setup would leave a repair
+    saying writes are refused long after they were permitted again,
+    and would never raise one for a demotion.
+
+    The subscription is released with the config entry, so a reload
+    does not accumulate listeners.
+
+    Args:
+        hass: Home Assistant instance.
+        entry: The config entry being set up.
+        coordinator: The entry's reservations coordinator.
+    """
+    guard = coordinator.identity
+
+    @callback
+    def _update() -> None:
+        """Re-evaluate the notice after a refresh."""
+        async_notify_identity_continuity(hass, entry, guard)
+
+    entry.async_on_unload(coordinator.async_add_listener(_update))
 
 
 async def async_setup_entry(
@@ -404,6 +446,7 @@ async def async_setup_entry(
         entry,
         reservations_coordinator.identity,
     )
+    async_track_identity_continuity(hass, entry, reservations_coordinator)
 
     messaging_client = GuestyMessagingClient(api_client)
     actions_client = GuestyActionsClient(api_client)
