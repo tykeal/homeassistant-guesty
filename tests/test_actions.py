@@ -34,15 +34,20 @@ from custom_components.guesty.api.exceptions import (
     GuestyActionError,
     GuestyApiError,
 )
-from custom_components.guesty.api.models import ActionResult
+from custom_components.guesty.api.models import ActionResult, GuestyReservation
 from custom_components.guesty.const import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
+    CONF_RESERVATIONS_API,
     DOMAIN,
+    RESERVATIONS_API_V3,
 )
+from custom_components.guesty.identity import CONTINUITY_UNCONFIRMED
 from tests.conftest import (
     FakeTokenStorage,
     make_fetch_result,
+    make_identity_reservation,
+    make_identity_reservations,
     make_token_response,
 )
 
@@ -77,17 +82,33 @@ def _make_entry(**overrides: object) -> MockConfigEntry:
     )
 
 
-async def _setup_entry(hass: HomeAssistant) -> MockConfigEntry:
+# Reservation identifiers the write actions target in this module.
+# Reservation identifiers the action tests write to; each needs a
+# baseline entry before the identity guard will permit the write.
+_WRITE_TARGETS = ("res-001", "res-bad", "res-e2e", "x")
+
+
+async def _setup_entry(
+    hass: HomeAssistant,
+    reservations: list[GuestyReservation] | None = None,
+    **entry_overrides: object,
+) -> MockConfigEntry:
     """Set up a config entry with all mocks.
 
     Args:
         hass: Home Assistant instance.
+        reservations: Reservations the first refresh returns, which
+            seed the identity baseline the write guard consults.
+        **entry_overrides: Fields to override on the config entry.
 
     Returns:
         The loaded MockConfigEntry.
     """
-    entry = _make_entry()
+    entry = _make_entry(**entry_overrides)
     entry.add_to_hass(hass)
+
+    if reservations is None:
+        reservations = make_identity_reservations(*_WRITE_TARGETS)
 
     with (
         patch(
@@ -103,7 +124,7 @@ async def _setup_entry(hass: HomeAssistant) -> MockConfigEntry:
         patch(
             _PATCH_RESERVATIONS,
             new_callable=AsyncMock,
-            return_value=make_fetch_result([]),
+            return_value=make_fetch_result(reservations),
         ),
     ):
         await hass.config_entries.async_setup(entry.entry_id)
@@ -216,7 +237,9 @@ class TestActionServiceRegistration:
             patch(
                 _PATCH_RESERVATIONS,
                 new_callable=AsyncMock,
-                return_value=make_fetch_result([]),
+                return_value=make_fetch_result(
+                    make_identity_reservations(*_WRITE_TARGETS)
+                ),
             ),
         ):
             await hass.config_entries.async_setup(entry2.entry_id)
@@ -260,7 +283,9 @@ class TestActionServiceRegistration:
             patch(
                 _PATCH_RESERVATIONS,
                 new_callable=AsyncMock,
-                return_value=make_fetch_result([]),
+                return_value=make_fetch_result(
+                    make_identity_reservations(*_WRITE_TARGETS)
+                ),
             ),
         ):
             await hass.config_entries.async_setup(entry2.entry_id)
@@ -309,7 +334,9 @@ class TestActionServiceRegistration:
             patch(
                 _PATCH_RESERVATIONS,
                 new_callable=AsyncMock,
-                return_value=make_fetch_result([]),
+                return_value=make_fetch_result(
+                    make_identity_reservations(*_WRITE_TARGETS)
+                ),
             ),
         ):
             await hass.config_entries.async_setup(
@@ -1720,7 +1747,9 @@ class TestHandleSetReservationStatus:
             patch(
                 _PATCH_RESERVATIONS,
                 new_callable=AsyncMock,
-                return_value=make_fetch_result([]),
+                return_value=make_fetch_result(
+                    make_identity_reservations(*_WRITE_TARGETS)
+                ),
             ),
         ):
             await hass.config_entries.async_setup(entry2.entry_id)
@@ -1742,3 +1771,203 @@ class TestHandleSetReservationStatus:
 
         mock_actions_client.set_reservation_status.assert_awaited_once()
         assert result == _result_dict(target_id="res-001")
+
+
+# ── Identity write predicate (T065) ─────────────────────────────────
+
+
+class TestIdentityWritePredicate:
+    """Reservation writes fail closed on an unsure identity.
+
+    Each conjunct of the FR-031c predicate is asserted on its own,
+    at both reservation write entry points, and every refusal must
+    send no request at all.
+    """
+
+    @staticmethod
+    def _client(hass: HomeAssistant, entry: MockConfigEntry) -> AsyncMock:
+        """Replace the entry's actions client with a mock.
+
+        Args:
+            hass: Home Assistant instance.
+            entry: The loaded config entry.
+
+        Returns:
+            The mock now wired into the entry.
+        """
+        client = AsyncMock()
+        hass.data[DOMAIN][entry.entry_id]["actions_client"] = client
+        return client
+
+    @staticmethod
+    async def _expect_refusal(
+        hass: HomeAssistant,
+        service: str,
+        data: dict[str, Any],
+        match: str,
+    ) -> None:
+        """Assert a reservation write is refused.
+
+        Args:
+            hass: Home Assistant instance.
+            service: The service to call.
+            data: The service call payload.
+            match: Expected fragment of the refusal.
+        """
+        with pytest.raises(HomeAssistantError, match=match):
+            await hass.services.async_call(
+                DOMAIN,
+                service,
+                data,
+                blocking=True,
+                return_response=True,
+            )
+
+    async def test_no_baseline_refuses_both_entry_points(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """An empty refresh leaves no baseline, so writes refuse."""
+        entry = await _setup_entry(hass, reservations=[])
+        client = self._client(hass, entry)
+
+        await self._expect_refusal(
+            hass,
+            "add_reservation_note",
+            {"reservation_id": "res-001", "note_text": "hi"},
+            "has not established a reservation identity baseline",
+        )
+        await self._expect_refusal(
+            hass,
+            "set_reservation_status",
+            {"reservation_id": "res-001", "status": "checked_in"},
+            "has not established a reservation identity baseline",
+        )
+
+        assert client.mock_calls == []
+
+    async def test_unconfirmed_continuity_refuses_writes(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A v3 baseline without cross-path evidence refuses."""
+        entry = await _setup_entry(
+            hass,
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_V3},
+        )
+        client = self._client(hass, entry)
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        baseline = coordinator.identity.baseline
+
+        assert baseline is not None
+        assert baseline.continuity == CONTINUITY_UNCONFIRMED
+        await self._expect_refusal(
+            hass,
+            "add_reservation_note",
+            {"reservation_id": "res-001", "note_text": "hi"},
+            "continuity is unconfirmed",
+        )
+        assert client.mock_calls == []
+
+    async def test_ambiguous_last_refresh_refuses_writes(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """An aborted refresh blocks writes until it is resolved."""
+        entry = await _setup_entry(hass)
+        client = self._client(hass, entry)
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+
+        rekeyed = [make_identity_reservation("res-999", "CONF-res-001")]
+        with patch(
+            _PATCH_RESERVATIONS,
+            new_callable=AsyncMock,
+            return_value=make_fetch_result(rekeyed),
+        ):
+            await coordinator.async_refresh()
+
+        assert not coordinator.last_update_success
+        await self._expect_refusal(
+            hass,
+            "set_reservation_status",
+            {"reservation_id": "res-001", "status": "checked_in"},
+            "aborted because a confirmation code",
+        )
+        assert client.mock_calls == []
+
+    async def test_target_without_confirmation_code_refuses(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """FR-033: a codeless reservation is not a write target."""
+        entry = await _setup_entry(
+            hass,
+            reservations=[
+                *make_identity_reservations(*_WRITE_TARGETS),
+                make_identity_reservation("res-nocode"),
+            ],
+        )
+        client = self._client(hass, entry)
+
+        await self._expect_refusal(
+            hass,
+            "add_reservation_note",
+            {"reservation_id": "res-nocode", "note_text": "hi"},
+            "has no known confirmation code",
+        )
+        assert client.mock_calls == []
+
+    async def test_permitted_write_still_reaches_the_client(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A confirmed identity leaves the write path unchanged."""
+        entry = await _setup_entry(hass)
+        client = self._client(hass, entry)
+        client.add_reservation_note = AsyncMock(
+            return_value=ActionResult(success=True, target_id="res-001"),
+        )
+
+        result = await hass.services.async_call(
+            DOMAIN,
+            "add_reservation_note",
+            {"reservation_id": "res-001", "note_text": "hi"},
+            blocking=True,
+            return_response=True,
+        )
+
+        assert result == {"success": True, "target_id": "res-001"}
+        client.add_reservation_note.assert_awaited_once()
+
+    async def test_predicate_is_re_evaluated_after_a_reload(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """The refusal is read back from the Store on reload."""
+        entry = await _setup_entry(
+            hass,
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_V3},
+        )
+
+        with (
+            patch(_PATCH_TEST, new_callable=AsyncMock, return_value=True),
+            patch(_PATCH_LISTINGS, new_callable=AsyncMock, return_value=[]),
+            patch(
+                _PATCH_RESERVATIONS,
+                new_callable=AsyncMock,
+                return_value=make_fetch_result(
+                    make_identity_reservations(*_WRITE_TARGETS)
+                ),
+            ),
+        ):
+            await hass.config_entries.async_reload(entry.entry_id)
+            await hass.async_block_till_done()
+
+        client = self._client(hass, entry)
+        await self._expect_refusal(
+            hass,
+            "add_reservation_note",
+            {"reservation_id": "res-001", "note_text": "hi"},
+            "continuity is unconfirmed",
+        )
+        assert client.mock_calls == []

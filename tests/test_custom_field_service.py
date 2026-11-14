@@ -30,18 +30,34 @@ from custom_components.guesty.api.exceptions import (
 from custom_components.guesty.api.models import (
     GuestyCustomFieldDefinition,
     GuestyCustomFieldResult,
+    GuestyReservation,
 )
 from custom_components.guesty.const import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
+    CONF_RESERVATIONS_API,
     DOMAIN,
+    RESERVATIONS_API_V3,
     SERVICE_SET_CUSTOM_FIELD,
 )
 from tests.conftest import (
     make_custom_field_definition_dict,
     make_fetch_result,
+    make_identity_reservation,
+    make_identity_reservations,
     make_token_response,
     sample_custom_field_definitions,
+)
+
+# Reservation identifiers these tests set custom fields on; the
+# identity guard refuses writes to anything the baseline lacks.
+_WRITE_TARGETS = (
+    "res-123",
+    "res-456",
+    "res-789",
+    "res-c2",
+    "res-e2e",
+    "res-gone",
 )
 
 
@@ -115,7 +131,9 @@ class TestServiceHandler:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -173,7 +191,9 @@ class TestServiceHandler:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -229,7 +249,9 @@ class TestServiceHandler:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -270,7 +292,9 @@ class TestServiceHandler:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -312,7 +336,9 @@ class TestServiceHandler:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -369,7 +395,9 @@ class TestServiceHandler:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -423,7 +451,9 @@ class TestServiceHandler:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -470,7 +500,9 @@ class TestServiceHandler:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -523,7 +555,9 @@ class TestServiceHandler:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -584,7 +618,9 @@ class TestReservationCustomFields:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -642,7 +678,9 @@ class TestReservationCustomFields:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -716,7 +754,9 @@ class TestAutomationCompatibility:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -768,7 +808,9 @@ class TestAutomationCompatibility:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -823,7 +865,9 @@ class TestAutomationCompatibility:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -875,7 +919,9 @@ class TestAutomationCompatibility:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -929,7 +975,9 @@ class TestAutomationCompatibility:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -987,7 +1035,9 @@ class TestAutomationCompatibility:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1065,7 +1115,9 @@ class TestEdgeCases:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1110,7 +1162,9 @@ class TestEdgeCases:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1168,7 +1222,9 @@ class TestEdgeCases:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1221,7 +1277,9 @@ class TestEdgeCases:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1272,7 +1330,9 @@ class TestEdgeCases:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1367,7 +1427,9 @@ class TestEdgeCases:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1426,7 +1488,9 @@ class TestEdgeCases:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1488,7 +1552,9 @@ class TestEdgeCases:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1725,7 +1791,9 @@ class TestErrorDetailQuality:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -1768,7 +1836,9 @@ class TestErrorDetailQuality:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -2052,7 +2122,9 @@ class TestIntegrationDataFlow:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -2114,7 +2186,9 @@ class TestIntegrationDataFlow:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -2184,7 +2258,9 @@ class TestSuccessCriteria:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -2239,7 +2315,9 @@ class TestSuccessCriteria:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -2283,7 +2361,9 @@ class TestSuccessCriteria:
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
         new_callable=AsyncMock,
-        return_value=make_fetch_result([]),
+        return_value=make_fetch_result(
+            make_identity_reservations(*_WRITE_TARGETS),
+        ),
     )
     @patch(
         "custom_components.guesty.GuestyApiClient.get_listings",
@@ -2403,3 +2483,207 @@ class TestQuickstartValidation:
     def test_service_name_constant(self) -> None:
         """Service name constant matches documentation."""
         assert SERVICE_SET_CUSTOM_FIELD == "set_custom_field"
+
+
+# ── Identity write predicate (T065) ─────────────────────────────────
+
+
+class TestSetCustomFieldIdentityGuard:
+    """guesty.set_custom_field fails closed on an unsure identity.
+
+    Setting a custom field is how door access codes reach Guesty, so
+    an unconfirmed identity must refuse the write rather than risk
+    publishing a working code onto a stranger's booking.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests.
+
+        Yields:
+            None, while the definitions client is patched.
+        """
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=sample_custom_field_definitions(),
+        ):
+            yield
+
+    @staticmethod
+    async def _setup(
+        hass: HomeAssistant,
+        reservations: list[GuestyReservation],
+        **overrides: object,
+    ) -> MockConfigEntry:
+        """Load an entry whose first refresh seeds the baseline.
+
+        Args:
+            hass: Home Assistant instance.
+            reservations: Reservations the first refresh returns.
+            **overrides: Config entry fields to override.
+
+        Returns:
+            The loaded config entry.
+        """
+        entry = _make_entry(**overrides)
+        entry.add_to_hass(hass)
+        with (
+            patch(
+                "custom_components.guesty.GuestyApiClient.test_connection",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "custom_components.guesty.GuestyApiClient.get_listings",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "custom_components.guesty.GuestyApiClient.get_reservations",
+                new_callable=AsyncMock,
+                return_value=make_fetch_result(reservations),
+            ),
+        ):
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+        return entry
+
+    @staticmethod
+    async def _expect_refusal(
+        hass: HomeAssistant,
+        target_id: str,
+        match: str,
+    ) -> None:
+        """Assert a reservation custom field write is refused.
+
+        Args:
+            hass: Home Assistant instance.
+            target_id: Reservation the write would target.
+            match: Expected fragment of the refusal message.
+        """
+        with (
+            patch.object(
+                GuestyCustomFieldsClient,
+                "set_field",
+                new_callable=AsyncMock,
+            ) as set_field,
+            pytest.raises(HomeAssistantError, match=match),
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_CUSTOM_FIELD,
+                {
+                    "target_type": "reservation",
+                    "target_id": target_id,
+                    "field_id": "cf-door-code",
+                    "value": "1234",
+                },
+                blocking=True,
+                return_response=True,
+            )
+        set_field.assert_not_awaited()
+
+    async def test_no_baseline_refuses(self, hass: HomeAssistant) -> None:
+        """Without a baseline there is nothing to verify against."""
+        await self._setup(hass, [])
+        await self._expect_refusal(
+            hass,
+            "res-456",
+            "has not established a reservation identity baseline",
+        )
+
+    async def test_unconfirmed_continuity_refuses(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A v3 baseline without cross-path evidence refuses."""
+        await self._setup(
+            hass,
+            make_identity_reservations(*_WRITE_TARGETS),
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_V3},
+        )
+        await self._expect_refusal(
+            hass,
+            "res-456",
+            "continuity is unconfirmed",
+        )
+
+    async def test_ambiguous_refresh_refuses(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """An aborted refresh blocks writes until it is resolved."""
+        entry = await self._setup(
+            hass,
+            make_identity_reservations(*_WRITE_TARGETS),
+        )
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        with patch(
+            "custom_components.guesty.GuestyApiClient.get_reservations",
+            new_callable=AsyncMock,
+            return_value=make_fetch_result(
+                [make_identity_reservation("res-999", "CONF-res-456")],
+            ),
+        ):
+            await coordinator.async_refresh()
+
+        assert not coordinator.last_update_success
+        await self._expect_refusal(
+            hass,
+            "res-456",
+            "aborted because a confirmation code",
+        )
+
+    async def test_target_without_confirmation_code_refuses(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """FR-033: a codeless reservation is not a write target."""
+        await self._setup(
+            hass,
+            [
+                *make_identity_reservations(*_WRITE_TARGETS),
+                make_identity_reservation("res-nocode"),
+            ],
+        )
+        await self._expect_refusal(
+            hass,
+            "res-nocode",
+            "has no known confirmation code",
+        )
+
+    async def test_listing_writes_are_unaffected(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """The guard covers reservations only, never listings."""
+        await self._setup(hass, [])
+
+        with patch.object(
+            GuestyCustomFieldsClient,
+            "set_field",
+            new_callable=AsyncMock,
+            return_value=GuestyCustomFieldResult(
+                success=True,
+                target_type="listing",
+                target_id="lst-123",
+                field_id="cf-region",
+            ),
+        ) as set_field:
+            result = await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_CUSTOM_FIELD,
+                {
+                    "target_type": "listing",
+                    "target_id": "lst-123",
+                    "field_id": "cf-region",
+                    "value": "emea",
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+        assert result is not None
+        assert result["result"] == "success"
+        set_field.assert_awaited_once()
