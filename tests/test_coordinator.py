@@ -1800,7 +1800,7 @@ def _v3_res(
         A GuestyReservation with the segments attached.
     """
     fields: dict[str, object] = {
-        "confirmation_code": "CONF-ABC",
+        "confirmation_code": f"CONF-{res_id}",
         "source": "airbnb",
         "guests_count": segments[0].guests_count,
         "nights_count": 1,
@@ -2229,7 +2229,7 @@ class TestPerListingProjection:
         assert destination.nights_count == 3
         for projection in (origin, destination):
             assert projection.id == "res-multi"
-            assert projection.confirmation_code == "CONF-ABC"
+            assert projection.confirmation_code == "CONF-res-multi"
             assert projection.source == "airbnb"
             assert projection.guest == reservation.guest
             assert projection.custom_fields == reservation.custom_fields

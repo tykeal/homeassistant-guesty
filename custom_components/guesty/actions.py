@@ -11,7 +11,7 @@ HomeAssistantError for clear automation feedback.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Mapping
 from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
@@ -39,6 +39,9 @@ if TYPE_CHECKING:
 
     from custom_components.guesty.api.actions import (
         GuestyActionsClient,
+    )
+    from custom_components.guesty.coordinator import (
+        ReservationsCoordinator,
     )
 
 _LOGGER = logging.getLogger(__name__)
@@ -113,14 +116,52 @@ _SCHEMA_SET_RESERVATION_STATUS = vol.Schema(
 # ── Helpers ─────────────────────────────────────────────────────────
 
 
+def _get_entry_data(
+    hass: HomeAssistant,
+    call: ServiceCall,
+) -> dict[str, Any]:
+    """Resolve the hass.data entry a service call addresses.
+
+    Uses an explicit config_entry_id when provided, otherwise
+    resolves the sole loaded entry automatically.
+
+    Args:
+        hass: Home Assistant instance.
+        call: The incoming service call.
+
+    Returns:
+        The resolved entry's hass.data mapping.
+
+    Raises:
+        HomeAssistantError: If resolution fails.
+    """
+    domain_data: dict[str, Any] = hass.data.get(DOMAIN, {})
+
+    config_entry_id = call.data.get("config_entry_id")
+    if config_entry_id:
+        entry_data: dict[str, Any] | None = domain_data.get(config_entry_id)
+        if entry_data is None:
+            msg = f"Config entry '{config_entry_id}' not found"
+            raise HomeAssistantError(msg)
+        return entry_data
+
+    entries = list(domain_data.keys())
+    if len(entries) == 0:
+        msg = "No Guesty config entries loaded"
+        raise HomeAssistantError(msg)
+    if len(entries) > 1:
+        msg = "Multiple Guesty config entries found; specify config_entry_id"
+        raise HomeAssistantError(msg)
+
+    resolved: dict[str, Any] = domain_data[entries[0]]
+    return resolved
+
+
 def _get_actions_client(
     hass: HomeAssistant,
     call: ServiceCall,
 ) -> GuestyActionsClient:
     """Resolve the GuestyActionsClient for a service call.
-
-    Uses an explicit config_entry_id when provided, otherwise
-    resolves the sole loaded entry automatically.
 
     Args:
         hass: Home Assistant instance.
@@ -132,27 +173,38 @@ def _get_actions_client(
     Raises:
         HomeAssistantError: If resolution fails.
     """
-    domain_data: dict[str, Any] = hass.data.get(DOMAIN, {})
+    client: GuestyActionsClient = _get_entry_data(hass, call)["actions_client"]
+    return client
 
-    config_entry_id = call.data.get("config_entry_id")
-    if config_entry_id:
-        entry_data = domain_data.get(config_entry_id)
-        if entry_data is None:
-            msg = f"Config entry '{config_entry_id}' not found"
-            raise HomeAssistantError(msg)
-        client: GuestyActionsClient = entry_data["actions_client"]
-        return client
 
-    entries = list(domain_data.keys())
-    if len(entries) == 0:
-        msg = "No Guesty config entries loaded"
-        raise HomeAssistantError(msg)
-    if len(entries) > 1:
-        msg = "Multiple Guesty config entries found; specify config_entry_id"
-        raise HomeAssistantError(msg)
+def guard_reservation_write(
+    entry_data: Mapping[str, Any],
+    reservation_id: str,
+    action_type: str,
+) -> None:
+    """Fail a reservation write closed on an unsure identity.
 
-    resolved: GuestyActionsClient = domain_data[entries[0]]["actions_client"]
-    return resolved
+    The guard lives in the Home Assistant service layer so that
+    ``api/`` keeps zero Home Assistant imports (NFR-007). It is
+    evaluated before the request is built, so a refused write sends
+    nothing at all (FR-031c, FR-033).
+
+    Args:
+        entry_data: The addressed entry's hass.data mapping.
+        reservation_id: The reservation the write would target.
+        action_type: The action being refused, for the error.
+
+    Raises:
+        GuestyActionError: When the identity cannot be confirmed.
+    """
+    coordinator: ReservationsCoordinator = entry_data["reservations_coordinator"]
+    refusal = coordinator.identity.write_refusal(reservation_id)
+    if refusal is not None:
+        raise GuestyActionError(
+            refusal,
+            target_id=reservation_id,
+            action_type=action_type,
+        )
 
 
 def _result_to_dict(result: ActionResult) -> dict[str, Any]:
@@ -192,10 +244,17 @@ async def _handle_add_note(
     Raises:
         HomeAssistantError: On API or validation failure.
     """
-    client = _get_actions_client(hass, call)
+    entry_data = _get_entry_data(hass, call)
+    client: GuestyActionsClient = entry_data["actions_client"]
+    reservation_id: str = call.data["reservation_id"]
     try:
+        guard_reservation_write(
+            entry_data,
+            reservation_id,
+            SERVICE_ADD_NOTE,
+        )
         result = await client.add_reservation_note(
-            reservation_id=call.data["reservation_id"],
+            reservation_id=reservation_id,
             note_text=call.data["note_text"],
         )
     except (GuestyActionError, GuestyApiError, ValueError) as exc:
@@ -304,10 +363,17 @@ async def _handle_set_reservation_status(
     Raises:
         HomeAssistantError: On API or validation failure.
     """
-    client = _get_actions_client(hass, call)
+    entry_data = _get_entry_data(hass, call)
+    client: GuestyActionsClient = entry_data["actions_client"]
+    reservation_id: str = call.data["reservation_id"]
     try:
+        guard_reservation_write(
+            entry_data,
+            reservation_id,
+            SERVICE_SET_RESERVATION_STATUS,
+        )
         result = await client.set_reservation_status(
-            reservation_id=call.data["reservation_id"],
+            reservation_id=reservation_id,
             status=call.data["status"],
         )
     except (GuestyActionError, GuestyApiError, ValueError) as exc:

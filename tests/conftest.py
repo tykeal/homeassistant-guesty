@@ -61,6 +61,51 @@ def make_fetch_result(
     )
 
 
+def make_identity_reservation(
+    reservation_id: str,
+    confirmation_code: str | None = None,
+) -> GuestyReservation:
+    """Build a reservation the identity baseline can record.
+
+    Args:
+        reservation_id: Guesty reservation identifier.
+        confirmation_code: Booking confirmation code, if any.
+
+    Returns:
+        A reservation carrying only identity-relevant fields.
+    """
+    now = datetime.now(UTC)
+    return GuestyReservation(
+        id=reservation_id,
+        listing_id="listing-001",
+        status="confirmed",
+        check_in=now + timedelta(days=1),
+        check_out=now + timedelta(days=3),
+        confirmation_code=confirmation_code,
+    )
+
+
+def make_identity_reservations(
+    *reservation_ids: str,
+) -> list[GuestyReservation]:
+    """Build coded reservations for every write target given.
+
+    Writes are refused unless the identity baseline knows the target
+    and its confirmation code, so tests exercising reservation writes
+    seed the first refresh with these.
+
+    Args:
+        *reservation_ids: Identifiers the tests target.
+
+    Returns:
+        One coded reservation per identifier.
+    """
+    return [
+        make_identity_reservation(target, f"CONF-{target}")
+        for target in reservation_ids
+    ]
+
+
 def device_for_listing(
     dev_reg: DeviceRegistry,
     entry_id: str,

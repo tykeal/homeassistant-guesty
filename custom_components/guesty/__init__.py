@@ -26,11 +26,13 @@ from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.httpx_client import get_async_client
 
+from custom_components.guesty.actions import guard_reservation_write
 from custom_components.guesty.api.actions import GuestyActionsClient
 from custom_components.guesty.api.auth import GuestyTokenManager
 from custom_components.guesty.api.client import GuestyApiClient
 from custom_components.guesty.api.custom_fields import GuestyCustomFieldsClient
 from custom_components.guesty.api.exceptions import (
+    GuestyActionError,
     GuestyApiError,
     GuestyCustomFieldError,
     GuestyMessageError,
@@ -63,8 +65,12 @@ from custom_components.guesty.coordinator import (
     ListingsCoordinator,
     ReservationsCoordinator,
 )
+from custom_components.guesty.identity import ReservationIdentityGuard
 
 _LOGGER = logging.getLogger(__name__)
+
+# Custom field target type that addresses a reservation.
+CF_TARGET_RESERVATION = "reservation"
 
 SET_CUSTOM_FIELD_SCHEMA = vol.Schema(
     {
@@ -372,6 +378,16 @@ async def async_setup_entry(
             )
 
         entry_data = next(iter(domain_data.values()))
+
+        if target_type == CF_TARGET_RESERVATION:
+            try:
+                guard_reservation_write(
+                    entry_data,
+                    target_id,
+                    SERVICE_SET_CUSTOM_FIELD,
+                )
+            except GuestyActionError as err:
+                raise HomeAssistantError(str(err)) from err
 
         local_cf_coordinator: CustomFieldsDefinitionCoordinator = entry_data[
             "cf_coordinator"
@@ -879,3 +895,22 @@ async def async_unload_entry(
         await async_unload_actions(hass, entry)
 
     return unload_ok
+
+
+async def async_remove_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+) -> None:
+    """Delete entry-scoped storage when the entry is removed.
+
+    Home Assistant calls this on permanent removal only, never on
+    an unload or a reload, so the identity baseline survives a
+    restart but does not outlive the entry it describes
+    (data-model.md section 4). Constructing the guard directly keeps
+    the cleanup working even when setup never completed.
+
+    Args:
+        hass: Home Assistant instance.
+        entry: The config entry being removed.
+    """
+    await ReservationIdentityGuard(hass, entry.entry_id).async_remove()
