@@ -27,6 +27,11 @@ from custom_components.guesty.api.exceptions import (
     GuestyRateLimitError,
     GuestyResponseError,
 )
+from custom_components.guesty.api.guest_cache import (
+    GuestCache,
+    GuestCacheEntry,
+    GuestLookupResult,
+)
 from custom_components.guesty.api.messaging import (
     GuestyMessagingClient,
 )
@@ -64,6 +69,9 @@ __all__ = [
     "ActionResult",
     "CachedToken",
     "Conversation",
+    "GuestCache",
+    "GuestCacheEntry",
+    "GuestLookupResult",
     "GuestyActionError",
     "GuestyActionsClient",
     "GuestyAddress",

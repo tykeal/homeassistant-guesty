@@ -252,3 +252,26 @@ HOLD_STATUSES: frozenset[str] = frozenset({"alteration"})
 
 # Maximum characters of a response body kept in an error excerpt.
 MAX_ERROR_BODY_EXCERPT: int = 500
+
+# ── Guest lookup and cache (Feature 008) ────────────────────────────
+
+# Guest lookup resource path (UNVERIFIED, OQ-004).
+GUESTS_CRUD_PATH: str = "/guests-crud/{guest_id}"
+
+# Fields requested from the guest lookup resource.
+GUEST_FIELDS: tuple[str, ...] = ("fullName", "phone", "email")
+
+# Freshness of a cached guest record, in seconds (24 hours).
+GUEST_CACHE_TTL_SECONDS: int = 86400
+
+# Freshness of a cached not-found guest, in seconds (1 hour).
+GUEST_CACHE_MISS_TTL_SECONDS: int = 3600
+
+# Maximum guest records retained before LRU eviction.
+GUEST_CACHE_MAX_ENTRIES: int = 512
+
+# Maximum guest lookups issued in a single refresh.
+MAX_GUEST_LOOKUPS_PER_REFRESH: int = 50
+
+# Maximum guest lookups in flight at once.
+GUEST_LOOKUP_CONCURRENCY: int = 4

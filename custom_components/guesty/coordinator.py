@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -19,13 +20,16 @@ from custom_components.guesty.api.const import (
     DEFAULT_FUTURE_DAYS,
     DEFAULT_PAST_DAYS,
     HOLD_STATUSES,
+    RESERVATIONS_API_V3,
 )
 from custom_components.guesty.api.exceptions import (
     GuestyApiError,
     GuestyFilterRejectedError,
 )
+from custom_components.guesty.api.guest_cache import GuestLookupResult
 from custom_components.guesty.api.models import (
     GuestyCustomFieldDefinition,
+    GuestyGuest,
     GuestyListing,
     GuestyReservation,
     GuestyStaySegment,
@@ -217,7 +221,9 @@ class ReservationsCoordinator(
         reservation is attributed to every tracked listing its stay
         touches (FR-009, FR-010). Each attribution is published as a
         per-listing projection (FR-011) whose status is segment-aware
-        for a multi-segment stay (FR-011a).
+        for a multi-segment stay (FR-011a). Guest details are then
+        resolved from the bounded cache for the published
+        reservations only (FR-016, FR-017, NFR-001).
 
         Returns:
             Dictionary mapping listing ID to sorted projections.
@@ -261,11 +267,16 @@ class ReservationsCoordinator(
                 "No known listings yet; skipping %d reservation(s)",
                 len(reservations),
             )
-            _log_refresh_diagnostics(fetch_result, counters)
+            _log_refresh_diagnostics(
+                fetch_result,
+                counters,
+                GuestLookupResult(),
+            )
             return {}
 
         now = datetime.now(UTC)
         grouped: dict[str, list[GuestyReservation]] = defaultdict(list)
+        guest_ids: list[str] = []
 
         for reservation in reservations:
             if reservation.status in HOLD_STATUSES:
@@ -304,6 +315,8 @@ class ReservationsCoordinator(
                 continue
 
             counters.attributed += 1
+            if reservation.guest is not None and reservation.guest.guest_id:
+                guest_ids.append(reservation.guest.guest_id)
             if unknown_ids:
                 counters.partially_attributed += 1
                 _LOGGER.debug(
@@ -318,12 +331,49 @@ class ReservationsCoordinator(
                     _project(reservation, listing_id, segments, now),
                 )
 
-        _log_refresh_diagnostics(fetch_result, counters)
+        lookup = await self._resolve_guests(guest_ids)
+        _log_refresh_diagnostics(fetch_result, counters, lookup)
 
         return {
-            listing_id: sorted(projections, key=lambda r: r.check_in)
+            listing_id: sorted(
+                (_with_guest(projection, lookup.guests) for projection in projections),
+                key=lambda r: r.check_in,
+            )
             for listing_id, projections in grouped.items()
         }
+
+    async def _resolve_guests(
+        self,
+        guest_ids: list[str],
+    ) -> GuestLookupResult:
+        """Resolve guest records for the published reservations.
+
+        Lookups are issued on the v3 path only, where the payload
+        carries a guest id and nothing else; the legacy payloads
+        embed the guest already. Nothing raised here may reach the
+        caller: a guest lookup must never cost a refresh (FR-020,
+        NFR-005).
+
+        Args:
+            guest_ids: Guest ids of the attributed reservations,
+                which may repeat across reservations.
+
+        Returns:
+            The known guest records and this refresh's counters.
+        """
+        distinct = list(dict.fromkeys(guest_ids))
+        if not distinct:
+            return GuestLookupResult()
+        if self.api_client.reservations_api != RESERVATIONS_API_V3:
+            return GuestLookupResult()
+        try:
+            return await self.api_client.resolve_guests(distinct)
+        except Exception as exc:
+            _LOGGER.warning(
+                "Guest lookups failed (%s); publishing without them",
+                type(exc).__name__,
+            )
+            return GuestLookupResult()
 
 
 @dataclass
@@ -349,6 +399,7 @@ class _RefreshCounters:
 def _log_refresh_diagnostics(
     fetch_result: ReservationFetchResult,
     counters: _RefreshCounters,
+    lookup: GuestLookupResult,
 ) -> None:
     """Emit the per-refresh DEBUG diagnostics line (FR-042).
 
@@ -358,11 +409,13 @@ def _log_refresh_diagnostics(
     Args:
         fetch_result: The retrieval result and its source counters.
         counters: The attribution counters of this refresh.
+        lookup: The guest cache counters of this refresh.
     """
     _LOGGER.debug(
         "Reservation refresh: pages=%d statuses=%s segments=%s "
         "attributed=%d partially_attributed=%d skipped=%d "
-        "alteration_drops=%d trim_drops=%d",
+        "alteration_drops=%d trim_drops=%d guest_hits=%d "
+        "guest_lookups=%d guest_failures=%d guest_deferrals=%d",
         fetch_result.pages,
         dict(fetch_result.status_counts),
         dict(fetch_result.segment_histogram),
@@ -371,7 +424,37 @@ def _log_refresh_diagnostics(
         counters.skipped,
         counters.alteration_drops,
         counters.trim_drops,
+        lookup.hits,
+        lookup.lookups,
+        lookup.failures,
+        lookup.deferrals,
     )
+
+
+def _with_guest(
+    reservation: GuestyReservation,
+    guests: Mapping[str, GuestyGuest],
+) -> GuestyReservation:
+    """Attach the cached guest record to one projection.
+
+    A projection whose guest is unknown this refresh keeps its
+    id-only placeholder, so it still publishes with empty guest
+    attributes rather than not publishing at all (FR-020).
+
+    Args:
+        reservation: The projection about to be published.
+        guests: Guest records resolved for this refresh.
+
+    Returns:
+        The projection, with its guest record attached if known.
+    """
+    guest = reservation.guest
+    if guest is None or not guest.guest_id:
+        return reservation
+    resolved = guests.get(guest.guest_id)
+    if resolved is None:
+        return reservation
+    return replace(reservation, guest=resolved)
 
 
 def _within_window(

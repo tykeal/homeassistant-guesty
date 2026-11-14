@@ -4,9 +4,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -16,6 +17,8 @@ from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.guesty.api.const import RESERVATIONS_API_V3
+from custom_components.guesty.api.guest_cache import GuestLookupResult
 from custom_components.guesty.api.models import (
     GuestyCustomFieldDefinition,
     GuestyGuest,
@@ -26,6 +29,7 @@ from custom_components.guesty.api.models import (
 from custom_components.guesty.const import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
+    CONF_RESERVATIONS_API,
     DOMAIN,
 )
 from custom_components.guesty.sensor import (
@@ -3643,3 +3647,220 @@ class TestProjectionSensorCompatibility:
         assert state.attributes["check_out_local"] == "2026-06-16"
         assert state.attributes["guests_count"] == 2
         assert state.attributes["nights_count"] == 2
+
+
+class TestGuestCachePublication:
+    """Tests that cached guests reach the sensor (T058)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.resolve_guests",
+        new_callable=AsyncMock,
+        return_value=GuestLookupResult(),
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=make_fetch_result([]),
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_cached_guest_populates_the_attributes(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        mock_guests: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """Guest attributes come from the cache on the v3 path."""
+        mock_listings.return_value = [sample_listing]
+        mock_reservations.return_value = make_fetch_result(
+            [
+                _make_reservation(
+                    res_id="res-v3",
+                    status="checked_in",
+                    guest=GuestyGuest(guest_id="guest-001"),
+                ),
+            ],
+        )
+        mock_guests.return_value = GuestLookupResult(
+            guests={
+                "guest-001": GuestyGuest(
+                    full_name="Ada Lovelace",
+                    phone="+15550100",
+                    email="ada@example.com",
+                    guest_id="guest-001",
+                ),
+            },
+            lookups=1,
+        )
+
+        entry = _make_v3_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        attrs = _reservation_attributes(hass)
+        assert attrs["guest_name"] == "Ada Lovelace"
+        assert attrs["guest_phone"] == "+15550100"
+        assert attrs["guest_email"] == "ada@example.com"
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.resolve_guests",
+        new_callable=AsyncMock,
+        return_value=GuestLookupResult(),
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=make_fetch_result([]),
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_shared_guest_is_requested_once(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        mock_guests: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """One guest on several stays is looked up once."""
+        mock_listings.return_value = [sample_listing]
+        guest = GuestyGuest(guest_id="guest-001")
+        mock_reservations.return_value = make_fetch_result(
+            [
+                _make_reservation(
+                    res_id="res-a",
+                    status="checked_in",
+                    guest=guest,
+                ),
+                _make_reservation(
+                    res_id="res-b",
+                    status="confirmed",
+                    check_in=_rel(6, 15),
+                    check_out=_rel(8, 11),
+                    guest=guest,
+                ),
+            ],
+        )
+
+        entry = _make_v3_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        mock_guests.assert_awaited_once()
+        assert mock_guests.await_args is not None
+        assert list(mock_guests.await_args.args[0]) == ["guest-001"]
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.resolve_guests",
+        new_callable=AsyncMock,
+        return_value=GuestLookupResult(),
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=make_fetch_result([]),
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_stale_guest_keeps_publishing_during_an_outage(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        mock_guests: AsyncMock,
+        hass: HomeAssistant,
+        sample_listing: object,
+    ) -> None:
+        """A lookup outage leaves the known attributes intact."""
+        mock_listings.return_value = [sample_listing]
+        mock_reservations.return_value = make_fetch_result(
+            [
+                _make_reservation(
+                    res_id="res-v3",
+                    status="checked_in",
+                    guest=GuestyGuest(guest_id="guest-001"),
+                ),
+            ],
+        )
+        mock_guests.return_value = GuestLookupResult(
+            guests={
+                "guest-001": GuestyGuest(
+                    full_name="Ada Lovelace",
+                    guest_id="guest-001",
+                ),
+            },
+            failures=1,
+        )
+
+        entry = _make_v3_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        attrs = _reservation_attributes(hass)
+        assert attrs["guest_name"] == "Ada Lovelace"
+
+
+def _make_v3_entry() -> MockConfigEntry:
+    """Create a config entry selecting the v3 reservation path.
+
+    Returns:
+        A MockConfigEntry with ``reservations_api`` set to v3.
+    """
+    return _make_entry(
+        options={CONF_RESERVATIONS_API: RESERVATIONS_API_V3},
+    )
+
+
+def _reservation_attributes(hass: HomeAssistant) -> Mapping[str, Any]:
+    """Read the reservation status sensor's attributes.
+
+    Args:
+        hass: Home Assistant instance.
+
+    Returns:
+        The attribute mapping of the reservation status sensor.
+    """
+    state = hass.states.get("sensor.beach_house_reservation_status")
+    assert state is not None
+    return state.attributes
