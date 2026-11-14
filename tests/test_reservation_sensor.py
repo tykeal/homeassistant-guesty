@@ -12,16 +12,21 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.components.sensor import SensorDeviceClass
-from homeassistant.const import EntityCategory
+from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import STATE_UNAVAILABLE, EntityCategory
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.guesty.api.const import RESERVATIONS_API_V3
+from custom_components.guesty.api.const import (
+    RESERVATIONS_API_LEGACY,
+    RESERVATIONS_API_V3,
+)
 from custom_components.guesty.api.guest_cache import GuestLookupResult
 from custom_components.guesty.api.models import (
     GuestyCustomFieldDefinition,
     GuestyGuest,
+    GuestyListing,
     GuestyMoney,
     GuestyReservation,
     GuestyStaySegment,
@@ -37,7 +42,11 @@ from custom_components.guesty.sensor import (
     _derive_state,
     _select_reservation,
 )
-from tests.conftest import device_for_listing, make_fetch_result
+from tests.conftest import (
+    device_for_listing,
+    make_fetch_result,
+    stub_guesty_network,
+)
 
 
 def _make_entry(**overrides: object) -> MockConfigEntry:
@@ -1544,7 +1553,11 @@ class TestFinancialDiagnosticSensors:
         )
         mock_reservations.return_value = make_fetch_result([reservation])
 
-        entry = _make_entry()
+        # The money sensors are a legacy-only surface
+        # since the v3 default flip (FR-045).
+        entry = _make_entry(
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
         entry.add_to_hass(hass)
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
@@ -1592,7 +1605,11 @@ class TestFinancialDiagnosticSensors:
         )
         mock_reservations.return_value = make_fetch_result([reservation])
 
-        entry = _make_entry()
+        # The money sensors are a legacy-only surface
+        # since the v3 default flip (FR-045).
+        entry = _make_entry(
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
         entry.add_to_hass(hass)
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
@@ -1639,7 +1656,11 @@ class TestFinancialDiagnosticSensors:
         )
         mock_reservations.return_value = make_fetch_result([reservation])
 
-        entry = _make_entry()
+        # The money sensors are a legacy-only surface
+        # since the v3 default flip (FR-045).
+        entry = _make_entry(
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
         entry.add_to_hass(hass)
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
@@ -1686,7 +1707,11 @@ class TestFinancialDiagnosticSensors:
         )
         mock_reservations.return_value = make_fetch_result([reservation])
 
-        entry = _make_entry()
+        # The money sensors are a legacy-only surface
+        # since the v3 default flip (FR-045).
+        entry = _make_entry(
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
         entry.add_to_hass(hass)
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
@@ -1736,7 +1761,11 @@ class TestFinancialDiagnosticSensors:
         )
         mock_reservations.return_value = make_fetch_result([reservation])
 
-        entry = _make_entry()
+        # The money sensors are a legacy-only surface
+        # since the v3 default flip (FR-045).
+        entry = _make_entry(
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
         entry.add_to_hass(hass)
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
@@ -1779,7 +1808,11 @@ class TestFinancialDiagnosticSensors:
         mock_listings.return_value = [sample_listing]
         mock_reservations.return_value = make_fetch_result([])
 
-        entry = _make_entry()
+        # The money sensors are a legacy-only surface
+        # since the v3 default flip (FR-045).
+        entry = _make_entry(
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
         entry.add_to_hass(hass)
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
@@ -1831,7 +1864,11 @@ class TestFinancialDiagnosticSensors:
         )
         mock_reservations.return_value = make_fetch_result([reservation])
 
-        entry = _make_entry()
+        # The money sensors are a legacy-only surface
+        # since the v3 default flip (FR-045).
+        entry = _make_entry(
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
         entry.add_to_hass(hass)
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
@@ -1883,7 +1920,11 @@ class TestFinancialDiagnosticSensors:
         )
         mock_reservations.return_value = make_fetch_result([reservation])
 
-        entry = _make_entry()
+        # The money sensors are a legacy-only surface
+        # since the v3 default flip (FR-045).
+        entry = _make_entry(
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
         entry.add_to_hass(hass)
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
@@ -1936,7 +1977,11 @@ class TestFinancialDiagnosticSensors:
         )
         mock_reservations.return_value = make_fetch_result([reservation])
 
-        entry = _make_entry()
+        # The money sensors are a legacy-only surface
+        # since the v3 default flip (FR-045).
+        entry = _make_entry(
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
         entry.add_to_hass(hass)
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
@@ -1974,7 +2019,11 @@ class TestFinancialDiagnosticSensors:
         listings_coordinator = MagicMock()
         listings_coordinator.data = None
 
-        entry = _make_entry()
+        # The money sensors are a legacy-only surface
+        # since the v3 default flip (FR-045).
+        entry = _make_entry(
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
         desc = RESERVATION_FINANCIAL_DESCRIPTIONS[0]
         sensor = GuestyFinancialSensor(
             coordinator=res_coordinator,
@@ -2001,7 +2050,11 @@ class TestFinancialDiagnosticSensors:
         listings_coordinator = MagicMock()
         listings_coordinator.data = {}
 
-        entry = _make_entry()
+        # The money sensors are a legacy-only surface
+        # since the v3 default flip (FR-045).
+        entry = _make_entry(
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
         desc = RESERVATION_FINANCIAL_DESCRIPTIONS[0]
         sensor = GuestyFinancialSensor(
             coordinator=res_coordinator,
@@ -2028,7 +2081,11 @@ class TestFinancialDiagnosticSensors:
         res_coordinator.last_update_success = False
         listings_coordinator = MagicMock()
 
-        entry = _make_entry()
+        # The money sensors are a legacy-only surface
+        # since the v3 default flip (FR-045).
+        entry = _make_entry(
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
         desc = RESERVATION_FINANCIAL_DESCRIPTIONS[0]
         sensor = GuestyFinancialSensor(
             coordinator=res_coordinator,
@@ -2055,7 +2112,11 @@ class TestFinancialDiagnosticSensors:
         res_coordinator.last_update_success = True
         listings_coordinator = MagicMock()
 
-        entry = _make_entry()
+        # The money sensors are a legacy-only surface
+        # since the v3 default flip (FR-045).
+        entry = _make_entry(
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
         desc = RESERVATION_FINANCIAL_DESCRIPTIONS[0]
         sensor = GuestyFinancialSensor(
             coordinator=res_coordinator,
@@ -2083,7 +2144,11 @@ class TestFinancialDiagnosticSensors:
         listings_coordinator = MagicMock()
         listings_coordinator.data = None
 
-        entry = _make_entry()
+        # The money sensors are a legacy-only surface
+        # since the v3 default flip (FR-045).
+        entry = _make_entry(
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
         desc = RESERVATION_FINANCIAL_DESCRIPTIONS[0]
         sensor = GuestyFinancialSensor(
             coordinator=res_coordinator,
@@ -2111,7 +2176,11 @@ class TestFinancialDiagnosticSensors:
         listings_coordinator = MagicMock()
         listings_coordinator.data = {"other": MagicMock()}
 
-        entry = _make_entry()
+        # The money sensors are a legacy-only surface
+        # since the v3 default flip (FR-045).
+        entry = _make_entry(
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
         desc = RESERVATION_FINANCIAL_DESCRIPTIONS[0]
         sensor = GuestyFinancialSensor(
             coordinator=res_coordinator,
@@ -2145,7 +2214,11 @@ class TestFinancialDiagnosticSensors:
         }
         listings_coordinator = MagicMock()
 
-        entry = _make_entry()
+        # The money sensors are a legacy-only surface
+        # since the v3 default flip (FR-045).
+        entry = _make_entry(
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
         desc = RESERVATION_FINANCIAL_DESCRIPTIONS[0]
         sensor = GuestyFinancialSensor(
             coordinator=res_coordinator,
@@ -2171,7 +2244,11 @@ class TestFinancialDiagnosticSensors:
         res_coordinator.data = None
         listings_coordinator = MagicMock()
 
-        entry = _make_entry()
+        # The money sensors are a legacy-only surface
+        # since the v3 default flip (FR-045).
+        entry = _make_entry(
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
         desc = RESERVATION_FINANCIAL_DESCRIPTIONS[0]
         sensor = GuestyFinancialSensor(
             coordinator=res_coordinator,
@@ -3935,3 +4012,203 @@ class TestLegacyWriteCountersAreNotAttributes:
         assert after is not None
         assert set(after.attributes) == keys_before
         assert not [key for key in after.attributes if "legacy" in key]
+
+
+class TestFinancialSensorDeprecation:
+    """The three financial sensors on each path (T086)."""
+
+    _KEYS = (
+        "reservation_total",
+        "reservation_balance",
+        "reservation_currency",
+    )
+    _ENTITY_IDS = (
+        "sensor.beach_house_reservation_total",
+        "sensor.beach_house_reservation_balance",
+        "sensor.beach_house_reservation_currency",
+    )
+
+    @staticmethod
+    def _money_reservation() -> GuestyReservation:
+        """Build a legacy reservation carrying money values.
+
+        Returns:
+            A reservation with a populated money object.
+        """
+        return _make_reservation(
+            res_id="res-fin",
+            status="checked_in",
+            money=GuestyMoney(
+                total_paid=1500.50,
+                balance_due=200.00,
+                currency="USD",
+            ),
+        )
+
+    @classmethod
+    def _registry_identity(
+        cls,
+        hass: HomeAssistant,
+    ) -> dict[str, tuple[str, str | None, EntityCategory | None]]:
+        """Capture the identity of the three financial entities.
+
+        Args:
+            hass: Home Assistant instance.
+
+        Returns:
+            Unique id, device and category by entity id.
+        """
+        registry = er.async_get(hass)
+        identity: dict[str, tuple[str, str | None, EntityCategory | None]] = {}
+        for entity_id in cls._ENTITY_IDS:
+            registered = registry.async_get(entity_id)
+            assert registered is not None
+            identity[entity_id] = (
+                registered.unique_id,
+                registered.device_id,
+                registered.entity_category,
+            )
+        return identity
+
+    @classmethod
+    async def _setup_on(
+        cls,
+        hass: HomeAssistant,
+        path: str,
+        listing: GuestyListing,
+    ) -> MockConfigEntry:
+        """Load an entry pinned to one reservation path.
+
+        Args:
+            hass: Home Assistant instance.
+            path: The reservation path to run.
+            listing: The listing the coordinator publishes.
+
+        Returns:
+            The loaded config entry.
+        """
+        entry = _make_entry(options={CONF_RESERVATIONS_API: path})
+        entry.add_to_hass(hass)
+        with stub_guesty_network(
+            listings=[listing],
+            reservations=[cls._money_reservation()],
+        ):
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+        assert entry.state is ConfigEntryState.LOADED
+        return entry
+
+    @classmethod
+    async def _switch_to(
+        cls,
+        hass: HomeAssistant,
+        entry: MockConfigEntry,
+        path: str,
+        listing: GuestyListing,
+    ) -> None:
+        """Switch a loaded entry to the other path and reload.
+
+        Args:
+            hass: Home Assistant instance.
+            entry: The loaded config entry.
+            path: The reservation path to switch to.
+            listing: The listing the coordinator publishes.
+        """
+        with stub_guesty_network(
+            listings=[listing],
+            reservations=[cls._money_reservation()],
+        ):
+            hass.config_entries.async_update_entry(
+                entry,
+                options={**entry.options, CONF_RESERVATIONS_API: path},
+            )
+            await hass.config_entries.async_reload(entry.entry_id)
+            await hass.async_block_till_done()
+        assert entry.state is ConfigEntryState.LOADED
+
+    async def test_legacy_path_still_reports_the_money(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """The rollback target is unchanged (FR-044)."""
+        await self._setup_on(hass, RESERVATIONS_API_LEGACY, sample_listing)
+
+        total = hass.states.get(self._ENTITY_IDS[0])
+        balance = hass.states.get(self._ENTITY_IDS[1])
+        currency = hass.states.get(self._ENTITY_IDS[2])
+        assert total is not None
+        assert balance is not None
+        assert currency is not None
+        assert float(total.state) == 1500.50
+        assert float(balance.state) == 200.00
+        assert currency.state == "USD"
+
+    async def test_v3_path_creates_no_financial_sensor(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """A fresh v3 install never registers them (FR-045)."""
+        entry = await self._setup_on(hass, RESERVATIONS_API_V3, sample_listing)
+
+        registry = er.async_get(hass)
+        for entity_id in self._ENTITY_IDS:
+            assert hass.states.get(entity_id) is None
+            assert registry.async_get(entity_id) is None
+        assert hass.states.get("sensor.beach_house_reservation_status") is not None
+        assert entry.state is ConfigEntryState.LOADED
+
+    async def test_v3_reports_unavailable_after_a_rollback_flip(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """An upgraded entry keeps its ids and goes unavailable."""
+        entry = await self._setup_on(
+            hass,
+            RESERVATIONS_API_LEGACY,
+            sample_listing,
+        )
+        before = self._registry_identity(hass)
+        assert all(
+            category is EntityCategory.DIAGNOSTIC for _, _, category in before.values()
+        )
+
+        await self._switch_to(
+            hass,
+            entry,
+            RESERVATIONS_API_V3,
+            sample_listing,
+        )
+
+        assert self._registry_identity(hass) == before
+        for entity_id in self._ENTITY_IDS:
+            state = hass.states.get(entity_id)
+            assert state is not None
+            assert state.state == STATE_UNAVAILABLE
+
+    async def test_rollback_restores_the_values(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """Flipping back makes the sensors report again."""
+        entry = await self._setup_on(
+            hass,
+            RESERVATIONS_API_LEGACY,
+            sample_listing,
+        )
+        before = self._registry_identity(hass)
+        await self._switch_to(hass, entry, RESERVATIONS_API_V3, sample_listing)
+        await self._switch_to(
+            hass,
+            entry,
+            RESERVATIONS_API_LEGACY,
+            sample_listing,
+        )
+
+        assert self._registry_identity(hass) == before
+        total = hass.states.get(self._ENTITY_IDS[0])
+        assert total is not None
+        assert float(total.state) == 1500.50

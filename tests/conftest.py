@@ -5,11 +5,12 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.core import HomeAssistant
@@ -59,6 +60,67 @@ def make_fetch_result(
         reservations=tuple(reservations or ()),
         **counters,
     )
+
+
+@contextmanager
+def stub_guesty_network(
+    *,
+    listings: list[GuestyListing] | None = None,
+    reservations: list[GuestyReservation] | None = None,
+    bootstrap: list[GuestyReservation] | None = None,
+) -> Generator[None]:
+    """Patch every network call a config entry setup makes.
+
+    An entry that already has reservation entities runs the
+    one-time legacy identity bootstrap sweep (FR-031d), which talks
+    to the legacy source directly rather than through
+    ``get_reservations``, so a test loading an upgraded entry has to
+    stub that too.
+
+    Args:
+        listings: Listings the listings coordinator receives.
+        reservations: Reservations each refresh receives.
+        bootstrap: Reservations the bootstrap sweep receives.
+
+    Yields:
+        None, with the Guesty client patched for the duration.
+    """
+    legacy_source = MagicMock()
+    legacy_source.return_value.fetch = AsyncMock(
+        return_value=make_fetch_result(list(bootstrap or ())),
+    )
+    with (
+        patch(
+            "custom_components.guesty.GuestyApiClient.test_connection",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "custom_components.guesty.GuestyApiClient.get_account_id",
+            new_callable=AsyncMock,
+            return_value="account-001",
+        ),
+        patch(
+            "custom_components.guesty.GuestyApiClient.get_listings",
+            new_callable=AsyncMock,
+            return_value=list(listings or ()),
+        ),
+        patch(
+            "custom_components.guesty.GuestyApiClient.get_reservations",
+            new_callable=AsyncMock,
+            return_value=make_fetch_result(list(reservations or ())),
+        ),
+        patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch(
+            "custom_components.guesty.identity.LegacyReservationSource",
+            legacy_source,
+        ),
+    ):
+        yield
 
 
 def make_identity_reservation(

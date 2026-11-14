@@ -229,7 +229,10 @@ Persisted with `homeassistant.helpers.storage.Store`, key
 | `path` | `"v3" \| "legacy"` | which path produced the baseline (FR-031b) |
 | `continuity` | `verified`, `unconfirmed` or `not_applicable` | cross-path |
 | `updated` | `str` | ISO timestamp of the last successful refresh |
+| `divergent` | `bool` | paths numbered one booking differently |
+| `bootstrap_attempted` | `bool` | the one-time sweep was decided |
 | `codes` | `dict[str, str]` | confirmation code → reservation id |
+| `legacy_codes` | `dict[str, str] \| None` | retained pre-switch map |
 | `bootstrap_codes` | `dict[str, str] \| None` | retained legacy map |
 | `fallback_codes` | `dict[str, str] \| None` | fallback-sourced map |
 | `candidates` | `dict[str, CandidateHint]` | id → stay dates, see §4.1 |
@@ -257,6 +260,23 @@ a code it did not cover is kept, and reaching `verified` continuity does
 not clear the remainder. An unchecked entry is retired only under the
 explicit safe policy that its reservation checked out more than
 `past_days` ago and so can never recur in a future window.
+
+`legacy_codes` holds the legacy-path evidence retained when an entry
+that had been running on the legacy path moves to v3. It exists for the
+same reason as `bootstrap_codes`: one disjoint v3 refresh must not be
+able to discard the only cross-path evidence the entry has.
+
+`divergent` records that the two paths were observed to number the same
+booking differently. It is **sticky**: once set it is never cleared by
+a later agreeing refresh, because a path that has contradicted itself
+once has not been shown to be trustworthy by agreeing later.
+
+`bootstrap_attempted` records that the one-time legacy sweep has been
+decided for this entry, whether it succeeded, failed or was skipped.
+Persisting the attempt rather than its result is what makes the sweep
+genuinely one-time across restarts and reloads (FR-031d): a sweep that
+failed must not be retried on every start, since that would turn a
+bounded exception to FR-001 into a recurring legacy call.
 
 `fallback_codes` holds the code-to-id mappings learned from
 fallback-sourced reservations (§9). It is kept apart from `codes` for

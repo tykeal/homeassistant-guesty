@@ -373,6 +373,13 @@ class GuestyOptionsFlowHandler(OptionsFlow):
         Returns:
             Config flow result (form or next step).
         """
+        if self._config_entry.entry_id not in self.hass.data.get(DOMAIN, {}):
+            # Setup never completed, so there is no API client to
+            # list with. The reservation path selector has to stay
+            # reachable anyway: a failed first v3 refresh is exactly
+            # when the documented rollback is needed (FR-039).
+            return await self.async_step_rollback()
+
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -411,6 +418,55 @@ class GuestyOptionsFlowHandler(OptionsFlow):
             step_id="init",
             data_schema=schema,
             errors=errors,
+        )
+
+    async def async_step_rollback(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Offer only the reservation path while setup is broken.
+
+        Every other option is carried over untouched, because the
+        listings cannot be re-selected without an API client and
+        silently dropping them would compound the failure.
+
+        Args:
+            user_input: User-provided form data, or None for
+                initial display.
+
+        Returns:
+            Config flow result (form or entry creation).
+        """
+        if user_input is not None:
+            result = self.async_create_entry(
+                title="",
+                data={
+                    **self._config_entry.options,
+                    CONF_RESERVATIONS_API: user_input[CONF_RESERVATIONS_API],
+                },
+            )
+            # A failed setup never registered the update listener,
+            # so nothing else would act on the new option until a
+            # retry or a restart. Recovery has to be immediate.
+            self.hass.async_create_task(
+                self.hass.config_entries.async_reload(
+                    self._config_entry.entry_id,
+                ),
+            )
+            return result
+
+        return self.async_show_form(
+            step_id="rollback",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_RESERVATIONS_API,
+                        default=_current_reservations_api(
+                            self._config_entry,
+                        ),
+                    ): _reservations_api_selector(),
+                }
+            ),
         )
 
     async def async_step_select_listings(
@@ -590,22 +646,7 @@ class GuestyOptionsFlowHandler(OptionsFlow):
                 vol.Required(
                     CONF_RESERVATIONS_API,
                     default=current_reservations_api,
-                ): SelectSelector(
-                    SelectSelectorConfig(
-                        options=[
-                            SelectOptionDict(
-                                value=RESERVATIONS_API_V3,
-                                label="Reservations v3 API",
-                            ),
-                            SelectOptionDict(
-                                value=RESERVATIONS_API_LEGACY,
-                                label="Legacy reservations API",
-                            ),
-                        ],
-                        mode=SelectSelectorMode.DROPDOWN,
-                        translation_key=CONF_RESERVATIONS_API,
-                    ),
-                ),
+                ): _reservations_api_selector(),
             }
         )
 
@@ -613,6 +654,30 @@ class GuestyOptionsFlowHandler(OptionsFlow):
             step_id="intervals",
             data_schema=schema,
         )
+
+
+def _reservations_api_selector() -> SelectSelector:
+    """Build the reservation path selector.
+
+    Returns:
+        A dropdown offering the v3 and legacy reservation paths.
+    """
+    return SelectSelector(
+        SelectSelectorConfig(
+            options=[
+                SelectOptionDict(
+                    value=RESERVATIONS_API_V3,
+                    label="Reservations v3 API",
+                ),
+                SelectOptionDict(
+                    value=RESERVATIONS_API_LEGACY,
+                    label="Legacy reservations API",
+                ),
+            ],
+            mode=SelectSelectorMode.DROPDOWN,
+            translation_key=CONF_RESERVATIONS_API,
+        ),
+    )
 
 
 def _current_reservations_api(entry: ConfigEntry) -> str:

@@ -682,6 +682,7 @@ class TestOptionsFlow:
         )
 
         entry = hass.config_entries.async_entries(DOMAIN)[0]
+        _setup_api_client(hass, entry.entry_id)
         result = await hass.config_entries.options.async_init(
             entry.entry_id,
         )
@@ -829,6 +830,7 @@ class TestReservationOptionsFlow:
             data=VALID_INPUT,
         )
         entry = hass.config_entries.async_entries(DOMAIN)[0]
+        _setup_api_client(hass, entry.entry_id)
 
         result = await hass.config_entries.options.async_init(
             entry.entry_id,
@@ -1957,3 +1959,217 @@ class TestReservationsApiOption:
         )
         assert result["type"] is FlowResultType.CREATE_ENTRY
         assert entry.options[CONF_RESERVATIONS_API] == DEFAULT_RESERVATIONS_API
+
+
+class TestReservationsApiDefaultIsV3:
+    """The option defaults to v3 for every entry (T085, FR-037)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions for setup tests."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
+    @staticmethod
+    def _option_marker(result: ConfigFlowResult) -> Any:
+        """Find the reservations_api marker in a form result.
+
+        Args:
+            result: Flow result holding the intervals schema.
+
+        Returns:
+            The voluptuous marker for the option.
+        """
+        data_schema = result["data_schema"]
+        assert data_schema is not None
+        for marker in dict(data_schema.schema):
+            if marker == CONF_RESERVATIONS_API:
+                return marker
+        raise AssertionError("reservations_api missing from schema")
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_fresh_installation_is_offered_v3(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """A brand-new entry sees v3 selected already."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        _setup_api_client(hass, entry.entry_id)
+
+        result = await _navigate_to_intervals(hass, entry.entry_id)
+
+        assert self._option_marker(result).default() == RESERVATIONS_API_V3
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_submitting_the_form_untouched_stores_v3(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """An unattended installation becomes compliant."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        _setup_api_client(hass, entry.entry_id)
+
+        result = await _navigate_to_intervals(hass, entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input=dict(_DEFAULT_INTERVALS),
+        )
+
+        assert entry.options[CONF_RESERVATIONS_API] == RESERVATIONS_API_V3
+
+    @patch(
+        "custom_components.guesty.async_setup_entry",
+        return_value=True,
+    )
+    @patch(
+        "custom_components.guesty.config_flow._validate_credentials",
+        new_callable=AsyncMock,
+    )
+    async def test_upgraded_entry_is_offered_v3_unmigrated(
+        self,
+        mock_validate: AsyncMock,
+        mock_setup: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """A pre-feature entry gets v3 without a schema bump."""
+        await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_USER},
+            data=VALID_INPUT,
+        )
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        hass.config_entries.async_update_entry(
+            entry,
+            options={CONF_SCAN_INTERVAL: 15},
+        )
+        _setup_api_client(hass, entry.entry_id)
+
+        result = await _navigate_to_intervals(hass, entry.entry_id)
+
+        assert CONF_RESERVATIONS_API not in entry.options
+        assert self._option_marker(result).default() == RESERVATIONS_API_V3
+        assert entry.version == 1
+
+
+class TestRollbackWithoutASuccessfulSetup:
+    """The rollback stays reachable when setup failed (FR-039)."""
+
+    @staticmethod
+    def _entry(hass: HomeAssistant) -> MockConfigEntry:
+        """Add a configured entry whose setup never completed.
+
+        Args:
+            hass: Home Assistant instance.
+
+        Returns:
+            The entry, with no runtime data registered.
+        """
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data=VALID_INPUT,
+            options={
+                CONF_TAG_FILTER: ["beach"],
+                CONF_SELECTED_LISTINGS: ["listing-1"],
+                CONF_SCAN_INTERVAL: 15,
+                CONF_RESERVATION_SCAN_INTERVAL: 15,
+                CONF_PAST_DAYS: 30,
+                CONF_FUTURE_DAYS: 365,
+                CONF_RESERVATIONS_API: RESERVATIONS_API_V3,
+            },
+        )
+        entry.add_to_hass(hass)
+        return entry
+
+    async def test_the_selector_is_reachable(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A failed first v3 refresh still offers the option."""
+        entry = self._entry(hass)
+
+        result = await hass.config_entries.options.async_init(
+            entry.entry_id,
+        )
+
+        assert result["step_id"] == "rollback"
+        schema = result["data_schema"]
+        assert schema is not None
+        assert CONF_RESERVATIONS_API in dict(schema.schema)
+
+    async def test_switching_back_preserves_the_options(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Rolling back changes nothing but the reservation path."""
+        entry = self._entry(hass)
+
+        result = await hass.config_entries.options.async_init(
+            entry.entry_id,
+        )
+        await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
+        await hass.async_block_till_done()
+
+        assert entry.options[CONF_RESERVATIONS_API] == RESERVATIONS_API_LEGACY
+        assert entry.options[CONF_SELECTED_LISTINGS] == ["listing-1"]
+        assert entry.options[CONF_TAG_FILTER] == ["beach"]
+        assert entry.options[CONF_PAST_DAYS] == 30
+
+    async def test_submitting_reloads_the_entry(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Recovery does not wait for a retry or a restart."""
+        entry = self._entry(hass)
+
+        with patch(
+            "homeassistant.config_entries.ConfigEntries.async_reload",
+            new_callable=AsyncMock,
+        ) as mock_reload:
+            result = await hass.config_entries.options.async_init(
+                entry.entry_id,
+            )
+            await hass.config_entries.options.async_configure(
+                result["flow_id"],
+                user_input={
+                    CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY,
+                },
+            )
+            await hass.async_block_till_done()
+
+        assert entry.options[CONF_RESERVATIONS_API] == RESERVATIONS_API_LEGACY
+        mock_reload.assert_awaited_once_with(entry.entry_id)

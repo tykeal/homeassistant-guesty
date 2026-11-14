@@ -25,7 +25,7 @@ from custom_components.guesty.api.models import (
     GuestyMoney,
     GuestyReservation,
 )
-from custom_components.guesty.const import DOMAIN
+from custom_components.guesty.const import DOMAIN, RESERVATIONS_API_V3
 from custom_components.guesty.entity import GuestyEntity
 
 if TYPE_CHECKING:
@@ -845,6 +845,15 @@ async def async_setup_entry(
     ]
     entry_data = hass.data[DOMAIN][entry.entry_id]
 
+    # FR-045: the v3 generation carries no reservation financial
+    # data, so the three sensors fed by it are not created at all.
+    # Registry entries left by an earlier release are deliberately
+    # not removed: Home Assistant then reports them `unavailable`
+    # under their existing entity ids, and a flip back to the legacy
+    # path restores them without risking a `_2` suffix on the
+    # dashboards this deprecation is meant to protect (FR-048).
+    financial_deprecated = res_coordinator.reservations_path == RESERVATIONS_API_V3
+
     known_ids: set[str] = set()
     known_cf_keys: dict[str, set[str]] = {}
     seen_slugs_per_listing: dict[str, dict[str, int]] = {}
@@ -933,6 +942,8 @@ async def async_setup_entry(
                 )
             )
             # Financial diagnostic sensors
+            if financial_deprecated:
+                continue
             for fin_desc in RESERVATION_FINANCIAL_DESCRIPTIONS:
                 entities.append(
                     GuestyFinancialSensor(

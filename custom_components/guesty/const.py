@@ -75,8 +75,14 @@ RESERVATIONS_API_V3: str = api_const.RESERVATIONS_API_V3
 # Legacy Open API reservations path selector value.
 RESERVATIONS_API_LEGACY: str = api_const.RESERVATIONS_API_LEGACY
 
-# Default reservation API path. Flipped to v3 by Feature 008 Phase 8.
-DEFAULT_RESERVATIONS_API: str = RESERVATIONS_API_LEGACY
+# Default reservation API path (FR-037). Flipped to v3 by Feature
+# 008 Phase 8: Guesty retires the legacy reservation resources on
+# 2027-03-01, so an installation left on the default has to be the
+# one that keeps working. Existing entries are not migrated, they
+# simply pick the new default up, and setting the option back to
+# "legacy" and reloading is the documented rollback until the
+# retirement date.
+DEFAULT_RESERVATIONS_API: str = RESERVATIONS_API_V3
 
 # Date Guesty retires the legacy Open API reservation resources.
 LEGACY_RESERVATIONS_RETIREMENT_DATE: str = api_const.LEGACY_RESERVATIONS_RETIREMENT_DATE

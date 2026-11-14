@@ -13,16 +13,23 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+import respx
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.guesty.api.auth import GuestyTokenManager
+from custom_components.guesty.api.client import GuestyApiClient
 from custom_components.guesty.api.const import (
+    BASE_URL,
     DEFAULT_FUTURE_DAYS,
     DEFAULT_PAST_DAYS,
     RESERVATIONS_API_LEGACY,
     RESERVATIONS_API_V3,
+    RESERVATIONS_ENDPOINT,
+    RESERVATIONS_V3_SEARCH_ENDPOINT,
+    TOKEN_URL,
 )
 from custom_components.guesty.api.exceptions import (
     GuestyAuthError,
@@ -58,7 +65,14 @@ from custom_components.guesty.coordinator import (
     ListingsCoordinator,
     ReservationsCoordinator,
 )
-from tests.conftest import make_fetch_result, make_listing_dict
+from tests.conftest import (
+    FakeTokenStorage,
+    make_fetch_result,
+    make_listing_dict,
+    make_token_response,
+    make_v3_reservation,
+    make_v3_search_page,
+)
 
 
 def _rel(days: int, hour: int, minute: int = 0) -> datetime:
@@ -2811,3 +2825,106 @@ class TestGuestLookupScope:
         assert "guest_deferrals=4" in lines[0]
         for secret in ("Jane Traveller", "+15551234567", "jane@example.com"):
             assert secret not in caplog.text
+
+
+class TestNoFolioOrPaymentsRequests:
+    """No financial resource is ever contacted (T088, FR-043)."""
+
+    @staticmethod
+    def _client(path: str) -> GuestyApiClient:
+        """Build a real API client on one reservation path.
+
+        Args:
+            path: The reservation path to select.
+
+        Returns:
+            A client whose HTTP calls respx can observe.
+        """
+        http = httpx.AsyncClient()
+        return GuestyApiClient(
+            token_manager=GuestyTokenManager(
+                client_id="test-client-id",
+                client_secret="test-client-secret",
+                http_client=http,
+                storage=FakeTokenStorage(),
+                refresh_buffer=0,
+            ),
+            http_client=http,
+            reservations_api=path,
+        )
+
+    async def _refresh(
+        self,
+        hass: HomeAssistant,
+        path: str,
+        page: dict[str, object],
+        endpoint: str,
+    ) -> list[str]:
+        """Run one full refresh and report the URLs it requested.
+
+        Args:
+            hass: Home Assistant instance.
+            path: The reservation path to run.
+            page: The reservation page the endpoint answers with.
+            endpoint: The reservation endpoint of that path.
+
+        Returns:
+            Every URL the refresh requested, as a string.
+        """
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = {"listing-001": _listing("listing-001")}
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=self._client(path),
+            listings_coordinator=listings_coordinator,
+        )
+        with respx.mock(assert_all_called=False) as router:
+            router.post(TOKEN_URL).mock(
+                return_value=httpx.Response(200, json=make_token_response()),
+            )
+            router.get(f"{BASE_URL}{endpoint}").mock(
+                return_value=httpx.Response(200, json=page),
+            )
+            catch_all = router.route().mock(
+                return_value=httpx.Response(200, json={}),
+            )
+            await coordinator._async_update_data()
+            assert not catch_all.called
+            return [str(call.request.url) for call in router.calls]
+
+    async def test_v3_refresh_touches_no_financial_resource(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """The v3 path asks for no folio and no payments."""
+        urls = await self._refresh(
+            hass,
+            RESERVATIONS_API_V3,
+            make_v3_search_page([make_v3_reservation("res-001")]),
+            RESERVATIONS_V3_SEARCH_ENDPOINT,
+        )
+
+        assert urls
+        for url in urls:
+            assert "guest-folio" not in url
+            assert "payments" not in url
+
+    async def test_legacy_refresh_touches_no_financial_resource(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """The rollback target asks for nothing extra either."""
+        urls = await self._refresh(
+            hass,
+            RESERVATIONS_API_LEGACY,
+            {"results": [], "count": 0, "limit": 100, "skip": 0},
+            RESERVATIONS_ENDPOINT,
+        )
+
+        assert urls
+        for url in urls:
+            assert "guest-folio" not in url
+            assert "payments" not in url

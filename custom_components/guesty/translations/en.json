@@ -1,5 +1,9 @@
 {
     "issues": {
+        "financial_sensors_deprecated": {
+            "title": "Guesty reservation financial sensors are deprecated",
+            "description": "The v3 Guesty reservation API does not return reservation money, so the reservation **total paid**, **balance due** and **currency** sensors are no longer created for **{title}**.\n\nTheir entity IDs are deliberately kept, so nothing else on your dashboards is renamed. Home Assistant reports them as *unavailable* instead. A sensor that is visibly unavailable is safer than one that keeps showing a monetary value nobody is refreshing.\n\nTo get the values back, set the **Reservations API** option to **legacy** and reload the entry. The legacy reservation API is retired by Guesty on {retirement_date}, after which reservation financial data is no longer available to this integration at all."
+        },
         "identity_continuity_unconfirmed": {
             "title": "Guesty reservation identity continuity is unconfirmed",
             "description": "Guesty could not confirm that the legacy and v3 reservation APIs identify the same booking by the same identifier for **{title}**, because the one-time legacy identity check was unavailable or found no reservation in common.\n\nReservations are still published normally. Reservation writes \u2014 adding a note, changing a status and setting a reservation custom field \u2014 are refused, so that a wrong identifier cannot act on someone else's booking.\n\nLeave the integration running: the notice clears automatically as soon as a refresh shares a confirmation code with the earlier evidence. To restore writes immediately, set the **Reservations API** option to **legacy** and reload the entry."
@@ -47,6 +51,16 @@
                     "tag_filter": "Enter one or more Guesty listing tags. Only listings with matching tags will appear in the selector."
                 }
             },
+           "rollback": {
+             "title": "Reservations API",
+             "description": "This entry has not finished setting up, so only the reservation API selection can be changed. Choosing 'Legacy reservations API' and reloading the entry restores the previous behaviour. The legacy reservations API is retired on 2027-03-01.",
+             "data": {
+               "reservations_api": "Reservations API"
+             },
+             "data_description": {
+               "reservations_api": "Select which Guesty reservation API to use. Your listing selection and polling intervals are left unchanged."
+             }
+           },
             "select_listings": {
                 "title": "Select Listings",
                 "description": "Choose which Guesty listings to track in Home Assistant. At least one listing must be selected.",
