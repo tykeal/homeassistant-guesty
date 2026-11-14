@@ -69,5 +69,7 @@ async def async_get_config_entry_diagnostics(
                 "sourced_ids": sorted(coordinator.fallback_sourced_ids),
             },
             "legacy_writes": legacy_writes,
+            "bootstrap_pages": coordinator.bootstrap_pages,
+            "refresh": dict(coordinator.last_refresh_diagnostics),
         },
     }

@@ -49,6 +49,7 @@ from custom_components.guesty.const import (
     CONF_CLIENT_SECRET,
     CONF_RESERVATIONS_API,
     DOMAIN,
+    RESERVATIONS_API_LEGACY,
     RESERVATIONS_API_V3,
 )
 from custom_components.guesty.identity import CONTINUITY_UNCONFIRMED
@@ -1049,7 +1050,13 @@ class TestIntegrationEndToEnd:
             TOKEN_URL,
         )
 
-        await _setup_entry(hass)
+        # This is the legacy note write route, which
+        # FR-040 keeps byte-identical; the v3 route has
+        # its own end-to-end coverage below.
+        await _setup_entry(
+            hass,
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
 
         with respx.mock:
             respx.post(TOKEN_URL).mock(
@@ -1288,7 +1295,13 @@ class TestIntegrationEndToEnd:
             TOKEN_URL,
         )
 
-        await _setup_entry(hass)
+        # This is the legacy note write route, which
+        # FR-040 keeps byte-identical; the v3 route has
+        # its own end-to-end coverage below.
+        await _setup_entry(
+            hass,
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
 
         with respx.mock:
             respx.post(TOKEN_URL).mock(

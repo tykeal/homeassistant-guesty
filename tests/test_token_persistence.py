@@ -15,13 +15,17 @@ from homeassistant.core import HomeAssistant
 from httpx import Response
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.guesty.api.const import BASE_URL, TOKEN_URL
+from custom_components.guesty.api.const import (
+    BASE_URL,
+    RESERVATIONS_V3_SEARCH_ENDPOINT,
+    TOKEN_URL,
+)
 from custom_components.guesty.const import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
     DOMAIN,
 )
-from tests.conftest import make_token_response
+from tests.conftest import make_token_response, make_v3_search_page
 
 
 def _entry_with_token(
@@ -91,6 +95,12 @@ class TestTokenPersistenceAcrossRestart:
         respx.get(f"{BASE_URL}/reservations").mock(
             return_value=Response(200, json={"results": []}),
         )
+        # The default reservation path is v3 (FR-037), so the
+        # restart these tests exercise goes through the search
+        # resource rather than the legacy collection.
+        respx.get(f"{BASE_URL}{RESERVATIONS_V3_SEARCH_ENDPOINT}").mock(
+            return_value=Response(200, json=make_v3_search_page([])),
+        )
 
         entry = _entry_with_token()
         entry.add_to_hass(hass)
@@ -115,6 +125,12 @@ class TestTokenPersistenceAcrossRestart:
         respx.get(f"{BASE_URL}/reservations").mock(
             return_value=Response(200, json={"results": []}),
         )
+        # The default reservation path is v3 (FR-037), so the
+        # restart these tests exercise goes through the search
+        # resource rather than the legacy collection.
+        respx.get(f"{BASE_URL}{RESERVATIONS_V3_SEARCH_ENDPOINT}").mock(
+            return_value=Response(200, json=make_v3_search_page([])),
+        )
 
         entry = _entry_with_token(expired=True)
         entry.add_to_hass(hass)
@@ -137,6 +153,12 @@ class TestTokenPersistenceAcrossRestart:
         )
         respx.get(f"{BASE_URL}/reservations").mock(
             return_value=Response(200, json={"results": []}),
+        )
+        # The default reservation path is v3 (FR-037), so the
+        # restart these tests exercise goes through the search
+        # resource rather than the legacy collection.
+        respx.get(f"{BASE_URL}{RESERVATIONS_V3_SEARCH_ENDPOINT}").mock(
+            return_value=Response(200, json=make_v3_search_page([])),
         )
 
         entry = _entry_with_token(missing=True)
@@ -174,6 +196,12 @@ class TestTenRestartScenario:
         )
         respx.get(f"{BASE_URL}/reservations").mock(
             return_value=Response(200, json={"results": []}),
+        )
+        # The default reservation path is v3 (FR-037), so the
+        # restart these tests exercise goes through the search
+        # resource rather than the legacy collection.
+        respx.get(f"{BASE_URL}{RESERVATIONS_V3_SEARCH_ENDPOINT}").mock(
+            return_value=Response(200, json=make_v3_search_page([])),
         )
 
         for _i in range(10):

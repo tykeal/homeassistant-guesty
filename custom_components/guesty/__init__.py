@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
@@ -25,6 +25,7 @@ from homeassistant.core import (
 )
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.httpx_client import get_async_client
 
@@ -89,6 +90,9 @@ CF_TARGET_RESERVATION = "reservation"
 
 # Repairs issue and translation key for FR-031c's write refusal.
 ISSUE_IDENTITY_UNCONFIRMED = "identity_continuity_unconfirmed"
+
+# Repairs issue and translation key for FR-046's deprecation notice.
+ISSUE_FINANCIAL_DEPRECATED = "financial_sensors_deprecated"
 
 SET_CUSTOM_FIELD_SCHEMA = vol.Schema(
     {
@@ -239,6 +243,108 @@ class HATokenStorage:
 # Verify protocol compliance at type-check time only
 if TYPE_CHECKING:
     _check: TokenStorage = HATokenStorage.__new__(HATokenStorage)
+
+
+FINANCIAL_SENSOR_KEYS: Final[tuple[str, ...]] = (
+    "reservation_total",
+    "reservation_balance",
+    "reservation_currency",
+)
+
+
+def async_notify_financial_deprecation(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+) -> None:
+    """Surface, or withdraw, the FR-046 deprecation notice (T094).
+
+    The v3 reservation generation carries no financial data, so the
+    three money sensors are no longer created. Their registry
+    entries are kept, which means Home Assistant reports them
+    `unavailable` rather than removing them: an entity that is
+    visibly unavailable is better than one that keeps showing a
+    monetary value nobody is refreshing, and keeping the registry
+    entry is what guarantees a rollback restores the same entity
+    ids instead of suffixed ones (FR-047, FR-048).
+
+    That is invisible on a dashboard until someone notices a card
+    has gone blank, so it is reported through both surfaces decided
+    in OQ-009: a non-fixable repairs issue, the only in-product
+    surface a dashboard-only user sees, and one warning log line.
+
+    Nothing is said to an installation that never had the sensors:
+    a fresh v3 install has lost nothing and does not need a repair
+    about it.
+
+    Args:
+        hass: Home Assistant instance.
+        entry: The config entry being set up.
+    """
+    issue_id = f"{ISSUE_FINANCIAL_DEPRECATED}_{entry.entry_id}"
+    on_v3 = (
+        entry.options.get(
+            CONF_RESERVATIONS_API,
+            DEFAULT_RESERVATIONS_API,
+        )
+        != RESERVATIONS_API_LEGACY
+    )
+    if not on_v3 or not _has_financial_entities(hass, entry.entry_id):
+        ir.async_delete_issue(hass, DOMAIN, issue_id)
+        return
+
+    # A restored non-persistent issue is inactive, so this is
+    # "already reported during this Home Assistant run" rather than
+    # "ever reported", which is what keeps a reload quiet without
+    # silencing the notice forever.
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, issue_id)
+    reported = issue is not None and issue.active
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        issue_id,
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key=ISSUE_FINANCIAL_DEPRECATED,
+        translation_placeholders={
+            "title": entry.title,
+            "retirement_date": LEGACY_RESERVATIONS_RETIREMENT_DATE,
+        },
+    )
+    if reported:
+        return
+
+    _LOGGER.warning(
+        "Guesty reservation financial sensors are deprecated for "
+        "'%s'. The v3 reservation API does not return reservation "
+        "money, so the total_paid, balance_due and currency sensors "
+        "are no longer created and now report 'unavailable'. Their "
+        "entity ids are kept, so nothing else on your dashboards "
+        "moves, and an unavailable sensor is safer than one showing "
+        "a value that is no longer being refreshed. To get the "
+        "values back, set the 'Reservations API' option to 'legacy' "
+        "and reload the entry; the legacy reservation API is "
+        "retired on %s, after which the values are gone for good",
+        entry.title,
+        LEGACY_RESERVATIONS_RETIREMENT_DATE,
+    )
+
+
+def _has_financial_entities(hass: HomeAssistant, entry_id: str) -> bool:
+    """Report whether this entry registered the money sensors.
+
+    Args:
+        hass: Home Assistant instance.
+        entry_id: The config entry identifier.
+
+    Returns:
+        True when at least one financial sensor is registered.
+    """
+    registry = er.async_get(hass)
+    return any(
+        entity.unique_id.endswith(key)
+        for entity in er.async_entries_for_config_entry(registry, entry_id)
+        for key in FINANCIAL_SENSOR_KEYS
+    )
 
 
 def async_notify_identity_continuity(
@@ -432,7 +538,7 @@ async def async_setup_entry(
     )
     # Permitted legacy call 1 of FR-001: one-time, pre-publication,
     # and only for an entry upgrading from a legacy-only release.
-    await async_bootstrap_identity(
+    bootstrap = await async_bootstrap_identity(
         hass,
         entry,
         guard=reservations_coordinator.identity,
@@ -443,6 +549,7 @@ async def async_setup_entry(
             DEFAULT_FUTURE_DAYS,
         ),
     )
+    reservations_coordinator.bootstrap_pages = bootstrap.pages
     await reservations_coordinator.async_config_entry_first_refresh()
     async_notify_identity_continuity(
         hass,
@@ -450,6 +557,7 @@ async def async_setup_entry(
         reservations_coordinator.identity,
     )
     async_track_identity_continuity(hass, entry, reservations_coordinator)
+    async_notify_financial_deprecation(hass, entry)
 
     messaging_client = GuestyMessagingClient(api_client)
     actions_client = GuestyActionsClient(api_client)
@@ -1069,5 +1177,10 @@ async def async_remove_entry(
         hass,
         DOMAIN,
         f"{ISSUE_IDENTITY_UNCONFIRMED}_{entry.entry_id}",
+    )
+    ir.async_delete_issue(
+        hass,
+        DOMAIN,
+        f"{ISSUE_FINANCIAL_DEPRECATED}_{entry.entry_id}",
     )
     await ReservationIdentityGuard(hass, entry.entry_id).async_remove()

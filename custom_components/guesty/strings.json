@@ -1,5 +1,9 @@
 {
     "issues": {
+        "financial_sensors_deprecated": {
+            "title": "Guesty reservation financial sensors are deprecated",
+            "description": "The v3 Guesty reservation API does not return reservation money, so the reservation **total paid**, **balance due** and **currency** sensors are no longer created for **{title}**.\n\nTheir entity IDs are deliberately kept, so nothing else on your dashboards is renamed. Home Assistant reports them as *unavailable* instead. A sensor that is visibly unavailable is safer than one that keeps showing a monetary value nobody is refreshing.\n\nTo get the values back, set the **Reservations API** option to **legacy** and reload the entry. The legacy reservation API is retired by Guesty on {retirement_date}, after which reservation financial data is no longer available to this integration at all."
+        },
         "identity_continuity_unconfirmed": {
             "title": "Guesty reservation identity continuity is unconfirmed",
             "description": "Guesty could not confirm that the legacy and v3 reservation APIs identify the same booking by the same identifier for **{title}**, because the one-time legacy identity check was unavailable or found no reservation in common.\n\nReservations are still published normally. Reservation writes \u2014 adding a note, changing a status and setting a reservation custom field \u2014 are refused, so that a wrong identifier cannot act on someone else's booking.\n\nLeave the integration running: the notice clears automatically as soon as a refresh shares a confirmation code with the earlier evidence. To restore writes immediately, set the **Reservations API** option to **legacy** and reload the entry."

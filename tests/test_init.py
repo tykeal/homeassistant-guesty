@@ -6,22 +6,25 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Generator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.guesty import HATokenStorage
+from custom_components.guesty import ISSUE_FINANCIAL_DEPRECATED, HATokenStorage
 from custom_components.guesty.api.exceptions import (
     GuestyAuthError,
     GuestyConnectionError,
 )
 from custom_components.guesty.api.models import (
     CachedToken,
+    GuestyMoney,
     GuestyReservation,
 )
 from custom_components.guesty.const import (
@@ -47,6 +50,7 @@ from tests.conftest import (
     device_for_listing,
     device_in_registry,
     make_fetch_result,
+    stub_guesty_network,
 )
 
 
@@ -4434,3 +4438,469 @@ class TestLegacyDeprecationWarning:
             await hass.async_block_till_done()
 
         assert LEGACY_RESERVATIONS_RETIREMENT_DATE not in caplog.text
+
+
+_FINANCIAL_KEYS = (
+    "reservation_total",
+    "reservation_balance",
+    "reservation_currency",
+)
+
+
+def _make_money_reservation() -> GuestyReservation:
+    """Build an in-window reservation carrying legacy money data.
+
+    Returns:
+        A reservation the coordinator will publish and keep.
+    """
+    now = datetime.now(UTC)
+    return GuestyReservation(
+        id="res-money",
+        listing_id="listing-001",
+        status="confirmed",
+        check_in=now + timedelta(days=1),
+        check_out=now + timedelta(days=4),
+        money=GuestyMoney(
+            total_paid=1500.50,
+            balance_due=200.00,
+            currency="USD",
+        ),
+    )
+
+
+def _financial_unique_ids(entry: MockConfigEntry, listing_id: str) -> list[str]:
+    """Build the three financial sensor unique ids of one listing.
+
+    Args:
+        entry: The config entry owning the entities.
+        listing_id: The listing the sensors belong to.
+
+    Returns:
+        The three unique ids, in description order.
+    """
+    return [f"{entry.unique_id}_{listing_id}_{key}" for key in _FINANCIAL_KEYS]
+
+
+def _register_financial_entities(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    listing_id: str = "listing-001",
+) -> list[str]:
+    """Pre-register the three financial sensors, as an upgrade would.
+
+    An installation that ran an earlier release already has these
+    registry entries; a fresh v3 installation never does.
+
+    Args:
+        hass: Home Assistant instance.
+        entry: The config entry owning the entities.
+        listing_id: The listing the sensors belong to.
+
+    Returns:
+        The entity ids that were registered.
+    """
+    registry = er.async_get(hass)
+    return [
+        registry.async_get_or_create(
+            "sensor",
+            DOMAIN,
+            unique_id,
+            config_entry=entry,
+        ).entity_id
+        for unique_id in _financial_unique_ids(entry, listing_id)
+    ]
+
+
+class TestReservationsApiDefaultIsV3:
+    """An unattended entry runs v3 without migration (T085)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=make_fetch_result([]),
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_fresh_entry_runs_v3(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """A new installation is v3 without being asked."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        api_client = hass.data[DOMAIN][entry.entry_id]["api_client"]
+        assert api_client.reservations_api == RESERVATIONS_API_V3
+
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_reservations",
+        new_callable=AsyncMock,
+        return_value=make_fetch_result([]),
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.get_listings",
+        new_callable=AsyncMock,
+        return_value=[],
+    )
+    @patch(
+        "custom_components.guesty.GuestyApiClient.test_connection",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
+    async def test_upgraded_entry_runs_v3_without_migration(
+        self,
+        mock_test: AsyncMock,
+        mock_listings: AsyncMock,
+        mock_reservations: AsyncMock,
+        hass: HomeAssistant,
+    ) -> None:
+        """A pre-feature entry is migrated by nothing at all."""
+        entry = _make_entry(
+            options={CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL},
+        )
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        api_client = hass.data[DOMAIN][entry.entry_id]["api_client"]
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        assert api_client.reservations_api == RESERVATIONS_API_V3
+        assert coordinator.reservations_path == RESERVATIONS_API_V3
+        assert CONF_RESERVATIONS_API not in entry.options
+        assert entry.version == 1
+        assert not hass.config_entries.flow.async_progress()
+
+
+class TestFinancialDeprecationNotice:
+    """The FR-046 deprecation notice (T087)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
+    @staticmethod
+    def _issue(hass: HomeAssistant, entry: MockConfigEntry) -> Any:
+        """Return this entry's deprecation issue, if raised.
+
+        Args:
+            hass: Home Assistant instance.
+            entry: The config entry being inspected.
+
+        Returns:
+            The issue registry entry, or None.
+        """
+        return ir.async_get(hass).async_get_issue(
+            DOMAIN,
+            f"{ISSUE_FINANCIAL_DEPRECATED}_{entry.entry_id}",
+        )
+
+    @staticmethod
+    async def _setup(
+        hass: HomeAssistant,
+        entry: MockConfigEntry,
+    ) -> None:
+        """Load an entry with its reservation calls stubbed.
+
+        Args:
+            hass: Home Assistant instance.
+            entry: The config entry to load.
+        """
+        with stub_guesty_network():
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+        assert entry.state is ConfigEntryState.LOADED
+
+    async def test_raised_once_with_a_warning_on_v3(
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The repair and the log line both name the sensors."""
+        entry = _make_entry(options={CONF_RESERVATIONS_API: RESERVATIONS_API_V3})
+        entry.add_to_hass(hass)
+        _register_financial_entities(hass, entry)
+
+        with caplog.at_level(
+            logging.WARNING,
+            logger="custom_components.guesty",
+        ):
+            await self._setup(hass, entry)
+
+        issue = self._issue(hass, entry)
+        assert issue is not None
+        assert issue.translation_key == ISSUE_FINANCIAL_DEPRECATED
+        assert issue.is_fixable is False
+        warnings = [
+            record for record in caplog.records if "total_paid" in record.getMessage()
+        ]
+        assert len(warnings) == 1
+        message = warnings[0].getMessage()
+        assert warnings[0].levelno == logging.WARNING
+        assert "balance_due" in message
+        assert "currency" in message
+        assert LEGACY_RESERVATIONS_RETIREMENT_DATE in message
+        assert "legacy" in message
+
+    async def test_not_raised_without_the_entities(
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A fresh v3 install is told nothing it has not lost."""
+        entry = _make_entry(options={CONF_RESERVATIONS_API: RESERVATIONS_API_V3})
+        entry.add_to_hass(hass)
+
+        with caplog.at_level(
+            logging.WARNING,
+            logger="custom_components.guesty",
+        ):
+            await self._setup(hass, entry)
+
+        assert self._issue(hass, entry) is None
+        assert "total_paid" not in caplog.text
+
+    async def test_not_raised_on_the_legacy_path(
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The rollback target still reports the values."""
+        entry = _make_entry(
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
+        entry.add_to_hass(hass)
+        _register_financial_entities(hass, entry)
+
+        with caplog.at_level(
+            logging.WARNING,
+            logger="custom_components.guesty",
+        ):
+            await self._setup(hass, entry)
+
+        assert self._issue(hass, entry) is None
+        assert "total_paid" not in caplog.text
+
+    async def test_reload_does_not_repeat_the_warning(
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """At most once per config entry per Home Assistant start."""
+        entry = _make_entry(options={CONF_RESERVATIONS_API: RESERVATIONS_API_V3})
+        entry.add_to_hass(hass)
+        _register_financial_entities(hass, entry)
+        await self._setup(hass, entry)
+        caplog.clear()
+
+        with caplog.at_level(
+            logging.WARNING,
+            logger="custom_components.guesty",
+        ):
+            with stub_guesty_network():
+                await hass.config_entries.async_reload(entry.entry_id)
+                await hass.async_block_till_done()
+            assert entry.state is ConfigEntryState.LOADED
+
+        assert self._issue(hass, entry) is not None
+        assert "total_paid" not in caplog.text
+
+    async def test_rolling_back_withdraws_the_notice(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """The repair clears when the sensors come back."""
+        entry = _make_entry(options={CONF_RESERVATIONS_API: RESERVATIONS_API_V3})
+        entry.add_to_hass(hass)
+        _register_financial_entities(hass, entry)
+        await self._setup(hass, entry)
+        assert self._issue(hass, entry) is not None
+
+        with stub_guesty_network():
+            hass.config_entries.async_update_entry(
+                entry,
+                options={
+                    **entry.options,
+                    CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY,
+                },
+            )
+            await hass.async_block_till_done()
+            await hass.config_entries.async_reload(entry.entry_id)
+            await hass.async_block_till_done()
+        assert entry.state is ConfigEntryState.LOADED
+
+        assert self._issue(hass, entry) is None
+
+
+class TestReservationsApiToggleLeavesRegistryAlone:
+    """Toggling the path registers and removes nothing (T089)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
+    @staticmethod
+    def _snapshot(hass: HomeAssistant, entry: MockConfigEntry) -> set[tuple[str, str]]:
+        """Capture the entry's registered entities.
+
+        Args:
+            hass: Home Assistant instance.
+            entry: The config entry being inspected.
+
+        Returns:
+            Entity id and unique id of every registered entity.
+        """
+        registry = er.async_get(hass)
+        return {
+            (registered.entity_id, registered.unique_id)
+            for registered in er.async_entries_for_config_entry(
+                registry,
+                entry.entry_id,
+            )
+        }
+
+    @staticmethod
+    async def _reload_with(
+        hass: HomeAssistant,
+        entry: MockConfigEntry,
+        path: str,
+        listing: Any,
+        reservation: GuestyReservation,
+    ) -> None:
+        """Switch the path and reload with stubbed network calls.
+
+        Args:
+            hass: Home Assistant instance.
+            entry: The config entry to reconfigure.
+            path: The reservation path to switch to.
+            listing: The listing the coordinator publishes.
+            reservation: The reservation the coordinator publishes.
+        """
+        with stub_guesty_network(
+            listings=[listing],
+            reservations=[reservation],
+            bootstrap=[reservation],
+        ):
+            hass.config_entries.async_update_entry(
+                entry,
+                options={**entry.options, CONF_RESERVATIONS_API: path},
+            )
+            await hass.async_block_till_done()
+            await hass.config_entries.async_reload(entry.entry_id)
+            await hass.async_block_till_done()
+        assert entry.state is ConfigEntryState.LOADED
+
+    async def test_toggling_both_ways_changes_no_entity(
+        self,
+        hass: HomeAssistant,
+        sample_listing: Any,
+    ) -> None:
+        """An upgraded installation keeps every entity id."""
+        reservation = _make_money_reservation()
+        entry = _make_entry(
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
+        entry.add_to_hass(hass)
+        with stub_guesty_network(
+            listings=[sample_listing],
+            reservations=[reservation],
+            bootstrap=[reservation],
+        ):
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+        assert entry.state is ConfigEntryState.LOADED
+
+        on_legacy = self._snapshot(hass, entry)
+        assert any("reservation_total" in unique for _, unique in on_legacy)
+
+        await self._reload_with(
+            hass,
+            entry,
+            RESERVATIONS_API_V3,
+            sample_listing,
+            reservation,
+        )
+        on_v3 = self._snapshot(hass, entry)
+
+        await self._reload_with(
+            hass,
+            entry,
+            RESERVATIONS_API_LEGACY,
+            sample_listing,
+            reservation,
+        )
+        back_on_legacy = self._snapshot(hass, entry)
+
+        assert on_v3 == on_legacy
+        assert back_on_legacy == on_legacy
+
+    async def test_first_legacy_run_registers_the_three(
+        self,
+        hass: HomeAssistant,
+        sample_listing: Any,
+    ) -> None:
+        """The only permitted change is additive registration."""
+        reservation = _make_money_reservation()
+        entry = _make_entry(
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_V3},
+        )
+        entry.add_to_hass(hass)
+        with stub_guesty_network(
+            listings=[sample_listing],
+            reservations=[reservation],
+            bootstrap=[reservation],
+        ):
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+        assert entry.state is ConfigEntryState.LOADED
+
+        on_v3 = self._snapshot(hass, entry)
+        assert not any("reservation_total" in unique for _, unique in on_v3)
+
+        await self._reload_with(
+            hass,
+            entry,
+            RESERVATIONS_API_LEGACY,
+            sample_listing,
+            reservation,
+        )
+        on_legacy = self._snapshot(hass, entry)
+
+        assert on_v3 < on_legacy
+        assert {unique for _, unique in on_legacy - on_v3} == set(
+            _financial_unique_ids(entry, "listing-001"),
+        )

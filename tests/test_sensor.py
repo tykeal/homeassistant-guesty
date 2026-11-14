@@ -25,6 +25,7 @@ from custom_components.guesty.const import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
     DOMAIN,
+    RESERVATIONS_API_LEGACY,
 )
 from custom_components.guesty.entity import GuestyEntity
 from custom_components.guesty.sensor import (
@@ -591,6 +592,7 @@ class TestSensorPlatformSetup:
         coordinator.async_add_listener = MagicMock(return_value=MagicMock())
 
         res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        res_coordinator.reservations_path = RESERVATIONS_API_LEGACY
         res_coordinator.data = {}
         res_coordinator.last_update_success = True
         res_coordinator.async_add_listener = MagicMock(
@@ -655,6 +657,7 @@ class TestNewListingDiscovery:
         coordinator.async_add_listener = MagicMock(return_value=MagicMock())
 
         res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        res_coordinator.reservations_path = RESERVATIONS_API_LEGACY
         res_coordinator.data = {}
         res_coordinator.last_update_success = True
         res_coordinator.async_add_listener = MagicMock(
@@ -804,6 +807,7 @@ class TestEdgeCases:
         )
 
         res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        res_coordinator.reservations_path = RESERVATIONS_API_LEGACY
         res_coordinator.data = {}
         res_coordinator.last_update_success = True
         res_coordinator.async_add_listener = MagicMock(
@@ -1188,6 +1192,7 @@ class TestCustomFieldSensors:
         coordinator.async_add_listener = MagicMock(return_value=MagicMock())
 
         res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        res_coordinator.reservations_path = RESERVATIONS_API_LEGACY
         res_coordinator.data = {}
         res_coordinator.last_update_success = True
         res_coordinator.async_add_listener = MagicMock(
@@ -1238,6 +1243,7 @@ class TestCustomFieldSensors:
         coordinator.async_add_listener = MagicMock(return_value=MagicMock())
 
         res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        res_coordinator.reservations_path = RESERVATIONS_API_LEGACY
         res_coordinator.data = {}
         res_coordinator.last_update_success = True
         res_coordinator.async_add_listener = MagicMock(
@@ -1306,6 +1312,7 @@ class TestCustomFieldSensors:
         coordinator.async_add_listener = MagicMock(return_value=MagicMock())
 
         res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        res_coordinator.reservations_path = RESERVATIONS_API_LEGACY
         res_coordinator.data = {}
         res_coordinator.last_update_success = True
         res_coordinator.async_add_listener = MagicMock(
@@ -1375,6 +1382,7 @@ class TestCustomFieldSensors:
         coordinator.async_add_listener = MagicMock(return_value=MagicMock())
 
         res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        res_coordinator.reservations_path = RESERVATIONS_API_LEGACY
         res_coordinator.data = {}
         res_coordinator.last_update_success = True
         res_coordinator.async_add_listener = MagicMock(
@@ -1498,6 +1506,7 @@ class TestReaddedListingRecreatesEntities:
         )
 
         res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        res_coordinator.reservations_path = RESERVATIONS_API_LEGACY
         res_coordinator.data = {}
         res_coordinator.last_update_success = True
         res_coordinator.async_add_listener = MagicMock(
@@ -1636,6 +1645,7 @@ class TestDynamicCustomFieldDiscovery:
         coordinator.async_add_listener = MagicMock(return_value=MagicMock())
 
         res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        res_coordinator.reservations_path = RESERVATIONS_API_LEGACY
         res_coordinator.data = {}
         res_coordinator.last_update_success = True
         res_coordinator.async_add_listener = MagicMock(
@@ -1739,6 +1749,7 @@ class TestDynamicCustomFieldDiscovery:
         coordinator.async_add_listener = MagicMock(return_value=MagicMock())
 
         res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        res_coordinator.reservations_path = RESERVATIONS_API_LEGACY
         res_coordinator.data = {}
         res_coordinator.last_update_success = True
         res_coordinator.async_add_listener = MagicMock(
@@ -1856,6 +1867,7 @@ class TestDynamicCustomFieldDiscovery:
         coordinator.async_add_listener = MagicMock(return_value=MagicMock())
 
         res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        res_coordinator.reservations_path = RESERVATIONS_API_LEGACY
         res_coordinator.data = {}
         res_coordinator.last_update_success = True
         res_coordinator.async_add_listener = MagicMock(
@@ -1972,6 +1984,7 @@ class TestDynamicCustomFieldDiscovery:
         coordinator.async_add_listener = MagicMock(return_value=MagicMock())
 
         res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        res_coordinator.reservations_path = RESERVATIONS_API_LEGACY
         res_coordinator.data = {}
         res_coordinator.last_update_success = True
         res_coordinator.async_add_listener = MagicMock(
@@ -2069,6 +2082,7 @@ class TestDynamicCustomFieldDiscovery:
         coordinator.async_add_listener = MagicMock(return_value=MagicMock())
 
         res_coordinator = AsyncMock(spec=DataUpdateCoordinator)
+        res_coordinator.reservations_path = RESERVATIONS_API_LEGACY
         res_coordinator.data = {}
         res_coordinator.last_update_success = True
         res_coordinator.async_add_listener = MagicMock(
@@ -2163,6 +2177,7 @@ class TestCFSensorsWithDefinitions:
         res_coordinator = AsyncMock(
             spec=DataUpdateCoordinator,
         )
+        res_coordinator.reservations_path = RESERVATIONS_API_LEGACY
         res_coordinator.data = {}
         res_coordinator.last_update_success = True
         res_coordinator.async_add_listener = MagicMock(

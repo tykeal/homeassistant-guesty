@@ -7,9 +7,9 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from collections.abc import Collection, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
@@ -227,6 +227,11 @@ class ReservationsCoordinator(
         self.fallback_sourced_ids: frozenset[str] = frozenset()
         self.last_fallback_counters = FallbackCounters()
         self.legacy_write_counters = LegacyWriteCounters()
+        # FR-042 requires the same counters on both surfaces, so the
+        # last refresh's numbers are retained for the diagnostics
+        # download rather than discarded with the refresh.
+        self.last_refresh_diagnostics: dict[str, Any] = {}
+        self.bootstrap_pages: int = 0
         interval_minutes = entry.options.get(
             CONF_RESERVATION_SCAN_INTERVAL,
             DEFAULT_RESERVATION_SCAN_INTERVAL,
@@ -303,7 +308,7 @@ class ReservationsCoordinator(
             self.fallback_served_ids -= returned
             self.fallback_sourced_ids -= returned
         self.last_fallback_counters = fetch_result.fallback
-        counters = _RefreshCounters()
+        counters = _RefreshCounters(received=len(reservations))
 
         comparison = await self._check_identity(
             reservations,
@@ -328,11 +333,10 @@ class ReservationsCoordinator(
                 past_days,
                 fetch_result,
             )
-            _log_refresh_diagnostics(
+            self._publish_refresh_diagnostics(
                 fetch_result,
                 counters,
                 GuestLookupResult(),
-                identity_ambiguous=self.identity.last_refresh_ambiguous,
             )
             return {}
 
@@ -368,6 +372,7 @@ class ReservationsCoordinator(
                 reservation,
                 known_ids,
             )
+            counters.unknown_listings |= unknown_ids
             if not attributed:
                 counters.skipped += 1
                 _LOGGER.warning(
@@ -406,12 +411,7 @@ class ReservationsCoordinator(
             past_days,
             fetch_result,
         )
-        _log_refresh_diagnostics(
-            fetch_result,
-            counters,
-            lookup,
-            identity_ambiguous=self.identity.last_refresh_ambiguous,
-        )
+        self._publish_refresh_diagnostics(fetch_result, counters, lookup)
 
         return {
             listing_id: sorted(
@@ -652,6 +652,49 @@ class ReservationsCoordinator(
             )
             return GuestLookupResult()
 
+    def _publish_refresh_diagnostics(
+        self,
+        fetch_result: ReservationFetchResult,
+        counters: _RefreshCounters,
+        lookup: GuestLookupResult,
+    ) -> None:
+        """Retain and log this refresh's counters (FR-042).
+
+        Both diagnostics surfaces carry the same numbers, so they
+        are produced once here: the DEBUG line for a log reader and
+        the retained mapping for the diagnostics download.
+
+        Args:
+            fetch_result: The retrieval result and its counters.
+            counters: The attribution counters of this refresh.
+            lookup: The guest cache counters of this refresh.
+        """
+        ambiguous = self.identity.last_refresh_ambiguous
+        self.last_refresh_diagnostics = {
+            "pages": fetch_result.pages,
+            "received": counters.received,
+            "attributed": counters.attributed,
+            "partially_attributed": counters.partially_attributed,
+            "trimmed": counters.trim_drops,
+            "skipped": counters.skipped,
+            "alteration_drops": counters.alteration_drops,
+            "status_counts": dict(fetch_result.status_counts),
+            "segment_histogram": dict(fetch_result.segment_histogram),
+            "unknown_listings": len(counters.unknown_listings),
+            "guest_hits": lookup.hits,
+            "guest_lookups": lookup.lookups,
+            "guest_failures": lookup.failures,
+            "guest_deferrals": lookup.deferrals,
+            "identity_matched": counters.identity_matched,
+            "identity_ambiguous": ambiguous,
+        }
+        _log_refresh_diagnostics(
+            fetch_result,
+            counters,
+            lookup,
+            identity_ambiguous=ambiguous,
+        )
+
 
 @dataclass
 class _RefreshCounters:
@@ -665,6 +708,9 @@ class _RefreshCounters:
         alteration_drops: Reservations dropped as proposed changes.
         trim_drops: Reservations dropped by the window trim.
         identity_matched: Previously known identifiers matched.
+        received: Reservations the source returned this refresh.
+        unknown_listings: Distinct listing ids a stay segment named
+            that no tracked listing claims.
     """
 
     attributed: int = 0
@@ -673,6 +719,8 @@ class _RefreshCounters:
     alteration_drops: int = 0
     trim_drops: int = 0
     identity_matched: int = 0
+    received: int = 0
+    unknown_listings: set[str] = field(default_factory=set)
 
 
 def _log_refresh_diagnostics(
@@ -698,7 +746,8 @@ def _log_refresh_diagnostics(
     _LOGGER.debug(
         "Reservation refresh: pages=%d statuses=%s segments=%s "
         "attributed=%d partially_attributed=%d skipped=%d "
-        "alteration_drops=%d trim_drops=%d guest_hits=%d "
+        "alteration_drops=%d trim_drops=%d unknown_listings=%d "
+        "guest_hits=%d "
         "guest_lookups=%d guest_failures=%d guest_deferrals=%d "
         "identity_matched=%d identity_ambiguous=%s "
         "fallback_attempted=%d fallback_served=%d "
@@ -712,6 +761,7 @@ def _log_refresh_diagnostics(
         counters.skipped,
         counters.alteration_drops,
         counters.trim_drops,
+        len(counters.unknown_listings),
         lookup.hits,
         lookup.lookups,
         lookup.failures,
@@ -1034,9 +1084,9 @@ class CustomFieldsDefinitionCoordinator(
         """
         if self.data is None:
             return None
-        for field in self.data:
-            if field.field_id == field_id:
-                return field
+        for definition in self.data:
+            if definition.field_id == field_id:
+                return definition
         return None
 
     def get_fields_for_target(
