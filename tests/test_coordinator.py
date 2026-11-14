@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from typing import cast
@@ -19,6 +20,8 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.guesty.api.const import (
     DEFAULT_FUTURE_DAYS,
     DEFAULT_PAST_DAYS,
+    RESERVATIONS_API_LEGACY,
+    RESERVATIONS_API_V3,
 )
 from custom_components.guesty.api.exceptions import (
     GuestyAuthError,
@@ -27,6 +30,7 @@ from custom_components.guesty.api.exceptions import (
     GuestyRateLimitError,
     GuestyResponseError,
 )
+from custom_components.guesty.api.guest_cache import GuestLookupResult
 from custom_components.guesty.api.models import (
     GuestyCustomFieldDefinition,
     GuestyGuest,
@@ -1850,8 +1854,13 @@ def _build_coordinator(
     *,
     entry: MockConfigEntry | None = None,
     fetch_counters: dict[str, object] | None = None,
+    guest_result: GuestLookupResult | None = None,
+    guest_error: Exception | None = None,
 ) -> ReservationsCoordinator:
     """Build a ReservationsCoordinator over canned reservations.
+
+    Passing ``guest_result`` or ``guest_error`` also selects the v3
+    path, because guest lookups exist only there.
 
     Args:
         hass: Home Assistant instance.
@@ -1859,6 +1868,8 @@ def _build_coordinator(
         known_listing_ids: Listing IDs the listings coordinator knows.
         entry: Config entry to use; a default one when None.
         fetch_counters: Diagnostics counters for the fetch result.
+        guest_result: Result the guest cache returns, if any.
+        guest_error: Error the guest lookup raises, if any.
 
     Returns:
         A ReservationsCoordinator wired to mocks.
@@ -1873,6 +1884,12 @@ def _build_coordinator(
             **(fetch_counters or {}),
         ),
     )
+    if guest_result is not None or guest_error is not None:
+        api_client.reservations_api = RESERVATIONS_API_V3
+        api_client.resolve_guests = AsyncMock(
+            return_value=guest_result,
+            side_effect=guest_error,
+        )
     listings_coordinator = AsyncMock()
     listings_coordinator.data = {
         listing_id: _listing(listing_id) for listing_id in known_listing_ids
@@ -2534,5 +2551,236 @@ class TestRefreshDiagnostics:
         assert "skipped=0" in line
         assert "alteration_drops=1" in line
         assert "trim_drops=1" in line
+        for secret in ("Jane Traveller", "+15551234567", "jane@example.com"):
+            assert secret not in caplog.text
+
+
+class TestGuestLookupScope:
+    """Tests for which reservations cost a guest lookup (T055)."""
+
+    async def test_only_attributed_reservations_are_looked_up(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """Untracked, dropped and guest-less stays cost nothing."""
+        freezer.move_to(_NOW)
+        tracked = _v3_res(
+            "res-1",
+            [_seg("listing-001", -1, 3)],
+            guest=GuestyGuest(guest_id="guest-1"),
+        )
+        untracked = _v3_res(
+            "res-2",
+            [_seg("listing-999", -1, 3)],
+            guest=GuestyGuest(guest_id="guest-2"),
+        )
+        altered = _v3_res(
+            "res-3",
+            [_seg("listing-001", 1, 2)],
+            status="alteration",
+            guest=GuestyGuest(guest_id="guest-3"),
+        )
+        far_away = _v3_res(
+            "res-4",
+            [_seg("listing-001", 400, 402)],
+            guest=GuestyGuest(guest_id="guest-4"),
+        )
+        no_guest = _v3_res("res-5", [_seg("listing-001", -1, 3)])
+        coordinator = _build_coordinator(
+            hass,
+            [tracked, untracked, altered, far_away, no_guest],
+            ["listing-001"],
+            guest_result=GuestLookupResult(
+                guests={"guest-1": GuestyGuest(guest_id="guest-1")},
+            ),
+        )
+
+        await coordinator._async_update_data()
+
+        resolve = cast(AsyncMock, coordinator.api_client.resolve_guests)
+        resolve.assert_awaited_once()
+        assert resolve.await_args is not None
+        assert set(resolve.await_args.args[0]) == {"guest-1"}
+
+    async def test_no_lookup_when_no_reservation_has_a_guest(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """A refresh with no guest ids issues no lookup at all."""
+        freezer.move_to(_NOW)
+        reservation = _v3_res("res-1", [_seg("listing-001", -1, 3)])
+        coordinator = _build_coordinator(
+            hass,
+            [reservation],
+            ["listing-001"],
+            guest_result=GuestLookupResult(),
+        )
+
+        await coordinator._async_update_data()
+
+        cast(
+            AsyncMock,
+            coordinator.api_client.resolve_guests,
+        ).assert_not_awaited()
+
+    async def test_resolved_guest_is_published(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """A resolved guest replaces the id-only placeholder."""
+        freezer.move_to(_NOW)
+        reservation = _v3_res(
+            "res-1",
+            [_seg("listing-001", -1, 3)],
+            guest=GuestyGuest(guest_id="guest-1"),
+        )
+        resolved = GuestyGuest(
+            full_name="Jane Traveller",
+            phone="+15551234567",
+            email="jane@example.com",
+            guest_id="guest-1",
+        )
+        coordinator = _build_coordinator(
+            hass,
+            [reservation],
+            ["listing-001"],
+            guest_result=GuestLookupResult(guests={"guest-1": resolved}),
+        )
+
+        data = await coordinator._async_update_data()
+
+        assert data["listing-001"][0].guest == resolved
+
+    async def test_unresolved_guest_publishes_the_reservation(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """A deferred or missing guest still publishes the stay."""
+        freezer.move_to(_NOW)
+        reservation = _v3_res(
+            "res-1",
+            [_seg("listing-001", -1, 3)],
+            guest=GuestyGuest(guest_id="guest-1"),
+        )
+        coordinator = _build_coordinator(
+            hass,
+            [reservation],
+            ["listing-001"],
+            guest_result=GuestLookupResult(deferrals=1),
+        )
+
+        data = await coordinator._async_update_data()
+
+        published = data["listing-001"][0]
+        assert published.id == "res-1"
+        assert published.guest == GuestyGuest(guest_id="guest-1")
+
+    async def test_guest_lookup_error_never_fails_the_refresh(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """An exception from the cache degrades only the guest."""
+        freezer.move_to(_NOW)
+        reservation = _v3_res(
+            "res-1",
+            [_seg("listing-001", -1, 3)],
+            guest=GuestyGuest(guest_id="guest-1"),
+        )
+        coordinator = _build_coordinator(
+            hass,
+            [reservation],
+            ["listing-001"],
+            guest_error=GuestyConnectionError("offline"),
+        )
+
+        data = await coordinator._async_update_data()
+
+        assert [r.id for r in data["listing-001"]] == ["res-1"]
+
+    async def test_legacy_path_issues_no_guest_lookup(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """The legacy path keeps its embedded guest untouched."""
+        freezer.move_to(_NOW)
+        embedded = GuestyGuest(
+            full_name="Jane Traveller",
+            guest_id="guest-1",
+        )
+        reservation = _legacy_res("res-1", "listing-001", -1, 3)
+        reservation = replace(reservation, guest=embedded)
+        coordinator = _build_coordinator(
+            hass,
+            [reservation],
+            ["listing-001"],
+        )
+        cast(
+            AsyncMock,
+            coordinator.api_client,
+        ).reservations_api = RESERVATIONS_API_LEGACY
+
+        data = await coordinator._async_update_data()
+
+        assert data["listing-001"][0].guest == embedded
+        cast(
+            AsyncMock,
+            coordinator.api_client.resolve_guests,
+        ).assert_not_awaited()
+
+    async def test_diagnostics_report_guest_counters(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The FR-042 line carries the guest cache counters."""
+        freezer.move_to(_NOW)
+        reservation = _v3_res(
+            "res-1",
+            [_seg("listing-001", -1, 3)],
+            guest=GuestyGuest(guest_id="guest-1"),
+        )
+        coordinator = _build_coordinator(
+            hass,
+            [reservation],
+            ["listing-001"],
+            guest_result=GuestLookupResult(
+                guests={
+                    "guest-1": GuestyGuest(
+                        full_name="Jane Traveller",
+                        phone="+15551234567",
+                        email="jane@example.com",
+                        guest_id="guest-1",
+                    ),
+                },
+                hits=3,
+                lookups=1,
+                failures=2,
+                deferrals=4,
+            ),
+        )
+
+        with caplog.at_level(
+            logging.DEBUG,
+            logger="custom_components.guesty.coordinator",
+        ):
+            await coordinator._async_update_data()
+
+        lines = [
+            record.getMessage()
+            for record in caplog.records
+            if "guest_hits=" in record.getMessage()
+        ]
+        assert len(lines) == 1
+        assert "guest_hits=3" in lines[0]
+        assert "guest_lookups=1" in lines[0]
+        assert "guest_failures=2" in lines[0]
+        assert "guest_deferrals=4" in lines[0]
         for secret in ("Jane Traveller", "+15551234567", "jane@example.com"):
             assert secret not in caplog.text

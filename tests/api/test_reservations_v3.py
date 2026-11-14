@@ -9,6 +9,7 @@ builders in ``tests/conftest.py``; no live Guesty payload exists
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -22,6 +23,7 @@ from custom_components.guesty.api.const import (
     ACTIONABLE_STATUSES,
     BASE_URL,
     MAX_V3_RESERVATION_PAGES,
+    RESERVATIONS_API_LEGACY,
     RESERVATIONS_API_V3,
     RESERVATIONS_ENDPOINT,
     RESERVATIONS_PAGE_SIZE,
@@ -37,6 +39,7 @@ from tests.conftest import (
     FAKE_CLIENT_ID,
     FAKE_CLIENT_SECRET,
     FakeTokenStorage,
+    make_reservation_dict,
     make_token_response,
     make_v3_reservation,
     make_v3_search_page,
@@ -716,3 +719,172 @@ def _fake_backend(
         )
 
     return _handler
+
+
+class TestV3RequestBudget:
+    """Tests for the per-refresh request budget (T056).
+
+    A refresh is modelled here as the search followed by the guest
+    lookups it implies, which is what the coordinator issues once
+    attribution has run (NFR-001, SC-003).
+    """
+
+    @respx.mock
+    async def test_warm_cache_costs_no_more_than_legacy(self) -> None:
+        """A warm v3 refresh is never dearer than the legacy one."""
+        _mock_token()
+        reservations = _guest_page(10)
+        respx.get(SEARCH_URL).mock(
+            return_value=Response(
+                200,
+                json=make_v3_search_page(reservations, skip=0),
+            ),
+        )
+        respx.get(url__regex=rf"{BASE_URL}/guests-crud/.+").mock(
+            side_effect=_guest_response,
+        )
+        respx.get(LEGACY_URL).mock(
+            return_value=Response(
+                200,
+                json={
+                    "results": [
+                        make_reservation_dict(_id=f"res-{index:06d}")
+                        for index in range(10)
+                    ],
+                    "count": 10,
+                },
+            ),
+        )
+
+        client = _make_client()
+        await _v3_refresh(client)
+        warm = await _count_requests(lambda: _v3_refresh(client))
+
+        legacy_client = GuestyApiClient(
+            token_manager=client._token_manager,
+            http_client=client._http,
+            reservations_api=RESERVATIONS_API_LEGACY,
+        )
+        legacy = await _count_requests(legacy_client.get_reservations)
+
+        assert warm == 1
+        assert warm <= legacy
+
+    @respx.mock
+    async def test_cold_cache_costs_the_pages_plus_one_per_guest(
+        self,
+    ) -> None:
+        """Ten reservations for ten guests cost exactly eleven."""
+        _mock_token()
+        respx.get(SEARCH_URL).mock(
+            return_value=Response(
+                200,
+                json=make_v3_search_page(_guest_page(10), skip=0),
+            ),
+        )
+        respx.get(url__regex=rf"{BASE_URL}/guests-crud/.+").mock(
+            side_effect=_guest_response,
+        )
+
+        client = _make_client()
+        cold = await _count_requests(lambda: _v3_refresh(client))
+
+        assert cold == 11
+
+    @respx.mock
+    async def test_repeated_guest_costs_one_lookup(self) -> None:
+        """Ten reservations sharing a guest cost a single lookup."""
+        _mock_token()
+        shared = [
+            make_v3_reservation(f"res-{index:06d}", guest_id="guest-same")
+            for index in range(10)
+        ]
+        respx.get(SEARCH_URL).mock(
+            return_value=Response(
+                200,
+                json=make_v3_search_page(shared, skip=0),
+            ),
+        )
+        respx.get(url__regex=rf"{BASE_URL}/guests-crud/.+").mock(
+            side_effect=_guest_response,
+        )
+
+        client = _make_client()
+        cold = await _count_requests(lambda: _v3_refresh(client))
+
+        assert cold == 2
+
+
+def _guest_page(count: int) -> list[dict[str, Any]]:
+    """Build reservations with one distinct guest each.
+
+    Args:
+        count: Number of reservation dicts to build.
+
+    Returns:
+        A list of v3 reservation dicts.
+    """
+    return [
+        make_v3_reservation(
+            f"res-{index:06d}",
+            guest_id=f"guest-{index:06d}",
+        )
+        for index in range(count)
+    ]
+
+
+def _guest_response(request: httpx.Request) -> Response:
+    """Serve one synthetic guests-crud lookup.
+
+    Args:
+        request: The outgoing guest lookup request.
+
+    Returns:
+        A guests-crud response for the requested guest.
+    """
+    guest_id = request.url.path.rsplit("/", 1)[-1]
+    return Response(
+        200,
+        json={
+            "_id": guest_id,
+            "fullName": "Ada Lovelace",
+            "phone": None,
+            "email": None,
+        },
+    )
+
+
+async def _v3_refresh(client: GuestyApiClient) -> None:
+    """Run a full v3 refresh: the search and its guest lookups.
+
+    Args:
+        client: The client under test.
+    """
+    result = await client.get_reservations()
+    await client.resolve_guests(
+        [
+            reservation.guest.guest_id
+            for reservation in result.reservations
+            if reservation.guest is not None and reservation.guest.guest_id is not None
+        ],
+    )
+
+
+async def _count_requests(
+    refresh: Callable[[], Awaitable[Any]],
+) -> int:
+    """Count the non-token requests one refresh issues.
+
+    Args:
+        refresh: The refresh to run.
+
+    Returns:
+        The number of API requests the refresh issued.
+    """
+    before = len(respx.calls)
+    await refresh()
+    return sum(
+        1
+        for call in list(respx.calls)[before:]
+        if not call.request.url.path.endswith("/oauth2/token")
+    )

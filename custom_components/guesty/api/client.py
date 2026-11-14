@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import random
+from collections.abc import Iterable
 
 import httpx
 
@@ -30,6 +31,10 @@ from custom_components.guesty.api.exceptions import (
     GuestyConnectionError,
     GuestyRateLimitError,
     GuestyResponseError,
+)
+from custom_components.guesty.api.guest_cache import (
+    GuestCache,
+    GuestLookupResult,
 )
 from custom_components.guesty.api.models import (
     GuestyListing,
@@ -83,6 +88,7 @@ class GuestyApiClient:
         _base_url: Guesty API base URL.
         _reservations_api: Selected reservation API generation.
         _reservation_source: Strategy serving reservation reads.
+        _guest_cache: Guest record cache, on the v3 path only.
     """
 
     def __init__(
@@ -110,6 +116,9 @@ class GuestyApiClient:
             reservations_api,
         )
         self._reservation_source: ReservationSource = self._build_reservation_source()
+        self._guest_cache: GuestCache | None = (
+            GuestCache(self) if self._reservations_api == RESERVATIONS_API_V3 else None
+        )
 
     @property
     def reservations_api(self) -> str:
@@ -313,6 +322,29 @@ class GuestyApiClient:
             future_days=future_days,
             statuses=statuses,
         )
+
+    async def resolve_guests(
+        self,
+        guest_ids: Iterable[str],
+    ) -> GuestLookupResult:
+        """Resolve guest records for the ids of one refresh.
+
+        Guest lookups exist on the v3 path only: the legacy
+        reservation payloads embed the guest, so the legacy path
+        resolves nothing and issues no request.
+
+        A lookup failure never propagates, because a missing guest
+        name must not cost a refresh (FR-020, NFR-005).
+
+        Args:
+            guest_ids: Guest ids the refresh needs, with repeats.
+
+        Returns:
+            The known guest records and this refresh's counters.
+        """
+        if self._guest_cache is None:
+            return GuestLookupResult()
+        return await self._guest_cache.resolve(guest_ids)
 
     async def _request(
         self,
