@@ -2488,3 +2488,43 @@ class TestIdentityGuardPrecedesRouting:
         assert "2027-03-01" not in str(exc_info.value)
         assert client.mock_calls == []
         assert coordinator.legacy_write_counters.total == 0
+
+
+class TestRetirementSurvivesAnIdentityRefusal:
+    """A retired target still explains itself (T130, T131)."""
+
+    async def test_refusal_adds_the_retirement_explanation(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A refresh between self-disable and the write is covered."""
+        entry = await _setup_entry(hass)
+        entry_data: dict[str, Any] = hass.data[DOMAIN][entry.entry_id]
+        coordinator = entry_data["reservations_coordinator"]
+        # The identity evidence for this reservation is gone: only
+        # the retired legacy resource ever held it.
+        coordinator.fallback_served_ids = frozenset({"res-unknown"})
+        coordinator.fallback_sourced_ids = frozenset({"res-unknown"})
+        client = AsyncMock()
+        entry_data["actions_client"] = client
+        api_client = entry_data["api_client"]
+
+        with (
+            patch.object(
+                type(api_client),
+                "legacy_write_routing_available",
+                property(lambda _self: False),
+            ),
+            pytest.raises(HomeAssistantError) as exc_info,
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                "add_reservation_note",
+                {"reservation_id": "res-unknown", "note_text": "hi"},
+                blocking=True,
+                return_response=True,
+            )
+
+        assert "2027-03-01" in str(exc_info.value)
+        assert client.mock_calls == []
+        assert coordinator.legacy_write_counters.note_refused == 1

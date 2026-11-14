@@ -55,6 +55,20 @@ REFUSAL_LEGACY_RETIRED: str = (
     "reservation appears in a v3 refresh."
 )
 
+# Error raised when the legacy resource answered a request in a
+# retirement-shaped way. Distinct from the pre-request refusal above,
+# which can truthfully say nothing was sent.
+ERROR_LEGACY_RETIRED_ON_WRITE: str = (
+    "Reservation {reservation_id} is not available in the Guesty "
+    "reservations v3 API yet, and the legacy reservation resource "
+    "that could still reach it answered {path} with HTTP "
+    "{status_code}, which reads as retirement rather than as a "
+    f"rejection. The legacy Guesty reservation resources retire on "
+    f"{LEGACY_RESERVATIONS_RETIREMENT_DATE}. The request was sent "
+    "but cannot be assumed to have been applied, and it is not "
+    "retried. No further legacy write is attempted in this session."
+)
+
 # Error raised when both generations agree the reservation is gone.
 ERROR_RESERVATION_ABSENT: str = (
     "Reservation {reservation_id} no longer exists: the Guesty "
@@ -126,8 +140,10 @@ def read_legacy_answer(
     verdict = classify_legacy_response(response, reservation_id)
     if is_retired(verdict):
         client.disable_legacy_write_routing()
-        return REFUSAL_LEGACY_RETIRED.format(
+        return ERROR_LEGACY_RETIRED_ON_WRITE.format(
             reservation_id=reservation_id,
+            path=response.request.url.path if response.request else "",
+            status_code=response.status_code,
         )
     if is_absent(verdict):
         client.retire_fallback_candidate(reservation_id)

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 
 import httpx
 
@@ -41,6 +42,22 @@ from custom_components.guesty.api.legacy_writes import (
 from custom_components.guesty.api.models import ActionResult
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _identifies(record: Mapping[str, object], reservation_id: str) -> bool:
+    """Report whether a v3 record is the one that was asked for.
+
+    Args:
+        record: One reservation document from a v3 read.
+        reservation_id: The reservation that was requested.
+
+    Returns:
+        True when the record carries that identifier.
+    """
+    return any(
+        record.get(key) == reservation_id for key in ("reservationId", "id", "_id")
+    )
+
 
 _MAX_DETAIL_LENGTH = 200
 
@@ -239,7 +256,14 @@ class GuestyActionsClient:
 
         if isinstance(data, dict):
             results = data.get("results")
-            items: list[object] = results if isinstance(results, list) else [data]
+            if isinstance(results, list):
+                items: list[object] = results
+            elif "results" in data:
+                # A results key that is not a list carries no
+                # record, and the envelope itself is not one.
+                items = []
+            else:
+                items = [data]
         elif isinstance(data, list):
             items = list(data)
         else:
@@ -248,7 +272,10 @@ class GuestyActionsClient:
             )
 
         for item in items:
-            if isinstance(item, dict):
+            # The identifier must match: writing the notes of
+            # whichever record happened to come back would put one
+            # reservation's text on another's (FR-029).
+            if isinstance(item, dict) and _identifies(item, reservation_id):
                 return item
 
         raise GuestyActionError(
@@ -331,6 +358,14 @@ class GuestyActionsClient:
             combined_note = existing_note + NOTE_SEPARATOR + note_text
         else:
             combined_note = note_text
+
+        if routed:
+            # Another write may have met the retirement while this
+            # read was in flight (FR-061).
+            self._refuse_when_retired(
+                reservation_id,
+                "add_reservation_note",
+            )
 
         put_path = legacy_reservation_path(reservation_id)
         put_response = await self._api_client._request(

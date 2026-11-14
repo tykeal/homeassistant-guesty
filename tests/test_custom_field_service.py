@@ -30,6 +30,7 @@ from custom_components.guesty.api.custom_fields import (
     GuestyCustomFieldsClient,
 )
 from custom_components.guesty.api.exceptions import (
+    GuestyActionError,
     GuestyAuthError,
     GuestyConnectionError,
     GuestyCustomFieldError,
@@ -2949,3 +2950,44 @@ class TestReservationCustomFieldRouting:
         assert await_args is not None
         assert "route" not in await_args.kwargs
         assert coordinator.legacy_write_counters.total == 0
+
+    async def test_routing_messages_survive_the_service(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """The retirement explanation is not genericized."""
+        entry = await self._loaded_entry(hass)
+        entry_data = hass.data[DOMAIN][entry.entry_id]
+        coordinator = entry_data["reservations_coordinator"]
+        coordinator.fallback_served_ids = frozenset({"res-789"})
+        coordinator.fallback_sourced_ids = frozenset({"res-789"})
+
+        with (
+            patch.object(
+                GuestyCustomFieldsClient,
+                "set_field",
+                new_callable=AsyncMock,
+                side_effect=GuestyActionError(
+                    "legacy answered /v1/reservations/res-789 with "
+                    "HTTP 410; the legacy resources retire on "
+                    "2027-03-01",
+                    target_id="res-789",
+                    action_type="set_custom_field",
+                ),
+            ),
+            pytest.raises(HomeAssistantError) as exc_info,
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_CUSTOM_FIELD,
+                {
+                    "target_type": "reservation",
+                    "target_id": "res-789",
+                    "field_id": "cf-door-code",
+                    "value": "0042",
+                },
+                blocking=True,
+            )
+
+        assert "2027-03-01" in str(exc_info.value)
+        assert coordinator.legacy_write_counters.custom_field_failed == 1

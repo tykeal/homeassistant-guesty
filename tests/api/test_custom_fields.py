@@ -26,6 +26,7 @@ from custom_components.guesty.api.custom_fields import (
     GuestyCustomFieldsClient,
 )
 from custom_components.guesty.api.exceptions import (
+    GuestyActionError,
     GuestyAuthError,
     GuestyCustomFieldError,
 )
@@ -1226,7 +1227,7 @@ class TestLegacyRoutedCustomFieldWrites:
         http = httpx.AsyncClient()
         try:
             client = _v3_custom_fields_client(http)
-            with pytest.raises(GuestyCustomFieldError) as first:
+            with pytest.raises(GuestyActionError) as first:
                 await client.set_field(
                     target_type="reservation",
                     target_id="res-777",
@@ -1237,7 +1238,7 @@ class TestLegacyRoutedCustomFieldWrites:
             assert "2027-03-01" in str(first.value)
             assert client._api_client.legacy_write_routing_available is False
 
-            with pytest.raises(GuestyCustomFieldError) as second:
+            with pytest.raises(GuestyActionError) as second:
                 await client.set_field(
                     target_type="reservation",
                     target_id="res-777",

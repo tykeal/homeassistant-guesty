@@ -297,6 +297,28 @@ def select_reservation_write_route(
     return ROUTE_V3
 
 
+def _retired_target(
+    entry_data: Mapping[str, Any],
+    reservation_id: str,
+) -> bool:
+    """Report whether only a retired legacy resource held this.
+
+    Args:
+        entry_data: The addressed entry's hass.data mapping.
+        reservation_id: The reservation a write would target.
+
+    Returns:
+        True when the fallback was publishing this reservation and
+        the legacy generation has since self-disabled.
+    """
+    coordinator: ReservationsCoordinator = entry_data["reservations_coordinator"]
+    known = coordinator.fallback_served_ids | coordinator.fallback_sourced_ids
+    if reservation_id not in known:
+        return False
+    api_client: GuestyApiClient = entry_data["api_client"]
+    return not api_client.legacy_write_routing_available
+
+
 async def execute_reservation_write[WriteResultT](
     entry_data: Mapping[str, Any],
     reservation_id: str,
@@ -327,7 +349,25 @@ async def execute_reservation_write[WriteResultT](
             sent.
     """
     coordinator: ReservationsCoordinator = entry_data["reservations_coordinator"]
-    guard_reservation_write(entry_data, reservation_id, action_type)
+    try:
+        guard_reservation_write(entry_data, reservation_id, action_type)
+    except GuestyActionError as exc:
+        # The guard still decides, and still refuses. A refresh
+        # after the self-disable can drop the identity evidence for
+        # a reservation only the retired legacy resource held, and
+        # the bare identity message would not explain why it can
+        # never succeed again (FR-061, FR-062).
+        if _retired_target(entry_data, reservation_id):
+            coordinator.record_legacy_write(operation, LEGACY_WRITE_REFUSED)
+            raise GuestyActionError(
+                f"{exc.message} "
+                + REFUSAL_LEGACY_RETIRED.format(
+                    reservation_id=reservation_id,
+                ),
+                target_id=reservation_id,
+                action_type=action_type,
+            ) from exc
+        raise
     try:
         route = select_reservation_write_route(
             entry_data,

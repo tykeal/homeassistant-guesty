@@ -2712,3 +2712,133 @@ class TestLegacyRoutedWriteFailures:
 
         assert LEGACY_RESERVATIONS_RETIREMENT_DATE in str(exc_info.value)
         assert api_client.legacy_write_routing_available is False
+
+
+class TestV3NoteReadIdentity:
+    """A v3 note read accepts only the record asked for."""
+
+    @respx.mock
+    async def test_a_foreign_record_is_not_written_to(self) -> None:
+        """Another reservation's notes never reach the write."""
+        _mock_token()
+        respx.get(f"{BASE_URL}{RESERVATIONS_V3_ENDPOINT}").mock(
+            return_value=Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "_id": "res-999",
+                            "notes": {"other": "Someone else"},
+                        },
+                    ],
+                },
+            ),
+        )
+        write = respx.put(
+            f"{BASE_URL}{RESERVATION_NOTES_PATH.format(reservation_id='res-001')}",
+        ).mock(return_value=Response(200, json={}))
+
+        http = httpx.AsyncClient()
+        try:
+            with pytest.raises(GuestyActionError) as exc_info:
+                await _v3_client(http).add_reservation_note(
+                    "res-001",
+                    "New note",
+                )
+        finally:
+            await http.aclose()
+
+        assert not write.called
+        assert "not found" in str(exc_info.value)
+
+    @respx.mock
+    async def test_a_null_results_envelope_writes_nothing(self) -> None:
+        """A results key that is not a list carries no record."""
+        _mock_token()
+        respx.get(f"{BASE_URL}{RESERVATIONS_V3_ENDPOINT}").mock(
+            return_value=Response(200, json={"results": None}),
+        )
+        write = respx.put(
+            f"{BASE_URL}{RESERVATION_NOTES_PATH.format(reservation_id='res-001')}",
+        ).mock(return_value=Response(200, json={}))
+
+        http = httpx.AsyncClient()
+        try:
+            with pytest.raises(GuestyActionError):
+                await _v3_client(http).add_reservation_note(
+                    "res-001",
+                    "New note",
+                )
+        finally:
+            await http.aclose()
+
+        assert not write.called
+
+
+class TestRoutingRetiredMidWrite:
+    """Routing is re-read after the routed note read."""
+
+    @respx.mock
+    async def test_a_self_disable_during_the_read_stops_the_write(
+        self,
+    ) -> None:
+        """No PUT follows a retirement seen while reading."""
+        _mock_token()
+        http = httpx.AsyncClient()
+        client = _v3_client(http)
+
+        def _retire(request: httpx.Request) -> Response:
+            """Disable routing as the read is answered.
+
+            Args:
+                request: The legacy read request.
+
+            Returns:
+                A successful legacy reservation document.
+            """
+            client._api_client.disable_legacy_write_routing()
+            return Response(200, json={"_id": "res-001", "note": "Hi"})
+
+        respx.get(_legacy_url()).mock(side_effect=_retire)
+        write = respx.put(_legacy_url()).mock(
+            return_value=Response(200, json={}),
+        )
+
+        try:
+            with pytest.raises(GuestyActionError) as exc_info:
+                await client.add_reservation_note(
+                    "res-001",
+                    "New note",
+                    route=WRITE_ROUTE_LEGACY,
+                )
+        finally:
+            await http.aclose()
+
+        assert not write.called
+        assert "2027-03-01" in str(exc_info.value)
+
+    @respx.mock
+    async def test_a_retirement_answer_says_the_request_was_sent(
+        self,
+    ) -> None:
+        """The post-request message never claims nothing was sent."""
+        _mock_token()
+        respx.put(_legacy_url()).mock(
+            return_value=Response(410, json={"error": "gone"}),
+        )
+
+        http = httpx.AsyncClient()
+        try:
+            with pytest.raises(GuestyActionError) as exc_info:
+                await _v3_client(http).set_reservation_status(
+                    "res-001",
+                    "checked_in",
+                    route=WRITE_ROUTE_LEGACY,
+                )
+        finally:
+            await http.aclose()
+
+        message = str(exc_info.value)
+        assert "No request was sent" not in message
+        assert "410" in message
+        assert "2027-03-01" in message

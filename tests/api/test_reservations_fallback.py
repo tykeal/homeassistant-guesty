@@ -1148,3 +1148,32 @@ def _coordinator(
         api_client=api_client,
         listings_coordinator=listings,
     )
+
+
+class TestWriteConfirmedAbsenceIsReported:
+    """A write-discovered deletion reaches the refresh (FR-052)."""
+
+    @respx.mock
+    async def test_the_next_refresh_reports_the_absence(self) -> None:
+        """The identifier appears once in ``absent``."""
+        _mock_token()
+        source = ReservationFallbackSource(_make_client())
+        source.retire_candidate("res-gone")
+
+        first = await _resolve(source)
+        second = await _resolve(source)
+
+        assert first.absent == ("res-gone",)
+        assert second.absent == ()
+
+    @respx.mock
+    async def test_a_retired_fallback_still_reports_it(self) -> None:
+        """Self-disabling must not swallow the absence."""
+        _mock_token()
+        source = ReservationFallbackSource(_make_client())
+        source.retire_candidate("res-gone")
+        source.note_retirement()
+
+        outcome = await _resolve(source)
+
+        assert outcome.absent == ("res-gone",)

@@ -206,6 +206,9 @@ class ReservationFallbackSource:
             successful or not, which the re-check interval is
             measured from (FR-053).
         _confirmed_absent: Identifiers legacy says are gone.
+        _unreported_absent: Confirmed absences a write discovered,
+            waiting to be reported to the refresh so the identity
+            baseline retires them durably (FR-052).
         _disabled: Whether retirement self-disabled the fallback.
         _retirement_logged: Whether the one warning has been made.
     """
@@ -221,6 +224,7 @@ class ReservationFallbackSource:
         self._retained: dict[str, GuestyReservation] = {}
         self._last_attempt: dict[str, datetime] = {}
         self._confirmed_absent: set[str] = set()
+        self._unreported_absent: set[str] = set()
         self._disabled = False
         self._retirement_logged = False
 
@@ -266,9 +270,16 @@ class ReservationFallbackSource:
     def retire_candidate(self, reservation_id: str) -> None:
         """Retire a candidate a legacy write reported is gone.
 
+        A write can meet a deletion before any lookup does. The
+        absence is queued for the next refresh to report, so it
+        reaches the identity baseline and survives a reload rather
+        than living only in this session's memory (FR-052).
+
         Args:
             reservation_id: The reservation legacy denied.
         """
+        if reservation_id not in self._confirmed_absent:
+            self._unreported_absent.add(reservation_id)
         self._retire(reservation_id)
 
     async def resolve(
@@ -302,7 +313,7 @@ class ReservationFallbackSource:
         if self._disabled:
             self._served.clear()
             self._retained.clear()
-            return FallbackOutcome()
+            return FallbackOutcome(absent=self._drain_unreported_absent())
 
         present = {reservation.id for reservation in retrieved}
         eligible = [
@@ -322,7 +333,7 @@ class ReservationFallbackSource:
         batch = due[:MAX_LEGACY_FALLBACK_LOOKUPS_PER_REFRESH]
         deferred = len(due) - len(batch)
 
-        absent: list[str] = []
+        absent: list[str] = list(self._drain_unreported_absent())
         succeeded = 0
         failed = 0
         for reservation_id in batch:
@@ -389,6 +400,7 @@ class ReservationFallbackSource:
             self._served.pop(reservation.id, None)
             self._last_attempt.pop(reservation.id, None)
             self._confirmed_absent.discard(reservation.id)
+            self._unreported_absent.discard(reservation.id)
 
     def _is_due(self, reservation_id: str, now: datetime) -> bool:
         """Report whether a candidate may be looked up again.
@@ -525,6 +537,16 @@ class ReservationFallbackSource:
         self._retained[reservation_id] = reservation
         return _OK
 
+    def _drain_unreported_absent(self) -> tuple[str, ...]:
+        """Hand write-discovered absences to this refresh.
+
+        Returns:
+            The queued identifiers, which are reported once.
+        """
+        queued = tuple(sorted(self._unreported_absent))
+        self._unreported_absent.clear()
+        return queued
+
     def _retire(self, reservation_id: str) -> None:
         """Retire a candidate both APIs agree no longer exists.
 
@@ -615,6 +637,7 @@ class ReservationFallbackSource:
             for reservation_id in [res_id for res_id in mapping if res_id not in keep]:
                 del mapping[reservation_id]
         self._confirmed_absent &= known
+        self._unreported_absent &= self._confirmed_absent
 
 
 def _overlaps(

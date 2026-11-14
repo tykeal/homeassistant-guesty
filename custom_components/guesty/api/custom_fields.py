@@ -16,6 +16,7 @@ from custom_components.guesty.api.const import (
     WRITE_ROUTE_V3,
 )
 from custom_components.guesty.api.exceptions import (
+    GuestyActionError,
     GuestyCustomFieldError,
 )
 from custom_components.guesty.api.legacy_writes import (
@@ -301,11 +302,14 @@ class GuestyCustomFieldsClient:
         if routed:
             refusal = routing_refusal(self._api_client, target_id)
             if refusal is not None:
-                raise GuestyCustomFieldError(
+                # Raised as an action error so the service layer
+                # surfaces the refusal verbatim: the generic
+                # custom-field message would lose the retirement
+                # date and the recovery advice (FR-061).
+                raise GuestyActionError(
                     refusal,
-                    target_type=target_type,
                     target_id=target_id,
-                    field_id=field_id,
+                    action_type="set_custom_field",
                 )
             path = legacy_reservation_path(target_id)
         elif target_type == "listing":
@@ -341,11 +345,10 @@ class GuestyCustomFieldsClient:
                 response,
             )
             if message is not None:
-                raise GuestyCustomFieldError(
+                raise GuestyActionError(
                     message,
-                    target_type=target_type,
                     target_id=target_id,
-                    field_id=field_id,
+                    action_type="set_custom_field",
                 )
 
         if response.status_code in (400, 404, 422):
