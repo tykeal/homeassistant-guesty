@@ -55,13 +55,16 @@ the new default the next time it loads.
 
 ### The `reservations_api` option
 
-Settings → Devices & Services → Guesty → **Configure** →
-**Reservations API**:
+The **Reservations API** selector lives on the **last** step of the
+options flow, not on the first screen. Settings → Devices & Services
+→ Guesty → **Configure** walks through **Filter by Tags** →
+**Select Listings** → **Polling Configuration**, and the selector is
+the final field of **Polling Configuration**:
 
-| Value | Meaning |
-| --- | --- |
-| `v3` *(default)* | Use the v3 reservation API. |
-| `legacy` | Use the legacy endpoints, until 2027-03-01. |
+| Value | UI label | Meaning |
+| --- | --- | --- |
+| `v3` *(default)* | Reservations v3 API | The v3 reservation API. |
+| `legacy` | Legacy reservations API | Legacy endpoints, until 2027-03-01. |
 
 Changing the option reloads the entry.
 
@@ -70,14 +73,21 @@ Changing the option reloads the entry.
 If v3 misbehaves for you, the rollback is immediate and complete:
 
 1. Settings → Devices & Services → Guesty → **Configure**
-2. Set **Reservations API** to **legacy**
-3. Submit — the entry reloads itself
+2. **Filter by Tags** — leave the tags as they are and submit
+3. **Select Listings** — leave the selection as it is and submit
+4. **Polling Configuration** — set **Reservations API**, the last
+   field on this step, to **Legacy reservations API**
+5. Submit — the entry reloads itself
+
+Steps 2 and 3 do not change anything if you submit them untouched,
+but you do have to pass through them: the selector is not shown
+until the final step.
 
 This works even if the entry failed to start at all. When setup has
-not completed, **Configure** shows only the **Reservations API**
-selector — your listings and intervals are kept exactly as they
-were — so a broken first v3 refresh cannot lock you out of the
-rollback.
+not completed, the intermediate steps cannot be shown, so
+**Configure** goes straight to a single **Reservations API** step —
+your listings and intervals are kept exactly as they were — so a
+broken first v3 refresh cannot lock you out of the rollback.
 
 Your entity IDs, history and automations are unaffected either way.
 While on `legacy` the integration logs a warning on every start
@@ -136,8 +146,10 @@ stale number is worse than one that is visibly unavailable.
 A repair notice and a warning in the log tell you once, per
 installation, per Home Assistant start.
 
-Setting **Reservations API** to `legacy` restores all three to the
-same entity IDs with live values — until 2027-03-01, after which
+Setting **Reservations API** to `legacy` (see
+[Rolling back](#rolling-back) for the full step sequence) restores
+all three to the same entity IDs with live values — until
+2027-03-01, after which
 reservation financial data is no longer available to this
 integration at all. The sensors, their strings and the notice are
 removed entirely in a release on or after that date.
