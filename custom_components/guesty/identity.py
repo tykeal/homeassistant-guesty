@@ -836,17 +836,26 @@ class ReservationIdentityGuard:
         Writes stay refused throughout, because an unstored baseline
         cannot authorize one.
 
+        The verdict is nevertheless adopted in memory. The permitted
+        legacy call has already been made, and discarding what it
+        returned would let a later refresh verify continuity through
+        an older matching code while the swept evidence that
+        contradicts it went unexamined. Held in memory it is still
+        compared, and the first refresh that reaches storage persists
+        it; until then the unstored conjunct keeps writes refused.
+
         Args:
             baseline: The baseline to persist.
         """
         try:
             await self.async_store(baseline)
         except OSError as exc:
+            self._baseline = baseline
             self._unstored = True
             _LOGGER.warning(
                 "Could not persist the reservation identity "
-                "bootstrap (%s); writes stay refused and the sweep "
-                "will be retried at the next start",
+                "bootstrap (%s); its evidence is still compared, but "
+                "writes stay refused until a baseline reaches storage",
                 type(exc).__name__,
             )
 

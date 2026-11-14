@@ -1046,8 +1046,18 @@ async def async_remove_entry(
     (data-model.md section 4). Constructing the guard directly keeps
     the cleanup working even when setup never completed.
 
+    The entry's continuity notice goes with it. The repair names a
+    single entry and is cleared by that entry's coordinator, so one
+    left behind by a removed entry could never be withdrawn while
+    another Guesty entry kept the domain alive.
+
     Args:
         hass: Home Assistant instance.
         entry: The config entry being removed.
     """
+    ir.async_delete_issue(
+        hass,
+        DOMAIN,
+        f"{ISSUE_IDENTITY_UNCONFIRMED}_{entry.entry_id}",
+    )
     await ReservationIdentityGuard(hass, entry.entry_id).async_remove()

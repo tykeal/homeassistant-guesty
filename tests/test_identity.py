@@ -1620,6 +1620,53 @@ class TestBootstrapSweep:
         assert guard.baseline.continuity == CONTINUITY_UNCONFIRMED
         assert guard.write_refusal("legacy-1") is not None
 
+    async def test_unstored_sweep_still_compares_its_evidence(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Lost-to-storage evidence must not be lost to the guard."""
+        entry = _make_entry(entry_id="entry-unstored-sweep")
+        entry.add_to_hass(hass)
+        _register_reservation_entity(hass, entry)
+        guard = ReservationIdentityGuard(hass, entry.entry_id)
+        await guard.async_load()
+        await guard.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_V3,
+                continuity=CONTINUITY_UNCONFIRMED,
+                codes={CODE_B: "shared-2"},
+            ),
+        )
+
+        with (
+            _legacy_sweep([_reservation("legacy-1", CODE_A)]),
+            patch.object(
+                guard._store,
+                "async_save",
+                side_effect=OSError("disk full"),
+            ),
+        ):
+            await async_bootstrap_identity(
+                hass,
+                entry,
+                guard=guard,
+                api_client=_api_client(),
+            )
+
+        assert guard.baseline is not None
+        assert guard.baseline.bootstrap_codes == {CODE_A: "legacy-1"}
+        assert guard.write_refusal("shared-2") == REFUSAL_UNSTORED
+
+        # A later refresh that matches an older code must not be
+        # able to verify continuity past the conflicting sweep.
+        conflicting = [
+            _reservation("shared-2", CODE_B),
+            _reservation("v3-other", CODE_A),
+        ]
+        comparison = guard.compare(conflicting, RESERVATIONS_API_V3)
+
+        assert comparison.is_ambiguous is True
+
 
 class TestContinuityNotice:
     """The unconfirmed-continuity notice (T075, FR-031c)."""
@@ -1791,3 +1838,27 @@ class TestContinuityNotice:
         listener()
 
         assert registry.async_get_issue(DOMAIN, issue_id) is not None
+
+    async def test_removing_the_entry_withdraws_the_notice(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A deleted entry must not leave an unclearable repair."""
+        entry = _make_entry(entry_id="entry-removed")
+        entry.add_to_hass(hass)
+        guard = ReservationIdentityGuard(hass, entry.entry_id)
+        await guard.async_load()
+        await guard.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_LEGACY,
+                continuity=CONTINUITY_UNCONFIRMED,
+                bootstrap_attempted=True,
+            ),
+        )
+        async_notify_identity_continuity(hass, entry, guard)
+        issue_id = f"{ISSUE_IDENTITY_UNCONFIRMED}_{entry.entry_id}"
+        assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
+
+        await async_remove_entry(hass, entry)
+
+        assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
