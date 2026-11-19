@@ -1,0 +1,12 @@
+---
+# SPDX-FileCopyrightText: 2026 Andrew Grimberg <tykeal@bardicgrove.org>
+# SPDX-License-Identifier: Apache-2.0
+
+fixes:
+  - |
+    Configure now offers a Reservations API shortcut that changes only
+    the API selection, without fetching listings or changing tags,
+    listing discovery or polling options. Choose Legacy reservations
+    API there to roll back and reload automatically. Failed setup still
+    opens this form directly; the existing listing and polling wizard
+    remains available under Listings and polling.

@@ -12,9 +12,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 import respx
+import voluptuous as vol
 from homeassistant.config_entries import (
     SOURCE_REAUTH,
     SOURCE_USER,
+    ConfigEntry,
     ConfigFlowResult,
 )
 from homeassistant.core import HomeAssistant
@@ -157,6 +159,28 @@ def _setup_api_client(
     return mock_api
 
 
+async def _start_listing_options(
+    hass: HomeAssistant,
+    entry_id: str,
+) -> ConfigFlowResult:
+    """Open the existing listings and polling wizard from the menu.
+
+    Args:
+        hass: Home Assistant instance.
+        entry_id: Config entry ID.
+
+    Returns:
+        The tag filter form.
+    """
+    result = await hass.config_entries.options.async_init(entry_id)
+    assert result["type"] is FlowResultType.MENU
+    assert result["menu_options"] == ["rollback", "listings"]
+    return await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={"next_step_id": "listings"},
+    )
+
+
 async def _navigate_to_intervals(
     hass: HomeAssistant,
     entry_id: str,
@@ -164,13 +188,13 @@ async def _navigate_to_intervals(
     tag_filter: list[str] | None = None,
     selected_ids: list[str] | None = None,
 ) -> ConfigFlowResult:
-    """Navigate options flow through init and select_listings.
+    """Navigate options flow through listings and select_listings.
 
     Args:
         hass: Home Assistant instance.
         entry_id: Config entry ID.
         flow_id: Flow ID if already started.
-        tag_filter: Tags for init step.
+        tag_filter: Tags for listings step.
         selected_ids: IDs for select_listings step.
 
     Returns:
@@ -182,7 +206,8 @@ async def _navigate_to_intervals(
         selected_ids = [lst.id for lst in _TEST_LISTINGS]
 
     if flow_id is None:
-        init_result = await hass.config_entries.options.async_init(
+        init_result = await _start_listing_options(
+            hass,
             entry_id,
         )
         flow_id = init_result["flow_id"]
@@ -674,7 +699,7 @@ class TestOptionsFlow:
         mock_setup: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
-        """Options flow shows init step with tag filter."""
+        """The listings menu choice opens the tag filter form."""
         await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": SOURCE_USER},
@@ -683,11 +708,12 @@ class TestOptionsFlow:
 
         entry = hass.config_entries.async_entries(DOMAIN)[0]
         _setup_api_client(hass, entry.entry_id)
-        result = await hass.config_entries.options.async_init(
+        result = await _start_listing_options(
+            hass,
             entry.entry_id,
         )
         assert result["type"] is FlowResultType.FORM
-        assert result["step_id"] == "init"
+        assert result["step_id"] == "listings"
 
     @patch(
         "custom_components.guesty.async_setup_entry",
@@ -823,7 +849,7 @@ class TestReservationOptionsFlow:
         mock_setup: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
-        """Options flow shows init step form."""
+        """The listings menu choice opens the tag filter form."""
         await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": SOURCE_USER},
@@ -832,11 +858,12 @@ class TestReservationOptionsFlow:
         entry = hass.config_entries.async_entries(DOMAIN)[0]
         _setup_api_client(hass, entry.entry_id)
 
-        result = await hass.config_entries.options.async_init(
+        result = await _start_listing_options(
+            hass,
             entry.entry_id,
         )
         assert result["type"] is FlowResultType.FORM
-        assert result["step_id"] == "init"
+        assert result["step_id"] == "listings"
 
     @patch(
         "custom_components.guesty.async_setup_entry",
@@ -1002,7 +1029,7 @@ class TestReservationOptionsFlow:
 class TestListingOptionsFlow:
     """Tests for the 3-step listing selection options flow.
 
-    Covers T010-T017: init, select_listings, and intervals steps.
+    Covers T010-T017: listings, select_listings, and intervals steps.
     """
 
     @pytest.fixture(autouse=True)
@@ -1029,7 +1056,7 @@ class TestListingOptionsFlow:
         mock_setup: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
-        """T010: init fetches listings and shows select_listings."""
+        """T010: listings fetches data and shows select_listings."""
         await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": SOURCE_USER},
@@ -1038,10 +1065,11 @@ class TestListingOptionsFlow:
         entry = hass.config_entries.async_entries(DOMAIN)[0]
         mock_api = _setup_api_client(hass, entry.entry_id)
 
-        result = await hass.config_entries.options.async_init(
+        result = await _start_listing_options(
+            hass,
             entry.entry_id,
         )
-        assert result["step_id"] == "init"
+        assert result["step_id"] == "listings"
 
         result = await hass.config_entries.options.async_configure(
             result["flow_id"],
@@ -1065,7 +1093,7 @@ class TestListingOptionsFlow:
         mock_setup: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
-        """T011: init shows cannot_connect on API failure."""
+        """T011: listings shows cannot_connect on API failure."""
         await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": SOURCE_USER},
@@ -1077,7 +1105,8 @@ class TestListingOptionsFlow:
             "connection failed",
         )
 
-        result = await hass.config_entries.options.async_init(
+        result = await _start_listing_options(
+            hass,
             entry.entry_id,
         )
         result = await hass.config_entries.options.async_configure(
@@ -1085,7 +1114,7 @@ class TestListingOptionsFlow:
             user_input={CONF_TAG_FILTER: []},
         )
         assert result["type"] is FlowResultType.FORM
-        assert result["step_id"] == "init"
+        assert result["step_id"] == "listings"
         assert result["errors"] == {"base": "cannot_connect"}
 
     @patch(
@@ -1102,7 +1131,7 @@ class TestListingOptionsFlow:
         mock_setup: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
-        """Init shows invalid_auth on GuestyAuthError."""
+        """Listings shows invalid_auth on GuestyAuthError."""
         await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": SOURCE_USER},
@@ -1114,7 +1143,8 @@ class TestListingOptionsFlow:
             "bad auth",
         )
 
-        result = await hass.config_entries.options.async_init(
+        result = await _start_listing_options(
+            hass,
             entry.entry_id,
         )
         result = await hass.config_entries.options.async_configure(
@@ -1122,7 +1152,7 @@ class TestListingOptionsFlow:
             user_input={CONF_TAG_FILTER: []},
         )
         assert result["type"] is FlowResultType.FORM
-        assert result["step_id"] == "init"
+        assert result["step_id"] == "listings"
         assert result["errors"] == {"base": "invalid_auth"}
 
     @patch(
@@ -1139,7 +1169,7 @@ class TestListingOptionsFlow:
         mock_setup: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
-        """Init shows rate_limited on GuestyRateLimitError."""
+        """Listings shows rate_limited on GuestyRateLimitError."""
         await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": SOURCE_USER},
@@ -1151,7 +1181,8 @@ class TestListingOptionsFlow:
             "rate limited",
         )
 
-        result = await hass.config_entries.options.async_init(
+        result = await _start_listing_options(
+            hass,
             entry.entry_id,
         )
         result = await hass.config_entries.options.async_configure(
@@ -1159,7 +1190,7 @@ class TestListingOptionsFlow:
             user_input={CONF_TAG_FILTER: []},
         )
         assert result["type"] is FlowResultType.FORM
-        assert result["step_id"] == "init"
+        assert result["step_id"] == "listings"
         assert result["errors"] == {"base": "rate_limited"}
 
     @patch(
@@ -1191,7 +1222,8 @@ class TestListingOptionsFlow:
         )
         _setup_api_client(hass, entry.entry_id)
 
-        result = await hass.config_entries.options.async_init(
+        result = await _start_listing_options(
+            hass,
             entry.entry_id,
         )
         result = await hass.config_entries.options.async_configure(
@@ -1230,7 +1262,8 @@ class TestListingOptionsFlow:
         entry = hass.config_entries.async_entries(DOMAIN)[0]
         _setup_api_client(hass, entry.entry_id)
 
-        result = await hass.config_entries.options.async_init(
+        result = await _start_listing_options(
+            hass,
             entry.entry_id,
         )
         result = await hass.config_entries.options.async_configure(
@@ -1279,7 +1312,8 @@ class TestListingOptionsFlow:
         assert CONF_SELECTED_LISTINGS not in entry.options
         _setup_api_client(hass, entry.entry_id)
 
-        result = await hass.config_entries.options.async_init(
+        result = await _start_listing_options(
+            hass,
             entry.entry_id,
         )
         result = await hass.config_entries.options.async_configure(
@@ -1360,7 +1394,8 @@ class TestListingOptionsFlow:
         entry = hass.config_entries.async_entries(DOMAIN)[0]
         _setup_api_client(hass, entry.entry_id)
 
-        result = await hass.config_entries.options.async_init(
+        result = await _start_listing_options(
+            hass,
             entry.entry_id,
         )
         result = await hass.config_entries.options.async_configure(
@@ -1445,7 +1480,8 @@ class TestListingOptionsFlow:
         entry = hass.config_entries.async_entries(DOMAIN)[0]
         _setup_api_client(hass, entry.entry_id)
 
-        result = await hass.config_entries.options.async_init(
+        result = await _start_listing_options(
+            hass,
             entry.entry_id,
         )
         result = await hass.config_entries.options.async_configure(
@@ -1556,7 +1592,8 @@ class TestTagFilterOptionsFlow:
         entry = hass.config_entries.async_entries(DOMAIN)[0]
         _setup_api_client(hass, entry.entry_id)
 
-        result = await hass.config_entries.options.async_init(
+        result = await _start_listing_options(
+            hass,
             entry.entry_id,
         )
         result = await hass.config_entries.options.async_configure(
@@ -1589,7 +1626,8 @@ class TestTagFilterOptionsFlow:
         entry = hass.config_entries.async_entries(DOMAIN)[0]
         _setup_api_client(hass, entry.entry_id)
 
-        result = await hass.config_entries.options.async_init(
+        result = await _start_listing_options(
+            hass,
             entry.entry_id,
         )
         result = await hass.config_entries.options.async_configure(
@@ -1626,7 +1664,8 @@ class TestTagFilterOptionsFlow:
         entry = hass.config_entries.async_entries(DOMAIN)[0]
         _setup_api_client(hass, entry.entry_id)
 
-        result = await hass.config_entries.options.async_init(
+        result = await _start_listing_options(
+            hass,
             entry.entry_id,
         )
         result = await hass.config_entries.options.async_configure(
@@ -1664,7 +1703,8 @@ class TestTagFilterOptionsFlow:
         entry = hass.config_entries.async_entries(DOMAIN)[0]
         _setup_api_client(hass, entry.entry_id)
 
-        result = await hass.config_entries.options.async_init(
+        result = await _start_listing_options(
+            hass,
             entry.entry_id,
         )
         result = await hass.config_entries.options.async_configure(
@@ -1672,7 +1712,7 @@ class TestTagFilterOptionsFlow:
             user_input={CONF_TAG_FILTER: ["nonexistent"]},
         )
         assert result["type"] is FlowResultType.FORM
-        assert result["step_id"] == "init"
+        assert result["step_id"] == "listings"
         assert result["errors"] == {
             "base": "no_listings_match_tags",
         }
@@ -1709,7 +1749,8 @@ class TestTagFilterOptionsFlow:
         )
         _setup_api_client(hass, entry.entry_id)
 
-        result = await hass.config_entries.options.async_init(
+        result = await _start_listing_options(
+            hass,
             entry.entry_id,
         )
         # "beachfront" matches lst_001 only
@@ -2173,3 +2214,95 @@ class TestRollbackWithoutASuccessfulSetup:
 
         assert entry.options[CONF_RESERVATIONS_API] == RESERVATIONS_API_LEGACY
         mock_reload.assert_awaited_once_with(entry.entry_id)
+
+
+class TestApiOnlyOptions:
+    """Switch APIs without fetching or rewriting listing options."""
+
+    @pytest.mark.parametrize("loaded", [False, True])
+    @pytest.mark.parametrize("selection", [None, [], ["hidden-listing", "lst_001"]])
+    async def test_preserves_options_and_reloads_once(
+        self,
+        hass: HomeAssistant,
+        loaded: bool,
+        selection: list[str] | None,
+    ) -> None:
+        """Only the API changes, including for dynamic listing discovery."""
+        options: dict[str, Any] = {
+            CONF_TAG_FILTER: ["nonmatching-tag"],
+            CONF_SCAN_INTERVAL: 25,
+            CONF_RESERVATION_SCAN_INTERVAL: 35,
+            CONF_PAST_DAYS: 12,
+            CONF_FUTURE_DAYS: 42,
+            CONF_RESERVATIONS_API: RESERVATIONS_API_V3,
+            "future_option": {"keep": [1, 2]},
+        }
+        if selection is not None:
+            options[CONF_SELECTED_LISTINGS] = selection
+        entry = MockConfigEntry(domain=DOMAIN, data=VALID_INPUT, options=options)
+        entry.add_to_hass(hass)
+        mock_api = _setup_api_client(hass, entry.entry_id) if loaded else None
+
+        async def reload_on_update(hass: HomeAssistant, entry: ConfigEntry) -> None:
+            """Model the reload already registered by successful setup."""
+            await hass.config_entries.async_reload(entry.entry_id)
+
+        if loaded:
+            entry.add_update_listener(reload_on_update)
+
+        with patch.object(
+            hass.config_entries, "async_reload", new_callable=AsyncMock
+        ) as reload_entry:
+            result = await hass.config_entries.options.async_init(entry.entry_id)
+            if loaded:
+                assert result["type"] is FlowResultType.MENU
+                assert result["menu_options"] == ["rollback", "listings"]
+                result = await hass.config_entries.options.async_configure(
+                    result["flow_id"], user_input={"next_step_id": "rollback"}
+                )
+            assert result["step_id"] == "rollback"
+            result = await hass.config_entries.options.async_configure(
+                result["flow_id"],
+                user_input={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+            )
+            await hass.async_block_till_done()
+
+        assert result["type"] is FlowResultType.CREATE_ENTRY
+        assert entry.options == {
+            **options,
+            CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY,
+        }
+        reload_entry.assert_awaited_once_with(entry.entry_id)
+        if mock_api is not None:
+            mock_api.get_listings.assert_not_awaited()
+
+    @pytest.mark.parametrize("loaded", [False, True])
+    async def test_invalid_api_does_not_save_or_reload(
+        self,
+        hass: HomeAssistant,
+        loaded: bool,
+    ) -> None:
+        """The selector rejects unknown values before changing options."""
+        options = {CONF_RESERVATIONS_API: RESERVATIONS_API_V3}
+        entry = MockConfigEntry(domain=DOMAIN, data=VALID_INPUT, options=options)
+        entry.add_to_hass(hass)
+        if loaded:
+            _setup_api_client(hass, entry.entry_id)
+
+        with patch.object(
+            hass.config_entries, "async_reload", new_callable=AsyncMock
+        ) as reload_entry:
+            result = await hass.config_entries.options.async_init(entry.entry_id)
+            if loaded:
+                result = await hass.config_entries.options.async_configure(
+                    result["flow_id"], user_input={"next_step_id": "rollback"}
+                )
+            with pytest.raises(vol.Invalid):
+                await hass.config_entries.options.async_configure(
+                    result["flow_id"],
+                    user_input={CONF_RESERVATIONS_API: "unsupported"},
+                )
+            await hass.async_block_till_done()
+
+        assert entry.options == options
+        reload_entry.assert_not_awaited()

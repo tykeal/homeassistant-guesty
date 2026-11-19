@@ -55,11 +55,9 @@ the new default the next time it loads.
 
 ### The `reservations_api` option
 
-The **Reservations API** selector lives on the **last** step of the
-options flow, not on the first screen. Settings → Devices & Services
-→ Guesty → **Configure** walks through **Filter by Tags** →
-**Select Listings** → **Polling Configuration**, and the selector is
-the final field of **Polling Configuration**:
+Open Settings → Devices & Services → Guesty → **Configure** →
+**Reservations API** to change only the reservation API, without
+fetching listings or changing any other options:
 
 | Value | UI label | Meaning |
 | --- | --- | --- |
@@ -73,27 +71,29 @@ Changing the option reloads the entry.
 If v3 misbehaves for you, the rollback is immediate and complete:
 
 1. Settings → Devices & Services → Guesty → **Configure**
-2. **Filter by Tags** — check the tags, then submit
-3. **Select Listings** — check that every listing you track is
-   still ticked, then submit
-4. **Polling Configuration** — set **Reservations API**, the last
-   field on this step, to **Legacy reservations API**
-5. Submit — the entry reloads itself
+2. Choose **Reservations API**
+3. Set **Reservations API** to **Legacy reservations API**
+4. Submit — the entry reloads itself
 
-You have to pass through steps 2 and 3: the selector is not shown
-until the final step. Review them rather than clicking through
-blindly, because the whole flow is saved on submit:
+This path needs no Guesty connectivity to save the selection and
+preserves your listing selection, tags, polling intervals and all
+other options exactly. If no listing selection was previously saved,
+new listings will continue to be discovered automatically.
 
-- A listing that does not match the tag filter is not offered on
-  step 3 and is dropped from the saved selection.
-- An entry that has never been through this flow has no saved
-  selection, so step 3 defaults to every listing currently
-  returned. Submitting pins that list, and listings added in
-  Guesty later will not be picked up until you run the flow again.
+To change listings or polling instead, choose **Listings and polling**
+from **Configure**. This retains the **Filter by Tags** →
+**Select Listings** → **Polling Configuration** wizard, including its
+Reservations API field. Review the listing selection before saving:
+
+- Listings excluded by the tag filter are not offered and are
+  dropped from the saved selection.
+- Without a saved selection, all currently returned listings are
+  preselected. Saving pins that list; future listings need to be
+  selected by running this wizard again.
 - Any listing left unticked has its devices and entities removed.
 
 This works even if the entry failed to start at all. When setup has
-not completed, the intermediate steps cannot be shown, so
+not completed, listings cannot be fetched, so
 **Configure** goes straight to a single **Reservations API** step —
 your listings and intervals are kept exactly as they were — so a
 broken first v3 refresh cannot lock you out of the rollback.

@@ -42,6 +42,14 @@
     "options": {
         "step": {
             "init": {
+                "title": "Guesty Options",
+                "description": "Change the reservations API without changing other options, or configure listings and polling.",
+                "menu_options": {
+                    "rollback": "Reservations API",
+                    "listings": "Listings and polling"
+                }
+            },
+            "listings": {
                 "title": "Filter by Tags",
                 "description": "Optionally enter Guesty tags to narrow the listing selector. Leave empty to see all listings.",
                 "data": {
@@ -53,7 +61,7 @@
             },
            "rollback": {
              "title": "Reservations API",
-             "description": "This entry has not finished setting up, so only the reservation API selection can be changed. Choosing 'Legacy reservations API' and reloading the entry restores the previous behaviour. The legacy reservations API is retired on 2027-03-01.",
+             "description": "Change only the reservations API. Saving a changed selection reloads the entry automatically; all other options stay unchanged. Choose 'Legacy reservations API' to roll back to the previous API. The legacy reservations API is retired on 2027-03-01.",
              "data": {
                "reservations_api": "Reservations API"
              },
