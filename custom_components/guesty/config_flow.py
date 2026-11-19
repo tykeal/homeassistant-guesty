@@ -337,7 +337,7 @@ class GuestyConfigFlow(ConfigFlow, domain=DOMAIN):
 class GuestyOptionsFlowHandler(OptionsFlow):
     """Handle options flow for the Guesty integration.
 
-    Three-step wizard: tag filter → listing selection → intervals.
+    API-only selection or tag filter → listing selection → intervals.
 
     Attributes:
         _config_entry: The config entry being configured.
@@ -361,17 +361,14 @@ class GuestyOptionsFlowHandler(OptionsFlow):
         self,
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
-        """Handle the tag filter step and fetch listings.
-
-        Shows an optional tag filter field. On submit, fetches all
-        listings from the API and transitions to select_listings.
+        """Offer API-only selection or the listings and polling wizard.
 
         Args:
             user_input: User-provided form data, or None for
                 initial display.
 
         Returns:
-            Config flow result (form or next step).
+            Options menu, or the API-only form when setup failed.
         """
         if self._config_entry.entry_id not in self.hass.data.get(DOMAIN, {}):
             # Setup never completed, so there is no API client to
@@ -380,6 +377,24 @@ class GuestyOptionsFlowHandler(OptionsFlow):
             # when the documented rollback is needed (FR-039).
             return await self.async_step_rollback()
 
+        return self.async_show_menu(
+            step_id="init",
+            menu_options=["rollback", "listings"],
+        )
+
+    async def async_step_listings(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Handle the tag filter step and fetch listings.
+
+        Args:
+            user_input: User-provided form data, or None for initial
+                display.
+
+        Returns:
+            Tag filter form or listing selection step.
+        """
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -415,7 +430,7 @@ class GuestyOptionsFlowHandler(OptionsFlow):
         )
 
         return self.async_show_form(
-            step_id="init",
+            step_id="listings",
             data_schema=schema,
             errors=errors,
         )
@@ -424,11 +439,10 @@ class GuestyOptionsFlowHandler(OptionsFlow):
         self,
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
-        """Offer only the reservation path while setup is broken.
+        """Offer only the reservation path, independently of Guesty access.
 
-        Every other option is carried over untouched, because the
-        listings cannot be re-selected without an API client and
-        silently dropping them would compound the failure.
+        Every other option is carried over untouched, so switching
+        API paths cannot change listing discovery or polling.
 
         Args:
             user_input: User-provided form data, or None for
@@ -445,14 +459,13 @@ class GuestyOptionsFlowHandler(OptionsFlow):
                     CONF_RESERVATIONS_API: user_input[CONF_RESERVATIONS_API],
                 },
             )
-            # A failed setup never registered the update listener,
-            # so nothing else would act on the new option until a
-            # retry or a restart. Recovery has to be immediate.
-            self.hass.async_create_task(
-                self.hass.config_entries.async_reload(
-                    self._config_entry.entry_id,
-                ),
-            )
+            if self._config_entry.entry_id not in self.hass.data.get(DOMAIN, {}):
+                # Failed setup never registered the update listener.
+                self.hass.async_create_task(
+                    self.hass.config_entries.async_reload(
+                        self._config_entry.entry_id,
+                    ),
+                )
             return result
 
         return self.async_show_form(
@@ -503,7 +516,7 @@ class GuestyOptionsFlowHandler(OptionsFlow):
 
         if not filtered and user_input is None and self._tag_filter:
             return self.async_show_form(
-                step_id="init",
+                step_id="listings",
                 data_schema=vol.Schema(
                     {
                         vol.Optional(

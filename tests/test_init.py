@@ -4202,7 +4202,7 @@ class TestReservationsApiOptionReload:
         mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
-        """Flipping only reservations_api reloads the entry."""
+        """The API-only options shortcut reloads a loaded entry once."""
         entry = _make_entry(
             options={
                 CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
@@ -4220,18 +4220,21 @@ class TestReservationsApiOptionReload:
             "async_reload",
             new_callable=AsyncMock,
         ) as mock_reload:
-            hass.config_entries.async_update_entry(
-                entry,
-                options={
-                    CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
-                    CONF_RESERVATION_SCAN_INTERVAL: (DEFAULT_RESERVATION_SCAN_INTERVAL),
-                    CONF_CF_SCAN_INTERVAL: DEFAULT_CF_SCAN_INTERVAL,
+            mock_listings.reset_mock()
+            result = await hass.config_entries.options.async_init(entry.entry_id)
+            result = await hass.config_entries.options.async_configure(
+                result["flow_id"], user_input={"next_step_id": "rollback"}
+            )
+            await hass.config_entries.options.async_configure(
+                result["flow_id"],
+                user_input={
                     CONF_RESERVATIONS_API: RESERVATIONS_API_V3,
                 },
             )
             await hass.async_block_till_done()
 
-            mock_reload.assert_awaited_once()
+            mock_reload.assert_awaited_once_with(entry.entry_id)
+            mock_listings.assert_not_awaited()
 
     @patch(
         "custom_components.guesty.GuestyApiClient.get_reservations",
@@ -4255,7 +4258,7 @@ class TestReservationsApiOptionReload:
         mock_reservations: AsyncMock,
         hass: HomeAssistant,
     ) -> None:
-        """Re-saving the same option value does not reload."""
+        """Re-saving the API-only form does not reload a loaded entry."""
         options = {
             CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
             CONF_RESERVATION_SCAN_INTERVAL: DEFAULT_RESERVATION_SCAN_INTERVAL,
@@ -4272,9 +4275,13 @@ class TestReservationsApiOptionReload:
             "async_reload",
             new_callable=AsyncMock,
         ) as mock_reload:
-            hass.config_entries.async_update_entry(
-                entry,
-                options=dict(options),
+            result = await hass.config_entries.options.async_init(entry.entry_id)
+            result = await hass.config_entries.options.async_configure(
+                result["flow_id"], user_input={"next_step_id": "rollback"}
+            )
+            await hass.config_entries.options.async_configure(
+                result["flow_id"],
+                user_input={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
             )
             await hass.async_block_till_done()
 
