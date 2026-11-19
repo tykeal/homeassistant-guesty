@@ -431,6 +431,7 @@ jobs:
     needs:
       - 'tag-validate'
       - 'attach-artefacts'
+      - 'grype'
     runs-on: 'ubuntu-latest'
     permissions:
       contents: write  # Promotes the draft release to published
