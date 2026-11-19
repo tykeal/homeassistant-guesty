@@ -41,9 +41,15 @@ mypy
 pytest
 pytest-asyncio
 pytest-cov
+pytest-freezer
 pytest-homeassistant-custom-component
 respx
 ruff
+
+# [dependency-groups] releasenotes.
+pyyaml
+reno
+types-pyyaml
 
 # [build-system] requires.
 hatch-vcs
