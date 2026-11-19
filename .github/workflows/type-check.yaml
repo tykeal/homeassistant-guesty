@@ -175,15 +175,15 @@ jobs:
           # --locked refuses to proceed when uv.lock is stale, so a
           # drifted lock file fails here rather than silently type
           # checking against a resolution nobody committed.
-          uv sync --locked
+          uv sync --locked --group releasenotes
 
       - name: 'Run mypy'
         shell: 'bash'
         run: |
           # Run mypy
           set -euo pipefail
-          # Matches the pre-commit hook entry exactly. Both directories
-          # are passed explicitly so this stays a whole-tree check: a
-          # typing change under custom_components/ must not be able to
-          # break an untouched caller in tests/ without failing.
-          uv run --no-sync mypy --show-error-codes custom_components/ tests/
+          # Matches the pre-commit hook entry exactly. Each source tree
+          # is passed explicitly so typing changes in release tooling
+          # and the integration are checked together.
+          uv run --no-sync --group releasenotes mypy --show-error-codes \
+            custom_components/ tests/ scripts/

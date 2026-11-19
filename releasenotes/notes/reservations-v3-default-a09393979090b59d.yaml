@@ -1,0 +1,26 @@
+---
+# SPDX-FileCopyrightText: 2026 Andrew Grimberg <tykeal@bardicgrove.org>
+# SPDX-License-Identifier: Apache-2.0
+
+upgrade:
+  - |
+    New and existing entries now use the v3 reservation API by default.
+    Home Assistant 2026.4.0 or newer is required. Review automations
+    that depend on reservation data against your Guesty account before
+    relying on them; this integration has not yet been tested against
+    live Guesty data. Reservation writes may be refused until the
+    integration can establish identifier continuity.
+  - |
+    The v3 API does not provide reservation financial data. Existing
+    financial sensor registry entries are retained and become
+    unavailable, not zero. Selecting the legacy API restores those
+    sensors with their existing entity IDs and live values, but legacy
+    endpoints are scheduled to retire on 2027-03-01.
+  - |
+    To roll back, open Configure and proceed through Filter by Tags,
+    Select Listings, then Polling Configuration; set the final
+    Reservations API field to Legacy reservations API. Review the
+    selected listings before submitting: this flow can change the saved
+    listing selection. If setup has not completed, Configure opens a
+    dedicated Reservations API-only rollback step that preserves the
+    other options.

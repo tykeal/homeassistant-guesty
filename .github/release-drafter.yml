@@ -101,9 +101,10 @@ version-resolver:
       - "revert"
   default: patch
 # yamllint disable rule:line-length
-template: |
+header: |
   [![Downloads for this release](https://img.shields.io/github/downloads/$OWNER/$REPOSITORY/v$RESOLVED_VERSION/total.svg)](https://github.com/$OWNER/$REPOSITORY/releases/v$RESOLVED_VERSION)
 
+template: |
   $CHANGES
 
   ## Links

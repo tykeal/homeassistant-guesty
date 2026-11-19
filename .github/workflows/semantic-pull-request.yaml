@@ -9,7 +9,13 @@ on:
   # Not supported when workflow contains: amannn/action-semantic-pull-request
   # workflow_dispatch:
   pull_request:
-    types: [opened, reopened, edited, synchronize]
+    types:
+      - opened
+      - reopened
+      - edited
+      - synchronize
+      - labeled
+      - unlabeled
 
 permissions: {}
 
@@ -40,6 +46,12 @@ concurrency:
   queue: max
 
 jobs:
+  release-notes:
+    name: "Release Notes"
+    uses: $/.github/workflows/release-notes.yaml
+    permissions:
+      contents: read
+
   validate:
     name: "Validate"
     # Delegate to the shared reusable workflow, which tolerates
@@ -63,7 +75,7 @@ jobs:
     # This job re-emits that exact name and fails whenever validation
     # did not succeed, keeping the required status check stable.
     name: "Semantic Pull Request"
-    needs: [validate]
+    needs: [validate, release-notes]
     if: always()
     runs-on: ubuntu-latest
     permissions: {}
@@ -72,9 +84,15 @@ jobs:
         shell: bash
         env:
           RESULT: ${{ needs.validate.result }}
+          RELEASE_NOTES_RESULT: ${{ needs.release-notes.result }}
         run: |
           echo "Validation result: $RESULT"
           if [ "$RESULT" != "success" ]; then
             echo "::error::Semantic pull request validation did not succeed"
+            exit 1
+          fi
+          echo "Release notes result: $RELEASE_NOTES_RESULT"
+          if [ "$RELEASE_NOTES_RESULT" != "success" ]; then
+            echo "::error::Release note validation did not succeed"
             exit 1
           fi

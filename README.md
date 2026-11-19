@@ -172,3 +172,25 @@ attribute keys on both paths; that equivalence is enforced by tests.
 
 This project is licensed under the Apache License 2.0. See
 [LICENSE](LICENSE) for details.
+
+## Release notes
+
+Add a [reno](https://docs.openstack.org/reno/latest/) note in
+`releasenotes/notes/` with each user-facing change:
+
+```bash
+uv run --only-group releasenotes reno new <slug>
+uv run --only-group releasenotes reno lint
+```
+
+Keep only the sections that apply and write entries in Markdown.
+Pull requests labeled `breaking-change` or titled with a conventional
+breaking marker such as `Feat!: ...` must include an upgrade entry with
+operator guidance. The draft GitHub release renders notes added since
+the latest release tag above the pull-request changelog. Preview that
+content locally after adding a new note to Git's index (reno uses Git
+history to discover note files):
+
+```bash
+uv run --only-group releasenotes python scripts/render_release_notes.py
+```

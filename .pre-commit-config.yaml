@@ -200,8 +200,9 @@ repos:
   # mirrors-mypy. The mirror builds an isolated virtualenv from
   # additional_dependencies, which resolves a different Home Assistant
   # than uv.lock pins and therefore type checks against the wrong
-  # stubs. Running 'uv run mypy' guarantees the same interpreter and
-  # dependency set as the test suite. pre-commit.ci has no uv, so the
+  # stubs. Running 'uv run --group releasenotes mypy' guarantees the same
+  # interpreter and dependency set as the test suite plus release tools.
+  # pre-commit.ci has no uv, so the
   # hook stays in the ci skip list above; the Type Check workflow in
   # .github/workflows/type-check.yaml is what enforces mypy in CI.
   - repo: local
@@ -212,7 +213,9 @@ repos:
         pass_filenames: false
         require_serial: true
         types_or: [python, pyi]
-        entry: uv run mypy --show-error-codes custom_components/ tests/
+        entry: >-
+          uv run --group releasenotes mypy --show-error-codes
+          custom_components/ tests/ scripts/
 
   # - repo: local
   #   hooks:
