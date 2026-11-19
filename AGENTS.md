@@ -221,7 +221,10 @@ The Python project lives under `custom_components/`. Run commands
 from the repository root using `uv`:
 
 - Run tests before committing: `uv run pytest tests/`
-- Run linting before committing: `uv run ruff check custom_components/ tests/`
+- Run linting before committing:
+  `uv run ruff check custom_components/ tests/ scripts/`
+- Run type checking before committing:
+  `uv run --group releasenotes mypy custom_components/ tests/ scripts/`
 - All tests must pass before pushing
 - New features should include appropriate test coverage
 
@@ -229,9 +232,11 @@ from the repository root using `uv`:
 
 1. Make changes to code
 2. Run tests locally to verify: `uv run pytest tests/ -x -q`
-3. Run linting: `uv run ruff check custom_components/ tests/`
-4. Stage changes: `git add <files>`
-5. Commit with sign-off and co-authorship:
+3. Run linting: `uv run ruff check custom_components/ tests/ scripts/`
+4. Run type checking:
+   `uv run --group releasenotes mypy custom_components/ tests/ scripts/`
+5. Stage changes: `git add <files>`
+6. Commit with sign-off and co-authorship:
 
    ```bash
    git commit -s -m "Type(scope): Short imperative description
@@ -241,8 +246,8 @@ from the repository root using `uv`:
    Co-authored-by: <AI Model> <email@provider.com>"
    ```
 
-6. If pre-commit fails, fix issues and commit again (don't reset)
-7. Push when ready
+7. If pre-commit fails, fix issues and commit again (don't reset)
+8. Push when ready
 
 ## Quick Reference
 

@@ -1,0 +1,80 @@
+---
+# SPDX-FileCopyrightText: 2026 Andrew Grimberg <tykeal@bardicgrove.org>
+# SPDX-License-Identifier: Apache-2.0
+
+name: 'Release Notes'
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  release-notes:
+    name: 'Release Notes'
+    runs-on: 'ubuntu-latest'
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: 'audit'
+
+      # reno lint needs the complete history to inspect note changes.
+      # yamllint disable-line rule:line-length
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 'Find release note changes'
+        id: changes
+        env:
+          BASE_SHA: "${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA: "${{ github.event.pull_request.head.sha }}"
+        run: |
+          changed=$(git diff --name-only \
+            "$BASE_SHA" "$HEAD_SHA" -- releasenotes/)
+          echo "changed=$([ -n "$changed" ] && echo true || echo false)" \
+            >> "$GITHUB_OUTPUT"
+
+      # yamllint disable-line rule:line-length
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        if: steps.changes.outputs.changed == 'true'
+        with:
+          python-version: '3.14'
+          enable-cache: false
+
+      - name: 'Require operator guidance for breaking changes'
+        env:
+          BASE_SHA: "${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA: "${{ github.event.pull_request.head.sha }}"
+          # yamllint disable-line rule:line-length
+          LABELLED: "${{ contains(github.event.pull_request.labels.*.name, 'breaking-change') }}"
+          PR_TITLE: "${{ github.event.pull_request.title }}"
+        run: |
+          breaking="$LABELLED"
+          shopt -s nocasematch
+          title_rule='^[a-z]+(\([^)]+\))?!:'
+          if [[ "$PR_TITLE" =~ $title_rule ]]; then
+            breaking=true
+          fi
+          if [ "$breaking" != true ]; then
+            exit 0
+          fi
+          added=$(git diff --name-only --diff-filter=A \
+            "$BASE_SHA" "$HEAD_SHA" -- 'releasenotes/notes/*.yaml')
+          if [ -z "$added" ]; then
+            echo "::error::Breaking changes must add a release note."
+            exit 1
+          fi
+          uv run --frozen --only-group releasenotes \
+            python scripts/render_release_notes.py \
+            --require-upgrade-pr --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA"
+
+      - name: 'Lint release notes'
+        if: steps.changes.outputs.changed == 'true'
+        run: uv run --frozen --only-group releasenotes reno lint
