@@ -11,9 +11,9 @@ unique `releasenotes/notes/stay-date-fallback-*.yaml` file.
 
 ## Prerequisites
 
-- [ ] T001 Inspect the existing parser and fixture conventions in
+- [x] T001 Inspect the existing parser and fixture conventions in
     `custom_components/guesty/api/models.py` and `tests/api/test_models.py`
-- [ ] T002 Run Speckit consistency analysis across the spec, plan, and tasks.
+- [x] T002 Run Speckit consistency analysis across the spec, plan, and tasks.
     No implementation begins until it passes. Resolve meaningful artifact
     drift in a separately reviewed and merged documentation PR; escalate
     unsettled policy or out-of-scope blockers.
@@ -25,51 +25,51 @@ Do not release the positive path without the negative and safety cases.
 
 ### Tests First (Red)
 
-- [ ] T003 Add parameterized parser tests for the four eligible combinations:
+- [x] T003 Add parameterized parser tests for the four eligible combinations:
     both date keys omitted, omitted/`null`, `null`/omitted, and both `null`.
     Assert a valid single segment uses the chronological top-level interval.
-- [ ] T004 Add parser regression tests for explicit valid segment dates,
+- [x] T004 Add parser regression tests for explicit valid segment dates,
     partial actual-date pairs, empty or malformed values, missing or invalid
     listing identifiers, and top-level listing inference rejection.
-- [ ] T005 Add parser tests rejecting missing, unparsable, equal, and reversed
+- [x] T005 Add parser tests rejecting missing, unparsable, equal, and reversed
     top-level intervals. Add raw-count cases for multi-segment stays, including
     one with only one otherwise usable segment after filtering.
-- [ ] T006 Add focused parser warning tests for unusable reservations using
+- [x] T006 Add focused parser warning tests for unusable reservations using
     synthetic guest and confirmation-code values, verifying diagnostics remain
     visible without exposing those values.
-- [ ] T007 Add a focused coordinator regression proving an eligible fallback
+- [x] T007 Add a focused coordinator regression proving an eligible fallback
     segment with a valid but untracked listing is skipped with a warning and
     never attributed to a listing inferred from top-level reservation data.
-- [ ] T008 Run the focused new tests and existing identity and write-safety
+- [x] T008 Run the focused new tests and existing identity and write-safety
     regressions before implementation. Confirm the eligible fallback cases
     fail against the existing parser and existing safety regressions pass;
     existing rejection cases may already pass.
 
 ### Implementation (Green)
 
-- [ ] T009 Implement the minimal guarded fallback in
+- [x] T009 Implement the minimal guarded fallback in
     `custom_components/guesty/api/models.py`: exactly one raw entry, a valid
     segment `listingId` under existing validation, both endpoints omitted or
     `None`, and a strictly chronological top-level interval parsed with
     existing rules.
-- [ ] T010 Re-run the focused tests and verify all eligible and ineligible
+- [x] T010 Re-run the focused tests and verify all eligible and ineligible
     cases pass. Run the existing identity and write-safety regression tests.
-- [ ] T011 Add one SPDX-covered release note at a unique path matching
+- [x] T011 Add one SPDX-covered release note at a unique path matching
     `releasenotes/notes/stay-date-fallback-*.yaml`; describe only the narrow
     fallback without claiming a live Guesty payload was verified.
-- [ ] T012 Run `uv run pytest tests/ -x -q`,
+- [x] T012 Run `uv run pytest tests/ -x -q`,
     `uv run ruff check custom_components/ tests/ scripts/`,
     `uv run --group releasenotes mypy custom_components/ tests/ scripts/`,
     and all configured pre-commit hooks. Fix any issues in scope and rerun.
-- [ ] T013 Complete a local rubber-duck review; fix and repeat until clean.
+- [x] T013 Complete a local rubber-duck review; fix and repeat until clean.
     Review raw counting, strict chronology, explicit-date precedence,
     attribution, privacy, identity/write safety, and the unchanged
     filtered-multi-to-one projection risk.
-- [ ] T014 Commit the implementation, tests, and release note together using
+- [x] T014 Commit the implementation, tests, and release note together using
     `git commit -s` and the required trailer
     `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>`.
     Verify the pushed commit's signature and effective author identity.
-- [ ] T015 If updating task checkboxes, commit those updates separately from
+- [x] T015 If updating task checkboxes, commit those updates separately from
     the implementation, with DCO sign-off and the same co-author trailer.
 - [ ] T016 Submit the implementation PR after the documentation stages are
     merged and T002 passes. Request Copilot review and resolve all threads;
