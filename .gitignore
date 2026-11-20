@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 __pycache__/
+*.py[cod]
 pythonenv*
 .python-version
 .coverage
@@ -31,6 +32,7 @@ data/.encryption_key
 
 # Environment files
 .env
+.env.*
 
 # Build artifacts
 dist/
@@ -40,6 +42,14 @@ dist/
 .ruff_cache/
 htmlcov/
 .github/release-drafter-generated.yml
+
+# Editor and temporary files
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp
+.vscode/
+.idea/
 
 # Documentation build
 docs/_build/
