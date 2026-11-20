@@ -852,9 +852,32 @@ class GuestyReservation:
         raw_stay = data.get("stay")
         if not isinstance(raw_stay, list):
             raw_stay = []
+        segment_items = raw_stay
+        if len(raw_stay) == 1:
+            raw_segment = raw_stay[0]
+            if (
+                isinstance(raw_segment, dict)
+                and raw_segment.get("listingId")
+                and raw_segment.get("checkIn") is None
+                and raw_segment.get("checkOut") is None
+            ):
+                fallback_check_in = _parse_iso_datetime(data.get("checkIn"))
+                fallback_check_out = _parse_iso_datetime(data.get("checkOut"))
+                if (
+                    fallback_check_in is not None
+                    and fallback_check_out is not None
+                    and fallback_check_out > fallback_check_in
+                ):
+                    segment_items = [
+                        {
+                            **raw_segment,
+                            "checkIn": data.get("checkIn"),
+                            "checkOut": data.get("checkOut"),
+                        },
+                    ]
         stay = tuple(
             segment
-            for item in raw_stay
+            for item in segment_items
             if (segment := GuestyStaySegment.from_api_dict(item)) is not None
         )
         if not stay:

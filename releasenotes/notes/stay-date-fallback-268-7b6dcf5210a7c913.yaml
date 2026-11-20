@@ -1,0 +1,12 @@
+---
+# SPDX-FileCopyrightText: 2026 Andrew Grimberg <tykeal@bardicgrove.org>
+# SPDX-License-Identifier: Apache-2.0
+
+fixes:
+  - |
+    A v3 reservation with exactly one stay segment can use its valid,
+    chronological reservation-level check-in and check-out when both
+    segment date endpoints are omitted or null. Explicit segment dates
+    and all other stay validation and listing attribution behavior are
+    unchanged. This change does not assert that a related live Guesty
+    payload has been observed.
