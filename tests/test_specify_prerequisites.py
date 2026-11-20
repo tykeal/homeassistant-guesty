@@ -20,7 +20,11 @@ SCRIPTS = ROOT / ".specify" / "scripts" / "bash"
 
 def _assert_safe_sources() -> None:
     """Prevent invoking the checker if its sourced path uses evaluation."""
-    for path in (SCRIPTS / "check-prerequisites.sh", SCRIPTS / "common.sh"):
+    for path in (
+        SCRIPTS / "check-prerequisites.sh",
+        SCRIPTS / "setup-plan.sh",
+        SCRIPTS / "common.sh",
+    ):
         assert not re.search(r"(?m)^\s*eval(?:\s|$)", path.read_text())
 
 
@@ -36,8 +40,11 @@ def feature_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
     root = tmp_path / "repo 'spaces' [group]"
     scripts = root / ".specify" / "scripts" / "bash"
     scripts.mkdir(parents=True)
-    for name in ("common.sh", "check-prerequisites.sh"):
+    for name in ("common.sh", "check-prerequisites.sh", "setup-plan.sh"):
         shutil.copy2(SCRIPTS / name, scripts / name)
+    template = root / ".specify" / "templates" / "plan-template.md"
+    template.parent.mkdir(parents=True)
+    template.write_text("Plan template\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(root)], check=True)
     feature = root / "specs" / "010-stay 'date' & more"
     feature.mkdir(parents=True)
@@ -90,6 +97,48 @@ def test_json_and_paths_preserve_literal_names(
     assert text.returncode == 0, text.stderr
     assert f"FEATURE_DIR:{feature}" in text.stdout
     assert "tasks.md" in text.stdout
+
+
+@pytest.mark.parametrize("json_mode", [False, True])
+def test_setup_plan_preserves_literal_paths_and_template(
+    feature_repo: tuple[Path, Path, Path], json_mode: bool
+) -> None:
+    """Create the plan from its template without reinterpreting path characters."""
+    repo, _, feature = feature_repo
+    script = repo / ".specify" / "scripts" / "bash" / "setup-plan.sh"
+    result = _run(repo, script, *(["--json"] if json_mode else []))
+    assert result.returncode == 0, result.stderr
+    assert (feature / "plan.md").read_text(encoding="utf-8") == "Plan template\n"
+
+    if json_mode:
+        assert json.loads(result.stdout.splitlines()[-1]) == {
+            "FEATURE_SPEC": str(feature / "spec.md"),
+            "IMPL_PLAN": str(feature / "plan.md"),
+            "SPECS_DIR": str(feature),
+            "BRANCH": "010-example",
+            "HAS_GIT": "true",
+        }
+    else:
+        assert f"Copied plan template to {feature / 'plan.md'}" in result.stdout
+        assert f"FEATURE_SPEC: {feature / 'spec.md'}" in result.stdout
+        assert f"IMPL_PLAN: {feature / 'plan.md'}" in result.stdout
+
+
+def test_setup_plan_path_resolution_failure_is_reported(
+    feature_repo: tuple[Path, Path, Path],
+) -> None:
+    """Ambiguous feature paths fail before creating a plan."""
+    repo, _, feature = feature_repo
+    script = repo / ".specify" / "scripts" / "bash" / "setup-plan.sh"
+    (feature / "plan.md").unlink()
+    (repo / "specs" / "010-another").mkdir()
+
+    result = _run(repo, script, "--json")
+
+    assert result.returncode != 0
+    assert "Multiple spec directories" in result.stderr
+    assert "ERROR: Failed to resolve feature paths" in result.stderr
+    assert not (feature / "plan.md").exists()
 
 
 @pytest.mark.parametrize(
