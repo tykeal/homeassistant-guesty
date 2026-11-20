@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 
 **Feature Branch**: `011-v3-listing-local-times`
 **Created**: 2026-11-20
-**Status**: Draft — owner policies incorporated; ready for planning review
+**Status**: Approved — planning complete; implementation not started
 **Tracking Issue**: [#282](https://github.com/tykeal/homeassistant-guesty/issues/282)
 **Input**: Correct V3 reservation times that appear to encode
 listing-local wall-clock values with a UTC suffix.
@@ -152,8 +152,17 @@ reusing stale intervals.
 10. **Given** Feature 010's sole raw segment has absent or `null` segment
     endpoints and a valid top-level interval, **When** its exact room timing
     is unavailable, **Then** the existing narrow fallback eligibility and
-    known date fallback remain intact, its exact-time status is unknown, and
-    no raw suffix or prior interval supplies an exact instant.
+    date-only fallback remains intact, preferring valid segment and then
+    reservation localized dates, then the written date of the corresponding
+    valid top-level timestamp; its exact-time status is unknown, and no raw
+    suffix or prior interval supplies an exact instant.
+11. **Given** a V3 reservation has multiple raw stay entries and one middle
+    entry is malformed, partial, or cannot be assigned a verified interval,
+    **When** its current candidate hint is recorded, **Then** the hint has no
+    usable timed interval even if the first and last entries or the parsed
+    survivors are valid; every otherwise usable segment keeps its existing
+    projection and attribution, and identity and write-guard outcomes are
+    unchanged.
 
 ## Edge Cases
 
@@ -169,9 +178,12 @@ reusing stale intervals.
   identity/write-safety rules remain unchanged. The eligible segment obtains
   its known calendar dates from the localized dates already present on that
   segment or its reservation. If neither localized date is present, the
-  existing top-level interval remains a date-only fallback under Feature
-  010's rules; its time component and suffix are not treated as an exact
-  schedule.
+  calendar date written in the corresponding valid top-level timestamp is
+  the date-only fallback. Extract that date without offset conversion,
+  `ZoneInfo`, or deriving an exact time. The top-level pair must still be a
+  valid strictly chronological interval for Feature 010 eligibility; an
+  invalid or reversed pair supplies no fallback date. Malformed-present
+  segment endpoints and all other ineligible shapes remain ineligible.
 - A segment's listing may be a tracked sub-unit, an untracked sub-unit with
   a tracked parent, or an unknown listing. Existing Feature 008 attribution
   rules remain authoritative; time correction must not broaden them.
@@ -277,13 +289,56 @@ reusing stale intervals.
 - **FR-011**: A current unknown-time record MUST NOT be eligible for a
   time-windowed legacy fallback lookup. Its stale last-known interval MUST
   NOT be surfaced or used to decide fallback eligibility, window membership,
-  ordering, or temporal status. Unknown timing MUST NOT itself expire or
-  evict candidate/identity evidence, and unknown or stale timing MUST NOT be
-  the temporal basis for existing bounded-capacity or confirmed-absence
-  rules. Preserve the reservation identifier and existing identity
-  protections, but do not use its stale hint for a fallback lookup. Once a
-  current verified interval is available, the existing candidate-window and
-  expiry rules apply to that verified interval.
+  ordering, or temporal status. Unknown or stale timing MUST NOT be the
+  temporal basis for candidate expiry, bounded candidate-hint capacity, or
+  confirmed absence. An observation-recency capacity eviction may remove
+  candidate metadata under FR-011b, but it MUST NOT expire or evict identity
+  evidence or change identity/write-guard outcomes. Preserve the reservation
+  identifier and existing identity protections, but do not use its stale
+  hint for a fallback lookup. Once a current verified interval is available,
+  the existing candidate-window and expiry rules apply to that verified
+  interval.
+- **FR-011a**: A timed fallback candidate MUST have a verified interval for
+  every entry in the complete raw V3 `stay` array. The implementation MUST
+  preserve raw count and order before filtering; it MUST NOT treat parsed
+  survivors, only the first and last entries, or a partial projection as the
+  complete stay. Every raw entry MUST be interpretable as a segment with a
+  valid listing identity and both current exact endpoints verified by the
+  Feature 011 timing rules. Each segment MUST have `check_in < check_out`,
+  and raw-order intervals MUST be chronological and non-overlapping
+  (`previous.check_out <= next.check_in`), after any qualifying handoff
+  adjustment. Only then may the overall candidate interval be bounded by
+  the first raw segment's verified check-in and the last raw segment's
+  verified check-out. Any unusable raw entry, missing or partial interval,
+  invalid endpoint, or chronology violation makes the current candidate
+  unknown and supplies no timed interval; it does not remove the reservation
+  from projection or alter attribution, identity evidence, confirmation-code
+  checks, or write routing. The raw V3 timestamps themselves do not establish
+  a segment interval; malformed timestamp fields do not invalidate an
+  otherwise fully derived interval except where Feature 010's separate
+  malformed-present eligibility rule applies.
+- **FR-011b**: Candidate storage MUST use deterministic observation recency
+  separate from stay timing and identity evidence. A successfully persisted
+  refresh observation of a reservation from the primary source or a
+  successful by-ID retrieval updates that candidate's recency, whether its
+  current interval is known or unknown. A one-time successful bootstrap
+  retrieval also records its observation time. Store recency as a UTC
+  timestamp, one observation time per successful refresh/bootstrap.
+  Retained hints, projections,
+  cache-only fallback servings, lookup attempts/failures, and aborted or
+  unpersisted refreshes do not create a newer observation. Old two-endpoint
+  hints migrate as timing-unknown with no usable interval; they use the
+  containing baseline's `updated` value as their migration recency when
+  valid, otherwise the fixed UTC sentinel
+  `0001-01-01T00:00:00+00:00`, never either stale endpoint.
+  Candidate hints are bounded to the existing `MAX_BASELINE_CODES` capacity
+  by sorting ascending on `(observed_at, reservation_id)` and retaining the
+  newest entries. Thus a tie evicts the lexicographically smallest
+  reservation ID first. This candidate-only bound/ordering MUST NOT
+  change identity-map retention, expiry, continuity, confirmed-absence, or
+  write-guard rules. A confirmed absence removes a candidate only under the
+  existing source-confirmation and successful-persistence/acknowledgment
+  rules; unknown timing, failed lookup, or missing V3 data is not absence.
 - **FR-012**: The system MUST preserve existing reservation identity,
   confirmation-code cross-checks, candidate identity, and write routing. An
   unknown interval MUST NOT change an identifier, mark a reservation absent,
@@ -297,10 +352,16 @@ reusing stale intervals.
   system MUST retain its existing eligibility and identity/write-safety
   requirements. Feature 011 MUST replace only the V3 endpoint's time
   interpretation; it MUST NOT use that fallback to bypass the requirements
-  in Feature 010. Use segment-localized dates first and reservation-localized
-  dates second. If neither is present, use the valid top-level interval only
-  for its existing date-only fallback; do not use its time component or
-  suffix as an exact schedule.
+  in Feature 010. For each endpoint, use a valid segment-localized date first
+  and a valid reservation-localized date second. If neither is present, use
+  the calendar date written in that endpoint's corresponding valid
+  top-level ISO timestamp, but only when the complete top-level pair is a
+  valid strictly chronological interval and the raw one-segment eligibility
+  conditions hold. Read the timestamp's written date component as-is: do not
+  convert its offset, construct/use `ZoneInfo`, or infer an exact schedule
+  from its time or suffix. An invalid endpoint provides no written-date
+  fallback; an invalid or reversed top-level pair makes this fallback
+  ineligible. This rule does not alter legacy parsing or publication.
 - **FR-015**: The system MUST NOT invent a missing local date or wall-clock
   time, silently choose a DST fold, normalize a nonexistent local time, or
   treat an implicit timezone default as explicit Guesty data.
@@ -346,10 +407,10 @@ projection model. Feature 010's use of the reservation-level interval for
 its narrowly eligible single raw segment remains in force; this feature
 changes how that V3 fallback's time is interpreted. For that fallback,
 segment-localized dates take precedence, followed by reservation-localized
-dates. If neither localized date is available, Feature 010's already-valid
-top-level interval remains the date-only fallback source under its existing
-date interpretation; its time component and suffix MUST NOT be treated as a
-verified local schedule or UTC instant.
+dates. If neither localized date is available, the date written in each
+corresponding endpoint of Feature 010's already-valid top-level interval is
+the date-only fallback; do not convert the offset or treat its time component
+or suffix as a verified local schedule or UTC instant.
 
 The owner has confirmed three operator policies for this specification:
 same-timezone, consecutive, same-local-date handoffs may start the moved-to
@@ -393,8 +454,9 @@ while their V3 semantics are unverified.
   status is `unknown`, and no prior interval is presented as current.
 - **SC-005**: Across window, ordering, status, and fallback-candidate cases,
   zero decisions requiring an exact instant use an unknown or stale interval;
-  inclusive date-window behavior and candidate-hint expiry match FR-009 and
-  FR-011.
+  timed fallback candidates include every verified raw segment and use only
+  the first-to-last verified interval; inclusive date-window behavior and
+  candidate-hint expiry match FR-009 and FR-011.
 - **SC-006**: In 100% of qualifying same-timezone handoffs, the destination
   begins at the exact prior checkout and its final checkout is unchanged; in
   all non-qualifying cases, the destination uses only its own verified
@@ -412,8 +474,9 @@ while their V3 semantics are unverified.
 - `checkInDateLocalized` and `checkOutDateLocalized` are the intended V3
   calendar-date inputs when present; the feature adds no claim that a
   localized date is available in every response. The narrow Feature 010
-  fallback retains its existing top-level interval as a date-only fallback
-  when localized dates are absent.
+  fallback uses the calendar date written in each corresponding timestamp
+  when localized dates are absent, only if its valid chronological top-level
+  interval and all raw single-segment eligibility conditions hold.
 - A listing's configured default check-in/check-out times are the baseline
   schedule for the exact room. Reservation-level planned-time attributes
   remain informational until Guesty semantics are verified.
@@ -472,6 +535,33 @@ fallback lookup, or change identity/write-routing outcomes; existing
 bounded-capacity and confirmed-absence safeguards remain unchanged and do
 not use unknown or stale timing as their temporal basis.
 
+### Complete timed fallback candidates and candidate recency
+
+A timed fallback candidate represents the interval from the first raw
+segment's verified check-in through the last raw segment's verified
+check-out, but only after every entry in the complete raw sequence has a
+valid listing identity, a verified positive interval, and chronological,
+non-overlapping order. A malformed, filtered, partial, missing, or
+chronology-invalid entry makes the candidate unknown; it does not remove a
+segment from its existing projection or change attribution. Unknown timing
+blocks timed fallback only; identity and write-guard evidence remain
+independent and unchanged.
+
+Candidate recency records actual persisted source observations, not stay
+dates: update it for records returned in a successfully persisted primary
+refresh, a successful by-ID response, or a successful bootstrap retrieval.
+Store one UTC observation timestamp for each successful refresh/bootstrap.
+Do not refresh it for retained or cache-only results, attempts/failures, or
+aborted/unpersisted refreshes. Migrate old two-endpoint hints to unknown with
+no usable interval; use the baseline `updated` timestamp when valid, else
+`0001-01-01T00:00:00+00:00`. Bound candidate hints at
+`MAX_BASELINE_CODES` by sorting `(observed_at, reservation_id)` ascending
+and retaining the newest entries; equal-recency ties evict the
+lexicographically smallest reservation ID first. This candidate-only order
+does not alter identity-map
+retention or expiry. Confirmed absence still requires the existing source
+verdict and persisted acknowledgment.
+
 ### Exact-room data and planned-time attributes
 
 Use timing settings for the exact room only, and only when present in the
@@ -492,8 +582,9 @@ unverified.
   owner-confirmed same-date handoff rule.
 - **Feature 010 interaction**: Retain the narrow fallback's exact one-raw-
   segment eligibility, null/omitted semantics, chronological top-level
-  interval requirement, date-only fallback, and safety rules. Do not broaden
-  it to multiple segments or infer a listing from reservation-level data.
+  interval requirement, written-calendar-date fallback, and safety rules.
+  Do not broaden it to multiple segments or infer a listing from
+  reservation-level data.
 - **Room moves**: Do not expand multi-stay semantics into a new entity,
   merge intervals, or change which listing owns a segment. Apply only the
   owner-confirmed same-timezone consecutive handoff rule.

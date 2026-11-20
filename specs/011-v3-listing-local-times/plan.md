@@ -20,7 +20,13 @@ endpoint cannot be verified; publish `null` exact instants and unknown
 temporal state rather than a stale or guessed time. Preserve legacy parsing,
 Feature 008 identity/attribution/write protections, Feature 010's narrow
 single-raw-segment eligibility, current reservation selection behavior for
-known lifecycle statuses, and the existing V3 request set.
+known lifecycle statuses, and the existing V3 request set. A timed fallback
+candidate must be verified across every segment in the full raw stay
+sequence; its bounding interval is the first verified check-in through the
+last verified check-out after full-sequence chronology checks. Candidate
+recency is stored separately from timing and identity evidence. Feature 010's
+date-only fallback uses the date written in each corresponding valid
+top-level timestamp, never offset-converted or used as an exact time.
 
 The bounded implementation surface is the V3 model/timing parse, the
 existing listing refresh's already-fetched exact-room metadata, V3 coordinator
@@ -133,10 +139,12 @@ shape and sensor entity identity.
    produce its current concrete intervals. V3 parsing retains localized
    dates and enough raw stay count/order metadata to prevent malformed,
    missing-field, untracked, or otherwise filtered entries from making a
-   multi-segment payload appear eligible as a single segment or consecutive
-   handoff. Feature 010 eligibility is checked against the raw collection
-   before filtering; the top-level V3 interval may supply only its already
-   permitted date fallback, never an exact schedule.
+   multi-segment payload appear eligible as a single segment, consecutive
+   handoff, or complete timed fallback candidate. Feature 010 eligibility is
+   checked against the raw collection before filtering. The top-level V3
+   interval may supply only the written calendar date for an otherwise
+   eligible Feature 010 endpoint when no localized date is available; it
+   never supplies an exact schedule.
 2. **Resolve against the exact room's fetched settings.** The listings
    endpoint already requests `timezone`, `defaultCheckInTime`, and
    `defaultCheckOutTime`; `ListingsCoordinator` currently discards
@@ -183,17 +191,31 @@ shape and sensor entity identity.
    check-in first, then unknown records by localized check-in date and
    reservation ID, with absent dates ordered deterministically after known
    dates.
-7. **Separate current timing from identity evidence.** Evolve durable
-   `CandidateHint` data so a current unknown record is marked ineligible for
-   time-windowed fallback and cannot reuse a prior interval for eligibility,
-   temporal expiry, or capacity ordering. Preserve existing identity maps
-   and write guards; an unknown interval is not absence. Read existing
-   two-endpoint persisted hints compatibly as known legacy-format records
-   until current V3 data updates that reservation. Keep bounded storage
-   deterministic with observation/recency metadata rather than stale stay
-   endpoints as the temporal eviction key. Unknown timing alone must neither
-   expire nor displace identity evidence. Fallback-sourced legacy records
-   retain existing source routing and write protections.
+7. **Separate current timing, candidate recency, and identity evidence.**
+   Evolve durable `CandidateHint` data with current certainty, an optional
+   verified interval, and observation recency. A timed V3 candidate requires
+   every entry in the complete raw stay array to have a valid listing ID and
+   a fully verified interval. Require each interval to be strictly positive
+   and raw-order intervals to be chronological and non-overlapping; only
+   then bound the candidate from the first check-in through the last
+   check-out. Any unusable, partial, filtered, or chronology-invalid entry
+   makes the candidate unknown without changing segment publication or
+   attribution. Store one UTC observation time per successful
+   refresh/bootstrap. Advance recency only for records actually returned by a
+   successfully persisted primary-source refresh or successful by-ID
+   retrieval, and for successful bootstrap retrievals; do not advance it for
+   retained, projected, or cache-only results or failed/aborted attempts.
+   Migrate old two-endpoint hints to unknown/no interval and use the enclosing
+   baseline update timestamp (or fixed UTC sentinel
+   `0001-01-01T00:00:00+00:00`) for deterministic recency. Bound only
+   candidate metadata at `MAX_BASELINE_CODES` by sorting
+   `(observed_at, reservation_id)` ascending and retaining the newest;
+   equal timestamps evict the lexicographically smallest reservation ID
+   first.
+   This metadata policy must not change identity-map retention, expiry,
+   confirmed absence, continuity, or write guards; unknown timing is not
+   absence. Fallback-sourced legacy records retain existing source routing
+   and write protections.
 8. **Keep sensor contract additive.** Maintain `check_in`, `check_out`,
    `check_in_local`, `check_out_local`, `planned_arrival`, and
    `planned_departure` keys. Publish null for unknown exact endpoints,
@@ -222,9 +244,13 @@ shape and sensor entity identity.
 - **Feature 010 provenance** (`tests/api/test_models.py` and coordinator
   tests): all omitted/null endpoint combinations for exactly one raw
   segment, malformed-present endpoints, multiple raw segments with only one
-  parseable survivor, invalid top-level fallback, and preserved localized
-  date precedence. Assert eligible fallback dates remain date-only and raw
-  suffixes cannot produce an exact instant.
+  parseable survivor, invalid top-level fallback, and per-endpoint
+  segment-then-reservation localized-date precedence. When localized dates
+  are absent, assert each eligible endpoint uses only the calendar date
+  written in its corresponding valid top-level timestamp; invalid endpoints
+  provide no extracted date, and an invalid/reversed top-level pair is
+  ineligible. Assert raw suffixes cannot produce an exact instant and this
+  date-only fallback cannot qualify a timed candidate.
 - **Window/publication** (`tests/test_coordinator.py`,
   `tests/test_reservation_sensor.py`): inclusive lower/upper local-date
   bounds, explicit versus implicit zone, no trim on an unprovable zone,
@@ -234,13 +260,19 @@ shape and sensor entity identity.
   selected/upcoming sensor null/date/status attributes.
 - **Identity, persistence and source isolation**
   (`tests/test_identity.py`, `tests/api/test_reservations_fallback.py`,
-  `tests/test_reservations_parity.py`): old stored candidate shape
-  deserializes; new unknown shape survives reload; unknown current records
-  do not call the legacy fallback or expire/evict evidence from stale stay
-  dates; known-time candidates retain existing windows; same-path conflict
-  still aborts and cross-path disagreement still blocks writes; writes
-  target the same ID; legacy parsing/publication is unchanged; fallback
-  eligibility, source routing and write safety remain narrow.
+  `tests/test_reservations_parity.py`): old stored two-endpoint hints migrate
+  to unknown/no interval and use baseline-update recency or the fixed oldest
+  sentinel; current unknown shape survives reload; incomplete middle raw
+  entries cannot yield a timed candidate from valid first/last survivors;
+  verified complete candidates use the first-to-last envelope; qualifying
+  observations, equal-recency ties, and capacity eviction are deterministic
+  and affect only candidate metadata; confirmed absence still follows
+  existing persisted acknowledgment. Unknown current records do not call
+  the legacy fallback or alter identity/write evidence; known-time candidates
+  retain existing windows; same-path conflict still aborts and cross-path
+  disagreement still blocks writes; writes target the same ID; legacy
+  parsing/publication is unchanged; fallback eligibility, source routing and
+  write safety remain narrow.
 - **Request and privacy regression**: instrument existing fake clients and
   assert zero additional listing/reservation calls for derivation. Diagnostics
   for invalid timing contain no guest name/contact data or confirmation

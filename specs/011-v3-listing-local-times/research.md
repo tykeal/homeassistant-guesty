@@ -96,7 +96,13 @@ provenance. These alternatives permit invalid fallback or handoff eligibility.
 already returned. Do not change the V3 query, add a listings request, or
 change legacy reservation parsing. Keep eligible Feature 010 fallback
 date-only when its localized date precedence cannot provide an exact
-schedule.
+schedule. For each missing localized endpoint date, use the calendar date
+written in its corresponding top-level timestamp only when Feature 010's
+complete top-level pair is valid and strictly chronological. Read the
+written date as-is; do not convert the offset, construct/use `ZoneInfo`, or
+infer an exact time. An invalid endpoint provides no fallback date, and an
+invalid/reversed pair or malformed-present segment endpoint remains
+ineligible.
 
 **Rationale**: `LISTINGS_FIELDS` already includes the three relevant
 settings; `get_listings()` fetches all pages before the coordinator applies
@@ -111,27 +117,49 @@ Feature 010 eligibility. All violate stated scope or add network behavior.
 
 ### 6. Keep current timing and persisted identity evidence separate
 
-**Decision**: Persist an explicit current timing certainty for candidate
-hints. A current unknown V3 record must not be submitted as a legacy
-time-window candidate, and old known timestamps must not be reused for
-window membership, expiry, or capacity ordering. Preserve existing
-identity/code evidence, and deserialize the existing two-endpoint candidate
-shape compatibly. Apply bounded-capacity ordering using non-stay observation
-recency rather than an unknown or stale stay interval.
+**Decision**: Persist explicit current timing certainty, an optional verified
+candidate interval, and non-stay observation recency. A timed candidate
+requires every entry in the complete raw V3 `stay` array to have a valid
+listing identity and verified interval. Each interval is strictly
+chronological, and the intervals follow raw order without overlap. Bound the
+candidate envelope by the first segment's check-in and last segment's
+check-out only after all segments pass; otherwise persist unknown with no
+usable interval. A current unknown V3 record must not be submitted as a
+legacy time-window candidate, and old known timestamps must not be reused
+for window membership, expiry, or capacity ordering.
+
+Advance observation recency for reservation records returned by a
+successfully persisted primary-source refresh or successful by-ID response,
+including records whose timing is unknown, and for a successful bootstrap
+retrieval. Do not advance it for retained/projected/cache-only records,
+failed attempts, or aborted/unpersisted refreshes. Migrate the old
+two-endpoint serialized shape as timing-unknown with no usable interval;
+use the enclosing baseline's valid `updated` timestamp for its migration
+recency, else a fixed oldest sentinel. Bound candidate hints at
+`MAX_BASELINE_CODES` by sorting `(observed_at, reservation_id)` ascending and
+retaining the newest entries; equal-recency ties evict the lexicographically
+smallest reservation ID first. The fixed sentinel is
+`0001-01-01T00:00:00+00:00`. This candidate-only ordering does not alter
+identity-map retention, expiry, confirmed-absence, or write-guard behavior.
+Confirmed absence continues to require the existing source verdict and
+persisted acknowledgment.
 
 **Rationale**: `CandidateHint` currently stores two ISO endpoint strings;
-`IdentityGuard` uses their checkout values in evidence retention and
-capacity ordering; the coordinator reconstructs legacy fallback candidates
-from them. FR-011 requires unknown current timing to suppress lookup and
-forbids stale intervals as current timing or the temporal basis of expiry,
-absence, or capacity behavior. The old serialized records must remain
-readable across Home Assistant reload/upgrade.
+the coordinator reconstructs legacy fallback candidates from them, and
+those hints are currently built from parsed reservations. The raw sequence
+must remain available so filtered or malformed entries cannot make an
+incomplete candidate look complete. FR-011 forbids stale intervals as
+current timing or as the basis of expiry, absence, or capacity behavior.
+Identity remains independently represented by the existing identity maps;
+old serialized candidate data must remain readable across reload/upgrade
+without treating its two endpoints as verified timing.
 
 **Alternatives considered**: Keep the old interval as an implicitly current
-candidate; evict evidence when its interval becomes unknown; use the stale
-checkout as a sort key; clear the whole identity baseline; change the
-reservation identifier. These would either enable unsafe fallback or
-weaken existing identity protections.
+candidate; build the envelope from only the endpoints or parsed survivors;
+evict identity evidence when timing becomes unknown; use stale endpoints as
+a candidate recency key; clear the whole identity baseline; change the
+reservation identifier. These would either enable unsafe fallback or weaken
+existing identity protections.
 
 ### 7. Preserve current sensor keys and add explicit uncertainty
 
