@@ -146,9 +146,12 @@ attributed to that listing; it does not merge disjoint intervals.
 ## 5. Persisted identity and fallback candidate evidence
 
 `IdentityBaseline` remains the existing per-entry persisted identity record.
-`CandidateHint` currently stores `check_in` and `check_out` ISO strings and
-feeds both fallback-window eligibility and temporal identity-evidence
-retention/capacity decisions.
+Candidate timing is separate from identity evidence. A candidate hint carries
+an observation-recency value, current timing certainty, and an optional
+verified interval. Only the optional interval is supplied to the existing
+time-windowed fallback; observation recency is not timing evidence and does
+not feed identity-map retention, expiry, continuity, absence, or write
+decisions.
 
 The candidate model must distinguish:
 
@@ -156,45 +159,82 @@ The candidate model must distinguish:
   identity guard;
 - current timing certainty for a reservation returned by V3; and
 - an optional verified interval usable for the existing time-windowed
-  fallback only while current timing is known.
+  fallback only while current timing is known; and
+- the timestamp of the most recent qualifying source observation, used only
+  for deterministic candidate-hint capacity management.
 
-An unknown current V3 timing record must persist as unknown, not inherit a
-previous interval as current. A reservation candidate is known only when
-the current reservation's full raw stay sequence needed for its overall
-interval is preserved and its required exact endpoints are verified; a
-filtered or malformed segment cannot make a partial sequence look complete.
-An unknown candidate must not initiate fallback or use stale endpoints for
-fallback eligibility, expiry, or capacity ordering. It must not itself
-expire or displace identity evidence. Existing serialized hints with the old
-two-string shape remain readable; a current V3 unknown result updates that
-record to unknown. Existing identity conflict and write-guard outcomes
-remain unchanged.
+An unknown current V3 timing record persists as unknown and has no usable
+interval; it never inherits the prior interval. A candidate is known only
+when the complete nonempty raw `stay` array is preserved and every raw entry
+has a valid listing identity and a verified current interval. Each interval
+must have `check_in < check_out`; in raw order, every next check-in must be
+at or after the previous check-out, after any qualifying handoff adjustment.
+The overall candidate interval is the first raw segment's check-in through
+the last raw segment's check-out. Gaps between non-overlapping segments are
+inside this envelope. Any non-object entry, missing listing identity,
+unverified endpoint, partial interval, or chronology violation makes the
+whole candidate unknown; do not build an envelope from first/last endpoints
+or parsable survivors. Raw `checkIn`/`checkOut` values do not verify timing
+under Feature 011; a malformed raw timestamp is not independently
+disqualifying if the entire interval is otherwise derived from valid
+localized dates and room settings, except for Feature 010's
+malformed-present eligibility rule. This candidate-only rule does not filter
+segments from publication or alter attribution.
 
-For bounded candidate storage, use non-stay observation/recency metadata
-rather than a stay endpoint as the capacity ordering key. New records carry
-that non-stay observation value; records from the old two-string shape use a
-deterministic migration tie-breaker, never their stale stay endpoint.
-Confirmed absence remains governed only by existing source response and
-persistence rules, not by unknown or stale timing.
+Qualifying recency is advanced by a reservation returned in a successfully
+persisted primary-source refresh or by a successful by-ID response, even
+when that observation has unknown timing. A successful one-time bootstrap
+retrieval also records its observation time. Do not advance it for a retained
+hint, projection, cache-only fallback serving, lookup attempt/failure, or
+aborted/unpersisted refresh. Use the existing refresh observation timestamp
+for all reservations observed in that refresh.
+
+Old `{check_in, check_out}` hints deserialize as timing-unknown and expose no
+usable interval: their two stay endpoints cannot establish full-sequence
+completeness or current timing. Use the containing baseline's valid `updated`
+timestamp as the deterministic migration recency; if it is absent or
+invalid, use the fixed UTC sentinel
+`0001-01-01T00:00:00+00:00`. Never use either endpoint to migrate recency,
+timing certainty, fallback eligibility, or candidate capacity.
+Bound candidate hints independently at `MAX_BASELINE_CODES` by sorting
+ascending on `(observed_at, reservation_id)` and retaining the newest
+entries. Equal-recency ties therefore evict the lexicographically smallest
+reservation ID first. This capacity rule applies only to candidate
+metadata and does not evict, expire, or reorder identity maps. Preserve the
+existing identity conflict and write-guard outcomes.
+
+Confirmed absence remains governed only by existing source-response and
+successful-persistence/acknowledgment rules. It removes the candidate hint
+only after the existing source has confirmed absence and the baseline
+records that result; unknown timing, a failed/retired lookup, and omission
+from V3 are not confirmed absence.
 
 ## 6. Feature 010 single-raw-segment date fallback
 
 Eligibility remains unchanged: exactly one raw segment before filtering,
 valid segment listing identity, each raw segment endpoint omitted or JSON
 `null`, and a valid strictly chronological top-level interval. Localized
-dates prefer segment values, then reservation values. Where neither is
-available, Feature 010's current top-level fallback remains date-only under
-its existing date interpretation. Its timestamp time component or suffix
-does not become an exact schedule. All malformed-present or multi-raw-entry
-cases remain ineligible.
+dates prefer valid segment values, then valid reservation values, separately
+for check-in and check-out. Where either date is still unavailable, use only
+the calendar date written in that endpoint's corresponding valid top-level
+timestamp, and only while the whole top-level interval remains valid and
+strictly chronological. Read the written calendar date without offset
+conversion or `ZoneInfo`; the timestamp's time and suffix never become an
+exact schedule. An invalid endpoint provides no fallback date, and an
+invalid/reversed top-level pair or any malformed-present segment endpoint
+makes the Feature 010 fallback ineligible. This date-only fallback cannot
+make a timed candidate verified. Legacy parsing and publication are
+unchanged.
 
 ## 7. Persistence compatibility and migration
 
 Do not discard or reinterpret the existing identity baseline. Candidate
-deserialization accepts old `{check_in, check_out}` entries and keeps those
-entries eligible under existing rules unless the current V3 refresh reports
-that reservation with unknown timing. New serialization carries an explicit
-timing certainty and does not expose a stale interval as current. A reload
-test must demonstrate both old-format compatibility and persistence of a
-current unknown marker. No change to reservation IDs, confirmation-code
-cross-checks, legacy write routing, or current storage key is planned.
+deserialization accepts old `{check_in, check_out}` entries but migrates
+their timing to unknown and their recency from the containing baseline's
+`updated` timestamp (or the fixed oldest sentinel); stale endpoints are not
+eligible for timed fallback. New serialization carries explicit timing
+certainty, an optional interval, and observation recency. A reload test must
+demonstrate old-format migration, deterministic candidate ordering, and
+persistence of a current unknown marker. No change to reservation IDs,
+confirmation-code cross-checks, legacy write routing, identity-map rules, or
+the current storage key is planned.

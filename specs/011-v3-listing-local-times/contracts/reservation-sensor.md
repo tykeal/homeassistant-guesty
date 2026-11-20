@@ -19,10 +19,16 @@ verified.
   only.
 - **`check_out`** (ISO instant or `null`): current verified exact instant
   only.
-- **`check_in_local`** (localized date or `null`): keep the current known
-  date even if `check_in` is null.
-- **`check_out_local`** (localized date or `null`): keep the current known
-  date even if `check_out` is null.
+- **`check_in_local`** (known calendar date or `null`): keep the current
+  valid localized date even if `check_in` is null. For an eligible Feature
+  010 single-raw-segment fallback only, use the written date component of
+  the corresponding valid top-level timestamp when localized dates are
+  absent; do not offset-convert it.
+- **`check_out_local`** (known calendar date or `null`): keep the current
+  valid localized date even if `check_out` is null. For an eligible Feature
+  010 single-raw-segment fallback only, use the written date component of
+  the corresponding valid top-level timestamp when localized dates are
+  absent; do not offset-convert it.
 - **`timing_status`** (`known` or `unknown`): `known` only when both current
   exact endpoints are verified.
 - **`reservation_status`**: source lifecycle status when temporal status is
@@ -55,5 +61,6 @@ unknown.
 
 Raw V3 suffix values, timezone provenance, raw segment count/position,
 candidate hints, and identity baseline contents are not user-facing sensor
-attributes. Do not publish them as identity, fallback, or planned-time
-overrides.
+attributes. A date extracted from a valid top-level timestamp is date-only;
+it never supplies a published exact instant. Do not publish internal
+candidate or identity data as identity, fallback, or planned-time overrides.

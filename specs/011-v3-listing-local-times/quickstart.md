@@ -38,9 +38,12 @@ own date and must return unknown for ambiguous or nonexistent wall times.
    listing projection, state/status selection, final sensor attributes and
    upcoming summaries. Verify no prior-refresh instant appears after current
    timing becomes unknown.
-4. Reload persisted identity fixtures in both existing two-endpoint and new
-   unknown-candidate shapes. Verify a current unknown record neither triggers
-   fallback nor changes identity conflict or write routing.
+4. Reload persisted identity fixtures in the old two-endpoint and new
+   candidate shapes. Verify old hints migrate to unknown/no interval with
+   deterministic non-stay recency, while current unknown records neither
+   trigger fallback nor change identity conflict or write routing. Exercise
+   candidate-only capacity, equal-recency ID ties, and confirmed-absence
+   persistence without changing identity-map behavior.
 5. Run legacy parity tests and the eligible/ineligible Feature 010 cases.
    The legacy parser and fallback/write behavior must stay unchanged.
 

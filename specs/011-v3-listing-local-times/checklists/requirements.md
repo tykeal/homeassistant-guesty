@@ -39,7 +39,9 @@ proceeding to planning
 
 - The owner confirmed same-timezone consecutive handoff rules, unknown-time
   handling, exact-room settings with no parent substitution or new request,
-  and preserving planned-time attributes without using them as overrides.
+  preserving planned-time attributes without using them as overrides,
+  complete-raw-sequence fallback candidates, deterministic candidate recency,
+  and the written-date fallback for eligible Feature 010 records.
 - The policy has been translated into testable acceptance criteria for
   localized-date visibility, exact-instant attributes, window filtering,
   ordering/status, candidate-hint expiry, identity, and routing.

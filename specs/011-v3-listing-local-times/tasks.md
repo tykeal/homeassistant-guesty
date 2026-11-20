@@ -201,16 +201,22 @@ changes identity or write routing after persistence reload.
 - [ ] T029 [P] [US3] Add failing tests in `tests/api/test_models.py` for all
   absent/null endpoint combinations in exactly one raw segment with a valid
   chronological top-level interval, segment-then-reservation localized-date
-  precedence, and existing top-level date-only fallback when both localized
-  dates are absent.
+  precedence independently for check-in and check-out, and written-calendar-
+  date fallback from each corresponding valid top-level timestamp when no
+  localized date is available. Assert the written date is not offset-
+  converted and does not produce an exact instant.
 - [ ] T030 [P] [US3] Add failing tests in `tests/api/test_reservations_v3.py`
   for malformed-present endpoints, multiple raw segments with one survivor,
   invalid or reversed top-level intervals, missing listing identity, and raw
-  suffixes never yielding exact fallback timing.
-- [ ] T031 [US3] Implement Feature 010's original raw eligibility and date
+  suffixes never yielding exact fallback timing. Assert no date is extracted
+  from an invalid corresponding top-level endpoint and an invalid/reversed
+  top-level pair is ineligible for Feature 010 fallback.
+- [ ] T031 [US3] Implement Feature 010's original raw eligibility and
+  per-endpoint segment → reservation → written top-level calendar-date
   precedence, with independent optional V3 endpoints, in
-  `custom_components/guesty/api/models.py`; never fill one endpoint from the
-  other or broaden attribution.
+  `custom_components/guesty/api/models.py`; do not convert the top-level
+  offset or infer an exact time, fill one endpoint from the other, or broaden
+  attribution.
 - [ ] T032 [US3] Run T029–T030 and Feature 010 regression tests in
   `tests/api/test_models.py` and `tests/api/test_reservations_v3.py`; checkpoint
   green.
@@ -247,29 +253,42 @@ changes identity or write routing after persistence reload.
 ### Slice C: Identity evidence, fallback and persistence
 
 - [ ] T039 [P] [US3] Add failing persistence tests in `tests/test_identity.py`
-  for old two-string `CandidateHint` loading, current unknown overwriting stale
-  known timing, unknown reload, deterministic old-record migration, and non-stay
-  observation ordering at bounded capacity.
+  for old two-string `CandidateHint` migration to unknown/no usable interval,
+  recency from the containing baseline's valid `updated` timestamp (or the
+  fixed oldest sentinel), current unknown overwriting stale known timing,
+  unknown reload, UTC observation recency, deterministic equal-recency
+  lexicographic ID ordering,
+  candidate-only capacity eviction, and identity-map preservation.
 - [ ] T040 [P] [US3] Add failing tests in
   `tests/api/test_reservations_fallback.py` for unknown current timing
-  suppressing time-windowed lookup and stale expiry, verified intervals
-  retaining existing window/expiry behavior, and unchanged confirmed-absence and
-  legacy fallback routing.
+  suppressing time-windowed lookup and stale expiry, complete verified
+  intervals retaining existing window/expiry behavior, and unchanged
+  confirmed-absence persistence and legacy fallback routing.
 - [ ] T041 [P] [US3] Add failing mixed-refresh and write-guard tests in
-  `tests/test_reservations_parity.py` for incomplete raw stay sequences,
-  same-path conflict abort, cross-path disagreement blocking writes, and
-  verified identity retaining the same permitted/refused target ID despite
-  unknown timing.
+  `tests/test_reservations_parity.py` for incomplete, malformed, partial, and
+  chronology-invalid raw stay sequences (including a valid first and last
+  segment around an unusable middle entry), first-to-last envelope bounds only
+  after every interval verifies, same-path conflict abort, cross-path
+  disagreement blocking writes, and verified identity retaining the same
+  permitted/refused target ID despite unknown timing.
 - [ ] T042 [US3] Complete `CandidateHint` serialization and
-  `ReservationIdentityGuard` retention/capacity in
-  `custom_components/guesty/identity.py`: old hints remain readable, current
-  unknown has no usable stale interval, and unknown timing alone neither expires
-  nor displaces evidence; use non-stay observation data and deterministic
-  migration ties.
+  candidate-only retention/capacity in `custom_components/guesty/identity.py`:
+  old hints remain readable but migrate to unknown with no usable interval;
+  update UTC recency for successfully persisted primary-source/by-ID
+  observations and successful bootstrap retrievals, not retained,
+  projected/cache-only results, attempts/failures or aborted refreshes;
+  observation recency is independent of stay endpoints and identity maps.
+  Unknown timing alone neither expires nor displaces identity evidence; use
+  baseline-update recency or the fixed UTC sentinel for old records and
+  deterministic ascending `(observed_at, reservation_id)` ordering, which
+  evicts the lexicographically smallest ID first on ties.
 - [ ] T043 [US3] Complete `_record_identity` and `_fallback_candidates` in
-  `custom_components/guesty/coordinator.py` to mark a candidate known only when
-  its required full raw sequence and endpoints are verified; preserve identity
-  maps, source status and existing confirmed-absence rules.
+  `custom_components/guesty/coordinator.py` to mark a timed candidate known
+  only when every entry in the complete raw sequence has a valid listing ID,
+  verified positive interval, and chronological non-overlapping order; bound
+  its envelope from the first check-in to the last check-out only after all
+  entries pass. Preserve segment projection/attribution, identity maps,
+  source status and existing confirmed-absence rules.
 - [ ] T044 [US3] Complete unknown-candidate gating in
   `custom_components/guesty/api/reservations_fallback.py` without changing
   verified legacy lookup windows, source routing, confirmation-code checks or
