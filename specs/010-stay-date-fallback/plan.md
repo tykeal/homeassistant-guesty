@@ -66,6 +66,15 @@ existing test modules; one release note.
 
 No constitutional violation or complexity exception is required.
 
+## Phase Boundary and Checkpoint
+
+The implementation has one phase: deliver both P1 stories together as the
+safe single-segment fallback described in `tasks.md` Phase 1. The phase
+begins only after the consistency analysis gate passes. It concludes when
+focused and full tests, lint, type checks, all pre-commit hooks, local review,
+Copilot review, and all PR CI checks pass. No manual or exploratory testing
+precedes green CI.
+
 ## Project Structure
 
 ### Documentation (this feature)
