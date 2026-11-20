@@ -25,15 +25,43 @@ validation slice, not a production-ready partial rollout.
 
 ## Phase 1: Setup
 
-- [ ] T001 Prepare the locked development environment with `uv sync
+- [X] T001 Prepare the locked development environment with `uv sync
   --all-groups` using `pyproject.toml` and `uv.lock`; run the focused baseline
   commands in `specs/011-v3-listing-local-times/quickstart.md` without a live
   account.
-- [ ] T002 Record existing source and fixture boundaries for
+- [X] T002 Record existing source and fixture boundaries for
   `GuestyReservation.from_v3_api_dict`, `ListingsCoordinator`,
   `ReservationsCoordinator`, `ReservationIdentityGuard`, and
   `GuestyReservationSensor` in `specs/011-v3-listing-local-times/tasks.md`
   implementation notes without changing approved policies.
+
+### Implementation notes
+
+- `GuestyReservation.from_v3_api_dict` and
+  `GuestyStaySegment.from_api_dict` are in
+  `custom_components/guesty/api/models.py`; malformed raw stay segments are
+  currently dropped after the single-raw-segment Feature 010 check.
+- `ListingsCoordinator._async_update_data` fetches every page through
+  `get_listings()` and then filters `data` to selected listing IDs. Keep any
+  timing-only exact-room lookup separate from selected `data` and `known_ids`.
+- `ReservationsCoordinator._async_update_data` retrieves via
+  `get_reservations()`, compares identity before publication, then applies
+  windowing, `_attribute_segments`, `_project`, and per-listing sorting.
+  `_record_identity` persists successful refresh evidence and
+  `_fallback_candidates` currently constructs time-window candidates from
+  stored hints.
+- `ReservationIdentityGuard` in `custom_components/guesty/identity.py`
+  owns baseline loading, identity comparison, successful refresh and bootstrap
+  persistence, and fallback/write evidence. `CandidateHint` is currently a
+  two-endpoint value; keep new timing metadata independent from identity maps.
+- `GuestyReservationSensor` in `custom_components/guesty/sensor.py` selects
+  by source lifecycle priority and builds selected/upcoming attributes through
+  `_build_attributes` and `_build_upcoming`; both currently assume concrete
+  datetimes.
+- Existing focused fixture boundaries are in
+  `tests/api/test_models.py`, `tests/test_coordinator.py`,
+  `tests/test_identity.py`, `tests/api/test_reservations_fallback.py`,
+  `tests/test_reservation_sensor.py`, and `tests/test_reservations_parity.py`.
 
 ## Phase 2: Foundational Source and Provenance
 
