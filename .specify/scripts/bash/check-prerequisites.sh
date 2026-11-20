@@ -79,9 +79,7 @@ SCRIPT_DIR="$(CDPATH="" cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
 # Get feature paths and validate branch
-_paths_output=$(get_feature_paths) || { echo "ERROR: Failed to resolve feature paths" >&2; exit 1; }
-eval "$_paths_output"
-unset _paths_output
+set_feature_paths || { echo "ERROR: Failed to resolve feature paths" >&2; exit 1; }
 check_feature_branch "$CURRENT_BRANCH" "$HAS_GIT" || exit 1
 
 # If paths-only mode, output paths and exit (support JSON + paths-only combined)
