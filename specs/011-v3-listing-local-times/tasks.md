@@ -106,26 +106,42 @@ unchanged. Run the tests named below without a Guesty account.
 - [ ] T015 [P] [US1] Add failing V3 model tests in `tests/api/test_models.py`
   showing that raw `checkIn`/`checkOut` suffixes and
   `plannedArrival`/`plannedDeparture` never supply exact instants, while
-  localized dates and planned attributes are preserved.
+  localized dates and planned attributes are preserved. Add a failing
+  known-to-unknown candidate reload test in `tests/test_identity.py` proving
+  stale endpoints are not reused or expired as current evidence.
 - [ ] T016 [P] [US1] Add failing end-to-end fixture tests in
   `tests/test_reservation_sensor.py` for standard and daylight dates,
   independent endpoint offsets, retained planned attributes, and unchanged
-  legacy selected/upcoming output.
+  legacy selected/upcoming output. In `tests/test_coordinator.py` and
+  `tests/api/test_reservations_fallback.py`, test missing room settings and
+  known-to-unknown refresh: no crash, guessed instant, stale fallback lookup,
+  or identity/write-target change.
 - [ ] T017 [US1] Preserve V3 dates and per-endpoint optional exact timing
   without changing strict legacy parsing in
   `custom_components/guesty/api/models.py`; never derive exact values from raw
-  V3 endpoint suffixes.
-- [ ] T018 [US1] Resolve V3 records using only each segment's exact-room lookup
-  in `custom_components/guesty/coordinator.py`; keep fallback-sourced and legacy
-  records on their existing paths and retain `ReservationsCoordinator.data`
-  shape.
-- [ ] T019 [US1] Publish resolved single-room instants and dates without
-  renaming existing keys or changing entity identity in
-  `custom_components/guesty/sensor.py`; leave planned attributes independent.
+  V3 endpoint suffixes. In `custom_components/guesty/identity.py`, preserve
+  unknown current candidates across reload without stale interval eligibility
+  or time-based eviction; retain old hint compatibility.
+- [ ] T018 [US1] Before activating optional endpoints, make window, projection,
+  ordering, status and candidate handling null-safe in
+  `custom_components/guesty/coordinator.py`, suppress unknown fallback in
+  `custom_components/guesty/api/reservations_fallback.py`, and publish
+  null/date/certainty and source status safely in
+  `custom_components/guesty/sensor.py`; preserve identity and legacy behavior.
+- [ ] T019 [US1] Activate V3 resolution only after T017–T018 in
+  `custom_components/guesty/coordinator.py`, using each segment's exact-room
+  lookup; retain `ReservationsCoordinator.data`, sensor keys, planned
+  attributes, and the unchanged legacy and fallback source paths.
 - [ ] T020 [US1] Run the US1 model, timing, coordinator, sensor and parity tests
   in `tests/api/test_models.py`, `tests/api/test_timing.py`,
   `tests/test_coordinator.py`, `tests/test_reservation_sensor.py`, and
-  `tests/test_reservations_parity.py`; checkpoint green before US2.
+  `tests/test_reservations_parity.py`, plus `tests/test_identity.py` and
+  `tests/api/test_reservations_fallback.py`; checkpoint green before US2.
+
+T017–T019 are one green atomic implementation slice: optional V3 endpoints
+must not reach consumers until their minimum null-safe and stale-evidence
+guards are in place. US3 expands the edge-case matrices and capacity policy;
+it must not be used to defer these initial safety guards.
 
 ## Phase 4: User Story 2 — Moved Stays on the Right Listings (P1)
 
@@ -214,12 +230,12 @@ changes identity or write routing after persistence reload.
   exact-instant ordering, unknown localized-date then reservation-ID ordering,
   deterministic absent-date handling, and unknown multi-segment temporal status
   without treating it as current/upcoming/past.
-- [ ] T036 [US3] Make `_within_window`, `_project`, `_select_segment`,
-  `_segment_status`, and ordering null-safe in
+- [ ] T036 [US3] Complete the edge-case handling for `_within_window`, `_project`,
+  `_select_segment`, `_segment_status`, and ordering in
   `custom_components/guesty/coordinator.py`, retaining known interval behavior
   and using inclusive date bounds only with provable dates and explicit valid
   exact-room zone.
-- [ ] T037 [US3] Implement selected and upcoming nullable exact attributes,
+- [ ] T037 [US3] Complete selected and upcoming nullable exact attributes,
   current dates, certainty and separate source status in
   `custom_components/guesty/sensor.py` per
   `specs/011-v3-listing-local-times/contracts/reservation-sensor.md`, preserving
@@ -244,17 +260,17 @@ changes identity or write routing after persistence reload.
   same-path conflict abort, cross-path disagreement blocking writes, and
   verified identity retaining the same permitted/refused target ID despite
   unknown timing.
-- [ ] T042 [US3] Evolve `CandidateHint` serialization and
+- [ ] T042 [US3] Complete `CandidateHint` serialization and
   `ReservationIdentityGuard` retention/capacity in
   `custom_components/guesty/identity.py`: old hints remain readable, current
   unknown has no usable stale interval, and unknown timing alone neither expires
   nor displaces evidence; use non-stay observation data and deterministic
   migration ties.
-- [ ] T043 [US3] Update `_record_identity` and `_fallback_candidates` in
+- [ ] T043 [US3] Complete `_record_identity` and `_fallback_candidates` in
   `custom_components/guesty/coordinator.py` to mark a candidate known only when
   its required full raw sequence and endpoints are verified; preserve identity
   maps, source status and existing confirmed-absence rules.
-- [ ] T044 [US3] Gate unknown candidates in
+- [ ] T044 [US3] Complete unknown-candidate gating in
   `custom_components/guesty/api/reservations_fallback.py` without changing
   verified legacy lookup windows, source routing, confirmation-code checks or
   write guard outcomes.
@@ -303,7 +319,8 @@ changes identity or write routing after persistence reload.
 
 ```text
 T001 → T002 → T003/T004 → T005 → T006
-  → US1: T007/T008/T009 → T010–T014 → T015/T016 → T017–T020
+  → US1: T007/T008/T009 → T010–T014 → T015/T016
+         → T017/T018 (nullable guards) → T019 (activation) → T020
   → US2: T021/T022 → T023–T024 → T025–T028
   → US3: T029/T030 → T031–T032 → T033/T034 → T035–T038
          → T039/T040/T041 → T042–T045 → T046/T047 → T048–T049
