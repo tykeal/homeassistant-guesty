@@ -33,6 +33,10 @@ rule. An exact child record returned by the listing refresh may be used for
 time derivation even when the child is not selected for publication; an
 absent child record cannot be inferred or fetched separately.
 
+Load/cache `ZoneInfo` data off the Home Assistant event loop; pass prepared
+timezone objects to the pure conversion helper. A cache miss or invalid zone
+must not block refresh work.
+
 ## 2. Raw V3 stay segment
 
 `GuestyStaySegment` represents one raw `stay[]` position when it has enough

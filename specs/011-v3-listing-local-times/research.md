@@ -49,21 +49,26 @@ FR-004 and the owner-confirmed policy.
 ### 3. Treat gaps, folds, invalid dates and missing settings as unknown
 
 **Decision**: Use standard-library `zoneinfo` and `datetime` for local
-wall-time conversion. Validate a candidate by round-tripping it through UTC.
-Accept only one distinct instant; zero valid instants (a gap) and two
-distinct instants (a fold) produce unknown timing. Validate each endpoint
+wall-time conversion. Because constructing a `ZoneInfo` can read timezone
+files on a cache miss, load/cache zones outside the Home Assistant event loop
+(for example, through its executor). Pass prepared zone objects into the
+pure converter. Validate candidates by round-tripping through UTC; accept
+only one distinct instant. Zero valid instants (a gap) and two distinct
+instants (a fold) produce unknown timing. Validate each endpoint
 independently.
 
-**Rationale**: Python's timezone database interface is available on the
-project's Python ≥3.14.2 runtime. Round-tripping distinguishes normalized
-nonexistent local times from valid ones; checking both folds distinguishes
-ambiguous times without selecting an undocumented policy. This implements
-FR-015 and gives pure deterministic tests without I/O.
+**Rationale**: The project targets Python ≥3.14.2. Round-tripping
+distinguishes normalized nonexistent local times from valid ones; checking
+both folds distinguishes ambiguous times without selecting an undocumented
+policy. Loading timezone files off-loop preserves Home Assistant's
+non-blocking requirement; the conversion itself is deterministic and
+in-memory.
 
 **Alternatives considered**: Silently choose `fold=0` or `fold=1`; normalize
 nonexistent times; fall back to UTC; reject the whole reservation instead
-of preserving a known date and an independently known endpoint. Each would
-contradict the approved uncertainty policy.
+of preserving a known date and an independently known endpoint; construct
+uncached zones synchronously on the event loop. These conflict with the
+approved uncertainty or performance requirements.
 
 ### 4. Preserve raw multi-segment provenance before parsing/filtering
 

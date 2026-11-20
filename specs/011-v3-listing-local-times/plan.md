@@ -38,8 +38,8 @@ selection or search filters, broaden listing attribution, or change
 fixtures; ruff, mypy, interrogate, repository pre-commit hooks, and CI.
 **Target Platform**: Home Assistant custom integration (HACS).
 **Project Type**: Home Assistant custom integration.
-**Performance Goals**: Resolve timing in memory from data already fetched;
-zero additional Guesty requests and no blocking work on the event loop.
+**Performance Goals**: Use data already fetched; add zero Guesty requests.
+Load uncached timezone data outside the HA event loop; convert in memory.
 **Constraints**: V3-only reinterpretation; exact-room settings only;
 preserve raw segment count/order before filtering; no parent-setting
 substitution; keep Feature 008 identity, attribution and write routing;
@@ -66,7 +66,8 @@ reservations; unchanged API pagination and polling volume.
 - **VI. Co-authorship and DCO — Pass.** Require `-s` and the Copilot trailer.
 - **VII. UX consistency — Pass.** No entity IDs or key renames; nullable
   values and additive certainty fields follow the spec.
-- **VIII. Performance — Pass.** Conversion is in memory; no I/O is added.
+- **VIII. Performance — Pass.** Timezone data is loaded off-loop; conversion
+  is in memory and no external I/O is added.
 - **IX. Phased development — Pass.** Test-first implementation checkpoints
   are defined for the later stage.
 - **X. Security and privacy — Pass.** No live calls/writes or guest PII in
@@ -147,12 +148,12 @@ shape and sensor entity identity.
    substitute a parent listing for a missing exact-room record or setting.
 3. **Use a pure, deterministic wall-time resolver.** Parse the supplied
    localized date and configured local wall time independently for each
-   endpoint. Use `zoneinfo.ZoneInfo` and round-trip candidate folds through
-   UTC: accept only one valid resulting instant; zero valid candidates
-   means a gap, and two distinct candidates mean a fold, both unknown.
-   Invalid dates, wall times, zones, or missing provenance likewise yield
-   an unknown endpoint. Do not normalize, select a fold, or use raw V3
-   endpoint suffixes as a substitute.
+   endpoint. Load/cache `zoneinfo.ZoneInfo` objects off the event loop
+   (executor on cache miss); pass prepared objects to the pure conversion
+   helper. Round-trip fold candidates through UTC and accept only one valid
+   instant. Zero candidates means a gap, two distinct candidates a fold;
+   both yield unknown. Invalid dates, wall times, zones, or provenance also
+   yield unknown. Do not normalize, select a fold, or use raw V3 suffixes.
 4. **Keep handoff narrow.** Apply a moved-to start adjustment only to
    adjacent raw segment positions whose localized boundary dates are the
    same, whose exact-room metadata and explicit valid timezone are present,
