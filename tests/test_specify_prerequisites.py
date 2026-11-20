@@ -19,18 +19,24 @@ SCRIPTS = ROOT / ".specify" / "scripts" / "bash"
 
 
 def _assert_safe_sources() -> None:
-    """Prevent invoking the checker if its sourced path uses evaluation."""
+    """Prevent invoking path scripts whose dependencies use evaluation."""
     for path in (
         SCRIPTS / "check-prerequisites.sh",
         SCRIPTS / "setup-plan.sh",
+        SCRIPTS / "update-agent-context.sh",
         SCRIPTS / "common.sh",
     ):
         assert not re.search(r"(?m)^\s*eval(?:\s|$)", path.read_text())
 
 
-def test_checker_does_not_evaluate_generated_shell() -> None:
-    """Keep the checker's sourced path resolution free of dynamic evaluation."""
+def test_path_scripts_do_not_evaluate_generated_shell() -> None:
+    """Keep path resolution free of dynamically evaluated assignments."""
     _assert_safe_sources()
+    updater = (SCRIPTS / "update-agent-context.sh").read_text()
+    assert (
+        'set_feature_paths || { echo "ERROR: Failed to resolve feature paths" '
+        ">&2; exit 1; }"
+    ) in updater
 
 
 @pytest.fixture
