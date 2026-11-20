@@ -5,11 +5,12 @@ SPDX-License-Identifier: Apache-2.0
 
 # Guesty Integration Development Guidelines
 
-Auto-generated from feature plans. Last updated: 2026-04-06
+Auto-generated from feature plans. Last updated: 2026-11-20
 
 ## Active Technologies
 - Python ≥3.14.2 (mypy target 3.14, ruff target py314) + homeassistant ≥2026.4.0, httpx ≥0.28, voluptuous (via HA) (007-listing-filtering)
 - HA config entry options (persistent key-value via `entry.options`) (007-listing-filtering)
+- Python standard-library `datetime`/`zoneinfo` for V3 local-time resolution (011-v3-listing-local-times-plan)
 
 - Python >=3.14.2 + Home Assistant >=2026.4.0, httpx >=0.28 (006-actions-plan)
 - Python >=3.14.2 + Home Assistant >=2026.4.0, httpx >=0.28 (002-plan-listings)
@@ -49,19 +50,9 @@ Python >=3.14.2: Full type annotations, 100% docstring coverage,
 async/await patterns, frozen dataclasses for DTOs
 
 ## Recent Changes
+- 011-v3-listing-local-times-plan: Plan V3 listing-local time resolution with stdlib `datetime`/`zoneinfo`
 - 007-listing-filtering: Added Python ≥3.14.2 (mypy target 3.14, ruff target py314) + homeassistant ≥2026.4.0, httpx ≥0.28, voluptuous (via HA)
-
 - 006-actions-plan: Added Python >=3.14.2 +
-  Home Assistant >=2026.4.0, httpx >=0.28
-- 004-custom-variables-plan: Added Python >=3.14.2 +
-  Home Assistant >=2026.4.0, httpx >=0.28
-- 003-reservations-plan: Added Python >=3.14.2 +
-  Home Assistant >=2026.4.0, httpx >=0.28
-- 005-plan-notify: Added Python >=3.14.2 +
-  Home Assistant >=2026.4.0, httpx >=0.28
-- 002-plan-listings: Added Python >=3.14.2 +
-  Home Assistant >=2026.4.0, httpx >=0.28
-- 001-auth-config-flow: Added Python >=3.14.2 +
   Home Assistant >=2026.4.0, httpx >=0.28
 
 <!-- MANUAL ADDITIONS START -->
