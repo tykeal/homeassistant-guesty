@@ -72,6 +72,7 @@ from tests.conftest import (
     make_token_response,
     make_v3_reservation,
     make_v3_search_page,
+    make_v3_segment,
 )
 
 
@@ -880,6 +881,63 @@ class TestReservationsCoordinator:
             and "unknown-listing" in r.getMessage()
         ]
         assert len(matching) == 1
+
+    async def test_single_segment_fallback_unknown_listing_is_not_inferred(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Fallback dates do not attribute an unknown segment to a known listing.
+
+        Args:
+            hass: The Home Assistant test instance.
+            sample_listing: The only tracked listing.
+            caplog: Log capture fixture.
+        """
+        check_in = _rel(1, 15)
+        check_out = _rel(4, 11)
+        parsed = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(
+                "res-fallback-unknown",
+                segments=[
+                    make_v3_segment(
+                        listingId="unknown-listing",
+                        checkIn=None,
+                        checkOut=None,
+                    ),
+                ],
+                checkIn=check_in.isoformat(),
+                checkOut=check_out.isoformat(),
+                listingId=sample_listing.id,
+            ),
+        )
+        assert parsed is not None
+        assert parsed.listing_id == "unknown-listing"
+
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_reservations = AsyncMock(
+            return_value=make_fetch_result([parsed]),
+        )
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = {sample_listing.id: sample_listing}
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+
+        with caplog.at_level(
+            logging.WARNING,
+            logger="custom_components.guesty.coordinator",
+        ):
+            result = await coordinator._async_update_data()
+
+        assert result == {}
+        assert "unknown-listing" in caplog.text
 
     async def test_sorts_reservations_by_check_in(
         self,

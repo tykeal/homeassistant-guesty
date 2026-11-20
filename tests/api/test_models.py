@@ -2157,6 +2157,318 @@ class TestGuestyStaySegmentFromApiDict:
 class TestGuestyReservationFromV3ApiDict:
     """Tests for the v3 reservation parse (Feature 008)."""
 
+    @pytest.mark.parametrize(
+        ("include_check_in", "check_in", "include_check_out", "check_out"),
+        [
+            (False, None, False, None),
+            (False, None, True, None),
+            (True, None, False, None),
+            (True, None, True, None),
+        ],
+    )
+    def test_single_raw_stay_uses_top_level_dates_when_segment_dates_absent(
+        self,
+        include_check_in: bool,
+        check_in: str | None,
+        include_check_out: bool,
+        check_out: str | None,
+    ) -> None:
+        """A sole attributed segment may use a valid top-level interval.
+
+        Args:
+            include_check_in: Whether the segment contains checkIn.
+            check_in: The explicit segment checkIn value, if included.
+            include_check_out: Whether the segment contains checkOut.
+            check_out: The explicit segment checkOut value, if included.
+        """
+        segment = make_v3_segment(listingId="listing-fallback")
+        if include_check_in:
+            segment["checkIn"] = check_in
+        else:
+            del segment["checkIn"]
+        if include_check_out:
+            segment["checkOut"] = check_out
+        else:
+            del segment["checkOut"]
+        top_level_check_in = "2025-08-03T14:00:00+00:00"
+        top_level_check_out = "2025-08-08T10:00:00+00:00"
+
+        reservation = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(
+                segments=[segment],
+                checkIn=top_level_check_in,
+                checkOut=top_level_check_out,
+            ),
+        )
+
+        assert reservation is not None
+        assert reservation.listing_id == "listing-fallback"
+        assert len(reservation.stay) == 1
+        assert reservation.stay[0].check_in == datetime(
+            2025,
+            8,
+            3,
+            14,
+            0,
+            tzinfo=UTC,
+        )
+        assert reservation.stay[0].check_out == datetime(
+            2025,
+            8,
+            8,
+            10,
+            0,
+            tzinfo=UTC,
+        )
+
+    @pytest.mark.parametrize(
+        ("present_key", "actual_date"),
+        [
+            ("checkIn", "2025-08-01T15:00:00+00:00"),
+            ("checkOut", "2025-08-05T11:00:00+00:00"),
+        ],
+    )
+    @pytest.mark.parametrize("absent_value", ["omitted", None])
+    def test_partial_segment_dates_do_not_use_top_level_interval(
+        self,
+        present_key: str,
+        actual_date: str,
+        absent_value: str | None,
+    ) -> None:
+        """One present segment endpoint is not eligible for fallback.
+
+        Args:
+            present_key: The segment endpoint containing a date.
+            actual_date: A valid segment date value.
+            absent_value: Whether the other endpoint is omitted or null.
+        """
+        segment = make_v3_segment()
+        segment[present_key] = actual_date
+        absent_key = "checkOut" if present_key == "checkIn" else "checkIn"
+        if absent_value is None:
+            segment[absent_key] = None
+        else:
+            del segment[absent_key]
+
+        result = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(
+                segments=[segment],
+                checkIn="2025-08-03T14:00:00+00:00",
+                checkOut="2025-08-08T10:00:00+00:00",
+            ),
+        )
+
+        assert result is None
+
+    @pytest.mark.parametrize(
+        ("present_key", "invalid_value"),
+        [
+            ("checkIn", ""),
+            ("checkOut", ""),
+            ("checkIn", "not-a-date"),
+            ("checkOut", "not-a-date"),
+            ("checkIn", 123),
+            ("checkOut", 123),
+        ],
+    )
+    def test_invalid_present_segment_date_does_not_use_fallback(
+        self,
+        present_key: str,
+        invalid_value: object,
+    ) -> None:
+        """Invalid present endpoint values are not treated as absent.
+
+        Args:
+            present_key: The segment endpoint containing the invalid value.
+            invalid_value: An empty, malformed, or non-string value.
+        """
+        segment = make_v3_segment()
+        segment[present_key] = invalid_value
+        absent_key = "checkOut" if present_key == "checkIn" else "checkIn"
+        del segment[absent_key]
+
+        result = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(
+                segments=[segment],
+                checkIn="2025-08-03T14:00:00+00:00",
+                checkOut="2025-08-08T10:00:00+00:00",
+            ),
+        )
+
+        assert result is None
+
+    @pytest.mark.parametrize(
+        ("check_in", "check_out"),
+        [
+            (None, "2025-08-05T11:00:00+00:00"),
+            ("2025-08-01T15:00:00+00:00", None),
+            ("not-a-date", "2025-08-05T11:00:00+00:00"),
+            ("2025-08-01T15:00:00+00:00", "not-a-date"),
+            ("2025-08-01T15:00:00+00:00", "2025-08-01T15:00:00+00:00"),
+            ("2025-08-05T11:00:00+00:00", "2025-08-01T15:00:00+00:00"),
+        ],
+    )
+    def test_invalid_top_level_interval_does_not_enable_fallback(
+        self,
+        check_in: str | None,
+        check_out: str | None,
+    ) -> None:
+        """Missing, unparsable, equal, and reversed intervals are rejected.
+
+        Args:
+            check_in: Reservation-level checkIn value.
+            check_out: Reservation-level checkOut value.
+        """
+        data = make_v3_reservation(
+            segments=[
+                make_v3_segment(
+                    listingId="listing-fallback",
+                    checkIn=None,
+                    checkOut=None,
+                ),
+            ],
+            checkIn=check_in,
+            checkOut=check_out,
+        )
+
+        assert GuestyReservation.from_v3_api_dict(data) is None
+
+    @pytest.mark.parametrize("listing_id", ["omitted", "", None])
+    def test_missing_segment_listing_does_not_enable_fallback(
+        self,
+        listing_id: str | None,
+    ) -> None:
+        """Top-level dates cannot make a segment without listing usable.
+
+        Args:
+            listing_id: A missing, empty, or null segment listingId.
+        """
+        segment = make_v3_segment(checkIn=None, checkOut=None)
+        if listing_id == "omitted":
+            del segment["listingId"]
+        else:
+            segment["listingId"] = listing_id
+
+        assert (
+            GuestyReservation.from_v3_api_dict(
+                make_v3_reservation(
+                    segments=[segment],
+                    checkIn="2025-08-03T14:00:00+00:00",
+                    checkOut="2025-08-08T10:00:00+00:00",
+                ),
+            )
+            is None
+        )
+
+    def test_multiple_raw_segments_do_not_fallback_after_filtering(self) -> None:
+        """Raw multiplicity blocks fallback even when another entry is invalid."""
+        fallback_candidate = make_v3_segment(
+            listingId="listing-fallback",
+            checkIn=None,
+            checkOut=None,
+        )
+        dropped = make_v3_segment()
+        del dropped["listingId"]
+
+        assert (
+            GuestyReservation.from_v3_api_dict(
+                make_v3_reservation(
+                    segments=[fallback_candidate, dropped],
+                    checkIn="2025-08-03T14:00:00+00:00",
+                    checkOut="2025-08-08T10:00:00+00:00",
+                ),
+            )
+            is None
+        )
+
+    def test_multiple_raw_segments_keep_only_explicitly_dated_segment(self) -> None:
+        """A usable segment does not enable fallback for another raw segment."""
+        reservation = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(
+                segments=[
+                    make_v3_segment(listingId="dated-listing"),
+                    make_v3_segment(
+                        listingId="undated-listing",
+                        checkIn=None,
+                        checkOut=None,
+                    ),
+                ],
+                checkIn="2025-08-03T14:00:00+00:00",
+                checkOut="2025-08-08T10:00:00+00:00",
+            ),
+        )
+
+        assert reservation is not None
+        assert [segment.listing_id for segment in reservation.stay] == [
+            "dated-listing",
+        ]
+
+    def test_explicit_segment_dates_take_precedence_over_top_level_dates(
+        self,
+    ) -> None:
+        """Valid segment dates remain unchanged when top-level dates differ."""
+        segment_check_in = "2025-08-01T15:00:00+00:00"
+        segment_check_out = "2025-08-05T11:00:00+00:00"
+        reservation = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(
+                segments=[
+                    make_v3_segment(
+                        checkIn=segment_check_in,
+                        checkOut=segment_check_out,
+                    ),
+                ],
+                checkIn="2025-08-02T15:00:00+00:00",
+                checkOut="2025-08-06T11:00:00+00:00",
+            ),
+        )
+
+        assert reservation is not None
+        assert reservation.stay[0].check_in == datetime(
+            2025,
+            8,
+            1,
+            15,
+            0,
+            tzinfo=UTC,
+        )
+        assert reservation.stay[0].check_out == datetime(
+            2025,
+            8,
+            5,
+            11,
+            0,
+            tzinfo=UTC,
+        )
+
+    def test_unusable_stay_warning_does_not_expose_guest_or_confirmation_data(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The skip warning remains visible but excludes sensitive values.
+
+        Args:
+            caplog: Log capture fixture.
+        """
+        data = make_v3_reservation(
+            "res-private",
+            guest_id="guest-private@example.invalid",
+            confirmationCode="CONF-PRIVATE-4821",
+            segments=[
+                make_v3_segment(
+                    checkIn="",
+                    checkOut=None,
+                ),
+            ],
+        )
+
+        with caplog.at_level(logging.WARNING):
+            result = GuestyReservation.from_v3_api_dict(data)
+
+        assert result is None
+        assert "no usable stay segment" in caplog.text
+        assert "guest-private@example.invalid" not in caplog.text
+        assert "CONF-PRIVATE-4821" not in caplog.text
+
     def test_identity_and_listing_from_first_segment(self) -> None:
         """reservationId maps to id and stay[0] gives listing_id."""
         reservation = GuestyReservation.from_v3_api_dict(
