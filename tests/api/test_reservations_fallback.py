@@ -728,6 +728,59 @@ class TestFailureModes:
         assert outcome.sourced == ("res-1",)
         assert outcome.served == ()
 
+    @respx.mock
+    async def test_failed_lookup_preserves_retained_v3_lifecycle(
+        self,
+    ) -> None:
+        """Unknown V3 timing must not overwrite the retained lifecycle."""
+        _mock_token()
+        respx.get(by_id_url("res-1")).mock(
+            return_value=Response(500, json={"error": "boom"}),
+        )
+        v3 = GuestyReservation.from_v3_api_dict(
+            _v3_in_window("res-1"),
+        )
+        assert v3 is not None
+        assert v3.status == "confirmed"
+        assert v3.timing_status == "unknown"
+        source = ReservationFallbackSource(_make_client())
+        candidates = {"res-1": _candidate()}
+
+        await _resolve(source, retrieved=(v3,), candidates=candidates)
+        outcome = await _resolve(source, candidates=candidates)
+
+        assert len(outcome.reservations) == 1
+        retained = outcome.reservations[0]
+        assert retained.status == "confirmed"
+        assert retained.reservation_status is None
+        assert retained.timing_status == "unknown"
+
+    @respx.mock
+    async def test_successful_filtered_lookup_retains_observed_record(
+        self,
+    ) -> None:
+        """A non-published successful lookup still carries fresh evidence."""
+        _mock_token()
+        respx.get(by_id_url("res-filtered")).mock(
+            return_value=Response(
+                200,
+                json=_legacy_document("res-filtered", status="cancelled"),
+            ),
+        )
+        source = ReservationFallbackSource(_make_client())
+
+        outcome = await _resolve(
+            source,
+            candidates={"res-filtered": _candidate()},
+        )
+
+        assert outcome.reservations == ()
+        assert outcome.observed == ("res-filtered",)
+        assert len(outcome.observed_reservations) == 1
+        observed = outcome.observed_reservations[0]
+        assert observed.id == "res-filtered"
+        assert observed.status == "cancelled"
+
     @pytest.mark.parametrize(
         "malformed",
         [

@@ -9,7 +9,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from typing import cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -2581,6 +2581,31 @@ def _build_coordinator(
 class TestSegmentAttribution:
     """Tests for stay-segment attribution (T041, T045, T046)."""
 
+    async def test_timing_listing_lookup_is_shared_for_refresh(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """The fetched listing map is prepared once per reservation refresh."""
+        freezer.move_to(_NOW)
+        reservations = [
+            _legacy_res(f"res-{index}", "listing-001", 1, 2) for index in range(3)
+        ]
+        coordinator = _build_coordinator(
+            hass,
+            reservations,
+            ["listing-001"],
+        )
+
+        with patch.object(
+            coordinator,
+            "_timing_listings",
+            wraps=coordinator._timing_listings,
+        ) as timing_listings:
+            await coordinator._async_update_data()
+
+        timing_listings.assert_called_once()
+
     async def test_single_segment_attributed_to_its_listing(
         self,
         hass: HomeAssistant,
@@ -2909,6 +2934,55 @@ class TestPerListingProjection:
             assert projection.guest == reservation.guest
             assert projection.custom_fields == reservation.custom_fields
             assert projection.stay == ()
+
+    async def test_source_night_count_survives_unknown_local_checkout(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Timing resolution does not erase a valid source night count."""
+        listing_data = make_listing_dict(
+            _id="listing-001",
+            timezone="UTC",
+            defaultCheckInTime="16:00",
+            defaultCheckOutTime="11:00",
+        )
+        listing = GuestyListing.from_api_dict(listing_data)
+        assert listing is not None
+        local_check_in = "2026-06-20"
+        segment = GuestyStaySegment(
+            listing_id="listing-001",
+            check_in=None,
+            check_out=None,
+            check_in_local=local_check_in,
+            check_out_local=None,
+            raw_position=0,
+        )
+        reservation = GuestyReservation(
+            id="res-night-count",
+            listing_id="listing-001",
+            status="confirmed",
+            check_in=None,
+            check_out=None,
+            check_in_local=local_check_in,
+            check_out_local=None,
+            nights_count=4,
+            is_v3=True,
+            raw_stay_count=1,
+            stay=(segment,),
+        )
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=_make_entry(),
+            api_client=AsyncMock(),
+            listings_coordinator=AsyncMock(
+                data={"listing-001": listing},
+                timing_listings={"listing-001": listing},
+            ),
+        )
+
+        resolved = await coordinator._resolve_v3_reservations((reservation,))
+
+        assert resolved[0].nights_count == 4
 
     async def test_repeat_listing_selects_current_interval(
         self,
@@ -3350,6 +3424,12 @@ class TestWindowTrim:
             id="res-no-date",
             check_in_local=None,
         )
+        partial = replace(
+            unknown_later,
+            id="res-partial",
+            check_in=datetime(2020, 1, 1, tzinfo=UTC),
+            check_out=None,
+        )
 
         ordered = sorted(
             [
@@ -3358,6 +3438,7 @@ class TestWindowTrim:
                 known,
                 unknown_earlier_id,
                 unknown_earlier_date,
+                partial,
             ],
             key=_reservation_sort_key,
         )
@@ -3366,6 +3447,7 @@ class TestWindowTrim:
             "res-known",
             "res-b",
             "res-a",
+            "res-partial",
             "res-z",
             "res-no-date",
         ]

@@ -186,6 +186,8 @@ class FallbackOutcome:
         absent: Identifiers legacy confirmed are gone (FR-052).
         observed: Identifiers returned by a successful by-ID response
             during this resolution.
+        observed_reservations: Records returned by successful by-ID
+            responses, including records filtered from publication.
     """
 
     reservations: tuple[GuestyReservation, ...] = ()
@@ -194,6 +196,7 @@ class FallbackOutcome:
     sourced: tuple[str, ...] = ()
     absent: tuple[str, ...] = ()
     observed: tuple[str, ...] = ()
+    observed_reservations: tuple[GuestyReservation, ...] = ()
 
 
 class ReservationFallbackSource:
@@ -340,8 +343,15 @@ class ReservationFallbackSource:
         succeeded = 0
         failed = 0
         observed: set[str] = set()
+        observed_reservations: list[GuestyReservation] = []
         for reservation_id in batch:
-            verdict = await self._lookup(reservation_id, now, statuses)
+            verdict, observation = await self._lookup(
+                reservation_id,
+                now,
+                statuses,
+            )
+            if observation is not None:
+                observed_reservations.append(observation)
             if verdict == _RETIRED:
                 self._disable()
                 self._served.clear()
@@ -356,6 +366,7 @@ class ReservationFallbackSource:
                     ),
                     absent=tuple(absent),
                     observed=tuple(sorted(observed)),
+                    observed_reservations=tuple(observed_reservations),
                 )
             if verdict == _ABSENT:
                 absent.append(reservation_id)
@@ -392,6 +403,7 @@ class ReservationFallbackSource:
             sourced=tuple(reservation.id for reservation in published),
             absent=tuple(absent),
             observed=tuple(sorted(observed)),
+            observed_reservations=tuple(observed_reservations),
         )
 
     def _absorb(
@@ -473,7 +485,7 @@ class ReservationFallbackSource:
         reservation_id: str,
         now: datetime,
         statuses: frozenset[str],
-    ) -> str:
+    ) -> tuple[str, GuestyReservation | None]:
         """Issue one legacy by-id lookup and read its answer.
 
         The attempt is recorded before the request so that a
@@ -485,7 +497,8 @@ class ReservationFallbackSource:
             statuses: The configured status set (FR-050a).
 
         Returns:
-            One of the module's verdict constants.
+            A verdict and, for every successful lookup, its source
+            record even when that record is filtered from publication.
         """
         self._last_attempt[reservation_id] = now
         try:
@@ -502,14 +515,14 @@ class ReservationFallbackSource:
                 reservation_id,
                 type(exc).__name__,
             )
-            return _FAILED
+            return _FAILED, None
 
         verdict = classify_legacy_response(response, reservation_id)
         if verdict == _ABSENT:
             self._retire(reservation_id)
-            return _ABSENT
+            return _ABSENT, None
         if verdict == _RETIRED:
-            return _RETIRED
+            return _RETIRED, None
         if verdict == _FAILED:
             _LOGGER.warning(
                 "Legacy fallback lookup for reservation %s "
@@ -518,7 +531,7 @@ class ReservationFallbackSource:
                 reservation_id,
                 response.status_code,
             )
-            return _FAILED
+            return _FAILED, None
 
         reservation = _parse(response, reservation_id)
         if reservation is None:
@@ -528,7 +541,7 @@ class ReservationFallbackSource:
                 "known values",
                 reservation_id,
             )
-            return _FAILED
+            return _FAILED, None
 
         if reservation.status not in statuses:
             # The reservation left the configured status set, which
@@ -542,14 +555,14 @@ class ReservationFallbackSource:
                 reservation_id,
                 reservation.status,
             )
-            return _OK
+            return _OK, reservation
 
         self._served[reservation_id] = ServedRecord(
             reservation=reservation,
             fetched_at=now,
         )
         self._retained[reservation_id] = reservation
-        return _OK
+        return _OK, reservation
 
     def _drain_unreported_absent(self) -> tuple[str, ...]:
         """Hand write-discovered absences to this refresh.
@@ -662,8 +675,6 @@ class ReservationFallbackSource:
                         reservation,
                         check_in=None,
                         check_out=None,
-                        status="unknown",
-                        reservation_status=reservation.status,
                     )
             elif (
                 reservation.check_in is None

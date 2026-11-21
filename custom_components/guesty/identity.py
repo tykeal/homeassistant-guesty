@@ -788,6 +788,7 @@ class ReservationIdentityGuard:
         comparison: IdentityComparison,
         updated: str,
         observed_ids: Collection[str] | None = None,
+        observed_reservations: Iterable[GuestyReservation] = (),
         past_days: int = DEFAULT_PAST_DAYS,
         fallback_ids: Collection[str] = (),
         absent_ids: Collection[str] = (),
@@ -816,6 +817,9 @@ class ReservationIdentityGuard:
             observed_ids: IDs returned by the primary source or a
                 successful by-ID retrieval. None preserves the legacy
                 caller behavior that every supplied record was observed.
+            observed_reservations: Successful by-ID records that were
+                not returned for publication, but still provide current
+                candidate evidence.
             past_days: The configured past-day window, which dates
                 the safe retirement policy of T074.
             fallback_ids: Identifiers this refresh published from
@@ -849,8 +853,12 @@ class ReservationIdentityGuard:
             for code, reservation_id in all_observed.items()
             if reservation_id in from_fallback
         }
+        hint_records = {reservation.id: reservation for reservation in retrieved}
+        hint_records.update(
+            (reservation.id, reservation) for reservation in observed_reservations
+        )
         hints = _retrieved_hints(
-            retrieved,
+            hint_records.values(),
             observed_at=updated,
             observed_ids=observed_ids,
         )

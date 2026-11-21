@@ -172,6 +172,7 @@ class V3ReservationSource:
                     set(result.observed_ids or ()) | set(outcome.observed),
                 ),
             ),
+            observed_reservations=outcome.observed_reservations,
         )
 
     async def _fetch_all_pages(

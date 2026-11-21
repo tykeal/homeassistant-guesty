@@ -465,6 +465,54 @@ class TestIdentityBaselineStore:
         guard.mark_ambiguous()
         assert guard.baseline.candidates["res-1"].observed_at == primary_observation
 
+    async def test_filtered_by_id_observation_replaces_candidate_timing(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A successful but unpublished lookup cannot leave stale hints."""
+        guard = ReservationIdentityGuard(hass, "entry-filtered-observation")
+        await guard.async_load()
+        prior_observation = "2026-01-01T00:00:00+00:00"
+        await guard.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_V3,
+                updated=prior_observation,
+                candidates={
+                    "res-filtered": CandidateHint(
+                        timing_status="known",
+                        check_in="2026-01-02T16:00:00+00:00",
+                        check_out="2026-01-04T11:00:00+00:00",
+                        observed_at=prior_observation,
+                    ),
+                },
+            ),
+        )
+        observed_at = "2026-02-01T12:00:00+00:00"
+        observed = GuestyReservation(
+            id="res-filtered",
+            listing_id="listing-001",
+            status="cancelled",
+            check_in=datetime(2026, 2, 2, 16, tzinfo=UTC),
+            check_out=datetime(2026, 2, 5, 11, tzinfo=UTC),
+        )
+
+        await guard.async_record_refresh(
+            path=RESERVATIONS_API_V3,
+            reservations=(),
+            observed_reservations=(observed,),
+            published={},
+            comparison=IdentityComparison(),
+            updated=observed_at,
+            observed_ids={"res-filtered"},
+        )
+
+        assert guard.baseline is not None
+        hint = guard.baseline.candidates["res-filtered"]
+        assert hint.timing_status == "known"
+        assert hint.check_in == "2026-02-02T16:00:00+00:00"
+        assert hint.check_out == "2026-02-05T11:00:00+00:00"
+        assert hint.observed_at == observed_at
+
     def test_v3_candidate_requires_every_raw_segment_in_order(self) -> None:
         """Only a complete, verified, non-overlapping raw sequence is timed."""
         start = datetime(2026, 1, 1, tzinfo=UTC)

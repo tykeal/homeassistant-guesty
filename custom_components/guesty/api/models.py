@@ -1274,6 +1274,8 @@ class ReservationFetchResult:
             the caller can retire their durable candidacy (FR-052).
         observed_ids: Identifiers returned by the primary source or a
             successful by-ID response during this retrieval.
+        observed_reservations: Records returned by successful by-ID
+            responses, including records filtered from publication.
     """
 
     reservations: tuple[GuestyReservation, ...] = ()
@@ -1291,6 +1293,7 @@ class ReservationFetchResult:
     fallback_sourced: tuple[str, ...] = ()
     fallback_absent: tuple[str, ...] = ()
     observed_ids: tuple[str, ...] | None = None
+    observed_reservations: tuple[GuestyReservation, ...] = ()
 
 
 @runtime_checkable

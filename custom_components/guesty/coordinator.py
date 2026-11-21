@@ -364,6 +364,7 @@ class ReservationsCoordinator(
             return {}
 
         now = datetime.now(UTC)
+        timing_listings = self._timing_listings()
         grouped: dict[str, list[GuestyReservation]] = defaultdict(list)
         guest_ids: list[str] = []
         published: dict[str, CandidateHint] = {}
@@ -383,7 +384,7 @@ class ReservationsCoordinator(
                 now=now,
                 past_days=past_days,
                 future_days=future_days,
-                timing_listings=self._timing_listings(),
+                timing_listings=timing_listings,
                 zones=self._zone_cache,
             ):
                 counters.trim_drops += 1
@@ -511,10 +512,6 @@ class ReservationsCoordinator(
                     check_in_local=first.check_in_local,
                     check_out_local=last.check_out_local,
                     guests_count=first.guests_count,
-                    nights_count=derive_nights_count(
-                        first.check_in_local,
-                        last.check_out_local,
-                    ),
                     stay=resolved_stay,
                 ),
             )
@@ -723,6 +720,7 @@ class ReservationsCoordinator(
             fallback_ids=fetch_result.fallback_sourced,
             absent_ids=fetch_result.fallback_absent,
             observed_ids=fetch_result.observed_ids,
+            observed_reservations=fetch_result.observed_reservations,
         )
         if stored and fetch_result.fallback_absent:
             # Only a persisted retirement may clear the fallback's
@@ -1109,7 +1107,11 @@ def _reservation_sort_key(
     Returns:
         A sortable key with no comparison between a date and an instant.
     """
-    if reservation.check_in is not None:
+    if (
+        reservation.check_in is not None
+        and reservation.check_out is not None
+        and reservation.check_in < reservation.check_out
+    ):
         return (0, reservation.check_in, "", reservation.id)
     local_date = _parse_local_date(reservation.check_in_local)
     date_key = local_date.isoformat() if local_date is not None else "~"
