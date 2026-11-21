@@ -1379,6 +1379,8 @@ class TestGuestyReservationFromApiDict:
             ),
         )
         assert res is not None
+        assert res.check_in is not None
+        assert res.check_out is not None
         assert res.check_in.tzinfo == UTC
         assert res.check_out.tzinfo == UTC
 
@@ -2096,8 +2098,8 @@ class TestGuestyStaySegmentFromApiDict:
         assert segment is not None
         assert segment.listing_id == "listing-001"
         assert segment.parent_listing_id == "parent-001"
-        assert segment.check_in == datetime(2025, 8, 1, 15, 0, tzinfo=UTC)
-        assert segment.check_out == datetime(2025, 8, 5, 11, 0, tzinfo=UTC)
+        assert segment.check_in is None
+        assert segment.check_out is None
         assert segment.check_in_local == "2025-08-01"
         assert segment.check_out_local == "2025-08-05"
         assert segment.guests_count == 2
@@ -2118,7 +2120,7 @@ class TestGuestyStaySegmentFromApiDict:
         missing: str,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """A segment missing a required field is dropped with a debug log.
+        """Only a missing listing identity drops the segment.
 
         Args:
             missing: The required field to remove.
@@ -2130,13 +2132,31 @@ class TestGuestyStaySegmentFromApiDict:
         with caplog.at_level(logging.DEBUG):
             segment = GuestyStaySegment.from_api_dict(data)
 
-        assert segment is None
-        assert caplog.records
-        assert all(r.levelno == logging.DEBUG for r in caplog.records)
+        if missing == "listingId":
+            assert segment is None
+            assert caplog.records
+            assert all(r.levelno == logging.DEBUG for r in caplog.records)
+        else:
+            assert segment is not None
+            assert segment.check_in is None
+            assert segment.check_out is None
 
     def test_non_dict_dropped(self) -> None:
         """A non-dict segment is dropped."""
         assert GuestyStaySegment.from_api_dict(None) is None
+
+    @pytest.mark.parametrize("listing_id", [42, {"_id": "listing-001"}, " "])
+    def test_invalid_listing_identity_dropped(
+        self,
+        listing_id: object,
+    ) -> None:
+        """A usable segment requires a nonempty string room identifier."""
+        assert (
+            GuestyStaySegment.from_api_dict(
+                make_v3_segment(listingId=listing_id),
+            )
+            is None
+        )
 
     def test_localized_dates_and_guests_preserved(self) -> None:
         """Localized dates and guestsCount survive parsing verbatim."""
@@ -2173,7 +2193,7 @@ class TestGuestyReservationFromV3ApiDict:
         include_check_out: bool,
         check_out: str | None,
     ) -> None:
-        """A sole attributed segment may use a valid top-level interval.
+        """An eligible single segment gets date-only top-level fallback.
 
         Args:
             include_check_in: Whether the segment contains checkIn.
@@ -2204,22 +2224,12 @@ class TestGuestyReservationFromV3ApiDict:
         assert reservation is not None
         assert reservation.listing_id == "listing-fallback"
         assert len(reservation.stay) == 1
-        assert reservation.stay[0].check_in == datetime(
-            2025,
-            8,
-            3,
-            14,
-            0,
-            tzinfo=UTC,
-        )
-        assert reservation.stay[0].check_out == datetime(
-            2025,
-            8,
-            8,
-            10,
-            0,
-            tzinfo=UTC,
-        )
+        assert reservation.stay[0].check_in is None
+        assert reservation.stay[0].check_out is None
+        assert reservation.check_in is None
+        assert reservation.check_out is None
+        assert reservation.stay[0].check_in_local == "2025-08-01"
+        assert reservation.stay[0].check_out_local == "2025-08-05"
 
     @pytest.mark.parametrize(
         ("present_key", "actual_date"),
@@ -2235,7 +2245,7 @@ class TestGuestyReservationFromV3ApiDict:
         actual_date: str,
         absent_value: str | None,
     ) -> None:
-        """One present segment endpoint is not eligible for fallback.
+        """Partial raw endpoints remain unknown without exact fallbacks.
 
         Args:
             present_key: The segment endpoint containing a date.
@@ -2258,7 +2268,9 @@ class TestGuestyReservationFromV3ApiDict:
             ),
         )
 
-        assert result is None
+        assert result is not None
+        assert result.stay[0].check_in is None
+        assert result.stay[0].check_out is None
 
     @pytest.mark.parametrize(
         ("present_key", "invalid_value"),
@@ -2276,7 +2288,7 @@ class TestGuestyReservationFromV3ApiDict:
         present_key: str,
         invalid_value: object,
     ) -> None:
-        """Invalid present endpoint values are not treated as absent.
+        """Invalid present endpoint values never establish exact timing.
 
         Args:
             present_key: The segment endpoint containing the invalid value.
@@ -2295,7 +2307,9 @@ class TestGuestyReservationFromV3ApiDict:
             ),
         )
 
-        assert result is None
+        assert result is not None
+        assert result.stay[0].check_in is None
+        assert result.stay[0].check_out is None
 
     @pytest.mark.parametrize(
         ("check_in", "check_out"),
@@ -2313,7 +2327,7 @@ class TestGuestyReservationFromV3ApiDict:
         check_in: str | None,
         check_out: str | None,
     ) -> None:
-        """Missing, unparsable, equal, and reversed intervals are rejected.
+        """Invalid pairs do not contribute date-only Feature 010 fallback.
 
         Args:
             check_in: Reservation-level checkIn value.
@@ -2325,13 +2339,21 @@ class TestGuestyReservationFromV3ApiDict:
                     listingId="listing-fallback",
                     checkIn=None,
                     checkOut=None,
+                    checkInDateLocalized=None,
+                    checkOutDateLocalized=None,
                 ),
             ],
             checkIn=check_in,
             checkOut=check_out,
         )
 
-        assert GuestyReservation.from_v3_api_dict(data) is None
+        reservation = GuestyReservation.from_v3_api_dict(data)
+
+        assert reservation is not None
+        assert reservation.check_in is None
+        assert reservation.check_out is None
+        assert reservation.check_in_local is None
+        assert reservation.check_out_local is None
 
     @pytest.mark.parametrize("listing_id", ["omitted", "", None])
     def test_missing_segment_listing_does_not_enable_fallback(
@@ -2370,19 +2392,23 @@ class TestGuestyReservationFromV3ApiDict:
         dropped = make_v3_segment()
         del dropped["listingId"]
 
-        assert (
-            GuestyReservation.from_v3_api_dict(
-                make_v3_reservation(
-                    segments=[fallback_candidate, dropped],
-                    checkIn="2025-08-03T14:00:00+00:00",
-                    checkOut="2025-08-08T10:00:00+00:00",
-                ),
-            )
-            is None
+        reservation = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(
+                segments=[fallback_candidate, dropped],
+                checkIn="2025-08-03T14:00:00+00:00",
+                checkOut="2025-08-08T10:00:00+00:00",
+            ),
         )
 
-    def test_multiple_raw_segments_keep_only_explicitly_dated_segment(self) -> None:
-        """A usable segment does not enable fallback for another raw segment."""
+        assert reservation is not None
+        assert reservation.raw_stay_count == 2
+        assert reservation.check_in_local == "2025-08-01"
+        assert reservation.check_out_local == "2025-08-05"
+        assert reservation.check_in is None
+        assert reservation.check_out is None
+
+    def test_multiple_raw_segments_preserve_entries_without_exact_times(self) -> None:
+        """A valid ID keeps a raw segment even if it has no endpoints."""
         reservation = GuestyReservation.from_v3_api_dict(
             make_v3_reservation(
                 segments=[
@@ -2401,12 +2427,15 @@ class TestGuestyReservationFromV3ApiDict:
         assert reservation is not None
         assert [segment.listing_id for segment in reservation.stay] == [
             "dated-listing",
+            "undated-listing",
         ]
+        assert reservation.raw_stay_count == 2
+        assert all(segment.check_in is None for segment in reservation.stay)
 
     def test_explicit_segment_dates_take_precedence_over_top_level_dates(
         self,
     ) -> None:
-        """Valid segment dates remain unchanged when top-level dates differ."""
+        """Raw segment timestamps do not supply timing or override dates."""
         segment_check_in = "2025-08-01T15:00:00+00:00"
         segment_check_out = "2025-08-05T11:00:00+00:00"
         reservation = GuestyReservation.from_v3_api_dict(
@@ -2423,22 +2452,10 @@ class TestGuestyReservationFromV3ApiDict:
         )
 
         assert reservation is not None
-        assert reservation.stay[0].check_in == datetime(
-            2025,
-            8,
-            1,
-            15,
-            0,
-            tzinfo=UTC,
-        )
-        assert reservation.stay[0].check_out == datetime(
-            2025,
-            8,
-            5,
-            11,
-            0,
-            tzinfo=UTC,
-        )
+        assert reservation.stay[0].check_in is None
+        assert reservation.stay[0].check_out is None
+        assert reservation.stay[0].check_in_local == "2025-08-01"
+        assert reservation.stay[0].check_out_local == "2025-08-05"
 
     def test_unusable_stay_warning_does_not_expose_guest_or_confirmation_data(
         self,
@@ -2455,8 +2472,7 @@ class TestGuestyReservationFromV3ApiDict:
             confirmationCode="CONF-PRIVATE-4821",
             segments=[
                 make_v3_segment(
-                    checkIn="",
-                    checkOut=None,
+                    listingId=None,
                 ),
             ],
         )
@@ -2520,7 +2536,7 @@ class TestGuestyReservationFromV3ApiDict:
             "listing-aaa",
             "listing-bbb",
         ]
-        assert reservation.stay[0].check_in < reservation.stay[1].check_in
+        assert [segment.raw_position for segment in reservation.stay] == [0, 1]
 
     def test_unusable_segment_dropped_from_stay(self) -> None:
         """An unusable segment is dropped while the rest survive."""
@@ -2675,7 +2691,7 @@ class TestGuestyReservationFromV3ApiDict:
         assert "res-200" in caplog.text
 
     def test_check_in_out_fall_back_to_segments(self) -> None:
-        """Missing top-level dates fall back to the stay span."""
+        """Missing top-level instants do not inherit raw stay timestamps."""
         data = make_v3_reservation(
             segments=[
                 make_v3_segment(),
@@ -2691,8 +2707,10 @@ class TestGuestyReservationFromV3ApiDict:
         reservation = GuestyReservation.from_v3_api_dict(data)
 
         assert reservation is not None
-        assert reservation.check_in == datetime(2025, 8, 1, 15, 0, tzinfo=UTC)
-        assert reservation.check_out == datetime(2025, 8, 9, 11, 0, tzinfo=UTC)
+        assert reservation.check_in is None
+        assert reservation.check_out is None
+        assert reservation.check_in_local == "2025-08-01"
+        assert reservation.check_out_local == "2025-08-05"
 
     @pytest.mark.parametrize(
         ("raw", "expected"),
@@ -2747,6 +2765,106 @@ class TestGuestyReservationFromV3ApiDict:
 
         assert reservation is not None
         assert reservation.stay == ()
+
+
+class TestV3TimingProvenance:
+    """Tests for V3 timing source and raw stay provenance."""
+
+    def test_raw_suffixes_do_not_create_verified_instants(self) -> None:
+        """V3 timestamp suffixes are not authoritative stay times."""
+        reservation = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(),
+        )
+
+        assert reservation is not None
+        assert reservation.is_v3 is True
+        assert reservation.stay[0].check_in is None
+        assert reservation.stay[0].check_out is None
+        assert reservation.check_in is None
+        assert reservation.check_out is None
+
+    def test_raw_count_and_positions_survive_segment_filtering(self) -> None:
+        """Retained segments keep their original raw-array positions."""
+        missing_identity = make_v3_segment()
+        del missing_identity["listingId"]
+        malformed_times = make_v3_segment(
+            listingId="listing-middle",
+            checkIn="invalid",
+            checkOut=None,
+        )
+        reservation = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(
+                segments=[
+                    make_v3_segment(listingId="listing-first"),
+                    missing_identity,
+                    malformed_times,
+                ],
+            ),
+        )
+
+        assert reservation is not None
+        assert reservation.raw_stay_count == 3
+        assert [segment.raw_position for segment in reservation.stay] == [0, 2]
+        assert reservation.stay[1].check_in is None
+        assert reservation.stay[1].check_out is None
+
+    @pytest.mark.parametrize(
+        ("check_in", "check_out", "check_in_date", "check_out_date"),
+        [
+            (
+                "2025-08-03T23:30:00-07:00",
+                "2025-08-08T10:00:00+00:00",
+                "2025-08-03",
+                "2025-08-08",
+            ),
+            (
+                "not-a-date",
+                "2025-08-08T10:00:00+00:00",
+                None,
+                None,
+            ),
+        ],
+    )
+    def test_feature_010_uses_written_dates_without_exact_fallback(
+        self,
+        check_in: str,
+        check_out: str,
+        check_in_date: str | None,
+        check_out_date: str | None,
+    ) -> None:
+        """Eligible top-level fallback supplies dates, never exact instants."""
+        segment = make_v3_segment(
+            checkIn=None,
+            checkOut=None,
+            checkInDateLocalized=None,
+            checkOutDateLocalized=None,
+        )
+        reservation = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(
+                segments=[segment],
+                checkIn=check_in,
+                checkOut=check_out,
+            ),
+        )
+
+        assert reservation is not None
+        assert reservation.check_in is None
+        assert reservation.check_out is None
+        assert reservation.check_in_local == check_in_date
+        assert reservation.check_out_local == check_out_date
+
+    def test_listing_timezone_tracks_explicit_source_presence(self) -> None:
+        """The compatibility UTC default is not source provenance."""
+        missing = GuestyListing.from_api_dict({"_id": "missing-zone"})
+        explicit = GuestyListing.from_api_dict(
+            {"_id": "explicit-zone", "timezone": "UTC"},
+        )
+
+        assert missing is not None
+        assert explicit is not None
+        assert missing.timezone == "UTC"
+        assert missing.timezone_explicit is False
+        assert explicit.timezone_explicit is True
 
 
 class TestV3StatusFilterTranslation:

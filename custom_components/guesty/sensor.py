@@ -324,8 +324,9 @@ def _select_reservation(
     best_priority = len(_STATUS_PRIORITY) + 1
 
     for reservation in reservations:
+        priority_status = reservation.reservation_status or reservation.status
         priority = _STATUS_PRIORITY.get(
-            reservation.status,
+            priority_status,
             len(_STATUS_PRIORITY),
         )
         if priority < best_priority:
@@ -386,6 +387,8 @@ def _build_attributes(
             "check_out": None,
             "check_in_local": None,
             "check_out_local": None,
+            "timing_status": "unknown",
+            "reservation_status": None,
             "planned_arrival": None,
             "planned_departure": None,
             "guest_name": None,
@@ -405,10 +408,20 @@ def _build_attributes(
 
     return {
         "reservation_id": reservation.id,
-        "check_in": reservation.check_in.isoformat(),
-        "check_out": reservation.check_out.isoformat(),
+        "check_in": (
+            reservation.check_in.isoformat()
+            if reservation.check_in is not None
+            else None
+        ),
+        "check_out": (
+            reservation.check_out.isoformat()
+            if reservation.check_out is not None
+            else None
+        ),
         "check_in_local": reservation.check_in_local,
         "check_out_local": reservation.check_out_local,
+        "timing_status": reservation.timing_status,
+        "reservation_status": reservation.reservation_status,
         "planned_arrival": reservation.planned_arrival,
         "planned_departure": reservation.planned_departure,
         "guest_name": guest.full_name if guest else None,
@@ -480,15 +493,24 @@ def _build_upcoming(
     _UPCOMING_STATUSES = {"confirmed", "checked_in"}
     upcoming: list[dict[str, Any]] = []
     for res in reservations:
-        if res.status not in _UPCOMING_STATUSES:
+        lifecycle_status = res.reservation_status or res.status
+        if lifecycle_status not in _UPCOMING_STATUSES:
             continue
         upcoming.append(
             {
                 "reservation_id": res.id,
                 "guest_name": (res.guest.full_name if res.guest else None),
-                "check_in": res.check_in.isoformat(),
-                "check_out": res.check_out.isoformat(),
+                "check_in": (
+                    res.check_in.isoformat() if res.check_in is not None else None
+                ),
+                "check_out": (
+                    res.check_out.isoformat() if res.check_out is not None else None
+                ),
+                "check_in_local": res.check_in_local,
+                "check_out_local": res.check_out_local,
+                "timing_status": res.timing_status,
                 "status": res.status,
+                "reservation_status": res.reservation_status,
             }
         )
         if len(upcoming) >= 10:

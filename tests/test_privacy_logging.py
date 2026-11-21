@@ -35,6 +35,7 @@ from custom_components.guesty.api.models import (
     GuestyGuest,
     GuestyListing,
     GuestyReservation,
+    GuestyStaySegment,
 )
 from custom_components.guesty.const import (
     CONF_CLIENT_ID,
@@ -153,6 +154,93 @@ def _private_reservation(reservation_id: str) -> GuestyReservation:
 
 class TestPrivacyLogging:
     """Tests that no guest data is logged at any level (T057)."""
+
+    @pytest.mark.parametrize("timezone", ["", "Invalid/Private"])
+    async def test_unknown_timing_diagnostics_never_log_private_data(
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+        timezone: str,
+    ) -> None:
+        """Missing or invalid room zones never expose guest/timing data."""
+        today = datetime.now(UTC).date()
+        segment = GuestyStaySegment(
+            listing_id="listing-001",
+            check_in=None,
+            check_out=None,
+            check_in_local=(today + timedelta(days=1)).isoformat(),
+            check_out_local=(today + timedelta(days=3)).isoformat(),
+            raw_position=0,
+        )
+        reservation = GuestyReservation(
+            id="res-private-timing",
+            listing_id="listing-001",
+            status="confirmed",
+            check_in=None,
+            check_out=None,
+            confirmation_code=CONFIRMATION_CODE,
+            guest=GuestyGuest(
+                full_name=GUEST_NAME,
+                phone=GUEST_PHONE,
+                email=GUEST_EMAIL,
+                guest_id="guest-001",
+            ),
+            is_v3=True,
+            raw_stay_count=1,
+            stay=(segment,),
+        )
+        listing = GuestyListing.from_api_dict(
+            make_listing_dict(
+                _id="listing-001",
+                timezone=timezone,
+                defaultCheckInTime="16:00",
+                defaultCheckOutTime="11:00",
+            ),
+        )
+        assert listing is not None
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            title="Guesty (test)",
+            data={
+                CONF_CLIENT_ID: FAKE_CLIENT_ID,
+                CONF_CLIENT_SECRET: FAKE_CLIENT_SECRET,
+            },
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_V3},
+            unique_id=FAKE_CLIENT_ID,
+        )
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_reservations = AsyncMock(
+            return_value=make_fetch_result([reservation]),
+        )
+        api_client.resolve_guests = AsyncMock(
+            return_value=GuestLookupResult(),
+        )
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = {listing.id: listing}
+        listings_coordinator.timing_listings = {listing.id: listing}
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+
+        with caplog.at_level(
+            logging.DEBUG,
+            logger="custom_components.guesty",
+        ):
+            result = await coordinator._async_update_data()
+
+        assert result["listing-001"][0].check_in is None
+        assert result["listing-001"][0].check_out is None
+        integration_logs = "\n".join(
+            record.getMessage()
+            for record in caplog.records
+            if record.name.startswith("custom_components.guesty")
+        )
+        for value in PII:
+            assert value not in integration_logs
 
     @respx.mock
     async def test_successful_refresh_logs_no_guest_data(

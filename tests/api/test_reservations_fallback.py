@@ -61,6 +61,10 @@ from custom_components.guesty.coordinator import (
     ListingsCoordinator,
     ReservationsCoordinator,
 )
+from custom_components.guesty.identity import (
+    CandidateHint,
+    IdentityBaseline,
+)
 from tests.conftest import (
     FAKE_CLIENT_ID,
     FAKE_CLIENT_SECRET,
@@ -225,6 +229,27 @@ async def _resolve(
 
 class TestCandidateSelection:
     """Who the fallback will and will not look up (T115)."""
+
+    async def test_unknown_candidate_is_not_eligible_for_fallback(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Unknown current timing cannot reuse stale endpoints for lookup."""
+        coordinator = _coordinator(hass)
+        await coordinator.identity.async_load()
+        await coordinator.identity.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_V3,
+                candidates={
+                    "res-unknown": CandidateHint(
+                        timing_status="unknown",
+                        observed_at="2026-01-01T00:00:00+00:00",
+                    ),
+                },
+            ),
+        )
+
+        assert coordinator._fallback_candidates() == {}
 
     @respx.mock
     async def test_previously_published_absentee_is_a_candidate(
@@ -415,6 +440,7 @@ class TestRepublication:
         assert reservation.confirmation_code == "CONF-ABC"
         assert outcome.sourced == ("res-1",)
         assert outcome.served == ("res-1",)
+        assert outcome.observed == ("res-1",)
 
     @respx.mock
     async def test_out_of_status_result_is_not_republished(
@@ -508,6 +534,10 @@ class TestRepublication:
         assert [res.id for res in coordinator.data["listing-001"]] == [
             "res-000001",
         ]
+        assert coordinator.identity.baseline is not None
+        primary_observation = coordinator.identity.baseline.candidates[
+            "res-000001"
+        ].observed_at
 
         await coordinator.async_refresh()
 
@@ -516,6 +546,13 @@ class TestRepublication:
         assert published == ["res-000001"]
         assert coordinator.fallback_sourced_ids == frozenset({"res-000001"})
         assert coordinator.fallback_served_ids == frozenset({"res-000001"})
+        assert coordinator.identity.baseline is not None
+        by_id_observation = coordinator.identity.baseline.candidates[
+            "res-000001"
+        ].observed_at
+        assert datetime.fromisoformat(by_id_observation) > datetime.fromisoformat(
+            primary_observation,
+        )
 
 
 class TestRequestBudget:
@@ -765,11 +802,15 @@ class TestFailureModes:
                     listingId="listing-001",
                     checkIn=_rel(1).isoformat(),
                     checkOut=_rel(2).isoformat(),
+                    checkInDateLocalized=_rel(1).date().isoformat(),
+                    checkOutDateLocalized=_rel(2).date().isoformat(),
                 ),
                 make_v3_segment(
                     listingId="listing-002",
                     checkIn=_rel(2).isoformat(),
                     checkOut=_rel(4).isoformat(),
+                    checkInDateLocalized=_rel(2).date().isoformat(),
+                    checkOutDateLocalized=_rel(4).date().isoformat(),
                 ),
             ],
         )
@@ -788,6 +829,10 @@ class TestFailureModes:
         )
 
         await coordinator.async_refresh()
+        assert coordinator.identity.baseline is not None
+        primary_observation = coordinator.identity.baseline.candidates[
+            "res-000001"
+        ].observed_at
         await coordinator.async_refresh()
 
         assert coordinator.last_update_success
@@ -797,6 +842,11 @@ class TestFailureModes:
         assert [res.id for res in coordinator.data["listing-002"]] == [
             "res-000001",
         ]
+        assert coordinator.identity.baseline is not None
+        assert (
+            coordinator.identity.baseline.candidates["res-000001"].observed_at
+            == primary_observation
+        )
         assert coordinator.fallback_served_ids == frozenset()
 
     @respx.mock
@@ -1081,12 +1131,16 @@ def _v3_in_window(reservation_id: str) -> dict[str, Any]:
     Returns:
         A v3 search ``results[]`` entry dict.
     """
+    check_in = _rel(1)
+    check_out = _rel(3)
     return make_v3_reservation(
         reservation_id,
         segments=[
             make_v3_segment(
-                checkIn=_rel(1).isoformat(),
-                checkOut=_rel(3).isoformat(),
+                checkIn=check_in.isoformat(),
+                checkOut=check_out.isoformat(),
+                checkInDateLocalized=check_in.date().isoformat(),
+                checkOutDateLocalized=check_out.date().isoformat(),
             ),
         ],
     )
@@ -1101,7 +1155,15 @@ def _listing(listing_id: str) -> GuestyListing:
     Returns:
         A GuestyListing the coordinator will treat as tracked.
     """
-    listing = GuestyListing.from_api_dict(make_listing_dict(_id=listing_id))
+    listing_data = make_listing_dict(_id=listing_id)
+    listing_data.update(
+        {
+            "timezone": "UTC",
+            "defaultCheckInTime": "16:00",
+            "defaultCheckOutTime": "11:00",
+        },
+    )
+    listing = GuestyListing.from_api_dict(listing_data)
     assert listing is not None
     return listing
 
@@ -1142,6 +1204,7 @@ def _coordinator(
         api_client=api_client,
     )
     listings.data = {lid: _listing(lid) for lid in listing_ids}
+    listings.timing_listings = dict(listings.data)
     return ReservationsCoordinator(
         hass=hass,
         entry=entry,

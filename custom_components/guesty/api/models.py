@@ -371,6 +371,7 @@ class GuestyListing:
         bathrooms: Bathroom count (half-baths), or None.
         accommodates: Maximum guest capacity, or None.
         timezone: IANA timezone string.
+        timezone_explicit: Whether a nonempty timezone was supplied.
         check_in_time: Default check-in time (HH:MM), or None.
         check_out_time: Default check-out time (HH:MM), or None.
         tags: Immutable tuple of listing tags.
@@ -393,6 +394,7 @@ class GuestyListing:
     check_out_time: str | None
     tags: tuple[str, ...]
     custom_fields: MappingProxyType[str, str]
+    timezone_explicit: bool = False
 
     @classmethod
     def from_api_dict(
@@ -451,6 +453,9 @@ class GuestyListing:
             check_out_time=data.get("defaultCheckOutTime"),
             tags=tags,
             custom_fields=custom_fields,
+            timezone_explicit=(
+                isinstance(data.get("timezone"), str) and bool(data["timezone"].strip())
+            ),
         )
 
 
@@ -619,33 +624,39 @@ class GuestyStaySegment:
     Attributes:
         listing_id: Listing the interval belongs to.
         parent_listing_id: Parent listing for a multi-unit sub-unit.
-        check_in: UTC check-in datetime of the interval.
-        check_out: UTC check-out datetime of the interval.
+        check_in: Verified UTC check-in datetime, or None.
+        check_out: Verified UTC check-out datetime, or None.
         check_in_local: Localized check-in date string.
         check_out_local: Localized check-out date string.
         guests_count: Party size for the interval.
+        raw_position: Position in the original V3 stay array.
     """
 
     listing_id: str
-    check_in: datetime
-    check_out: datetime
+    check_in: datetime | None
+    check_out: datetime | None
     parent_listing_id: str | None = None
     check_in_local: str | None = None
     check_out_local: str | None = None
     guests_count: int | None = None
+    raw_position: int = 0
 
     @classmethod
     def from_api_dict(
         cls,
         data: Any,
+        *,
+        raw_position: int = 0,
     ) -> GuestyStaySegment | None:
         """Create a GuestyStaySegment from a v3 ``stay[]`` entry.
 
-        A segment missing ``listingId``, ``checkIn`` or ``checkOut``
-        is dropped with a debug log.
+        A segment without a valid listing identity is dropped. Raw
+        endpoint values are deliberately not parsed into instants;
+        only later listing-local resolution may establish them.
 
         Args:
             data: Stay segment dictionary from the v3 API.
+            raw_position: Original position in the raw ``stay`` array.
 
         Returns:
             A GuestyStaySegment instance, or None if unusable.
@@ -654,35 +665,20 @@ class GuestyStaySegment:
             _LOGGER.debug("Dropping non-dict stay segment")
             return None
 
-        listing_id = data.get("listingId") or ""
-        if not listing_id:
+        listing_id = data.get("listingId")
+        if not isinstance(listing_id, str) or not listing_id.strip():
             _LOGGER.debug("Dropping stay segment with missing listingId")
-            return None
-
-        check_in = _parse_iso_datetime(data.get("checkIn"))
-        if check_in is None:
-            _LOGGER.debug(
-                "Dropping stay segment for listing %s with unparsable checkIn",
-                listing_id,
-            )
-            return None
-
-        check_out = _parse_iso_datetime(data.get("checkOut"))
-        if check_out is None:
-            _LOGGER.debug(
-                "Dropping stay segment for listing %s with unparsable checkOut",
-                listing_id,
-            )
             return None
 
         return cls(
             listing_id=listing_id,
-            check_in=check_in,
-            check_out=check_out,
+            check_in=None,
+            check_out=None,
             parent_listing_id=data.get("parentListingId"),
             check_in_local=data.get("checkInDateLocalized"),
             check_out_local=data.get("checkOutDateLocalized"),
             guests_count=data.get("guestsCount"),
+            raw_position=raw_position,
         )
 
 
@@ -699,8 +695,8 @@ class GuestyReservation:
         id: Guesty reservation identifier.
         listing_id: Parent listing reference.
         status: Reservation lifecycle state.
-        check_in: UTC check-in datetime.
-        check_out: UTC check-out datetime.
+        check_in: Current verified check-in datetime, or None on V3.
+        check_out: Current verified check-out datetime, or None on V3.
         confirmation_code: Booking confirmation code.
         check_in_local: Localized check-in date string.
         check_out_local: Localized check-out date string.
@@ -714,13 +710,17 @@ class GuestyReservation:
         money: Financial summary.
         custom_fields: Immutable mapping of field IDs to values.
         stay: Per-listing intervals; populated on the v3 path only.
+        is_v3: Whether this record came from the V3 reservation source.
+        raw_stay_count: Number of entries in the original V3 stay array.
+        reservation_status: Source lifecycle status when temporal status
+            cannot be determined.
     """
 
     id: str
     listing_id: str
     status: str
-    check_in: datetime
-    check_out: datetime
+    check_in: datetime | None
+    check_out: datetime | None
     confirmation_code: str | None = None
     check_in_local: str | None = None
     check_out_local: str | None = None
@@ -736,6 +736,22 @@ class GuestyReservation:
         default_factory=lambda: MappingProxyType({}),
     )
     stay: tuple[GuestyStaySegment, ...] = ()
+    is_v3: bool = False
+    raw_stay_count: int | None = None
+    reservation_status: str | None = None
+
+    @property
+    def timing_status(self) -> str:
+        """Report whether both current exact endpoints are verified.
+
+        Returns:
+            ``known`` only when both endpoint instants are present.
+        """
+        return (
+            "known"
+            if self.check_in is not None and self.check_out is not None
+            else "unknown"
+        )
 
     @classmethod
     def from_api_dict(
@@ -852,34 +868,53 @@ class GuestyReservation:
         raw_stay = data.get("stay")
         if not isinstance(raw_stay, list):
             raw_stay = []
-        segment_items = raw_stay
-        if len(raw_stay) == 1:
-            raw_segment = raw_stay[0]
-            if (
-                isinstance(raw_segment, dict)
-                and raw_segment.get("listingId")
-                and raw_segment.get("checkIn") is None
-                and raw_segment.get("checkOut") is None
-            ):
-                fallback_check_in = _parse_iso_datetime(data.get("checkIn"))
-                fallback_check_out = _parse_iso_datetime(data.get("checkOut"))
-                if (
-                    fallback_check_in is not None
-                    and fallback_check_out is not None
-                    and fallback_check_out > fallback_check_in
-                ):
-                    segment_items = [
-                        {
-                            **raw_segment,
-                            "checkIn": data.get("checkIn"),
-                            "checkOut": data.get("checkOut"),
-                        },
-                    ]
-        stay = tuple(
-            segment
-            for item in segment_items
-            if (segment := GuestyStaySegment.from_api_dict(item)) is not None
+
+        fallback_check_in = _parse_iso_datetime(data.get("checkIn"))
+        fallback_check_out = _parse_iso_datetime(data.get("checkOut"))
+        feature_010_eligible = (
+            len(raw_stay) == 1
+            and isinstance(raw_stay[0], dict)
+            and bool(raw_stay[0].get("listingId"))
+            and raw_stay[0].get("checkIn") is None
+            and raw_stay[0].get("checkOut") is None
+            and fallback_check_in is not None
+            and fallback_check_out is not None
+            and fallback_check_out > fallback_check_in
         )
+
+        stay_list: list[GuestyStaySegment] = []
+        for raw_position, item in enumerate(raw_stay):
+            if not isinstance(item, dict):
+                continue
+            segment = GuestyStaySegment.from_api_dict(
+                item,
+                raw_position=raw_position,
+            )
+            if segment is None:
+                continue
+            check_in_local = _valid_local_date(item.get("checkInDateLocalized"))
+            check_out_local = _valid_local_date(item.get("checkOutDateLocalized"))
+            if feature_010_eligible:
+                if check_in_local is None:
+                    check_in_local = _valid_local_date(
+                        data.get("checkInDateLocalized"),
+                    )
+                if check_out_local is None:
+                    check_out_local = _valid_local_date(
+                        data.get("checkOutDateLocalized"),
+                    )
+                if check_in_local is None and fallback_check_in is not None:
+                    check_in_local = fallback_check_in.date().isoformat()
+                if check_out_local is None and fallback_check_out is not None:
+                    check_out_local = fallback_check_out.date().isoformat()
+            stay_list.append(
+                replace(
+                    segment,
+                    check_in_local=check_in_local,
+                    check_out_local=check_out_local,
+                ),
+            )
+        stay = tuple(stay_list)
         if not stay:
             _LOGGER.warning(
                 "Skipping v3 reservation %s with no usable stay segment",
@@ -887,11 +922,10 @@ class GuestyReservation:
             )
             return None
 
-        check_in = _parse_iso_datetime(data.get("checkIn")) or stay[0].check_in
-        check_out = _parse_iso_datetime(data.get("checkOut")) or stay[-1].check_out
-
-        check_in_local = data.get("checkInDateLocalized") or stay[0].check_in_local
-        check_out_local = data.get("checkOutDateLocalized") or stay[-1].check_out_local
+        check_in: datetime | None = None
+        check_out: datetime | None = None
+        check_in_local = stay[0].check_in_local
+        check_out_local = stay[-1].check_out_local
 
         nights_count = data.get("nightsCount")
         if not isinstance(nights_count, int):
@@ -929,6 +963,8 @@ class GuestyReservation:
             money=None,
             custom_fields=custom_fields,
             stay=stay,
+            is_v3=True,
+            raw_stay_count=len(raw_stay),
         )
 
 
@@ -1016,6 +1052,24 @@ def _parse_iso_datetime(value: Any) -> datetime | None:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
     return dt
+
+
+def _valid_local_date(value: Any) -> str | None:
+    """Return a canonical ISO calendar date when the input is valid.
+
+    Args:
+        value: Candidate localized date value from the V3 response.
+
+    Returns:
+        The canonical ``YYYY-MM-DD`` date, or None when invalid.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed.isoformat() if parsed.isoformat() == value else None
 
 
 @dataclass(frozen=True)
@@ -1218,6 +1272,8 @@ class ReservationFetchResult:
             retained values. Diagnostics only (FR-057).
         fallback_absent: Identifiers legacy confirmed are gone, so
             the caller can retire their durable candidacy (FR-052).
+        observed_ids: Identifiers returned by the primary source or a
+            successful by-ID response during this retrieval.
     """
 
     reservations: tuple[GuestyReservation, ...] = ()
@@ -1234,6 +1290,7 @@ class ReservationFetchResult:
     fallback_served: tuple[str, ...] = ()
     fallback_sourced: tuple[str, ...] = ()
     fallback_absent: tuple[str, ...] = ()
+    observed_ids: tuple[str, ...] | None = None
 
 
 @runtime_checkable

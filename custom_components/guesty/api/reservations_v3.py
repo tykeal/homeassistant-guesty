@@ -167,6 +167,11 @@ class V3ReservationSource:
             fallback_served=outcome.served,
             fallback_sourced=outcome.sourced,
             fallback_absent=outcome.absent,
+            observed_ids=tuple(
+                sorted(
+                    set(result.observed_ids or ()) | set(outcome.observed),
+                ),
+            ),
         )
 
     async def _fetch_all_pages(
@@ -432,4 +437,5 @@ def _map_results(
         pages=len(pages),
         status_counts=MappingProxyType(dict(status_counts)),
         segment_histogram=MappingProxyType(dict(segment_histogram)),
+        observed_ids=tuple(reservation.id for reservation in reservations),
     )

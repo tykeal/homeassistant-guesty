@@ -55,6 +55,10 @@ STORAGE_VERSION: Final[int] = 1
 # Upper bound on each persisted code map (data-model.md section 4).
 MAX_BASELINE_CODES: Final[int] = 5000
 
+# Stable ordering for legacy hints whose enclosing baseline has no
+# valid observation timestamp.
+OLDEST_OBSERVATION: Final[str] = "0001-01-01T00:00:00+00:00"
+
 # Cross-path evidence exists and agrees.
 CONTINUITY_VERIFIED: Final[str] = "verified"
 
@@ -195,35 +199,111 @@ class CandidateHint:
     Holds identifiers and dates only — never guest data (FR-049a).
 
     Attributes:
-        check_in: ISO-8601 UTC check-in instant.
-        check_out: ISO-8601 UTC check-out instant.
+        timing_status: Whether the complete current candidate interval is known.
+        check_in: Verified UTC check-in instant, or None.
+        check_out: Verified UTC check-out instant, or None.
+        observed_at: UTC time of the qualifying source observation.
     """
 
-    check_in: str
-    check_out: str
+    timing_status: str = "unknown"
+    check_in: str | None = None
+    check_out: str | None = None
+    observed_at: str = OLDEST_OBSERVATION
 
-    def to_dict(self) -> dict[str, str]:
+    def __post_init__(self) -> None:
+        """Normalize observation time and reject incomplete intervals."""
+        observed_at = _utc_iso(self.observed_at) or OLDEST_OBSERVATION
+        object.__setattr__(self, "observed_at", observed_at)
+        if self.timing_status != "known":
+            object.__setattr__(self, "timing_status", "unknown")
+            object.__setattr__(self, "check_in", None)
+            object.__setattr__(self, "check_out", None)
+            return
+        start = _aware_instant(self.check_in)
+        end = _aware_instant(self.check_out)
+        if start is None or end is None or start >= end:
+            object.__setattr__(self, "timing_status", "unknown")
+            object.__setattr__(self, "check_in", None)
+            object.__setattr__(self, "check_out", None)
+            return
+        object.__setattr__(self, "check_in", start.isoformat())
+        object.__setattr__(self, "check_out", end.isoformat())
+
+    def to_dict(self) -> dict[str, Any]:
         """Serialize the hint for storage.
 
         Returns:
             A JSON-serializable mapping of the hint.
         """
-        return {"check_in": self.check_in, "check_out": self.check_out}
+        return {
+            "timing_status": self.timing_status,
+            "check_in": self.check_in,
+            "check_out": self.check_out,
+            "observed_at": self.observed_at,
+        }
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> CandidateHint:
+    def from_dict(
+        cls,
+        data: Mapping[str, Any],
+        *,
+        baseline_updated: str = "",
+    ) -> CandidateHint:
         """Deserialize a hint from storage.
 
         Args:
             data: The stored mapping.
+            baseline_updated: Enclosing baseline update time for legacy entries.
 
         Returns:
             The reconstructed hint.
         """
+        observed_at = _utc_iso(data.get("observed_at"))
+        if observed_at is None:
+            observed_at = _utc_iso(baseline_updated) or OLDEST_OBSERVATION
+        if data.get("timing_status") != "known":
+            return cls(observed_at=observed_at)
+        check_in = data.get("check_in")
+        check_out = data.get("check_out")
         return cls(
-            check_in=str(data.get("check_in", "")),
-            check_out=str(data.get("check_out", "")),
+            timing_status="known",
+            check_in=check_in if isinstance(check_in, str) else None,
+            check_out=check_out if isinstance(check_out, str) else None,
+            observed_at=observed_at,
         )
+
+
+def _aware_instant(value: str | None) -> datetime | None:
+    """Parse an ISO datetime only when it carries an explicit timezone.
+
+    Args:
+        value: Candidate timestamp.
+
+    Returns:
+        The UTC-normalized instant, or None when invalid or naive.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)
+
+
+def _utc_iso(value: Any) -> str | None:
+    """Normalize a valid timezone-aware ISO value to UTC text.
+
+    Args:
+        value: Candidate ISO datetime value.
+
+    Returns:
+        Normalized UTC timestamp, or None when invalid.
+    """
+    instant = _aware_instant(value if isinstance(value, str) else None)
+    return instant.isoformat() if instant is not None else None
 
 
 @dataclass(frozen=True)
@@ -538,7 +618,10 @@ class IdentityBaseline:
             bootstrap_codes=_optional_map(data.get("bootstrap_codes")),
             fallback_codes=_optional_map(data.get("fallback_codes")),
             candidates={
-                reservation_id: CandidateHint.from_dict(hint)
+                reservation_id: CandidateHint.from_dict(
+                    hint,
+                    baseline_updated=str(data.get("updated", "")),
+                )
                 for reservation_id, hint in (data.get("candidates") or {}).items()
             },
         )
@@ -704,6 +787,7 @@ class ReservationIdentityGuard:
         published: Mapping[str, CandidateHint],
         comparison: IdentityComparison,
         updated: str,
+        observed_ids: Collection[str] | None = None,
         past_days: int = DEFAULT_PAST_DAYS,
         fallback_ids: Collection[str] = (),
         absent_ids: Collection[str] = (),
@@ -729,6 +813,9 @@ class ReservationIdentityGuard:
                 published, keyed by reservation identifier.
             comparison: The comparison this refresh already ran.
             updated: ISO timestamp of this refresh.
+            observed_ids: IDs returned by the primary source or a
+                successful by-ID retrieval. None preserves the legacy
+                caller behavior that every supplied record was observed.
             past_days: The configured past-day window, which dates
                 the safe retirement policy of T074.
             fallback_ids: Identifiers this refresh published from
@@ -762,7 +849,11 @@ class ReservationIdentityGuard:
             for code, reservation_id in all_observed.items()
             if reservation_id in from_fallback
         }
-        hints = _retrieved_hints(retrieved)
+        hints = _retrieved_hints(
+            retrieved,
+            observed_at=updated,
+            observed_ids=observed_ids,
+        )
         hints.update(published)
         merged_hints = dict(previous.candidates) if previous else {}
         merged_hints.update(hints)
@@ -771,6 +862,7 @@ class ReservationIdentityGuard:
         check_outs = {
             reservation_id: hint.check_out
             for reservation_id, hint in merged_hints.items()
+            if hint.timing_status == "known" and hint.check_out is not None
         }
         divergent = bool(comparison.cross_path_conflicts) or bool(
             previous and previous.divergent,
@@ -864,14 +956,23 @@ class ReservationIdentityGuard:
             path=RESERVATIONS_API_LEGACY,
         )
         merged = dict(current.candidates)
-        merged.update(_retrieved_hints(retrieved))
+        merged.update(
+            _retrieved_hints(
+                retrieved,
+                observed_at=datetime.now(UTC).isoformat(),
+            ),
+        )
         await self._store_bootstrap(
             replace(
                 current,
                 bootstrap_attempted=True,
                 bootstrap_codes=_bounded(
                     observe_codes(retrieved).mapping,
-                    {res_id: hint.check_out for res_id, hint in merged.items()},
+                    {
+                        res_id: hint.check_out
+                        for res_id, hint in merged.items()
+                        if hint.timing_status == "known" and hint.check_out is not None
+                    },
                 ),
                 candidates=_bounded_candidates(merged),
             ),
@@ -1114,28 +1215,102 @@ def _retained_legacy(
 
 def _retrieved_hints(
     reservations: Iterable[GuestyReservation],
+    *,
+    observed_at: str | None = None,
+    observed_ids: Collection[str] | None = None,
 ) -> dict[str, CandidateHint]:
     """Record stay dates for every reservation retrieved.
 
-    Hints are taken before attribution and the window trim, so a
-    reservation held back from publication — for an untracked
-    listing, or because its stay fell outside the window — still
-    gains the durable dates the Phase 6a fallback judges eligibility
-    by (data-model.md §4.1).
+    Recency advances only for IDs the caller identifies as returned
+    by a qualifying source observation. The candidate interval is
+    known for V3 only when every raw segment is present, verified,
+    positive, chronological, and non-overlapping.
 
     Args:
         reservations: Reservations the refresh retrieved.
+        observed_at: UTC time shared by this successful source observation.
+        observed_ids: Qualifying IDs; None means all records for legacy callers.
 
     Returns:
         Stay hints keyed by reservation identifier.
     """
-    return {
-        reservation.id: CandidateHint(
-            check_in=reservation.check_in.isoformat(),
-            check_out=reservation.check_out.isoformat(),
-        )
-        for reservation in reservations
-    }
+    if observed_at is None:
+        observed_at = datetime.now(UTC).isoformat()
+    observed = None if observed_ids is None else set(observed_ids)
+    hints: dict[str, CandidateHint] = {}
+    for reservation in reservations:
+        if observed is not None and reservation.id not in observed:
+            continue
+        interval = _verified_candidate_interval(reservation)
+        if interval is None:
+            hints[reservation.id] = CandidateHint(observed_at=observed_at)
+        else:
+            hints[reservation.id] = CandidateHint(
+                timing_status="known",
+                check_in=interval[0].isoformat(),
+                check_out=interval[1].isoformat(),
+                observed_at=observed_at,
+            )
+    return hints
+
+
+def _verified_candidate_interval(
+    reservation: GuestyReservation,
+) -> tuple[datetime, datetime] | None:
+    """Validate a complete current stay interval for fallback use.
+
+    Args:
+        reservation: Current source record.
+
+    Returns:
+        The first-to-last UTC envelope, or None when not fully verified.
+    """
+    if not reservation.is_v3:
+        check_in = reservation.check_in
+        check_out = reservation.check_out
+        if (
+            check_in is None
+            or check_out is None
+            or check_in.tzinfo is None
+            or check_out.tzinfo is None
+            or check_in >= check_out
+        ):
+            return None
+        return check_in.astimezone(UTC), check_out.astimezone(UTC)
+
+    if (
+        reservation.raw_stay_count is None
+        or reservation.raw_stay_count == 0
+        or len(reservation.stay) != reservation.raw_stay_count
+    ):
+        return None
+    if [segment.raw_position for segment in reservation.stay] != list(
+        range(reservation.raw_stay_count),
+    ):
+        return None
+
+    previous_checkout: datetime | None = None
+    for segment in reservation.stay:
+        check_in = segment.check_in
+        check_out = segment.check_out
+        if (
+            not segment.listing_id
+            or check_in is None
+            or check_out is None
+            or check_in.tzinfo is None
+            or check_out.tzinfo is None
+            or check_in >= check_out
+        ):
+            return None
+        if previous_checkout is not None and check_in < previous_checkout:
+            return None
+        previous_checkout = check_out
+
+    first = reservation.stay[0].check_in
+    last = reservation.stay[-1].check_out
+    if first is None or last is None:
+        return None
+    return first.astimezone(UTC), last.astimezone(UTC)
 
 
 def _instant(value: str) -> datetime:
@@ -1177,7 +1352,11 @@ def _bounded(
         return codes
     ordered = sorted(
         codes.items(),
-        key=lambda item: _instant(check_outs.get(item[1], "")),
+        key=lambda item: (
+            _instant(check_outs[item[1]])
+            if item[1] in check_outs
+            else datetime.max.replace(tzinfo=UTC)
+        ),
     )
     return dict(ordered[-MAX_BASELINE_CODES:])
 
@@ -1203,7 +1382,7 @@ def _bounded_candidates(
         return merged
     ordered = sorted(
         merged.items(),
-        key=lambda item: _instant(item[1].check_out),
+        key=lambda item: (_instant(item[1].observed_at), item[0]),
     )
     return dict(ordered[-MAX_BASELINE_CODES:])
 

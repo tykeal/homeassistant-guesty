@@ -50,7 +50,7 @@ Zero Home Assistant imports (NFR-007).
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -184,6 +184,8 @@ class FallbackOutcome:
         sourced: Identifiers published by the fallback, including
             those republished from retained values (FR-054).
         absent: Identifiers legacy confirmed are gone (FR-052).
+        observed: Identifiers returned by a successful by-ID response
+            during this resolution.
     """
 
     reservations: tuple[GuestyReservation, ...] = ()
@@ -191,6 +193,7 @@ class FallbackOutcome:
     served: tuple[str, ...] = ()
     sourced: tuple[str, ...] = ()
     absent: tuple[str, ...] = ()
+    observed: tuple[str, ...] = ()
 
 
 class ReservationFallbackSource:
@@ -336,6 +339,7 @@ class ReservationFallbackSource:
         absent: list[str] = list(self._drain_unreported_absent())
         succeeded = 0
         failed = 0
+        observed: set[str] = set()
         for reservation_id in batch:
             verdict = await self._lookup(reservation_id, now, statuses)
             if verdict == _RETIRED:
@@ -351,15 +355,24 @@ class ReservationFallbackSource:
                         failed=failed,
                     ),
                     absent=tuple(absent),
+                    observed=tuple(sorted(observed)),
                 )
             if verdict == _ABSENT:
                 absent.append(reservation_id)
             elif verdict == _OK:
                 succeeded += 1
+                observed.add(reservation_id)
             else:
                 failed += 1
 
-        published = self._publish(eligible, now, past_days, future_days, statuses)
+        published = self._publish(
+            eligible,
+            candidates,
+            now,
+            past_days,
+            future_days,
+            statuses,
+        )
         self._prune(present, set(candidates))
 
         attempted = set(batch)
@@ -378,6 +391,7 @@ class ReservationFallbackSource:
             served=tuple(sorted(self._served)),
             sourced=tuple(reservation.id for reservation in published),
             absent=tuple(absent),
+            observed=tuple(sorted(observed)),
         )
 
     def _absorb(
@@ -591,6 +605,7 @@ class ReservationFallbackSource:
     def _publish(
         self,
         eligible: list[str],
+        candidates: Mapping[str, FallbackCandidate],
         now: datetime,
         past_days: int,
         future_days: int,
@@ -627,12 +642,39 @@ class ReservationFallbackSource:
                 continue
             if reservation.status not in statuses:
                 continue
-            if not _in_window(
-                reservation.check_in,
-                reservation.check_out,
-                now,
-                past_days,
-                future_days,
+            if reservation.is_v3:
+                # The durable, fully verified candidate interval bounds
+                # this fallback publication. Raw V3 endpoint suffixes
+                # never become current published instants.
+                hint = candidates.get(reservation_id)
+                if hint is None or not _overlaps(
+                    hint,
+                    now,
+                    past_days,
+                    future_days,
+                ):
+                    continue
+                if (
+                    reservation.status in {"confirmed", "checked_in"}
+                    and reservation.timing_status == "unknown"
+                ):
+                    reservation = replace(
+                        reservation,
+                        check_in=None,
+                        check_out=None,
+                        status="unknown",
+                        reservation_status=reservation.status,
+                    )
+            elif (
+                reservation.check_in is None
+                or reservation.check_out is None
+                or not _in_window(
+                    reservation.check_in,
+                    reservation.check_out,
+                    now,
+                    past_days,
+                    future_days,
+                )
             ):
                 continue
             published.append(reservation)

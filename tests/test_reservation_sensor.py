@@ -39,6 +39,7 @@ from custom_components.guesty.const import (
 )
 from custom_components.guesty.sensor import (
     _STATUS_PRIORITY,
+    _build_attributes,
     _derive_state,
     _select_reservation,
 )
@@ -122,6 +123,91 @@ def _make_reservation(
         check_out=check_out or _rel(4, 11),
         **kwargs,  # type: ignore[arg-type]
     )
+
+
+def test_unknown_timing_publishes_dates_and_source_lifecycle_separately() -> None:
+    """Unknown exact endpoints remain null in selected and upcoming data."""
+    reservation = GuestyReservation(
+        id="res-unknown",
+        listing_id="listing-001",
+        status="unknown",
+        check_in=None,
+        check_out=None,
+        check_in_local="2026-11-21",
+        check_out_local="2026-11-24",
+        reservation_status="confirmed",
+        planned_arrival="15:00",
+        planned_departure="11:00",
+        is_v3=True,
+    )
+
+    attributes = _build_attributes(
+        reservation,
+        [reservation],
+        "listing-001",
+    )
+
+    assert attributes["check_in"] is None
+    assert attributes["check_out"] is None
+    assert attributes["check_in_local"] == "2026-11-21"
+    assert attributes["check_out_local"] == "2026-11-24"
+    assert attributes["timing_status"] == "unknown"
+    assert attributes["reservation_status"] == "confirmed"
+    assert attributes["planned_arrival"] == "15:00"
+    assert attributes["planned_departure"] == "11:00"
+    assert attributes["upcoming_reservations"] == [
+        {
+            "reservation_id": "res-unknown",
+            "guest_name": None,
+            "check_in": None,
+            "check_out": None,
+            "check_in_local": "2026-11-21",
+            "check_out_local": "2026-11-24",
+            "timing_status": "unknown",
+            "status": "unknown",
+            "reservation_status": "confirmed",
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    ("check_in", "check_out"),
+    [
+        (_rel(1, 16), None),
+        (None, _rel(3, 11)),
+    ],
+)
+def test_sensor_preserves_independently_known_endpoints(
+    check_in: datetime | None,
+    check_out: datetime | None,
+) -> None:
+    """A missing endpoint never erases or fabricates its counterpart."""
+    reservation = GuestyReservation(
+        id="res-partial",
+        listing_id="listing-001",
+        status="unknown",
+        check_in=check_in,
+        check_out=check_out,
+        check_in_local="2026-11-21",
+        check_out_local="2026-11-24",
+        reservation_status="confirmed",
+        is_v3=True,
+    )
+
+    attributes = _build_attributes(
+        reservation,
+        [reservation],
+        "listing-001",
+    )
+
+    expected_check_in = check_in.isoformat() if check_in is not None else None
+    expected_check_out = check_out.isoformat() if check_out is not None else None
+    assert attributes["check_in"] == expected_check_in
+    assert attributes["check_out"] == expected_check_out
+    assert attributes["timing_status"] == "unknown"
+    upcoming = attributes["upcoming_reservations"][0]
+    assert upcoming["check_in"] == expected_check_in
+    assert upcoming["check_out"] == expected_check_out
 
 
 class TestReservationSensorEnumConfig:
