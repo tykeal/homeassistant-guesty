@@ -35,7 +35,11 @@ from custom_components.guesty.api.const import (
     RESERVATIONS_API_V3,
 )
 from custom_components.guesty.api.exceptions import GuestyRateLimitError
-from custom_components.guesty.api.models import GuestyListing, GuestyReservation
+from custom_components.guesty.api.models import (
+    GuestyListing,
+    GuestyReservation,
+    GuestyStaySegment,
+)
 from custom_components.guesty.const import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
@@ -66,8 +70,11 @@ from custom_components.guesty.identity import (
     IdentityComparison,
     ReservationIdentityGuard,
     _bounded,
+    _bounded_candidates,
     _next_continuity,
     _retained_legacy,
+    _retrieved_hints,
+    _verified_candidate_interval,
     async_bootstrap_identity,
     observe_codes,
     storage_key,
@@ -281,8 +288,10 @@ class TestIdentityBaselineStore:
                 fallback_codes={"CONF-CCC": "res-3"},
                 candidates={
                     "res-1": CandidateHint(
+                        timing_status="known",
                         check_in="2026-01-01T00:00:00+00:00",
                         check_out="2026-01-04T00:00:00+00:00",
+                        observed_at="2026-01-01T00:00:00+00:00",
                     ),
                 },
             ),
@@ -299,6 +308,372 @@ class TestIdentityBaselineStore:
         assert baseline.bootstrap_codes == {CODE_B: "res-2"}
         assert baseline.fallback_codes == {"CONF-CCC": "res-3"}
         assert baseline.candidates["res-1"].check_out == ("2026-01-04T00:00:00+00:00")
+
+    def test_old_candidate_shape_migrates_without_timing_evidence(self) -> None:
+        """Old endpoints migrate to unknown using baseline recency only."""
+        baseline = IdentityBaseline.from_dict(
+            {
+                "path": RESERVATIONS_API_V3,
+                "updated": "2026-02-01T12:00:00+00:00",
+                "candidates": {
+                    "res-old": {
+                        "check_in": "2026-01-01T00:00:00+00:00",
+                        "check_out": "2026-01-04T00:00:00+00:00",
+                    },
+                },
+            },
+        )
+
+        hint = baseline.candidates["res-old"]
+        assert hint.timing_status == "unknown"
+        assert hint.check_in is None
+        assert hint.check_out is None
+        assert hint.observed_at == "2026-02-01T12:00:00+00:00"
+
+    def test_old_candidate_without_valid_baseline_time_uses_sentinel(self) -> None:
+        """Malformed enclosing timestamps use the fixed oldest sentinel."""
+        baseline = IdentityBaseline.from_dict(
+            {
+                "updated": "not-a-timestamp",
+                "candidates": {
+                    "res-old": {
+                        "check_in": "2026-01-01T00:00:00+00:00",
+                        "check_out": "2026-01-04T00:00:00+00:00",
+                    },
+                },
+            },
+        )
+
+        hint = baseline.candidates["res-old"]
+        assert hint.timing_status == "unknown"
+        assert hint.observed_at == "0001-01-01T00:00:00+00:00"
+
+    def test_candidate_capacity_uses_recency_then_reservation_id(self) -> None:
+        """Equal-recent observations evict the smallest identifier first."""
+        observed_at = "2026-01-01T00:00:00+00:00"
+        candidates = {
+            f"res-{index:05d}": CandidateHint(
+                timing_status="unknown",
+                observed_at=observed_at,
+            )
+            for index in range(MAX_BASELINE_CODES + 1)
+        }
+
+        retained = _bounded_candidates(candidates)
+
+        assert len(retained) == MAX_BASELINE_CODES
+        assert "res-00000" not in retained
+        assert "res-05000" in retained
+
+    async def test_candidate_recency_requires_persisted_source_observation(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Only persisted primary/by-ID observations advance candidate age."""
+        guard = ReservationIdentityGuard(hass, "entry-observation-recency")
+        await guard.async_load()
+        original_observation = "2026-01-01T00:00:00+00:00"
+        await guard.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_V3,
+                updated=original_observation,
+                codes={CODE_A: "res-1"},
+                candidates={
+                    "res-1": CandidateHint(
+                        timing_status="known",
+                        check_in="2026-01-02T16:00:00+00:00",
+                        check_out="2026-01-04T11:00:00+00:00",
+                        observed_at=original_observation,
+                    ),
+                },
+            ),
+        )
+        current_unknown = GuestyReservation(
+            id="res-1",
+            listing_id="listing-001",
+            status="confirmed",
+            check_in=None,
+            check_out=None,
+            confirmation_code=CODE_A,
+            is_v3=True,
+        )
+        primary_observation = "2026-01-02T00:00:00+00:00"
+        await guard.async_record_refresh(
+            path=RESERVATIONS_API_V3,
+            reservations=[current_unknown],
+            published={},
+            comparison=IdentityComparison(),
+            updated=primary_observation,
+            observed_ids={"res-1"},
+        )
+
+        baseline = guard.baseline
+        assert baseline is not None
+        assert baseline.candidates["res-1"].observed_at == primary_observation
+        assert baseline.candidates["res-1"].timing_status == "unknown"
+        assert baseline.candidates["res-1"].check_in is None
+        assert baseline.candidates["res-1"].check_out is None
+        assert baseline.codes == {CODE_A: "res-1"}
+        reloaded = ReservationIdentityGuard(
+            hass,
+            "entry-observation-recency",
+        )
+        await reloaded.async_load()
+        assert reloaded.baseline is not None
+        assert reloaded.baseline.candidates["res-1"].observed_at == primary_observation
+        assert reloaded.baseline.candidates["res-1"].timing_status == "unknown"
+        assert reloaded.baseline.candidates["res-1"].check_in is None
+        assert reloaded.baseline.codes == {CODE_A: "res-1"}
+
+        # A retained/cache-only representation is not source evidence,
+        # even when it carries an ID and current timing fields.
+        await guard.async_record_refresh(
+            path=RESERVATIONS_API_V3,
+            reservations=[current_unknown],
+            published={},
+            comparison=IdentityComparison(),
+            updated="2026-01-03T00:00:00+00:00",
+            observed_ids=(),
+        )
+        assert guard.baseline is not None
+        assert guard.baseline.candidates["res-1"].observed_at == primary_observation
+
+        await guard.async_record_bootstrap(reservations=(), failed=True)
+        assert guard.baseline is not None
+        assert guard.baseline.candidates["res-1"].observed_at == primary_observation
+
+        # A qualifying observation that cannot be persisted must not
+        # replace the last durable timestamp in memory or storage.
+        with patch.object(
+            guard._store,
+            "async_save",
+            side_effect=OSError("disk full"),
+        ):
+            stored = await guard.async_record_refresh(
+                path=RESERVATIONS_API_V3,
+                reservations=[current_unknown],
+                published={},
+                comparison=IdentityComparison(),
+                updated="2026-01-04T00:00:00+00:00",
+                observed_ids={"res-1"},
+            )
+        assert stored is False
+        assert guard.baseline is not None
+        assert guard.baseline.candidates["res-1"].observed_at == primary_observation
+
+        # An aborted identity comparison never records a source refresh.
+        guard.mark_ambiguous()
+        assert guard.baseline.candidates["res-1"].observed_at == primary_observation
+
+    async def test_filtered_by_id_observation_replaces_candidate_timing(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A successful but unpublished lookup cannot leave stale hints."""
+        guard = ReservationIdentityGuard(hass, "entry-filtered-observation")
+        await guard.async_load()
+        prior_observation = "2026-01-01T00:00:00+00:00"
+        await guard.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_V3,
+                updated=prior_observation,
+                candidates={
+                    "res-filtered": CandidateHint(
+                        timing_status="known",
+                        check_in="2026-01-02T16:00:00+00:00",
+                        check_out="2026-01-04T11:00:00+00:00",
+                        observed_at=prior_observation,
+                    ),
+                },
+            ),
+        )
+        observed_at = "2026-02-01T12:00:00+00:00"
+        observed = GuestyReservation(
+            id="res-filtered",
+            listing_id="listing-001",
+            status="cancelled",
+            check_in=datetime(2026, 2, 2, 16, tzinfo=UTC),
+            check_out=datetime(2026, 2, 5, 11, tzinfo=UTC),
+        )
+
+        await guard.async_record_refresh(
+            path=RESERVATIONS_API_V3,
+            reservations=(),
+            observed_reservations=(observed,),
+            published={},
+            comparison=IdentityComparison(),
+            updated=observed_at,
+            observed_ids={"res-filtered"},
+        )
+
+        assert guard.baseline is not None
+        hint = guard.baseline.candidates["res-filtered"]
+        assert hint.timing_status == "known"
+        assert hint.check_in == "2026-02-02T16:00:00+00:00"
+        assert hint.check_out == "2026-02-05T11:00:00+00:00"
+        assert hint.observed_at == observed_at
+
+    def test_v3_candidate_requires_every_raw_segment_in_order(self) -> None:
+        """Only a complete, verified, non-overlapping raw sequence is timed."""
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        end_first = datetime(2026, 1, 2, tzinfo=UTC)
+        end_last = datetime(2026, 1, 4, tzinfo=UTC)
+        complete = GuestyReservation(
+            id="res-complete",
+            listing_id="listing-001",
+            status="confirmed",
+            check_in=None,
+            check_out=None,
+            is_v3=True,
+            raw_stay_count=2,
+            stay=(
+                GuestyStaySegment(
+                    listing_id="listing-001",
+                    check_in=start,
+                    check_out=end_first,
+                    raw_position=0,
+                ),
+                GuestyStaySegment(
+                    listing_id="listing-002",
+                    check_in=end_first,
+                    check_out=end_last,
+                    raw_position=1,
+                ),
+            ),
+        )
+        assert _verified_candidate_interval(complete) == (start, end_last)
+
+        # A usable first and last segment cannot hide an unusable raw
+        # middle entry, which the model records as a positional gap.
+        around_bad_middle = GuestyReservation(
+            id="res-middle-gap",
+            listing_id="listing-001",
+            status="confirmed",
+            check_in=None,
+            check_out=None,
+            is_v3=True,
+            raw_stay_count=3,
+            stay=(
+                complete.stay[0],
+                GuestyStaySegment(
+                    listing_id="listing-003",
+                    check_in=end_first,
+                    check_out=end_last,
+                    raw_position=2,
+                ),
+            ),
+        )
+        assert _verified_candidate_interval(around_bad_middle) is None
+        assert (
+            _retrieved_hints(
+                [around_bad_middle],
+                observed_at="2026-01-05T00:00:00+00:00",
+            )["res-middle-gap"].timing_status
+            == "unknown"
+        )
+
+        invalid_sequences = (
+            # Missing exact room identity.
+            (
+                GuestyStaySegment(
+                    listing_id="",
+                    check_in=start,
+                    check_out=end_first,
+                    raw_position=0,
+                ),
+            ),
+            # Partial endpoint.
+            (
+                GuestyStaySegment(
+                    listing_id="listing-001",
+                    check_in=start,
+                    check_out=None,
+                    raw_position=0,
+                ),
+            ),
+            # Reverse raw chronology.
+            (
+                GuestyStaySegment(
+                    listing_id="listing-002",
+                    check_in=end_first,
+                    check_out=end_last,
+                    raw_position=0,
+                ),
+                GuestyStaySegment(
+                    listing_id="listing-001",
+                    check_in=start,
+                    check_out=end_first,
+                    raw_position=1,
+                ),
+            ),
+            # Positive individual intervals that overlap.
+            (
+                GuestyStaySegment(
+                    listing_id="listing-001",
+                    check_in=start,
+                    check_out=end_last,
+                    raw_position=0,
+                ),
+                GuestyStaySegment(
+                    listing_id="listing-002",
+                    check_in=end_first,
+                    check_out=end_last,
+                    raw_position=1,
+                ),
+            ),
+        )
+        for index, stay in enumerate(invalid_sequences):
+            reservation = GuestyReservation(
+                id=f"res-invalid-{index}",
+                listing_id="listing-001",
+                status="confirmed",
+                check_in=None,
+                check_out=None,
+                is_v3=True,
+                raw_stay_count=len(stay),
+                stay=stay,
+            )
+            assert _verified_candidate_interval(reservation) is None
+
+    async def test_unknown_candidate_does_not_expire_identity_evidence(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Missing timing is not evidence that identity maps may expire."""
+        guard = ReservationIdentityGuard(hass, "entry-unknown-no-expiry")
+        await guard.async_load()
+        await guard.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_LEGACY,
+                updated="2026-01-01T00:00:00+00:00",
+                bootstrap_attempted=True,
+                codes={CODE_B: "res-1"},
+                bootstrap_codes={CODE_A: "res-1"},
+                candidates={
+                    "res-1": CandidateHint(
+                        timing_status="unknown",
+                        observed_at="2026-01-01T00:00:00+00:00",
+                    ),
+                },
+            ),
+        )
+
+        await guard.async_record_refresh(
+            path=RESERVATIONS_API_V3,
+            reservations=[],
+            published={},
+            comparison=IdentityComparison(),
+            updated=datetime.now(UTC).isoformat(),
+            past_days=0,
+            observed_ids=(),
+        )
+
+        baseline = guard.baseline
+        assert baseline is not None
+        assert baseline.candidates["res-1"].timing_status == "unknown"
+        assert baseline.candidates["res-1"].check_out is None
+        assert baseline.bootstrap_codes == {CODE_A: "res-1"}
+        assert baseline.legacy_codes == {CODE_B: "res-1"}
 
     async def test_storage_key_and_version(
         self,
@@ -544,6 +919,10 @@ class TestCoordinatorIdentityGuard:
         coordinator = _make_coordinator(hass, entry, api_client)
         await coordinator.async_refresh()
         first = coordinator.data
+        assert coordinator.identity.baseline is not None
+        observed_at_before_abort = coordinator.identity.baseline.candidates[
+            "res-1"
+        ].observed_at
 
         with caplog.at_level(logging.ERROR):
             await coordinator.async_refresh()
@@ -565,6 +944,10 @@ class TestCoordinatorIdentityGuard:
         assert coordinator.identity.last_refresh_ambiguous
         assert coordinator.identity.baseline is not None
         assert coordinator.identity.baseline.codes == {CODE_A: "res-1"}
+        assert (
+            coordinator.identity.baseline.candidates["res-1"].observed_at
+            == observed_at_before_abort
+        )
 
     async def test_swap_aborts_the_refresh(
         self,
@@ -1154,8 +1537,10 @@ class TestIdentityReviewHardening:
                 codes={f"CODE-{index}": f"res-{index}" for index in range(total)},
                 candidates={
                     f"res-{index}": CandidateHint(
+                        timing_status="known",
                         check_in=_rel(total - index).isoformat(),
                         check_out=_rel(total - index + 2).isoformat(),
+                        observed_at=_rel(index).isoformat(),
                     )
                     for index in range(total)
                 },
@@ -1253,6 +1638,7 @@ class TestBootstrapSweep:
         _register_reservation_entity(hass, entry)
         guard = ReservationIdentityGuard(hass, entry.entry_id)
 
+        before_sweep = datetime.now(UTC)
         with _legacy_sweep([_reservation("legacy-1", CODE_A)]) as fetch:
             result = await async_bootstrap_identity(
                 hass,
@@ -1269,6 +1655,11 @@ class TestBootstrapSweep:
         assert baseline.bootstrap_codes == {CODE_A: "legacy-1"}
         assert baseline.continuity == CONTINUITY_UNCONFIRMED
         assert baseline.candidates["legacy-1"].check_out != ""
+        bootstrap_observed_at = datetime.fromisoformat(
+            baseline.candidates["legacy-1"].observed_at,
+        )
+        assert bootstrap_observed_at.tzinfo is not None
+        assert bootstrap_observed_at >= before_sweep
 
     async def test_sweep_runs_exactly_once_across_a_reload(
         self,
@@ -1525,12 +1916,16 @@ class TestBootstrapSweep:
                 bootstrap_codes={CODE_A: "old-1", CODE_B: "recent-1"},
                 candidates={
                     "old-1": CandidateHint(
+                        timing_status="known",
                         check_in=_rel(-120).isoformat(),
                         check_out=_rel(-119).isoformat(),
+                        observed_at=_rel(-120).isoformat(),
                     ),
                     "recent-1": CandidateHint(
+                        timing_status="known",
                         check_in=_rel(-2).isoformat(),
                         check_out=_rel(-1).isoformat(),
+                        observed_at=_rel(-2).isoformat(),
                     ),
                 },
             ),

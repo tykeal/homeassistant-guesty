@@ -1,0 +1,24 @@
+---
+# SPDX-FileCopyrightText: 2026 Andrew Grimberg <tykeal@bardicgrove.org>
+# SPDX-License-Identifier: Apache-2.0
+
+upgrade:
+  - |
+    V3 reservation check-in and check-out attributes may now be null when an
+    exact instant cannot be verified from the room's localized stay date,
+    default wall time, and explicitly supplied timezone. Review automations
+    and templates that assume both values are always available. Gate
+    instant-based behavior on `timing_status == "known"` and handle null
+    endpoints; use the localized date attributes when a date is available.
+    Configure timezone and default arrival/departure times on each exact room
+    in Guesty. Do not substitute parent-room schedules or parse raw V3
+    timestamps as UTC. DST gaps, folds, missing settings, and invalid values
+    remain unknown rather than being guessed or copied from an earlier
+    refresh. Legacy reservation timing is unchanged.
+fixes:
+  - |
+    V3 reservation instants are now derived independently from each stay
+    segment's localized dates, exact-room defaults, and explicit listing
+    timezone. This avoids treating raw V3 timestamps as verified UTC times,
+    preserves known local dates when exact timing is unavailable, and handles
+    eligible same-date room handoffs without changing listing attribution.

@@ -9,7 +9,8 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from typing import cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -53,6 +54,7 @@ from custom_components.guesty.const import (
     CONF_FUTURE_DAYS,
     CONF_PAST_DAYS,
     CONF_RESERVATION_SCAN_INTERVAL,
+    CONF_RESERVATIONS_API,
     CONF_SCAN_INTERVAL,
     CONF_SELECTED_LISTINGS,
     DEFAULT_CF_SCAN_INTERVAL,
@@ -64,6 +66,9 @@ from custom_components.guesty.coordinator import (
     CustomFieldsDefinitionCoordinator,
     ListingsCoordinator,
     ReservationsCoordinator,
+    _apply_same_date_handoffs,
+    _reservation_sort_key,
+    _within_window,
 )
 from tests.conftest import (
     FakeTokenStorage,
@@ -317,6 +322,40 @@ class TestListingsCoordinatorFiltering:
 
         assert set(data.keys()) == {"lst_miami_beach", "lst_tampa_bay"}
         assert len(data) == 2
+
+    async def test_retains_unselected_exact_room_for_timing_only(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """The fetched lookup includes unselected rooms without selecting them."""
+        selected = GuestyListing.from_api_dict(
+            make_listing_dict(_id="selected-room", timezone="UTC"),
+        )
+        child = GuestyListing.from_api_dict(
+            make_listing_dict(
+                _id="unselected-child",
+                timezone="America/New_York",
+                defaultCheckInTime="16:00",
+                defaultCheckOutTime="11:00",
+            ),
+        )
+        assert selected is not None
+        assert child is not None
+        entry = _make_entry(options={CONF_SELECTED_LISTINGS: [selected.id]})
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_listings = AsyncMock(return_value=[selected, child])
+        coordinator = ListingsCoordinator(hass, entry, api_client)
+
+        data = await coordinator._async_update_data()
+
+        assert set(data) == {selected.id}
+        assert set(coordinator.timing_listings) == {
+            selected.id,
+            child.id,
+        }
+        assert coordinator.timing_listings[child.id] is child
+        api_client.get_listings.assert_awaited_once()
 
     async def test_returns_all_when_selected_absent(
         self,
@@ -938,6 +977,568 @@ class TestReservationsCoordinator:
 
         assert result == {}
         assert "unknown-listing" in caplog.text
+
+    async def test_v3_resolves_from_exact_listing_local_schedule(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """V3 endpoints use exact-room localized settings, not raw suffixes."""
+        listing = replace(
+            sample_listing,
+            timezone="America/New_York",
+            timezone_explicit=True,
+            check_in_time="16:00",
+            check_out_time="11:00",
+        )
+        local_check_in = (datetime.now(UTC).date() + timedelta(days=1)).isoformat()
+        local_check_out = (datetime.now(UTC).date() + timedelta(days=4)).isoformat()
+        parsed = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(
+                guest_id=None,
+                segments=[
+                    make_v3_segment(
+                        checkIn="2026-01-01T00:00:00Z",
+                        checkOut="2026-01-02T00:00:00Z",
+                        checkInDateLocalized=local_check_in,
+                        checkOutDateLocalized=local_check_out,
+                    ),
+                ],
+            ),
+        )
+        assert parsed is not None
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_reservations = AsyncMock(
+            return_value=make_fetch_result([parsed]),
+        )
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = {listing.id: listing}
+        listings_coordinator.timing_listings = {listing.id: listing}
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+
+        result = await coordinator._async_update_data()
+
+        reservation = result[listing.id][0]
+        zone = ZoneInfo("America/New_York")
+        expected_check_in = (
+            datetime.fromisoformat(
+                f"{local_check_in}T16:00:00",
+            )
+            .replace(tzinfo=zone)
+            .astimezone(UTC)
+        )
+        expected_check_out = (
+            datetime.fromisoformat(
+                f"{local_check_out}T11:00:00",
+            )
+            .replace(tzinfo=zone)
+            .astimezone(UTC)
+        )
+        assert reservation.check_in == expected_check_in
+        assert reservation.check_out == expected_check_out
+        api_client.get_reservations.assert_awaited_once()
+
+    async def test_moved_stay_uses_each_rooms_distinct_schedule(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A different-zone handoff keeps the destination room's defaults."""
+        origin = GuestyListing.from_api_dict(
+            make_listing_dict(
+                _id="room-origin",
+                timezone="UTC",
+                defaultCheckInTime="16:00",
+                defaultCheckOutTime="11:00",
+            ),
+        )
+        destination = GuestyListing.from_api_dict(
+            make_listing_dict(
+                _id="room-destination",
+                timezone="America/Los_Angeles",
+                defaultCheckInTime="15:00",
+                defaultCheckOutTime="10:00",
+            ),
+        )
+        assert origin is not None
+        assert destination is not None
+        today = datetime.now(UTC).date()
+        origin_date = (today + timedelta(days=1)).isoformat()
+        handoff_date = (today + timedelta(days=2)).isoformat()
+        final_date = (today + timedelta(days=4)).isoformat()
+        reservation = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(
+                "res-two-room-zones",
+                guest_id=None,
+                segments=[
+                    make_v3_segment(
+                        listingId=origin.id,
+                        checkInDateLocalized=origin_date,
+                        checkOutDateLocalized=handoff_date,
+                    ),
+                    make_v3_segment(
+                        listingId=destination.id,
+                        checkInDateLocalized=handoff_date,
+                        checkOutDateLocalized=final_date,
+                    ),
+                ],
+            ),
+        )
+        assert reservation is not None
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_reservations = AsyncMock(
+            return_value=make_fetch_result([reservation]),
+        )
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = {
+            origin.id: origin,
+            destination.id: destination,
+        }
+        listings_coordinator.timing_listings = dict(
+            listings_coordinator.data,
+        )
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+
+        data = await coordinator._async_update_data()
+
+        origin_projection = data[origin.id][0]
+        destination_projection = data[destination.id][0]
+        expected_origin_checkout = datetime.fromisoformat(
+            f"{handoff_date}T11:00:00+00:00",
+        )
+        expected_destination_checkin = (
+            datetime.fromisoformat(
+                f"{handoff_date}T15:00:00",
+            )
+            .replace(
+                tzinfo=ZoneInfo("America/Los_Angeles"),
+            )
+            .astimezone(UTC)
+        )
+        assert origin_projection.check_out == expected_origin_checkout
+        assert destination_projection.check_in == expected_destination_checkin
+        assert destination_projection.check_in != expected_origin_checkout
+
+    async def test_missing_child_schedule_never_uses_parent_defaults(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Parent attribution does not authorize parent schedule substitution."""
+        parent = GuestyListing.from_api_dict(
+            make_listing_dict(
+                _id="parent-room",
+                timezone="UTC",
+                defaultCheckInTime="16:00",
+                defaultCheckOutTime="11:00",
+            ),
+        )
+        assert parent is not None
+        check_in_date = (datetime.now(UTC).date() + timedelta(days=1)).isoformat()
+        check_out_date = (datetime.now(UTC).date() + timedelta(days=3)).isoformat()
+        reservation = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(
+                "res-child-without-settings",
+                guest_id=None,
+                segments=[
+                    make_v3_segment(
+                        listingId="child-room",
+                        parentListingId=parent.id,
+                        checkInDateLocalized=check_in_date,
+                        checkOutDateLocalized=check_out_date,
+                    ),
+                ],
+            ),
+        )
+        assert reservation is not None
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_reservations = AsyncMock(
+            return_value=make_fetch_result([reservation]),
+        )
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = {parent.id: parent}
+        listings_coordinator.timing_listings = {parent.id: parent}
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+
+        data = await coordinator._async_update_data()
+
+        projection = data[parent.id][0]
+        assert projection.listing_id == parent.id
+        assert projection.check_in is None
+        assert projection.check_out is None
+        assert projection.check_in_local == check_in_date
+        assert projection.check_out_local == check_out_date
+        assert projection.status == "unknown"
+
+    async def test_unknown_v3_keeps_local_dates_and_source_status(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """Missing timezone provenance retains the bounded result as unknown."""
+        check_in_date = (datetime.now(UTC).date() + timedelta(days=1)).isoformat()
+        check_out_date = (datetime.now(UTC).date() + timedelta(days=4)).isoformat()
+        parsed = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(
+                guest_id=None,
+                segments=[
+                    make_v3_segment(
+                        checkInDateLocalized=check_in_date,
+                        checkOutDateLocalized=check_out_date,
+                    ),
+                ],
+            ),
+        )
+        assert parsed is not None
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_reservations = AsyncMock(
+            return_value=make_fetch_result([parsed]),
+        )
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = {sample_listing.id: sample_listing}
+        listings_coordinator.timing_listings = {
+            sample_listing.id: sample_listing,
+        }
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+
+        result = await coordinator._async_update_data()
+
+        projected = result[sample_listing.id][0]
+        assert projected.check_in is None
+        assert projected.check_out is None
+        assert projected.check_in_local == check_in_date
+        assert projected.check_out_local == check_out_date
+        assert projected.status == "unknown"
+        assert projected.reservation_status == "confirmed"
+
+    async def test_timing_certainty_survives_refresh_and_reload(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Known→partial-unknown→known never reuses stale instants."""
+        listing = GuestyListing.from_api_dict(
+            make_listing_dict(
+                _id="listing-001",
+                timezone="UTC",
+                defaultCheckInTime="16:00",
+                defaultCheckOutTime="11:00",
+            ),
+        )
+        assert listing is not None
+        today = datetime.now(UTC).date()
+        check_in_date = (today + timedelta(days=1)).isoformat()
+        check_out_date = (today + timedelta(days=4)).isoformat()
+
+        def reservation(*, checkout_date: str | None) -> GuestyReservation:
+            """Build one source observation with current date evidence."""
+            segment = GuestyStaySegment(
+                listing_id=listing.id,
+                check_in=None,
+                check_out=None,
+                check_in_local=check_in_date,
+                check_out_local=checkout_date,
+                raw_position=0,
+            )
+            return GuestyReservation(
+                id="res-timing-reload",
+                listing_id=listing.id,
+                status="confirmed",
+                check_in=None,
+                check_out=None,
+                confirmation_code="CONF-TIMING",
+                check_in_local=check_in_date,
+                check_out_local=checkout_date,
+                stay=(segment,),
+                is_v3=True,
+                raw_stay_count=1,
+            )
+
+        entry = _make_entry(
+            entry_id="entry-timing-reload",
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_V3},
+        )
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_reservations = AsyncMock(
+            side_effect=[
+                make_fetch_result([reservation(checkout_date=check_out_date)]),
+                make_fetch_result([reservation(checkout_date=None)]),
+                make_fetch_result([reservation(checkout_date=check_out_date)]),
+            ],
+        )
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = {listing.id: listing}
+        listings_coordinator.timing_listings = {listing.id: listing}
+
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+        await coordinator.async_refresh()
+        first = coordinator.data[listing.id][0]
+        assert first.check_in is not None
+        assert first.check_out is not None
+        assert first.status == "confirmed"
+        assert coordinator.identity.baseline is not None
+        assert (
+            coordinator.identity.baseline.candidates["res-timing-reload"].timing_status
+            == "known"
+        )
+        initial_write_refusal = coordinator.identity.write_refusal(
+            "res-timing-reload",
+        )
+
+        await coordinator.async_refresh()
+        partial = coordinator.data[listing.id][0]
+        assert partial.check_in is not None
+        assert partial.check_out is None
+        assert partial.check_in_local == check_in_date
+        assert partial.check_out_local is None
+        assert partial.status == "unknown"
+        assert partial.reservation_status == "confirmed"
+        assert coordinator.identity.baseline is not None
+        assert (
+            coordinator.identity.baseline.candidates["res-timing-reload"].timing_status
+            == "unknown"
+        )
+        assert coordinator.identity.baseline.codes == {
+            "CONF-TIMING": "res-timing-reload",
+        }
+        assert (
+            coordinator.identity.write_refusal("res-timing-reload")
+            == initial_write_refusal
+        )
+
+        reloaded = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+        await reloaded.async_refresh()
+        restored = reloaded.data[listing.id][0]
+        assert restored.check_in is not None
+        assert restored.check_out is not None
+        assert restored.status == "confirmed"
+        assert reloaded.identity.baseline is not None
+        assert (
+            reloaded.identity.baseline.candidates["res-timing-reload"].timing_status
+            == "known"
+        )
+        assert reloaded.identity.baseline.codes == {
+            "CONF-TIMING": "res-timing-reload",
+        }
+        assert (
+            reloaded.identity.write_refusal("res-timing-reload")
+            == initial_write_refusal
+        )
+        assert api_client.get_reservations.await_count == 3
+        assert api_client.get_reservations.await_args_list[2].kwargs["candidates"] == {}
+
+    async def test_adjacent_same_zone_handoff_uses_prior_exact_checkout(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Only an adjacent same-local-date same-zone move shares checkout."""
+        zone = ZoneInfo("America/New_York")
+        local_today = datetime.now(zone).date()
+        first_date = (local_today + timedelta(days=1)).isoformat()
+        handoff_date = (local_today + timedelta(days=2)).isoformat()
+        final_date = (local_today + timedelta(days=4)).isoformat()
+        rooms = {
+            listing_id: GuestyListing.from_api_dict(
+                make_listing_dict(
+                    _id=listing_id,
+                    timezone="America/New_York",
+                    defaultCheckInTime="16:00",
+                    defaultCheckOutTime="11:00",
+                ),
+            )
+            for listing_id in ("room-a", "room-b")
+        }
+        assert all(room is not None for room in rooms.values())
+        reservation = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(
+                guest_id=None,
+                segments=[
+                    make_v3_segment(
+                        listingId="room-a",
+                        checkInDateLocalized=first_date,
+                        checkOutDateLocalized=handoff_date,
+                    ),
+                    make_v3_segment(
+                        listingId="room-b",
+                        checkInDateLocalized=handoff_date,
+                        checkOutDateLocalized=final_date,
+                    ),
+                ],
+            ),
+        )
+        assert reservation is not None
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_reservations = AsyncMock(
+            return_value=make_fetch_result([reservation]),
+        )
+        listings_coordinator = AsyncMock()
+        listings_coordinator.data = rooms
+        listings_coordinator.timing_listings = rooms
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=listings_coordinator,
+        )
+
+        result = await coordinator._async_update_data()
+
+        prior_checkout = (
+            datetime.fromisoformat(
+                f"{handoff_date}T11:00:00",
+            )
+            .replace(tzinfo=zone)
+            .astimezone(UTC)
+        )
+        destination = next(
+            item for item in result["room-b"] if item.id == reservation.id
+        )
+        assert destination.check_in == prior_checkout
+
+    @pytest.mark.parametrize(
+        "blocked_reason",
+        [
+            "different-date",
+            "different-zone",
+            "implicit-zone",
+            "missing-settings",
+            "invalid-settings",
+            "unknown-prior-checkout",
+            "nonadjacent-raw-position",
+            "destination-checkout-not-later",
+        ],
+    )
+    def test_nonqualifying_handoffs_keep_destination_schedule(
+        self,
+        blocked_reason: str,
+    ) -> None:
+        """Every failed handoff predicate leaves the destination unchanged."""
+        boundary = datetime(2026, 1, 2, 11, tzinfo=UTC)
+        destination_date = "2026-01-02"
+        destination_checkout = datetime(2026, 1, 4, 11, tzinfo=UTC)
+        destination_zone = "UTC"
+        raw_position = 1
+        prior_checkout: datetime | None = boundary
+        explicit_destination_zone = True
+        destination_check_in_time: str | None = "16:00"
+        destination_check_out_time: str | None = "11:00"
+
+        if blocked_reason == "different-date":
+            destination_date = "2026-01-03"
+        elif blocked_reason == "different-zone":
+            destination_zone = "America/New_York"
+            destination_checkout = datetime(
+                2026,
+                1,
+                4,
+                16,
+                tzinfo=UTC,
+            )
+        elif blocked_reason == "implicit-zone":
+            explicit_destination_zone = False
+        elif blocked_reason == "missing-settings":
+            destination_check_out_time = None
+        elif blocked_reason == "invalid-settings":
+            destination_check_in_time = "25:00"
+        elif blocked_reason == "unknown-prior-checkout":
+            prior_checkout = None
+        elif blocked_reason == "nonadjacent-raw-position":
+            raw_position = 2
+        elif blocked_reason == "destination-checkout-not-later":
+            destination_checkout = boundary
+
+        prior = GuestyStaySegment(
+            listing_id="room-a",
+            check_in=datetime(2026, 1, 1, 16, tzinfo=UTC),
+            check_out=prior_checkout,
+            check_in_local="2026-01-01",
+            check_out_local="2026-01-02",
+            raw_position=0,
+        )
+        destination_check_in = (
+            datetime.fromisoformat(f"{destination_date}T16:00:00")
+            .replace(tzinfo=ZoneInfo(destination_zone))
+            .astimezone(UTC)
+        )
+        destination = GuestyStaySegment(
+            listing_id="room-b",
+            check_in=destination_check_in,
+            check_out=destination_checkout,
+            check_in_local=destination_date,
+            check_out_local="2026-01-04",
+            raw_position=raw_position,
+        )
+
+        prior_listing = GuestyListing.from_api_dict(
+            make_listing_dict(
+                _id="room-a",
+                timezone="UTC",
+                defaultCheckInTime="16:00",
+                defaultCheckOutTime="11:00",
+            ),
+        )
+        destination_listing_data = make_listing_dict(
+            _id="room-b",
+            timezone=destination_zone if explicit_destination_zone else "",
+            defaultCheckInTime=destination_check_in_time,
+            defaultCheckOutTime=destination_check_out_time,
+        )
+        destination_listing = GuestyListing.from_api_dict(
+            destination_listing_data,
+        )
+        assert prior_listing is not None
+        assert destination_listing is not None
+        zones: dict[str, ZoneInfo | None] = {
+            "UTC": ZoneInfo("UTC"),
+            "America/New_York": ZoneInfo("America/New_York"),
+        }
+
+        adjusted = _apply_same_date_handoffs(
+            (prior, destination),
+            {"room-a": prior_listing, "room-b": destination_listing},
+            zones,
+        )
+
+        assert adjusted[1].check_in == destination_check_in
+        assert adjusted[1].check_out == destination_checkout
 
     async def test_sorts_reservations_by_check_in(
         self,
@@ -1980,6 +2581,31 @@ def _build_coordinator(
 class TestSegmentAttribution:
     """Tests for stay-segment attribution (T041, T045, T046)."""
 
+    async def test_timing_listing_lookup_is_shared_for_refresh(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """The fetched listing map is prepared once per reservation refresh."""
+        freezer.move_to(_NOW)
+        reservations = [
+            _legacy_res(f"res-{index}", "listing-001", 1, 2) for index in range(3)
+        ]
+        coordinator = _build_coordinator(
+            hass,
+            reservations,
+            ["listing-001"],
+        )
+
+        with patch.object(
+            coordinator,
+            "_timing_listings",
+            wraps=coordinator._timing_listings,
+        ) as timing_listings:
+            await coordinator._async_update_data()
+
+        timing_listings.assert_called_once()
+
     async def test_single_segment_attributed_to_its_listing(
         self,
         hass: HomeAssistant,
@@ -2016,7 +2642,6 @@ class TestSegmentAttribution:
             [reservation],
             ["listing-001", "listing-002"],
         )
-
         data = await coordinator._async_update_data()
 
         assert set(data) == {"listing-001", "listing-002"}
@@ -2310,6 +2935,55 @@ class TestPerListingProjection:
             assert projection.custom_fields == reservation.custom_fields
             assert projection.stay == ()
 
+    async def test_source_night_count_survives_unknown_local_checkout(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """Timing resolution does not erase a valid source night count."""
+        listing_data = make_listing_dict(
+            _id="listing-001",
+            timezone="UTC",
+            defaultCheckInTime="16:00",
+            defaultCheckOutTime="11:00",
+        )
+        listing = GuestyListing.from_api_dict(listing_data)
+        assert listing is not None
+        local_check_in = "2026-06-20"
+        segment = GuestyStaySegment(
+            listing_id="listing-001",
+            check_in=None,
+            check_out=None,
+            check_in_local=local_check_in,
+            check_out_local=None,
+            raw_position=0,
+        )
+        reservation = GuestyReservation(
+            id="res-night-count",
+            listing_id="listing-001",
+            status="confirmed",
+            check_in=None,
+            check_out=None,
+            check_in_local=local_check_in,
+            check_out_local=None,
+            nights_count=4,
+            is_v3=True,
+            raw_stay_count=1,
+            stay=(segment,),
+        )
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=_make_entry(),
+            api_client=AsyncMock(),
+            listings_coordinator=AsyncMock(
+                data={"listing-001": listing},
+                timing_listings={"listing-001": listing},
+            ),
+        )
+
+        resolved = await coordinator._resolve_v3_reservations((reservation,))
+
+        assert resolved[0].nights_count == 4
+
     async def test_repeat_listing_selects_current_interval(
         self,
         hass: HomeAssistant,
@@ -2465,6 +3139,64 @@ class TestSegmentAwareState:
         assert data["listing-001"][0].status == "canceled"
         assert data["listing-002"][0].status == "canceled"
 
+    async def test_unknown_multi_segment_status_stays_temporally_unknown(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """Localized dates do not turn unknown intervals into live states."""
+        freezer.move_to(_NOW)
+        stay = (
+            GuestyStaySegment(
+                listing_id="listing-001",
+                check_in=None,
+                check_out=None,
+                check_in_local=_NOW.date().isoformat(),
+                check_out_local=(_NOW + timedelta(days=2)).date().isoformat(),
+                raw_position=0,
+            ),
+            GuestyStaySegment(
+                listing_id="listing-002",
+                check_in=None,
+                check_out=None,
+                check_in_local=(_NOW + timedelta(days=2)).date().isoformat(),
+                check_out_local=(_NOW + timedelta(days=4)).date().isoformat(),
+                raw_position=1,
+            ),
+        )
+        reservation = GuestyReservation(
+            id="res-unknown-move",
+            listing_id="listing-001",
+            status="checked_in",
+            check_in=None,
+            check_out=None,
+            confirmation_code="CONF-UNKNOWN-MOVE",
+            check_in_local=stay[0].check_in_local,
+            check_out_local=stay[-1].check_out_local,
+            stay=stay,
+            is_v3=True,
+            raw_stay_count=2,
+        )
+        coordinator = _build_coordinator(
+            hass,
+            [reservation],
+            ["listing-001", "listing-002"],
+        )
+        coordinator.listings_coordinator.timing_listings = {
+            listing_id: replace(_listing(listing_id), timezone_explicit=False)
+            for listing_id in ("listing-001", "listing-002")
+        }
+
+        data = await coordinator._async_update_data()
+
+        assert set(data) == {"listing-001", "listing-002"}
+        for projections in data.values():
+            projection = projections[0]
+            assert projection.check_in is None
+            assert projection.check_out is None
+            assert projection.status == "unknown"
+            assert projection.reservation_status == "checked_in"
+
 
 class TestWindowTrim:
     """Tests for the instant-based window trim (T044)."""
@@ -2554,6 +3286,171 @@ class TestWindowTrim:
         data = await coordinator._async_update_data()
 
         assert [r.id for r in data["listing-001"]] == ["res-inside"]
+
+    def test_unknown_v3_window_uses_inclusive_local_date_boundaries(self) -> None:
+        """Date-only candidates include both configured local-date edges."""
+        now = datetime(2026, 1, 10, 12, tzinfo=UTC)
+        listing = GuestyListing.from_api_dict(
+            make_listing_dict(
+                _id="listing-001",
+                timezone="UTC",
+                defaultCheckInTime="16:00",
+                defaultCheckOutTime="11:00",
+            ),
+        )
+        assert listing is not None
+        reservations = (
+            GuestyReservation(
+                id="res-lower-bound",
+                listing_id=listing.id,
+                status="confirmed",
+                check_in=None,
+                check_out=None,
+                is_v3=True,
+                raw_stay_count=1,
+                stay=(
+                    GuestyStaySegment(
+                        listing_id=listing.id,
+                        check_in=None,
+                        check_out=None,
+                        check_in_local="2026-01-07",
+                        check_out_local="2026-01-08",
+                        raw_position=0,
+                    ),
+                ),
+            ),
+            GuestyReservation(
+                id="res-upper-bound",
+                listing_id=listing.id,
+                status="confirmed",
+                check_in=None,
+                check_out=None,
+                is_v3=True,
+                raw_stay_count=1,
+                stay=(
+                    GuestyStaySegment(
+                        listing_id=listing.id,
+                        check_in=None,
+                        check_out=None,
+                        check_in_local="2026-01-15",
+                        check_out_local="2026-01-16",
+                        raw_position=0,
+                    ),
+                ),
+            ),
+        )
+
+        assert all(
+            _within_window(
+                reservation,
+                now=now,
+                past_days=2,
+                future_days=5,
+                timing_listings={listing.id: listing},
+                zones={"UTC": ZoneInfo("UTC")},
+            )
+            for reservation in reservations
+        )
+
+    def test_unverifiable_date_window_retains_server_bounded_v3_result(
+        self,
+    ) -> None:
+        """Missing date or explicit zone never guesses an instant."""
+        now = datetime(2026, 1, 10, 12, tzinfo=UTC)
+        implicit_zone = GuestyListing.from_api_dict(
+            make_listing_dict(
+                _id="listing-001",
+                timezone="",
+                defaultCheckInTime="16:00",
+                defaultCheckOutTime="11:00",
+            ),
+        )
+        assert implicit_zone is not None
+        reservation = GuestyReservation(
+            id="res-unbounded",
+            listing_id=implicit_zone.id,
+            status="confirmed",
+            check_in=None,
+            check_out=None,
+            is_v3=True,
+            raw_stay_count=1,
+            stay=(
+                GuestyStaySegment(
+                    listing_id=implicit_zone.id,
+                    check_in=None,
+                    check_out=None,
+                    check_in_local="invalid",
+                    check_out_local="2025-01-01",
+                    raw_position=0,
+                ),
+            ),
+        )
+
+        assert _within_window(
+            reservation,
+            now=now,
+            past_days=2,
+            future_days=5,
+            timing_listings={implicit_zone.id: implicit_zone},
+            zones={"UTC": ZoneInfo("UTC")},
+        )
+
+    def test_unknown_timing_order_is_deterministic_after_known_instants(self) -> None:
+        """Known instants lead; unknown dates and absent dates remain stable."""
+        known = GuestyReservation(
+            id="res-known",
+            listing_id="listing-001",
+            status="confirmed",
+            check_in=datetime(2026, 1, 1, tzinfo=UTC),
+            check_out=datetime(2026, 1, 2, tzinfo=UTC),
+        )
+        unknown_later = GuestyReservation(
+            id="res-z",
+            listing_id="listing-001",
+            status="unknown",
+            check_in=None,
+            check_out=None,
+            check_in_local="2026-01-03",
+            is_v3=True,
+        )
+        unknown_earlier_id = replace(unknown_later, id="res-a")
+        unknown_earlier_date = replace(
+            unknown_later,
+            id="res-b",
+            check_in_local="2026-01-02",
+        )
+        unknown_without_date = replace(
+            unknown_later,
+            id="res-no-date",
+            check_in_local=None,
+        )
+        partial = replace(
+            unknown_later,
+            id="res-partial",
+            check_in=datetime(2020, 1, 1, tzinfo=UTC),
+            check_out=None,
+        )
+
+        ordered = sorted(
+            [
+                unknown_without_date,
+                unknown_later,
+                known,
+                unknown_earlier_id,
+                unknown_earlier_date,
+                partial,
+            ],
+            key=_reservation_sort_key,
+        )
+
+        assert [reservation.id for reservation in ordered] == [
+            "res-known",
+            "res-b",
+            "res-a",
+            "res-partial",
+            "res-z",
+            "res-no-date",
+        ]
 
 
 class TestRefreshDiagnostics:

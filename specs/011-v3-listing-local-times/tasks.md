@@ -25,34 +25,62 @@ validation slice, not a production-ready partial rollout.
 
 ## Phase 1: Setup
 
-- [ ] T001 Prepare the locked development environment with `uv sync
+- [X] T001 Prepare the locked development environment with `uv sync
   --all-groups` using `pyproject.toml` and `uv.lock`; run the focused baseline
   commands in `specs/011-v3-listing-local-times/quickstart.md` without a live
   account.
-- [ ] T002 Record existing source and fixture boundaries for
+- [X] T002 Record existing source and fixture boundaries for
   `GuestyReservation.from_v3_api_dict`, `ListingsCoordinator`,
   `ReservationsCoordinator`, `ReservationIdentityGuard`, and
   `GuestyReservationSensor` in `specs/011-v3-listing-local-times/tasks.md`
   implementation notes without changing approved policies.
+
+### Implementation notes
+
+- `GuestyReservation.from_v3_api_dict` and
+  `GuestyStaySegment.from_api_dict` are in
+  `custom_components/guesty/api/models.py`; malformed raw stay segments are
+  currently dropped after the single-raw-segment Feature 010 check.
+- `ListingsCoordinator._async_update_data` fetches every page through
+  `get_listings()` and then filters `data` to selected listing IDs. Keep any
+  timing-only exact-room lookup separate from selected `data` and `known_ids`.
+- `ReservationsCoordinator._async_update_data` retrieves via
+  `get_reservations()`, compares identity before publication, then applies
+  windowing, `_attribute_segments`, `_project`, and per-listing sorting.
+  `_record_identity` persists successful refresh evidence and
+  `_fallback_candidates` currently constructs time-window candidates from
+  stored hints.
+- `ReservationIdentityGuard` in `custom_components/guesty/identity.py`
+  owns baseline loading, identity comparison, successful refresh and bootstrap
+  persistence, and fallback/write evidence. `CandidateHint` is currently a
+  two-endpoint value; keep new timing metadata independent from identity maps.
+- `GuestyReservationSensor` in `custom_components/guesty/sensor.py` selects
+  by source lifecycle priority and builds selected/upcoming attributes through
+  `_build_attributes` and `_build_upcoming`; both currently assume concrete
+  datetimes.
+- Existing focused fixture boundaries are in
+  `tests/api/test_models.py`, `tests/test_coordinator.py`,
+  `tests/test_identity.py`, `tests/api/test_reservations_fallback.py`,
+  `tests/test_reservation_sensor.py`, and `tests/test_reservations_parity.py`.
 
 ## Phase 2: Foundational Source and Provenance
 
 **Purpose**: Preserve source identity and raw shape before timing is resolved.
 The red tests and green implementation in this phase precede all stories.
 
-- [ ] T003 Add failing source-provenance tests in `tests/api/test_models.py` for
+- [X] T003 Add failing source-provenance tests in `tests/api/test_models.py` for
   V3 versus legacy records, raw `stay` count and positions including malformed
   entries, and Feature 010 eligibility before filtering; keep legacy endpoint
   rejection unchanged.
-- [ ] T004 Add failing mixed V3/legacy-fallback source tests in
+- [X] T004 Add failing mixed V3/legacy-fallback source tests in
   `tests/test_reservations_parity.py` proving that a resolved legacy fallback
   record is not reinterpreted as V3 when both sources occur in one refresh.
-- [ ] T005 Implement explicit source and original raw count/position provenance
+- [X] T005 Implement explicit source and original raw count/position provenance
   in `custom_components/guesty/api/models.py` and preserve it through
   `custom_components/guesty/api/reservations_v3.py` and
   `custom_components/guesty/api/reservations_fallback.py`; retain existing
   identity and Feature 010 eligibility.
-- [ ] T006 Run the T003–T004 tests plus existing Feature 008/010 and legacy
+- [X] T006 Run the T003–T004 tests plus existing Feature 008/010 and legacy
   model tests in `tests/api/test_models.py`,
   `tests/api/test_reservations_v3.py`, and `tests/test_reservations_parity.py`;
   refactor with all tests green.
@@ -69,70 +97,70 @@ unchanged. Run the tests named below without a Guesty account.
 
 ### Slice A: Listing inputs and pure conversion
 
-- [ ] T007 [P] [US1] Add failing tests in `tests/api/test_models.py` for
+- [X] T007 [P] [US1] Add failing tests in `tests/api/test_models.py` for
   explicit versus missing/blank timezone provenance, explicit UTC, valid and
   malformed localized dates/defaults, offset-bearing defaults, independent
   endpoint inputs, and unchanged legacy parsing.
-- [ ] T008 [P] [US1] Add failing pure-conversion tests in
+- [X] T008 [P] [US1] Add failing pure-conversion tests in
   `tests/api/test_timing.py` for New York winter 16:00 → 21:00 UTC, summer 16:00
   → 20:00 UTC, endpoint-specific offsets across a DST transition, an unambiguous
   time, both fold candidates, and a spring gap.
-- [ ] T009 [P] [US1] Add failing tests in `tests/test_coordinator.py` proving
+- [X] T009 [P] [US1] Add failing tests in `tests/test_coordinator.py` proving
   the existing paginated listing response retains an unselected exact room for
   timing while selected `data` and `known_ids` remain unchanged and no extra
   Guesty requests occur.
-- [ ] T010 [US1] Preserve the listing model's compatibility timezone default
+- [X] T010 [US1] Preserve the listing model's compatibility timezone default
   while recording whether Guesty supplied a nonempty timezone in
   `custom_components/guesty/api/models.py`; retain valid raw default time
   fields.
-- [ ] T011 [US1] Implement a typed, HA-independent resolver in
+- [X] T011 [US1] Implement a typed, HA-independent resolver in
   `custom_components/guesty/api/timing.py` using prepared zone objects,
   per-endpoint dates and wall times, and UTC round trips; accept exactly one
   distinct instant and return unknown for invalid inputs, folds, and gaps.
-- [ ] T012 [US1] Retain an exact-ID lookup of all records already returned by
+- [X] T012 [US1] Retain an exact-ID lookup of all records already returned by
   `get_listings()` in `custom_components/guesty/coordinator.py`, without
   expanding selected listings, attribution, pagination, fields, or request
   count.
-- [ ] T013 [US1] Load/cache uncached `ZoneInfo` objects off the Home Assistant
+- [X] T013 [US1] Load/cache uncached `ZoneInfo` objects off the Home Assistant
   event loop in `custom_components/guesty/coordinator.py` and pass prepared
   zones to `custom_components/guesty/api/timing.py`; invalid zones remain
   unknown.
-- [ ] T014 [US1] Run T007–T009 and `tests/api/test_timing.py` green; verify the
+- [X] T014 [US1] Run T007–T009 and `tests/api/test_timing.py` green; verify the
   resolver in `custom_components/guesty/api/timing.py` has no HA or network
   dependency.
 
 ### Slice B: Single-room end-to-end resolution
 
-- [ ] T015 [P] [US1] Add failing V3 model tests in `tests/api/test_models.py`
+- [X] T015 [P] [US1] Add failing V3 model tests in `tests/api/test_models.py`
   showing that raw `checkIn`/`checkOut` suffixes and
   `plannedArrival`/`plannedDeparture` never supply exact instants, while
   localized dates and planned attributes are preserved. Add a failing
   known-to-unknown candidate reload test in `tests/test_identity.py` proving
   stale endpoints are not reused or expired as current evidence.
-- [ ] T016 [P] [US1] Add failing end-to-end fixture tests in
+- [X] T016 [P] [US1] Add failing end-to-end fixture tests in
   `tests/test_reservation_sensor.py` for standard and daylight dates,
   independent endpoint offsets, retained planned attributes, and unchanged
   legacy selected/upcoming output. In `tests/test_coordinator.py` and
   `tests/api/test_reservations_fallback.py`, test missing room settings and
   known-to-unknown refresh: no crash, guessed instant, stale fallback lookup,
   or identity/write-target change.
-- [ ] T017 [US1] Preserve V3 dates and per-endpoint optional exact timing
+- [X] T017 [US1] Preserve V3 dates and per-endpoint optional exact timing
   without changing strict legacy parsing in
   `custom_components/guesty/api/models.py`; never derive exact values from raw
   V3 endpoint suffixes. In `custom_components/guesty/identity.py`, preserve
   unknown current candidates across reload without stale interval eligibility
   or time-based eviction; retain old hint compatibility.
-- [ ] T018 [US1] Before activating optional endpoints, make window, projection,
+- [X] T018 [US1] Before activating optional endpoints, make window, projection,
   ordering, status and candidate handling null-safe in
   `custom_components/guesty/coordinator.py`, suppress unknown fallback in
   `custom_components/guesty/api/reservations_fallback.py`, and publish
   null/date/certainty and source status safely in
   `custom_components/guesty/sensor.py`; preserve identity and legacy behavior.
-- [ ] T019 [US1] Activate V3 resolution only after T017–T018 in
+- [X] T019 [US1] Activate V3 resolution only after T017–T018 in
   `custom_components/guesty/coordinator.py`, using each segment's exact-room
   lookup; retain `ReservationsCoordinator.data`, sensor keys, planned
   attributes, and the unchanged legacy and fallback source paths.
-- [ ] T020 [US1] Run the US1 model, timing, coordinator, sensor and parity tests
+- [X] T020 [US1] Run the US1 model, timing, coordinator, sensor and parity tests
   in `tests/api/test_models.py`, `tests/api/test_timing.py`,
   `tests/test_coordinator.py`, `tests/test_reservation_sensor.py`, and
   `tests/test_reservations_parity.py`, plus `tests/test_identity.py` and
@@ -155,34 +183,34 @@ the destination's own schedule or unknown.
 
 ### Slice A: Attribution and raw adjacency
 
-- [ ] T021 [P] [US2] Add failing tests in `tests/test_coordinator.py` for two
+- [X] T021 [P] [US2] Add failing tests in `tests/test_coordinator.py` for two
   tracked rooms with different zones/defaults, unselected exact child metadata
   already fetched, missing child metadata, tracked parent attribution, and no
   parent-setting substitution or added requests.
-- [ ] T022 [P] [US2] Add failing tests in `tests/api/test_models.py` for
+- [X] T022 [P] [US2] Add failing tests in `tests/api/test_models.py` for
   original positions across malformed/filtered stay entries and preservation of
   per-segment localized dates and listing identities.
-- [ ] T023 [US2] Update V3 segment projection in
+- [X] T023 [US2] Update V3 segment projection in
   `custom_components/guesty/coordinator.py` to resolve exact room settings
   separately from `_attribute_segments`, preserve raw order, and leave existing
   listing attribution and distinct intervals unchanged.
-- [ ] T024 [US2] Run T021–T022 and existing Feature 008 projection tests in
+- [X] T024 [US2] Run T021–T022 and existing Feature 008 projection tests in
   `tests/test_coordinator.py` and `tests/api/test_models.py`; checkpoint green.
 
 ### Slice B: Narrow handoff
 
-- [ ] T025 [US2] Add failing handoff tests in `tests/test_coordinator.py` for
+- [X] T025 [US2] Add failing handoff tests in `tests/test_coordinator.py` for
   adjacent same-date same-explicit-zone rooms with valid settings, prior exact
   checkout and strictly later destination checkout; assert exact destination
   start, unchanged final checkout, no buffer and unchanged attribution.
-- [ ] T026 [US2] Extend `tests/test_coordinator.py` with failing non-handoff
+- [X] T026 [US2] Extend `tests/test_coordinator.py` with failing non-handoff
   cases for different dates/zones, missing or invalid room settings, implicit
   zone, unknown prior checkout, filtered raw gap, nonadjacency, and destination
   checkout not strictly later; assert own schedule or unknown.
-- [ ] T027 [US2] Implement only the qualifying adjacent raw-position handoff in
+- [X] T027 [US2] Implement only the qualifying adjacent raw-position handoff in
   `custom_components/guesty/coordinator.py`; never infer a missing segment,
   extend the final checkout, or change identity or attribution.
-- [ ] T028 [US2] Run moved-stay and handoff tests in `tests/test_coordinator.py`
+- [X] T028 [US2] Run moved-stay and handoff tests in `tests/test_coordinator.py`
   plus US1 tests in `tests/api/test_timing.py` and
   `tests/test_reservation_sensor.py`; checkpoint green before US3.
 
@@ -198,80 +226,80 @@ changes identity or write routing after persistence reload.
 
 ### Slice A: Feature 010 and per-endpoint uncertainty
 
-- [ ] T029 [P] [US3] Add failing tests in `tests/api/test_models.py` for all
+- [X] T029 [P] [US3] Add failing tests in `tests/api/test_models.py` for all
   absent/null endpoint combinations in exactly one raw segment with a valid
   chronological top-level interval, segment-then-reservation localized-date
   precedence independently for check-in and check-out, and written-calendar-
   date fallback from each corresponding valid top-level timestamp when no
   localized date is available. Assert the written date is not offset-
   converted and does not produce an exact instant.
-- [ ] T030 [P] [US3] Add failing tests in `tests/api/test_reservations_v3.py`
+- [X] T030 [P] [US3] Add failing tests in `tests/api/test_reservations_v3.py`
   for malformed-present endpoints, multiple raw segments with one survivor,
   invalid or reversed top-level intervals, missing listing identity, and raw
   suffixes never yielding exact fallback timing. Assert no date is extracted
   from an invalid corresponding top-level endpoint and an invalid/reversed
   top-level pair is ineligible for Feature 010 fallback.
-- [ ] T031 [US3] Implement Feature 010's original raw eligibility and
+- [X] T031 [US3] Implement Feature 010's original raw eligibility and
   per-endpoint segment → reservation → written top-level calendar-date
   precedence, with independent optional V3 endpoints, in
   `custom_components/guesty/api/models.py`; do not convert the top-level
   offset or infer an exact time, fill one endpoint from the other, or broaden
   attribution.
-- [ ] T032 [US3] Run T029–T030 and Feature 010 regression tests in
+- [X] T032 [US3] Run T029–T030 and Feature 010 regression tests in
   `tests/api/test_models.py` and `tests/api/test_reservations_v3.py`; checkpoint
   green.
 
 ### Slice B: Windows, ordering, temporal state and sensor contract
 
-- [ ] T033 [P] [US3] Add failing tests in `tests/test_coordinator.py` for known
+- [X] T033 [P] [US3] Add failing tests in `tests/test_coordinator.py` for known
   instant windows; inclusive local-date lower/upper boundaries; per-segment zone
   overlap; missing date or explicit zone retaining the already-bounded V3
   result; and no stale previous-refresh instant.
-- [ ] T034 [P] [US3] Add failing sensor contract tests in
+- [X] T034 [P] [US3] Add failing sensor contract tests in
   `tests/test_reservation_sensor.py` for each independently null endpoint,
   current local dates, `timing_status`, unknown projected state and separate
   `reservation_status`, selected and upcoming summaries, lifecycle selection
   priority, and unchanged planned attributes.
-- [ ] T035 [US3] Extend `tests/test_coordinator.py` with failing known-first
+- [X] T035 [US3] Extend `tests/test_coordinator.py` with failing known-first
   exact-instant ordering, unknown localized-date then reservation-ID ordering,
   deterministic absent-date handling, and unknown multi-segment temporal status
   without treating it as current/upcoming/past.
-- [ ] T036 [US3] Complete the edge-case handling for `_within_window`, `_project`,
+- [X] T036 [US3] Complete the edge-case handling for `_within_window`, `_project`,
   `_select_segment`, `_segment_status`, and ordering in
   `custom_components/guesty/coordinator.py`, retaining known interval behavior
   and using inclusive date bounds only with provable dates and explicit valid
   exact-room zone.
-- [ ] T037 [US3] Complete selected and upcoming nullable exact attributes,
+- [X] T037 [US3] Complete selected and upcoming nullable exact attributes,
   current dates, certainty and separate source status in
   `custom_components/guesty/sensor.py` per
   `specs/011-v3-listing-local-times/contracts/reservation-sensor.md`, preserving
   known lifecycle selection priority.
-- [ ] T038 [US3] Run T033–T035 and the full sensor/coordinator regressions in
+- [X] T038 [US3] Run T033–T035 and the full sensor/coordinator regressions in
   `tests/test_coordinator.py` and `tests/test_reservation_sensor.py`; checkpoint
   green.
 
 ### Slice C: Identity evidence, fallback and persistence
 
-- [ ] T039 [P] [US3] Add failing persistence tests in `tests/test_identity.py`
+- [X] T039 [P] [US3] Add failing persistence tests in `tests/test_identity.py`
   for old two-string `CandidateHint` migration to unknown/no usable interval,
   recency from the containing baseline's valid `updated` timestamp (or the
   fixed oldest sentinel), current unknown overwriting stale known timing,
   unknown reload, UTC observation recency, deterministic equal-recency
   lexicographic ID ordering,
   candidate-only capacity eviction, and identity-map preservation.
-- [ ] T040 [P] [US3] Add failing tests in
+- [X] T040 [P] [US3] Add failing tests in
   `tests/api/test_reservations_fallback.py` for unknown current timing
   suppressing time-windowed lookup and stale expiry, complete verified
   intervals retaining existing window/expiry behavior, and unchanged
   confirmed-absence persistence and legacy fallback routing.
-- [ ] T041 [P] [US3] Add failing mixed-refresh and write-guard tests in
+- [X] T041 [P] [US3] Add failing mixed-refresh and write-guard tests in
   `tests/test_reservations_parity.py` for incomplete, malformed, partial, and
   chronology-invalid raw stay sequences (including a valid first and last
   segment around an unusable middle entry), first-to-last envelope bounds only
   after every interval verifies, same-path conflict abort, cross-path
   disagreement blocking writes, and verified identity retaining the same
   permitted/refused target ID despite unknown timing.
-- [ ] T042 [US3] Complete `CandidateHint` serialization and
+- [X] T042 [US3] Complete `CandidateHint` serialization and
   candidate-only retention/capacity in `custom_components/guesty/identity.py`:
   old hints remain readable but migrate to unknown with no usable interval;
   update UTC recency for successfully persisted primary-source/by-ID
@@ -282,54 +310,54 @@ changes identity or write routing after persistence reload.
   baseline-update recency or the fixed UTC sentinel for old records and
   deterministic ascending `(observed_at, reservation_id)` ordering, which
   evicts the lexicographically smallest ID first on ties.
-- [ ] T043 [US3] Complete `_record_identity` and `_fallback_candidates` in
+- [X] T043 [US3] Complete `_record_identity` and `_fallback_candidates` in
   `custom_components/guesty/coordinator.py` to mark a timed candidate known
   only when every entry in the complete raw sequence has a valid listing ID,
   verified positive interval, and chronological non-overlapping order; bound
   its envelope from the first check-in to the last check-out only after all
   entries pass. Preserve segment projection/attribution, identity maps,
   source status and existing confirmed-absence rules.
-- [ ] T044 [US3] Complete unknown-candidate gating in
+- [X] T044 [US3] Complete unknown-candidate gating in
   `custom_components/guesty/api/reservations_fallback.py` without changing
   verified legacy lookup windows, source routing, confirmation-code checks or
   write guard outcomes.
-- [ ] T045 [US3] Run identity, fallback, mixed-source and write-safety tests in
+- [X] T045 [US3] Run identity, fallback, mixed-source and write-safety tests in
   `tests/test_identity.py`, `tests/api/test_reservations_fallback.py`, and
   `tests/test_reservations_parity.py`; checkpoint green.
 
 ### Slice D: Privacy and end-to-end regression
 
-- [ ] T046 [P] [US3] Add failing diagnostics tests in
+- [X] T046 [P] [US3] Add failing diagnostics tests in
   `tests/test_privacy_logging.py` for missing/invalid settings and raw V3 timing
   evidence, ensuring guest names, contacts and confirmation codes never appear
   in time-related logs.
-- [ ] T047 [P] [US3] Add a fixture-driven refresh-to-reload regression in
+- [X] T047 [P] [US3] Add a fixture-driven refresh-to-reload regression in
   `tests/test_coordinator.py` covering known → partially unknown → known timing,
   selected/upcoming attributes, date windows, fallback suppression, unchanged
   identity and zero extra requests.
-- [ ] T048 [US3] Add only privacy-safe timing diagnostics in
+- [X] T048 [US3] Add only privacy-safe timing diagnostics in
   `custom_components/guesty/api/models.py` and
   `custom_components/guesty/coordinator.py`; raw V3 values, if logged for
   evidence, must be DEBUG-only and contain no guest data or confirmation codes.
-- [ ] T049 [US3] Run the T046–T047 tests and the focused fixture suite in
+- [X] T049 [US3] Run the T046–T047 tests and the focused fixture suite in
   `specs/011-v3-listing-local-times/quickstart.md`; checkpoint all three stories
   green.
 
 ## Phase 6: Polish and Cross-Cutting Gates
 
-- [ ] T050 Author a `fixes` release note in
+- [X] T050 Author a `fixes` release note in
   `releasenotes/notes/v3-listing-local-times-282.yaml` describing V3 local
   scheduling, unknown/date-only behavior, unchanged legacy behavior and evidence
   limits; do not claim live verification or publish a release.
-- [ ] T051 Run full fixture tests with `uv run pytest tests/`, lint with `uv run
+- [X] T051 Run full fixture tests with `uv run pytest tests/`, lint with `uv run
   ruff check custom_components/ tests/ scripts/`, and type-check with `uv run
   --group releasenotes mypy custom_components/ tests/ scripts/` from
   `specs/011-v3-listing-local-times/quickstart.md`.
-- [ ] T052 Run `uv run pre-commit run --all-files` and confirm interrogate,
+- [X] T052 Run `uv run pre-commit run --all-files` and confirm interrogate,
   REUSE and all configured hooks succeed for `custom_components/guesty/`,
   `tests/`, and `releasenotes/notes/v3-listing-local-times-282.yaml`; fix
   failures without bypass.
-- [ ] T053 Verify all CI checks are green before any permitted manual
+- [X] T053 Verify all CI checks are green before any permitted manual
   validation, and review `specs/011-v3-listing-local-times/quickstart.md` gates
   for unchanged requests, identity, attribution and write routing; no live
   Guesty operations.

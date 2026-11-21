@@ -136,6 +136,7 @@ class LegacyReservationSource:
                     ),
                 ),
             ),
+            observed_ids=tuple(reservation.id for reservation in merged),
         )
 
     async def _fetch_all_reservations(

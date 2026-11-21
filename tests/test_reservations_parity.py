@@ -13,7 +13,7 @@ NFR-003, NFR-004, FR-049).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -34,11 +34,21 @@ from custom_components.guesty.api.const import (
     RESERVATIONS_V3_SEARCH_ENDPOINT,
     TOKEN_URL,
 )
+from custom_components.guesty.api.models import (
+    GuestyReservation,
+    GuestyStaySegment,
+)
 from custom_components.guesty.const import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
     CONF_RESERVATIONS_API,
     DOMAIN,
+)
+from custom_components.guesty.identity import (
+    CONTINUITY_VERIFIED,
+    CandidateHint,
+    IdentityBaseline,
+    ReservationIdentityGuard,
 )
 from tests.conftest import (
     FAKE_CLIENT_ID,
@@ -222,6 +232,13 @@ async def _publish_on(hass: HomeAssistant, path: str, listing: Any) -> dict[str,
         "limit": 100,
         "skip": 0,
     }
+    timing_listing = replace(
+        listing,
+        timezone="UTC",
+        timezone_explicit=True,
+        check_in_time="15:00",
+        check_out_time="11:00",
+    )
     with (
         respx.mock(assert_all_called=False) as router,
         patch(
@@ -237,7 +254,7 @@ async def _publish_on(hass: HomeAssistant, path: str, listing: Any) -> dict[str,
         patch(
             "custom_components.guesty.GuestyApiClient.get_listings",
             new_callable=AsyncMock,
-            return_value=[listing],
+            return_value=[timing_listing],
         ),
         patch(
             "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
@@ -352,6 +369,68 @@ class TestLegacyV3Parity:
             "upcoming_reservations",
         ):
             assert v3_attrs[key] == legacy_attrs[key], key
+
+    async def test_unknown_v3_timing_does_not_change_write_identity(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A missing interval cannot remap or unconfirm the verified target."""
+        guard = ReservationIdentityGuard(hass, "entry-parity-identity")
+        await guard.async_load()
+        await guard.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_V3,
+                continuity=CONTINUITY_VERIFIED,
+                codes={"CONF-IDENTITY": "res-identity"},
+                candidates={
+                    "res-identity": CandidateHint(
+                        timing_status="known",
+                        check_in="2026-01-02T16:00:00+00:00",
+                        check_out="2026-01-04T11:00:00+00:00",
+                        observed_at="2026-01-01T00:00:00+00:00",
+                    ),
+                },
+            ),
+        )
+        refusal_before = guard.write_refusal("res-identity")
+        unknown = GuestyReservation(
+            id="res-identity",
+            listing_id=_LISTING_ID,
+            status="confirmed",
+            check_in=None,
+            check_out=None,
+            confirmation_code="CONF-IDENTITY",
+            is_v3=True,
+            raw_stay_count=1,
+            stay=(
+                GuestyStaySegment(
+                    listing_id=_LISTING_ID,
+                    check_in=None,
+                    check_out=None,
+                    check_in_local="2026-01-02",
+                    check_out_local="2026-01-04",
+                    raw_position=0,
+                ),
+            ),
+        )
+        comparison = guard.compare([unknown], RESERVATIONS_API_V3)
+        assert not comparison.is_ambiguous
+        assert comparison.matched == 1
+
+        await guard.async_record_refresh(
+            path=RESERVATIONS_API_V3,
+            reservations=[unknown],
+            published={},
+            comparison=comparison,
+            updated=datetime.now(UTC).isoformat(),
+            observed_ids={"res-identity"},
+        )
+
+        assert guard.baseline is not None
+        assert guard.baseline.codes == {"CONF-IDENTITY": "res-identity"}
+        assert guard.baseline.candidates["res-identity"].timing_status == "unknown"
+        assert guard.baseline.candidates["res-identity"].check_in is None
+        assert guard.write_refusal("res-identity") == refusal_before
 
     async def test_the_financial_three_exist_only_on_legacy(
         self,

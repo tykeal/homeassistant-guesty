@@ -50,7 +50,7 @@ Zero Home Assistant imports (NFR-007).
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -184,6 +184,10 @@ class FallbackOutcome:
         sourced: Identifiers published by the fallback, including
             those republished from retained values (FR-054).
         absent: Identifiers legacy confirmed are gone (FR-052).
+        observed: Identifiers returned by a successful by-ID response
+            during this resolution.
+        observed_reservations: Records returned by successful by-ID
+            responses, including records filtered from publication.
     """
 
     reservations: tuple[GuestyReservation, ...] = ()
@@ -191,6 +195,8 @@ class FallbackOutcome:
     served: tuple[str, ...] = ()
     sourced: tuple[str, ...] = ()
     absent: tuple[str, ...] = ()
+    observed: tuple[str, ...] = ()
+    observed_reservations: tuple[GuestyReservation, ...] = ()
 
 
 class ReservationFallbackSource:
@@ -336,8 +342,16 @@ class ReservationFallbackSource:
         absent: list[str] = list(self._drain_unreported_absent())
         succeeded = 0
         failed = 0
+        observed: set[str] = set()
+        observed_reservations: list[GuestyReservation] = []
         for reservation_id in batch:
-            verdict = await self._lookup(reservation_id, now, statuses)
+            verdict, observation = await self._lookup(
+                reservation_id,
+                now,
+                statuses,
+            )
+            if observation is not None:
+                observed_reservations.append(observation)
             if verdict == _RETIRED:
                 self._disable()
                 self._served.clear()
@@ -351,15 +365,25 @@ class ReservationFallbackSource:
                         failed=failed,
                     ),
                     absent=tuple(absent),
+                    observed=tuple(sorted(observed)),
+                    observed_reservations=tuple(observed_reservations),
                 )
             if verdict == _ABSENT:
                 absent.append(reservation_id)
             elif verdict == _OK:
                 succeeded += 1
+                observed.add(reservation_id)
             else:
                 failed += 1
 
-        published = self._publish(eligible, now, past_days, future_days, statuses)
+        published = self._publish(
+            eligible,
+            candidates,
+            now,
+            past_days,
+            future_days,
+            statuses,
+        )
         self._prune(present, set(candidates))
 
         attempted = set(batch)
@@ -378,6 +402,8 @@ class ReservationFallbackSource:
             served=tuple(sorted(self._served)),
             sourced=tuple(reservation.id for reservation in published),
             absent=tuple(absent),
+            observed=tuple(sorted(observed)),
+            observed_reservations=tuple(observed_reservations),
         )
 
     def _absorb(
@@ -459,7 +485,7 @@ class ReservationFallbackSource:
         reservation_id: str,
         now: datetime,
         statuses: frozenset[str],
-    ) -> str:
+    ) -> tuple[str, GuestyReservation | None]:
         """Issue one legacy by-id lookup and read its answer.
 
         The attempt is recorded before the request so that a
@@ -471,7 +497,8 @@ class ReservationFallbackSource:
             statuses: The configured status set (FR-050a).
 
         Returns:
-            One of the module's verdict constants.
+            A verdict and, for every successful lookup, its source
+            record even when that record is filtered from publication.
         """
         self._last_attempt[reservation_id] = now
         try:
@@ -488,14 +515,14 @@ class ReservationFallbackSource:
                 reservation_id,
                 type(exc).__name__,
             )
-            return _FAILED
+            return _FAILED, None
 
         verdict = classify_legacy_response(response, reservation_id)
         if verdict == _ABSENT:
             self._retire(reservation_id)
-            return _ABSENT
+            return _ABSENT, None
         if verdict == _RETIRED:
-            return _RETIRED
+            return _RETIRED, None
         if verdict == _FAILED:
             _LOGGER.warning(
                 "Legacy fallback lookup for reservation %s "
@@ -504,7 +531,7 @@ class ReservationFallbackSource:
                 reservation_id,
                 response.status_code,
             )
-            return _FAILED
+            return _FAILED, None
 
         reservation = _parse(response, reservation_id)
         if reservation is None:
@@ -514,7 +541,7 @@ class ReservationFallbackSource:
                 "known values",
                 reservation_id,
             )
-            return _FAILED
+            return _FAILED, None
 
         if reservation.status not in statuses:
             # The reservation left the configured status set, which
@@ -528,14 +555,14 @@ class ReservationFallbackSource:
                 reservation_id,
                 reservation.status,
             )
-            return _OK
+            return _OK, reservation
 
         self._served[reservation_id] = ServedRecord(
             reservation=reservation,
             fetched_at=now,
         )
         self._retained[reservation_id] = reservation
-        return _OK
+        return _OK, reservation
 
     def _drain_unreported_absent(self) -> tuple[str, ...]:
         """Hand write-discovered absences to this refresh.
@@ -591,6 +618,7 @@ class ReservationFallbackSource:
     def _publish(
         self,
         eligible: list[str],
+        candidates: Mapping[str, FallbackCandidate],
         now: datetime,
         past_days: int,
         future_days: int,
@@ -627,12 +655,37 @@ class ReservationFallbackSource:
                 continue
             if reservation.status not in statuses:
                 continue
-            if not _in_window(
-                reservation.check_in,
-                reservation.check_out,
-                now,
-                past_days,
-                future_days,
+            if reservation.is_v3:
+                # The durable, fully verified candidate interval bounds
+                # this fallback publication. Raw V3 endpoint suffixes
+                # never become current published instants.
+                hint = candidates.get(reservation_id)
+                if hint is None or not _overlaps(
+                    hint,
+                    now,
+                    past_days,
+                    future_days,
+                ):
+                    continue
+                if (
+                    reservation.status in {"confirmed", "checked_in"}
+                    and reservation.timing_status == "unknown"
+                ):
+                    reservation = replace(
+                        reservation,
+                        check_in=None,
+                        check_out=None,
+                    )
+            elif (
+                reservation.check_in is None
+                or reservation.check_out is None
+                or not _in_window(
+                    reservation.check_in,
+                    reservation.check_out,
+                    now,
+                    past_days,
+                    future_days,
+                )
             ):
                 continue
             published.append(reservation)

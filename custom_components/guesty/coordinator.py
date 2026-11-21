@@ -8,8 +8,9 @@ import logging
 from collections import defaultdict
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
@@ -39,6 +40,10 @@ from custom_components.guesty.api.models import (
     LegacyWriteCounters,
     ReservationFetchResult,
     derive_nights_count,
+)
+from custom_components.guesty.api.timing import (
+    is_valid_local_wall_time,
+    resolve_local_datetime,
 )
 from custom_components.guesty.const import (
     CONF_CF_SCAN_INTERVAL,
@@ -90,6 +95,7 @@ class ListingsCoordinator(
     Attributes:
         api_client: The Guesty API client instance.
         config_entry: The integration config entry.
+        timing_listings: All fetched listings, including unselected exact rooms.
         disappeared_listing_ids: IDs of listings previously present
             but absent in the most recent successful fetch.
     """
@@ -110,6 +116,7 @@ class ListingsCoordinator(
             api_client: Guesty API client for fetching listings.
         """
         self.api_client = api_client
+        self.timing_listings: dict[str, GuestyListing] = {}
         self.disappeared_listing_ids: set[str] = set()
         self._previous_listing_ids: set[str] | None = None
         interval_minutes = entry.options.get(
@@ -149,6 +156,7 @@ class ListingsCoordinator(
             ) from exc
 
         new_data = {listing.id: listing for listing in listings}
+        self.timing_listings = new_data
         current_ids = set(new_data.keys())
 
         if self._previous_listing_ids is not None:
@@ -214,6 +222,7 @@ class ReservationsCoordinator(
         """
         self.api_client = api_client
         self.listings_coordinator = listings_coordinator
+        self._zone_cache: dict[str, ZoneInfo | None] = {}
         self.identity = ReservationIdentityGuard(hass, entry.entry_id)
         self.reservations_path = resolve_reservations_api(
             entry.options.get(
@@ -289,7 +298,9 @@ class ReservationsCoordinator(
                 f"Error fetching reservations: {exc.message}",
             ) from exc
 
-        reservations = fetch_result.reservations
+        reservations = await self._resolve_v3_reservations(
+            fetch_result.reservations,
+        )
         known_fallback_ids = self.fallback_served_ids | self.fallback_sourced_ids
         retired = (
             bool(known_fallback_ids)
@@ -353,6 +364,7 @@ class ReservationsCoordinator(
             return {}
 
         now = datetime.now(UTC)
+        timing_listings = self._timing_listings()
         grouped: dict[str, list[GuestyReservation]] = defaultdict(list)
         guest_ids: list[str] = []
         published: dict[str, CandidateHint] = {}
@@ -372,6 +384,8 @@ class ReservationsCoordinator(
                 now=now,
                 past_days=past_days,
                 future_days=future_days,
+                timing_listings=timing_listings,
+                zones=self._zone_cache,
             ):
                 counters.trim_drops += 1
                 _LOGGER.debug(
@@ -395,10 +409,6 @@ class ReservationsCoordinator(
                 continue
 
             counters.attributed += 1
-            published[reservation.id] = CandidateHint(
-                check_in=reservation.check_in.isoformat(),
-                check_out=reservation.check_out.isoformat(),
-            )
             if reservation.guest is not None and reservation.guest.guest_id:
                 guest_ids.append(reservation.guest.guest_id)
             if unknown_ids:
@@ -428,10 +438,125 @@ class ReservationsCoordinator(
         return {
             listing_id: sorted(
                 (_with_guest(projection, lookup.guests) for projection in projections),
-                key=lambda r: r.check_in,
+                key=_reservation_sort_key,
             )
             for listing_id, projections in grouped.items()
         }
+
+    async def _resolve_v3_reservations(
+        self,
+        reservations: tuple[GuestyReservation, ...],
+    ) -> tuple[GuestyReservation, ...]:
+        """Resolve only V3 segments from already-fetched exact-room settings.
+
+        Args:
+            reservations: The source records returned by this refresh.
+
+        Returns:
+            Records with current V3 endpoint values resolved independently.
+            Legacy and fallback-sourced records remain unchanged.
+        """
+        fetched = getattr(
+            self.listings_coordinator,
+            "timing_listings",
+            None,
+        )
+        if not isinstance(fetched, Mapping):
+            fetched = self.listings_coordinator.data
+        listings = fetched if isinstance(fetched, Mapping) else {}
+        resolved: list[GuestyReservation] = []
+        for reservation in reservations:
+            if not reservation.is_v3 or not reservation.stay:
+                resolved.append(reservation)
+                continue
+
+            segments: list[GuestyStaySegment] = []
+            for segment in reservation.stay:
+                listing = listings.get(segment.listing_id)
+                if (
+                    not isinstance(listing, GuestyListing)
+                    or not listing.timezone_explicit
+                ):
+                    segments.append(replace(segment, check_in=None, check_out=None))
+                    continue
+                zone = await self._async_timezone(listing.timezone)
+                segments.append(
+                    replace(
+                        segment,
+                        check_in=resolve_local_datetime(
+                            segment.check_in_local,
+                            listing.check_in_time,
+                            zone,
+                        ),
+                        check_out=resolve_local_datetime(
+                            segment.check_out_local,
+                            listing.check_out_time,
+                            zone,
+                        ),
+                    ),
+                )
+
+            resolved_stay = tuple(segments)
+            resolved_stay = _apply_same_date_handoffs(
+                resolved_stay,
+                listings,
+                self._zone_cache,
+            )
+            first = resolved_stay[0]
+            last = resolved_stay[-1]
+            resolved.append(
+                replace(
+                    reservation,
+                    check_in=first.check_in,
+                    check_out=last.check_out,
+                    check_in_local=first.check_in_local,
+                    check_out_local=last.check_out_local,
+                    guests_count=first.guests_count,
+                    stay=resolved_stay,
+                ),
+            )
+        return tuple(resolved)
+
+    def _timing_listings(self) -> Mapping[str, GuestyListing]:
+        """Return the full fetched listing map without changing selection.
+
+        Returns:
+            Exact-room metadata retained by the listings coordinator.
+        """
+        fetched = getattr(
+            self.listings_coordinator,
+            "timing_listings",
+            None,
+        )
+        if not isinstance(fetched, Mapping):
+            fetched = self.listings_coordinator.data
+        if not isinstance(fetched, Mapping):
+            return {}
+        return {
+            listing_id: listing
+            for listing_id, listing in fetched.items()
+            if isinstance(listing, GuestyListing)
+        }
+
+    async def _async_timezone(self, timezone_name: str) -> ZoneInfo | None:
+        """Load and cache one IANA zone outside Home Assistant's event loop.
+
+        Args:
+            timezone_name: Explicit timezone name from a listing DTO.
+
+        Returns:
+            The prepared timezone, or None for invalid input.
+        """
+        if not isinstance(timezone_name, str) or not timezone_name.strip():
+            return None
+        if timezone_name in self._zone_cache:
+            return self._zone_cache[timezone_name]
+        try:
+            zone = await self.hass.async_add_executor_job(ZoneInfo, timezone_name)
+        except ZoneInfoNotFoundError, ValueError, TypeError, OSError:
+            zone = None
+        self._zone_cache[timezone_name] = zone
+        return zone
 
     def record_legacy_write(self, operation: str, outcome: str) -> None:
         """Count one legacy-routed write outcome (FR-062).
@@ -594,6 +719,8 @@ class ReservationsCoordinator(
             past_days=past_days,
             fallback_ids=fetch_result.fallback_sourced,
             absent_ids=fetch_result.fallback_absent,
+            observed_ids=fetch_result.observed_ids,
+            observed_reservations=fetch_result.observed_reservations,
         )
         if stored and fetch_result.fallback_absent:
             # Only a persisted retirement may clear the fallback's
@@ -620,6 +747,12 @@ class ReservationsCoordinator(
             return {}
         candidates: dict[str, FallbackCandidate] = {}
         for reservation_id, hint in baseline.candidates.items():
+            if (
+                hint.timing_status != "known"
+                or hint.check_in is None
+                or hint.check_out is None
+            ):
+                continue
             try:
                 check_in = datetime.fromisoformat(hint.check_in)
                 check_out = datetime.fromisoformat(hint.check_out)
@@ -839,6 +972,8 @@ def _within_window(
     now: datetime,
     past_days: int,
     future_days: int,
+    timing_listings: Mapping[str, GuestyListing] | None = None,
+    zones: Mapping[str, ZoneInfo | None] | None = None,
 ) -> bool:
     """Test a reservation against the configured instant window.
 
@@ -856,9 +991,131 @@ def _within_window(
     Returns:
         True when the reservation overlaps the configured window.
     """
-    return reservation.check_out > now - timedelta(
-        days=past_days
-    ) and reservation.check_in < now + timedelta(days=future_days)
+    if reservation.check_in is not None and reservation.check_out is not None:
+        return reservation.check_out > now - timedelta(
+            days=past_days,
+        ) and reservation.check_in < now + timedelta(days=future_days)
+
+    if not reservation.is_v3 or not reservation.stay:
+        return reservation.is_v3
+
+    listings = timing_listings or {}
+    prepared_zones = zones or {}
+    for segment in reservation.stay:
+        listing = listings.get(segment.listing_id)
+        if (
+            listing is None
+            or not listing.timezone_explicit
+            or listing.timezone not in prepared_zones
+        ):
+            return True
+        zone = prepared_zones[listing.timezone]
+        if zone is None:
+            return True
+        check_in_date = _parse_local_date(segment.check_in_local)
+        check_out_date = _parse_local_date(segment.check_out_local)
+        if check_in_date is None or check_out_date is None:
+            return True
+        local_today = now.astimezone(zone).date()
+        if check_out_date >= local_today - timedelta(
+            days=past_days
+        ) and check_in_date <= local_today + timedelta(days=future_days):
+            return True
+    return False
+
+
+def _parse_local_date(value: str | None) -> date | None:
+    """Parse a canonical localized calendar date.
+
+    Args:
+        value: Candidate ISO calendar-date value.
+
+    Returns:
+        The date, or None when missing or invalid.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.isoformat() == value else None
+
+
+def _apply_same_date_handoffs(
+    segments: tuple[GuestyStaySegment, ...],
+    listings: Mapping[str, GuestyListing],
+    zones: Mapping[str, ZoneInfo | None],
+) -> tuple[GuestyStaySegment, ...]:
+    """Apply the narrowly allowed checkout-to-checkin handoff.
+
+    Args:
+        segments: Current reservation segments in parsed raw order.
+        listings: Exact-room metadata from the existing listing response.
+        zones: Prepared timezone cache.
+
+    Returns:
+        Segments with only qualifying destination starts adjusted.
+    """
+    adjusted = list(segments)
+    for index in range(1, len(adjusted)):
+        previous = adjusted[index - 1]
+        destination = adjusted[index]
+        if destination.raw_position != previous.raw_position + 1:
+            continue
+        handoff_date = _parse_local_date(previous.check_out_local)
+        if (
+            handoff_date is None
+            or handoff_date != _parse_local_date(destination.check_in_local)
+            or previous.check_out is None
+            or destination.check_out is None
+        ):
+            continue
+
+        prior_listing = listings.get(previous.listing_id)
+        destination_listing = listings.get(destination.listing_id)
+        if (
+            prior_listing is None
+            or destination_listing is None
+            or not prior_listing.timezone_explicit
+            or not destination_listing.timezone_explicit
+            or prior_listing.timezone != destination_listing.timezone
+            or prior_listing.timezone not in zones
+            or zones[prior_listing.timezone] is None
+            or not is_valid_local_wall_time(prior_listing.check_in_time)
+            or not is_valid_local_wall_time(prior_listing.check_out_time)
+            or not is_valid_local_wall_time(destination_listing.check_in_time)
+            or not is_valid_local_wall_time(destination_listing.check_out_time)
+        ):
+            continue
+        if previous.check_out < destination.check_out:
+            adjusted[index] = replace(
+                destination,
+                check_in=previous.check_out,
+            )
+    return tuple(adjusted)
+
+
+def _reservation_sort_key(
+    reservation: GuestyReservation,
+) -> tuple[int, datetime, str, str]:
+    """Order fully timed records before deterministic unknown-date records.
+
+    Args:
+        reservation: The per-listing reservation projection.
+
+    Returns:
+        A sortable key with no comparison between a date and an instant.
+    """
+    if (
+        reservation.check_in is not None
+        and reservation.check_out is not None
+        and reservation.check_in < reservation.check_out
+    ):
+        return (0, reservation.check_in, "", reservation.id)
+    local_date = _parse_local_date(reservation.check_in_local)
+    date_key = local_date.isoformat() if local_date is not None else "~"
+    return (1, datetime.max.replace(tzinfo=UTC), date_key, reservation.id)
 
 
 def _attribute_segments(
@@ -928,19 +1185,32 @@ def _project(
     if len(reservation.stay) <= 1:
         if not reservation.stay and reservation.listing_id == listing_id:
             return reservation
-        return replace(reservation, listing_id=listing_id, stay=())
+        projected = replace(reservation, listing_id=listing_id, stay=())
+        if (
+            reservation.is_v3
+            and reservation.status in _TEMPORAL_STATUSES
+            and reservation.timing_status == "unknown"
+        ):
+            projected = replace(
+                projected,
+                status="unknown",
+                reservation_status=reservation.status,
+            )
+        return projected
 
     segment = _select_segment(segments, now)
+    status = _segment_status(reservation.status, segment, now)
     return replace(
         reservation,
         listing_id=listing_id,
-        status=_segment_status(reservation.status, segment, now),
+        status=status,
         check_in=segment.check_in,
         check_out=segment.check_out,
         check_in_local=segment.check_in_local,
         check_out_local=segment.check_out_local,
         guests_count=segment.guests_count,
         nights_count=_segment_nights(segment),
+        reservation_status=(reservation.status if status == "unknown" else None),
         stay=(),
     )
 
@@ -964,14 +1234,53 @@ def _select_segment(
     Returns:
         The selected segment.
     """
-    ordered = sorted(segments, key=lambda segment: segment.check_in)
+    timed = [
+        segment
+        for segment in segments
+        if segment.check_in is not None
+        and segment.check_out is not None
+        and segment.check_in < segment.check_out
+    ]
+    ordered = sorted(
+        timed,
+        key=lambda segment: (
+            segment.check_in
+            if segment.check_in is not None
+            else datetime.max.replace(tzinfo=UTC)
+        ),
+    )
     for segment in ordered:
+        assert segment.check_in is not None
+        assert segment.check_out is not None
         if segment.check_in <= now < segment.check_out:
             return segment
     for segment in ordered:
+        assert segment.check_in is not None
         if segment.check_in > now:
             return segment
-    return max(ordered, key=lambda segment: segment.check_out)
+    unknown = [
+        segment
+        for segment in segments
+        if segment.check_in is None
+        or segment.check_out is None
+        or segment.check_in >= segment.check_out
+    ]
+    if unknown:
+        return min(
+            unknown,
+            key=lambda segment: (
+                _parse_local_date(segment.check_in_local) or date.max,
+                segment.raw_position,
+            ),
+        )
+    return max(
+        ordered,
+        key=lambda segment: (
+            segment.check_out
+            if segment.check_out is not None
+            else datetime.min.replace(tzinfo=UTC)
+        ),
+    )
 
 
 def _segment_status(
@@ -996,6 +1305,12 @@ def _segment_status(
     """
     if status not in _TEMPORAL_STATUSES:
         return status
+    if (
+        segment.check_in is None
+        or segment.check_out is None
+        or segment.check_in >= segment.check_out
+    ):
+        return "unknown"
     if now < segment.check_in:
         return "confirmed"
     if now >= segment.check_out:
@@ -1018,6 +1333,8 @@ def _segment_nights(segment: GuestyStaySegment) -> int | None:
     )
     if nights is not None:
         return nights
+    if segment.check_in is None or segment.check_out is None:
+        return None
     return (segment.check_out.date() - segment.check_in.date()).days
 
 
