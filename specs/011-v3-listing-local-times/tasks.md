@@ -357,7 +357,7 @@ changes identity or write routing after persistence reload.
   REUSE and all configured hooks succeed for `custom_components/guesty/`,
   `tests/`, and `releasenotes/notes/v3-listing-local-times-282.yaml`; fix
   failures without bypass.
-- [ ] T053 Verify all CI checks are green before any permitted manual
+- [X] T053 Verify all CI checks are green before any permitted manual
   validation, and review `specs/011-v3-listing-local-times/quickstart.md` gates
   for unchanged requests, identity, attribution and write routing; no live
   Guesty operations.
