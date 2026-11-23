@@ -1,0 +1,10 @@
+---
+# SPDX-FileCopyrightText: 2026 Andrew Grimberg <tykeal@bardicgrove.org>
+# SPDX-License-Identifier: Apache-2.0
+
+fixes:
+  - |
+    An eligible reservation write missing current identity evidence may now
+    trigger one refresh of the configured reservation source before being
+    refused. Writes still fail closed if the refresh fails or identity and
+    routing evidence remain insufficient.

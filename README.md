@@ -125,6 +125,14 @@ explains why. The notice clears by itself as soon as a later refresh
 provides the evidence. Reads are never blocked by this — only
 writes, and only until continuity is confirmed.
 
+When a valid reservation write cannot find a current identity or
+confirmation code, the integration may refresh the configured
+reservation source once and check again. It still refuses the write
+if the refresh fails or identity, continuity, persistence, or source
+provenance cannot be confirmed. A refresh does not guarantee that a
+new booking has already appeared in Guesty's results. This recovery
+does not retry the write itself or refresh for listing custom fields.
+
 If you need writes back immediately, roll back to `legacy`.
 
 ## Breaking changes
