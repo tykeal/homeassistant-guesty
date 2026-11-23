@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncGenerator
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -2711,13 +2712,18 @@ class TestLegacyRoutedWriteFailures:
         assert len(route.calls) > 1
 
     @respx.mock
-    @pytest.mark.parametrize("status_code", [401, 429, 500])
-    async def test_recovered_v3_status_does_not_retry(self, status_code: int) -> None:
+    @pytest.mark.parametrize("failure", [401, 429, 500, "connection"])
+    async def test_recovered_v3_status_does_not_retry(self, failure: int | str) -> None:
         """A recovery-mode v3 write is attempted at most once."""
         _mock_token()
         route = respx.put(
             f"{BASE_URL}{RESERVATION_STATUS_PATH.format(reservation_id='res-001')}",
-        ).mock(return_value=Response(status_code, json={"error": "no"}))
+        )
+        if failure == "connection":
+            route.mock(side_effect=httpx.ConnectError("unavailable"))
+        else:
+            assert isinstance(failure, int)
+            route.mock(return_value=Response(failure, json={"error": "no"}))
         async with httpx.AsyncClient() as http:
             with pytest.raises(GuestyApiError):
                 await _v3_client(http).set_reservation_status(
@@ -2758,6 +2764,37 @@ class TestLegacyRoutedWriteFailures:
                     "res-001", "note", route=route_name, single_attempt=True
                 )
         assert len(route.calls) == 1
+
+    @respx.mock
+    @pytest.mark.parametrize("route_name", [WRITE_ROUTE_V3, WRITE_ROUTE_LEGACY])
+    async def test_recovered_note_read_keeps_retry_policy(
+        self, route_name: str
+    ) -> None:
+        """Only the note PUT becomes single-attempt, not its prerequisite GET."""
+        _mock_token()
+        document: dict[str, Any]
+        if route_name == WRITE_ROUTE_LEGACY:
+            read_url = _legacy_url()
+            write_url = _legacy_url()
+            document = {"_id": "res-001", "note": ""}
+        else:
+            read_url = f"{BASE_URL}{RESERVATIONS_V3_ENDPOINT}"
+            write_url = (
+                f"{BASE_URL}{RESERVATION_NOTES_PATH.format(reservation_id='res-001')}"
+            )
+            document = {"results": [{"reservationId": "res-001", "notes": {}}]}
+        read = respx.get(read_url).mock(
+            side_effect=[Response(500), Response(200, json=document)]
+        )
+        put = respx.put(write_url).mock(return_value=Response(200, json={}))
+        async with httpx.AsyncClient() as http:
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                result = await _v3_client(http).add_reservation_note(
+                    "res-001", "note", route=route_name, single_attempt=True
+                )
+        assert result.success
+        assert len(read.calls) == 2
+        assert len(put.calls) == 1
 
     @respx.mock
     async def test_not_found_retires_the_candidate(self) -> None:

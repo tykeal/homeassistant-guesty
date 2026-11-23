@@ -31,6 +31,7 @@ from custom_components.guesty.api.custom_fields import (
 )
 from custom_components.guesty.api.exceptions import (
     GuestyActionError,
+    GuestyApiError,
     GuestyAuthError,
     GuestyConnectionError,
     GuestyCustomFieldError,
@@ -2717,6 +2718,37 @@ class TestSetCustomFieldIdentityGuard:
             before_write=ANY,
         )
 
+    @pytest.mark.parametrize("failed", [True, False])
+    async def test_custom_field_miss_refuses_after_failed_or_empty_refresh(
+        self, hass: HomeAssistant, failed: bool
+    ) -> None:
+        """A failed or omitted reservation is never written after one refresh."""
+        await self._setup(hass, make_identity_reservations(*_WRITE_TARGETS))
+        with patch(
+            "custom_components.guesty.GuestyApiClient.get_reservations",
+            new_callable=AsyncMock,
+            side_effect=GuestyApiError("unavailable") if failed else None,
+            return_value=make_fetch_result(make_identity_reservations(*_WRITE_TARGETS)),
+        ) as fetch:
+            await self._expect_refusal(
+                hass,
+                "res-new",
+                "refresh" if failed else "has no known confirmation code",
+            )
+        fetch.assert_awaited_once()
+
+    async def test_blank_custom_field_target_does_not_refresh(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Whitespace-only targets are rejected before the coordinator runs."""
+        await self._setup(hass, make_identity_reservations(*_WRITE_TARGETS))
+        with patch(
+            "custom_components.guesty.GuestyApiClient.get_reservations",
+            new_callable=AsyncMock,
+        ) as fetch:
+            await self._expect_refusal(hass, " ", "non-empty")
+        fetch.assert_not_awaited()
+
     async def test_unconfirmed_continuity_refuses(
         self,
         hass: HomeAssistant,
@@ -2796,17 +2828,23 @@ class TestSetCustomFieldIdentityGuard:
         """The guard covers reservations only, never listings."""
         await self._setup(hass, [])
 
-        with patch.object(
-            GuestyCustomFieldsClient,
-            "set_field",
-            new_callable=AsyncMock,
-            return_value=GuestyCustomFieldResult(
-                success=True,
-                target_type="listing",
-                target_id="lst-123",
-                field_id="cf-region",
-            ),
-        ) as set_field:
+        with (
+            patch(
+                "custom_components.guesty.GuestyApiClient.get_reservations",
+                new_callable=AsyncMock,
+            ) as fetch,
+            patch.object(
+                GuestyCustomFieldsClient,
+                "set_field",
+                new_callable=AsyncMock,
+                return_value=GuestyCustomFieldResult(
+                    success=True,
+                    target_type="listing",
+                    target_id="lst-123",
+                    field_id="cf-region",
+                ),
+            ) as set_field,
+        ):
             result = await hass.services.async_call(
                 DOMAIN,
                 SERVICE_SET_CUSTOM_FIELD,
@@ -2822,6 +2860,7 @@ class TestSetCustomFieldIdentityGuard:
 
         assert result is not None
         assert result["result"] == "success"
+        fetch.assert_not_awaited()
         set_field.assert_awaited_once()
 
     async def test_fallback_sourced_target_is_refused(
