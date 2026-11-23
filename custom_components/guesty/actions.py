@@ -23,6 +23,7 @@ from homeassistant.core import (
 from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.guesty.api.actions import GuestyActionsClient
+from custom_components.guesty.api.client import resolve_reservations_api
 from custom_components.guesty.api.const import (
     LEGACY_RESERVATIONS_RETIREMENT_DATE,
     LEGACY_WRITE_FAILED,
@@ -39,12 +40,17 @@ from custom_components.guesty.api.const import (
 from custom_components.guesty.api.exceptions import (
     GuestyActionError,
     GuestyApiError,
+    GuestyRoutingError,
 )
 from custom_components.guesty.api.legacy_writes import (
     REFUSAL_LEGACY_RETIRED,
 )
 from custom_components.guesty.api.models import ActionResult
-from custom_components.guesty.const import DOMAIN
+from custom_components.guesty.const import (
+    CONF_RESERVATIONS_API,
+    DEFAULT_RESERVATIONS_API,
+    DOMAIN,
+)
 from custom_components.guesty.identity import WriteRefusal
 
 if TYPE_CHECKING:
@@ -420,6 +426,23 @@ async def execute_reservation_write[WriteResultT](
             raise
         generation = coordinator.write_miss_generation
         options = dict(coordinator.config_entry.options)
+        configured_source = resolve_reservations_api(
+            options.get(CONF_RESERVATIONS_API, DEFAULT_RESERVATIONS_API)
+        )
+        if (
+            coordinator.hass.data.get(DOMAIN, {}).get(coordinator.config_entry.entry_id)
+            is not entry_data
+            or entry_data.get("reservations_coordinator") is not coordinator
+            or entry_data.get("api_client") is not coordinator.api_client
+            or configured_source != coordinator.reservations_path
+            or configured_source != coordinator.api_client.reservations_api
+        ):
+            raise GuestyActionError(
+                "The configured reservation source is changing; "
+                "the write was refused. Retry after the integration reloads.",
+                target_id=reservation_id,
+                action_type=action_type,
+            )
         if not await coordinator.async_refresh_for_write_miss(generation):
             raise GuestyActionError(
                 "The reservation refresh failed or did not complete; "
@@ -435,7 +458,10 @@ async def execute_reservation_write[WriteResultT](
             coordinator.hass.data.get(DOMAIN, {}).get(coordinator.config_entry.entry_id)
             is not entry_data
             or entry_data.get("reservations_coordinator") is not coordinator
+            or entry_data.get("api_client") is not coordinator.api_client
             or dict(coordinator.config_entry.options) != options
+            or coordinator.reservations_path != configured_source
+            or coordinator.api_client.reservations_api != configured_source
             or not coordinator.last_update_success
         ):
             raise GuestyActionError(
@@ -486,7 +512,7 @@ async def execute_reservation_write[WriteResultT](
 
             try:
                 return await dispatch(route, True, recheck_route)
-            except _WriteGuardRefusal:
+            except _WriteGuardRefusal, GuestyRoutingError:
                 raise
             except GuestyApiError:
                 raise GuestyActionError(

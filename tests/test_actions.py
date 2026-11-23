@@ -28,6 +28,7 @@ from custom_components.guesty.actions import (
     ROUTE_LEGACY,
     ROUTE_V3,
     _identity_miss_kind,
+    execute_reservation_write,
     select_reservation_write_route,
 )
 from custom_components.guesty.api.actions import GuestyActionsClient
@@ -1970,6 +1971,30 @@ class TestIdentityWritePredicate:
             )
         fetch.assert_not_awaited()
         assert client.mock_calls == []
+
+    async def test_changed_source_before_miss_does_not_refresh(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A not-yet-reloaded option cannot use the old coordinator source."""
+        entry = await _setup_entry(hass)
+        entry_data = hass.data[DOMAIN][entry.entry_id]
+        hass.config_entries.async_update_entry(
+            entry, options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY}
+        )
+        write = AsyncMock()
+        with (
+            patch(_PATCH_RESERVATIONS, new_callable=AsyncMock) as fetch,
+            pytest.raises(GuestyActionError, match="source"),
+        ):
+            await execute_reservation_write(
+                entry_data,
+                "res-new",
+                operation="status",
+                action_type="set_reservation_status",
+                write=write,
+            )
+        fetch.assert_not_awaited()
+        write.assert_not_awaited()
 
     @pytest.mark.parametrize(
         ("service", "payload", "method"),

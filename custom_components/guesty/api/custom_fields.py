@@ -18,8 +18,8 @@ from custom_components.guesty.api.const import (
     WRITE_ROUTE_V3,
 )
 from custom_components.guesty.api.exceptions import (
-    GuestyActionError,
     GuestyCustomFieldError,
+    GuestyRoutingError,
 )
 from custom_components.guesty.api.legacy_writes import (
     legacy_reservation_path,
@@ -319,7 +319,7 @@ class GuestyCustomFieldsClient:
                 # surfaces the refusal verbatim: the generic
                 # custom-field message would lose the retirement
                 # date and the recovery advice (FR-061).
-                raise GuestyActionError(
+                raise GuestyRoutingError(
                     refusal,
                     target_id=target_id,
                     action_type="set_custom_field",
@@ -362,7 +362,7 @@ class GuestyCustomFieldsClient:
                 response,
             )
             if message is not None:
-                raise GuestyActionError(
+                raise GuestyRoutingError(
                     message,
                     target_id=target_id,
                     action_type="set_custom_field",

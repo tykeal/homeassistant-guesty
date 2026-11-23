@@ -204,3 +204,7 @@ class GuestyActionError(GuestyApiError):
         super().__init__(message)
         self.target_id = target_id
         self.action_type = action_type
+
+
+class GuestyRoutingError(GuestyActionError):
+    """A safe, locally generated legacy routing refusal or verdict."""

@@ -34,6 +34,7 @@ from custom_components.guesty.api.const import (
 from custom_components.guesty.api.exceptions import (
     GuestyActionError,
     GuestyResponseError,
+    GuestyRoutingError,
 )
 from custom_components.guesty.api.legacy_writes import (
     legacy_reservation_path,
@@ -481,7 +482,7 @@ class GuestyActionsClient:
         """
         refusal = routing_refusal(self._api_client, reservation_id)
         if refusal is not None:
-            raise GuestyActionError(
+            raise GuestyRoutingError(
                 refusal,
                 target_id=reservation_id,
                 action_type=action_type,
@@ -511,7 +512,7 @@ class GuestyActionsClient:
             response,
         )
         if message is not None:
-            raise GuestyActionError(
+            raise GuestyRoutingError(
                 message,
                 target_id=reservation_id,
                 action_type=action_type,

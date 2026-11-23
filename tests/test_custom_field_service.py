@@ -2835,6 +2835,68 @@ class TestSetCustomFieldIdentityGuard:
         assert callable(writes[0]["before_send"])
         assert ("/reservations-v3/" in str(writes[0]["path"])) is not legacy
 
+    @pytest.mark.parametrize("operation", ["note", "status", "field"])
+    @pytest.mark.parametrize("status", [404, 410])
+    async def test_recovered_legacy_verdict_remains_actionable(
+        self, hass: HomeAssistant, operation: str, status: int
+    ) -> None:
+        """A safe legacy absence or retirement verdict retains its explanation."""
+        entry = await self._setup(hass, make_identity_reservations(*_WRITE_TARGETS))
+        api_client = hass.data[DOMAIN][entry.entry_id]["api_client"]
+        fetch_result = make_fetch_result(
+            [
+                *make_identity_reservations(*_WRITE_TARGETS),
+                make_identity_reservation("res-new", "CONF-res-new"),
+            ],
+            fallback_served=("res-new",),
+            fallback_sourced=("res-new",),
+        )
+        methods: list[str] = []
+
+        async def request(method: str, path: str, **kwargs: object) -> Response:
+            """Return a legacy verdict without echoing the raw body."""
+            methods.append(method)
+            return Response(
+                status,
+                json={"error": "Reservation res-new not found SECRET-PIN"},
+                request=httpx.Request(method, f"{BASE_URL}{path}"),
+            )
+
+        if operation == "note":
+            service = "add_reservation_note"
+            payload: dict[str, object] = {
+                "reservation_id": "res-new",
+                "note_text": "hello",
+            }
+        elif operation == "status":
+            service = "set_reservation_status"
+            payload = {"reservation_id": "res-new", "status": "checked_in"}
+        else:
+            service = SERVICE_SET_CUSTOM_FIELD
+            payload = {
+                "target_type": "reservation",
+                "target_id": "res-new",
+                "field_id": "cf-door-code",
+                "value": "0042",
+            }
+        with (
+            patch(
+                "custom_components.guesty.GuestyApiClient.get_reservations",
+                new_callable=AsyncMock,
+                return_value=fetch_result,
+            ),
+            patch.object(api_client, "_request", side_effect=request),
+            pytest.raises(HomeAssistantError) as error,
+        ):
+            await hass.services.async_call(
+                DOMAIN, service, payload, blocking=True, return_response=True
+            )
+        assert ("2027-03-01" if status == 410 else "no longer exists") in str(
+            error.value
+        )
+        assert "SECRET-PIN" not in str(error.value)
+        assert methods == (["GET"] if operation == "note" else ["PUT"])
+
     @pytest.mark.parametrize("failed", [True, False])
     async def test_custom_field_miss_refuses_after_failed_or_empty_refresh(
         self, hass: HomeAssistant, failed: bool
