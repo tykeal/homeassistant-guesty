@@ -19,6 +19,9 @@ before implementing the minimum change. Existing-behavior protections are
 baseline controls: run and record them before the corresponding code change,
 and keep them green afterward. References to failing tests in the tasks below
 apply to new or changed behavior, not to baseline-green controls.
+Observe each red failure before implementation; the test may remain
+uncommitted during that observation. Do not commit intentionally failing
+tests or code: preserve atomic commits and runnable intermediate states.
 Do not treat retained coordinator data or an API method's `None` return as
 proof that a refresh succeeded.
 
@@ -80,6 +83,10 @@ specific failure and no write.
 - [ ] T003 [P] [US1] Add failing service-level tests in `tests/test_actions.py` for note and status writes: distinguish a valid absent identifier and a currently published code-less target from invalid input and a cache hit. Before implementing recovery, verify invalid ID or action input, missing/unusable/unpersisted baseline, unconfirmed continuity, ambiguity, and known unroutable targets cause no refresh and no write. Assert success uses the refreshed target, while refresh failure, stale retained data, target still absent, or target still code-less produces an actionable error and zero writes. Assert no second refresh after any failed or incomplete attempt (FR-001–FR-007, FR-015–FR-016; US1-S1–S3; SC-001–SC-004).
 - [ ] T004 [P] [US1] Add failing service-level tests in `tests/test_custom_field_service.py` for reservation custom-field misses with absent and code-less targets, successful recovery, failed/stale refreshes, and missing/code-less post-refresh results. Before implementing recovery, verify invalid target/field/value and every independent baseline, storage, continuity, ambiguity and known-route refusal cause no refresh and no write. Assert listing custom-field writes never enter recovery and each reservation attempt performs no more than one coordinated refresh (FR-001–FR-007, FR-016; US1-S1–S3, US3-S3; SC-001, SC-003, SC-006).
 - [ ] T005 [US1] Implement a shared typed miss classification and the one-refresh recovery flow in `custom_components/guesty/actions.py` and `custom_components/guesty/__init__.py`. Use it for all three reservation writes on the existing configured `ReservationsCoordinator`; validate inputs and independent refusals first; distinguish cache hit, absent target, and present code-less target; await/join one attempt; and report refresh failure/staleness separately from a target still absent or code-less. Do not refresh listings or other operations (FR-001–FR-007, FR-013, FR-015–FR-016; US1-S1–S3, US3-S3).
+
+  T005 owns final recovered-dispatch enablement, only after T008, T010, T012,
+  and T016 are implemented and behaviorally verified. Scaffolding alone does
+  not complete T005.
 
 **Intermediate milestone**: Tests cover all three write types, failed refreshes,
 cache hits and listing writes. Do not enable recovered dispatch until the
@@ -150,6 +157,10 @@ implementation without implying live Guesty verification.
 - [ ] T017 [P] Add an accurate Reno fix note in `releasenotes/notes/reservation-write-miss-293-20261123.yaml`. State that an eligible reservation write miss may trigger one configured-source refresh and still fails closed if identity or routing evidence is insufficient; do not claim this explains issue #223 or that Guesty's live behavior was verified (FR-015–FR-016; SC-007).
 - [ ] T018 [P] Update the reservation-write guidance in `README.md` to explain eligible cache-miss recovery, the unchanged fail-closed identity/provenance rules, and the absence of an eventual-indexing guarantee. Do not imply writes are retried or that listing writes refresh (FR-001–FR-016; US1-S1–S3, US2-S1–S5, US3-S1–S3; SC-001–SC-007).
 - [ ] T019 Run focused suites from `specs/012-reservation-write-miss/quickstart.md`, then `uv run pytest tests/ -x -q`, `uv run ruff check custom_components/ tests/ scripts/`, `uv run --group releasenotes mypy custom_components/ tests/ scripts/`, `uv run pre-commit run --all-files`, and `uv run --group releasenotes reno lint`. Run coordinator compatibility tests in the locked HA 2026.10.4 environment and an isolated compatible HA 2026.4.0 environment without changing `uv.lock`; record actual versions and results, or report a blocked gate if the latter cannot be constructed. Do not perform or claim live Guesty verification (FR-003–FR-006, FR-013–FR-016; SC-001–SC-007).
+
+  Reporting a blocked gate does not complete T019 or Phase 4. A failed
+  compatibility test or inability to construct the HA 2026.4.0 environment
+  remains blocked pending resolution, not an automatic exception.
 
 **Checkpoint**: T017–T019 are complete, all required local and CI tests
 pass, and compatibility results are recorded. No live Guesty verification is
