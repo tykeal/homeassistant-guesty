@@ -10,6 +10,7 @@ expose guest details (FR-021, NFR-009).
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -19,6 +20,7 @@ import httpx
 import pytest
 import respx
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from httpx import Response
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -30,8 +32,10 @@ from custom_components.guesty.api.const import (
     RESERVATIONS_V3_SEARCH_ENDPOINT,
     TOKEN_URL,
 )
+from custom_components.guesty.api.exceptions import GuestyApiError
 from custom_components.guesty.api.guest_cache import GuestLookupResult
 from custom_components.guesty.api.models import (
+    ActionResult,
     GuestyGuest,
     GuestyListing,
     GuestyReservation,
@@ -47,16 +51,19 @@ from custom_components.guesty.coordinator import (
     ListingsCoordinator,
     ReservationsCoordinator,
 )
+from custom_components.guesty.diagnostics import async_get_config_entry_diagnostics
 from tests.conftest import (
     FAKE_CLIENT_ID,
     FAKE_CLIENT_SECRET,
     FakeTokenStorage,
     make_fetch_result,
+    make_identity_reservations,
     make_listing_dict,
     make_token_response,
     make_v3_reservation,
     make_v3_search_page,
 )
+from tests.test_actions import _setup_entry
 
 SEARCH_URL = f"{BASE_URL}{RESERVATIONS_V3_SEARCH_ENDPOINT}"
 
@@ -392,3 +399,61 @@ class TestIdentityAbortPrivacy:
         assert "res-1" in caplog.text
         for secret in PII:
             assert secret not in caplog.text
+
+
+class TestWriteMissPrivacy:
+    """Recovery must not expose guest details, confirmation codes, or PINs."""
+
+    @pytest.mark.parametrize("fails", [False, True])
+    async def test_recovery_logs_errors_and_diagnostics_are_redacted(
+        self, hass: HomeAssistant, caplog: pytest.LogCaptureFixture, fails: bool
+    ) -> None:
+        """Successful and failed recovered writes omit sensitive response data."""
+        entry = await _setup_entry(hass)
+        client = hass.data[DOMAIN][entry.entry_id]["actions_client"]
+        private = _private_reservation("res-private")
+        base = make_identity_reservations("res-001", "res-bad", "res-e2e", "x")
+        pin = "sample-pin-0072"
+        secret_text = f"{pin} {CONFIRMATION_CODE} {GUEST_EMAIL} {FAKE_CLIENT_SECRET}"
+        client.set_reservation_status = AsyncMock(
+            side_effect=GuestyApiError(secret_text) if fails else None,
+            return_value=ActionResult(success=True, target_id="res-private"),
+        )
+        with (
+            caplog.at_level(logging.DEBUG),
+            patch(
+                "custom_components.guesty.GuestyApiClient.get_reservations",
+                new_callable=AsyncMock,
+                return_value=make_fetch_result([*base, private]),
+            ) as fetch,
+        ):
+            if fails:
+                with pytest.raises(HomeAssistantError) as error:
+                    await hass.services.async_call(
+                        DOMAIN,
+                        "set_reservation_status",
+                        {"reservation_id": "res-private", "status": "checked_in"},
+                        blocking=True,
+                        return_response=True,
+                    )
+                assert all(secret not in str(error.value) for secret in (*PII, pin))
+            else:
+                result = await hass.services.async_call(
+                    DOMAIN,
+                    "set_reservation_status",
+                    {"reservation_id": "res-private", "status": "checked_in"},
+                    blocking=True,
+                    return_response=True,
+                )
+                assert result is not None and result["success"] is True
+            diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+        fetch.assert_awaited_once()
+        client.set_reservation_status.assert_awaited_once()
+        logs = "\n".join(
+            record.getMessage()
+            for record in caplog.records
+            if record.name != "pytest_homeassistant_custom_component.common"
+        )
+        evidence = logs + json.dumps(diagnostics)
+        for secret in (*PII, pin, FAKE_CLIENT_SECRET):
+            assert secret not in evidence

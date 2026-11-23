@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from collections.abc import AsyncGenerator
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -48,6 +50,15 @@ from custom_components.guesty.api.exceptions import (
 )
 from custom_components.guesty.api.models import ActionResult
 from tests.conftest import FakeTokenStorage, make_token_response
+
+
+def _recovery_options(method: Any) -> dict[str, Any]:
+    """Use recovery mode when implemented, or exercise the baseline transport."""
+    return (
+        {"single_attempt": True}
+        if "single_attempt" in inspect.signature(method).parameters
+        else {}
+    )
 
 
 @pytest.fixture
@@ -2557,6 +2568,117 @@ class TestLegacyRoutedWriteFailures:
     """A routed write fails loudly and exactly once (T132)."""
 
     @respx.mock
+    @pytest.mark.parametrize("route_name", [WRITE_ROUTE_V3, WRITE_ROUTE_LEGACY])
+    @pytest.mark.parametrize("operation", ["note", "status"])
+    async def test_guard_after_token_prevents_dispatch(
+        self, route_name: str, operation: str
+    ) -> None:
+        """A changed guard during token acquisition prevents the actual PUT."""
+        _mock_token()
+        if operation == "note":
+            if route_name == WRITE_ROUTE_LEGACY:
+                respx.get(_legacy_url()).mock(
+                    return_value=Response(200, json={"_id": "res-001", "note": ""})
+                )
+            else:
+                respx.get(f"{BASE_URL}{RESERVATIONS_V3_ENDPOINT}").mock(
+                    return_value=Response(
+                        200,
+                        json={"results": [{"reservationId": "res-001", "notes": {}}]},
+                    )
+                )
+        put = respx.route(method="PUT").mock(return_value=Response(200, json={}))
+        state = {"valid": True}
+        calls = 0
+
+        def recheck() -> None:
+            """Reject the write once the token request invalidates authorization."""
+            if not state["valid"]:
+                raise GuestyActionError("changed")
+
+        async with httpx.AsyncClient() as http:
+            client = _v3_client(http)
+            method = (
+                client.add_reservation_note
+                if operation == "note"
+                else client.set_reservation_status
+            )
+            original = client._api_client._token_manager.get_token
+
+            async def token() -> str:
+                """Invalidate authorization while preparing the PUT token."""
+                nonlocal calls
+                calls += 1
+                value = await original()
+                if operation == "status" or calls == 2:
+                    state["valid"] = False
+                return value
+
+            options = _recovery_options(method)
+            if "before_write" in inspect.signature(method).parameters:
+                options["before_write"] = recheck
+            with patch.object(client._api_client._token_manager, "get_token", token):
+                try:
+                    value = "note" if operation == "note" else "checked_in"
+                    await method("res-001", value, route=route_name, **options)
+                except GuestyActionError as exc:
+                    assert str(exc) == "changed"
+        assert not put.called
+
+    @respx.mock
+    @pytest.mark.parametrize("route_name", [WRITE_ROUTE_V3, WRITE_ROUTE_LEGACY])
+    async def test_guard_after_note_read_prevents_write_token(
+        self, route_name: str
+    ) -> None:
+        """A changed guard after the note GET refuses before write authentication."""
+        _mock_token()
+        state = {"valid": True}
+        calls = 0
+
+        def note_response(_: httpx.Request) -> Response:
+            """Invalidate authorization as the prerequisite GET completes."""
+            state["valid"] = False
+            if route_name == WRITE_ROUTE_LEGACY:
+                return Response(200, json={"_id": "res-001", "note": ""})
+            return Response(
+                200, json={"results": [{"reservationId": "res-001", "notes": {}}]}
+            )
+
+        def recheck() -> None:
+            """Reject the changed authorization."""
+            if not state["valid"]:
+                raise GuestyActionError("changed")
+
+        read_url = (
+            _legacy_url()
+            if route_name == WRITE_ROUTE_LEGACY
+            else (f"{BASE_URL}{RESERVATIONS_V3_ENDPOINT}")
+        )
+        respx.get(read_url).mock(side_effect=note_response)
+        put = respx.route(method="PUT").mock(return_value=Response(200, json={}))
+        async with httpx.AsyncClient() as http:
+            client = _v3_client(http)
+            original = client._api_client._token_manager.get_token
+
+            async def token() -> str:
+                """Count token retrievals for the GET and potential PUT."""
+                nonlocal calls
+                calls += 1
+                return await original()
+
+            method = client.add_reservation_note
+            options = _recovery_options(method)
+            if "before_write" in inspect.signature(method).parameters:
+                options["before_write"] = recheck
+            with patch.object(client._api_client._token_manager, "get_token", token):
+                try:
+                    await method("res-001", "note", route=route_name, **options)
+                except GuestyActionError as exc:
+                    assert str(exc) == "changed"
+        assert not put.called
+        assert calls == 1
+
+    @respx.mock
     async def test_rejection_names_resource_and_detail(self) -> None:
         """A non-2xx raises and is never reported as success."""
         _mock_token()
@@ -2658,6 +2780,96 @@ class TestLegacyRoutedWriteFailures:
             await http.aclose()
 
         assert len(route.calls) > 1
+
+    @respx.mock
+    @pytest.mark.parametrize(
+        ("source", "route_name"),
+        [
+            (RESERVATIONS_API_V3, WRITE_ROUTE_V3),
+            (RESERVATIONS_API_V3, WRITE_ROUTE_LEGACY),
+            (RESERVATIONS_API_LEGACY, WRITE_ROUTE_V3),
+        ],
+    )
+    @pytest.mark.parametrize("operation", ["note", "status"])
+    @pytest.mark.parametrize("failure", [401, 429, 500, "connection"])
+    async def test_recovered_write_is_single_attempt(
+        self, source: str, route_name: str, operation: str, failure: int | str
+    ) -> None:
+        """A recovered write is sent at most once regardless of source or route."""
+        _mock_token()
+        legacy = source == RESERVATIONS_API_LEGACY or route_name == WRITE_ROUTE_LEGACY
+        if operation == "note":
+            if legacy:
+                respx.get(_legacy_url()).mock(
+                    return_value=Response(200, json={"_id": "res-001", "note": ""})
+                )
+            else:
+                respx.get(f"{BASE_URL}{RESERVATIONS_V3_ENDPOINT}").mock(
+                    return_value=Response(
+                        200,
+                        json={"results": [{"reservationId": "res-001", "notes": {}}]},
+                    )
+                )
+        path = (
+            RESERVATION_NOTES_PATH if operation == "note" else RESERVATION_STATUS_PATH
+        )
+        url = (
+            _legacy_url()
+            if legacy
+            else f"{BASE_URL}{path.format(reservation_id='res-001')}"
+        )
+        write = respx.put(url)
+        if failure == "connection":
+            write.mock(side_effect=httpx.ConnectError("unavailable"))
+        else:
+            assert isinstance(failure, int)
+            write.mock(return_value=Response(failure, json={"error": "no"}))
+        async with httpx.AsyncClient() as http:
+            client = _make_actions_client(http, source)
+            method = (
+                client.add_reservation_note
+                if operation == "note"
+                else client.set_reservation_status
+            )
+            value = "note" if operation == "note" else "checked_in"
+            with (
+                patch("asyncio.sleep", new_callable=AsyncMock),
+                pytest.raises(GuestyApiError),
+            ):
+                await method(
+                    "res-001", value, route=route_name, **_recovery_options(method)
+                )
+        assert len(write.calls) == 1
+
+    @respx.mock
+    @pytest.mark.parametrize("route_name", [WRITE_ROUTE_V3, WRITE_ROUTE_LEGACY])
+    async def test_recovered_note_read_keeps_retry_policy(
+        self, route_name: str
+    ) -> None:
+        """Recovery constrains the note PUT, not its prerequisite read."""
+        _mock_token()
+        if route_name == WRITE_ROUTE_LEGACY:
+            read_url = write_url = _legacy_url()
+            document: dict[str, Any] = {"_id": "res-001", "note": ""}
+        else:
+            read_url = f"{BASE_URL}{RESERVATIONS_V3_ENDPOINT}"
+            write_url = (
+                f"{BASE_URL}{RESERVATION_NOTES_PATH.format(reservation_id='res-001')}"
+            )
+            document = {"results": [{"reservationId": "res-001", "notes": {}}]}
+        read = respx.get(read_url).mock(
+            side_effect=[Response(500), Response(200, json=document)]
+        )
+        write = respx.put(write_url).mock(return_value=Response(200, json={}))
+        async with httpx.AsyncClient() as http:
+            method = _v3_client(http).add_reservation_note
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                result = await method(
+                    "res-001", "note", route=route_name, **_recovery_options(method)
+                )
+        assert result.success
+        assert len(read.calls) == 2
+        assert len(write.calls) == 1
 
     @respx.mock
     async def test_not_found_retires_the_candidate(self) -> None:

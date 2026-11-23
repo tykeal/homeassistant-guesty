@@ -4,8 +4,10 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -27,6 +29,7 @@ from custom_components.guesty.api.custom_fields import (
 )
 from custom_components.guesty.api.exceptions import (
     GuestyActionError,
+    GuestyApiError,
     GuestyAuthError,
     GuestyCustomFieldError,
 )
@@ -1098,6 +1101,94 @@ def _legacy_custom_field_url(reservation_id: str = "res-777") -> str:
 
 class TestLegacyRoutedCustomFieldWrites:
     """Routed custom field writes use the catch-all (T129)."""
+
+    @respx.mock
+    @pytest.mark.parametrize("route_name", ["v3", WRITE_ROUTE_LEGACY])
+    async def test_guard_after_token_prevents_dispatch(self, route_name: str) -> None:
+        """A changed guard during token acquisition prevents the custom-field PUT."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response())
+        )
+        put = respx.route(method="PUT").mock(return_value=Response(200, json={}))
+        state = {"valid": True}
+
+        def recheck() -> None:
+            """Reject changed authorization."""
+            if not state["valid"]:
+                raise GuestyActionError("changed")
+
+        async with httpx.AsyncClient() as http:
+            client = _v3_custom_fields_client(http)
+            original = client._api_client._token_manager.get_token
+
+            async def token() -> str:
+                """Invalidate authorization while preparing the token."""
+                value = await original()
+                state["valid"] = False
+                return value
+
+            method = client.set_field
+            options: dict[str, Any] = {}
+            if "single_attempt" in inspect.signature(method).parameters:
+                options["single_attempt"] = True
+            if "before_write" in inspect.signature(method).parameters:
+                options["before_write"] = recheck
+            with patch.object(client._api_client._token_manager, "get_token", token):
+                try:
+                    await method(
+                        "reservation",
+                        "res-777",
+                        "cf-a",
+                        "0042",
+                        route=route_name,
+                        **options,
+                    )
+                except GuestyActionError as exc:
+                    assert str(exc) == "changed"
+        assert not put.called
+
+    @respx.mock
+    @pytest.mark.parametrize("route_name", ["v3", WRITE_ROUTE_LEGACY])
+    @pytest.mark.parametrize("failure", [401, 429, 500, "connection"])
+    async def test_recovered_field_is_single_attempt(
+        self, route_name: str, failure: int | str
+    ) -> None:
+        """A recovered reservation field write never retries on either route."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response())
+        )
+        path = RESERVATION_CUSTOM_FIELDS_PATH.format(reservation_id="res-777")
+        url = (
+            _legacy_custom_field_url()
+            if route_name == WRITE_ROUTE_LEGACY
+            else f"{BASE_URL}{path}"
+        )
+        write = respx.put(url)
+        if failure == "connection":
+            write.mock(side_effect=httpx.ConnectError("unavailable"))
+        else:
+            assert isinstance(failure, int)
+            write.mock(return_value=Response(failure, json={"error": "no"}))
+        async with httpx.AsyncClient() as http:
+            method = _v3_custom_fields_client(http).set_field
+            options: dict[str, Any] = (
+                {"single_attempt": True}
+                if "single_attempt" in inspect.signature(method).parameters
+                else {}
+            )
+            with (
+                patch("asyncio.sleep", new_callable=AsyncMock),
+                pytest.raises(GuestyApiError),
+            ):
+                await method(
+                    "reservation",
+                    "res-777",
+                    "cf-a",
+                    "0042",
+                    route=route_name,
+                    **options,
+                )
+        assert len(write.calls) == 1
 
     @respx.mock
     async def test_routed_write_uses_the_legacy_catch_all(

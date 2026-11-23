@@ -7,7 +7,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict, deque
-from collections.abc import Collection, Mapping
+from collections.abc import AsyncIterator, Collection, Mapping
+from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
@@ -282,6 +283,12 @@ class ReservationsCoordinator(
     def write_miss_attempt_generation(self) -> int:
         """Return the generation of the latest started coordinator attempt."""
         return self._write_miss_attempt_generation
+
+    @asynccontextmanager
+    async def async_write_miss_dispatch_lock(self) -> AsyncIterator[None]:
+        """Prevent coordinator refreshes throughout a recovered dispatch."""
+        async with self._debounced_refresh.async_lock():
+            yield
 
     def _write_miss_settings(self) -> tuple[Any, ...]:
         """Capture effective source and selection values without credentials."""

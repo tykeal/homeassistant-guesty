@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
@@ -137,6 +139,19 @@ async def _request_write_miss_refresh(
     return coordinator.last_update_success
 
 
+@asynccontextmanager
+async def _recovery_dispatch_lock(
+    coordinator: ReservationsCoordinator,
+) -> AsyncIterator[None]:
+    """Use the recovery lock when implemented, or baseline unlocked dispatch."""
+    factory = getattr(coordinator, "async_write_miss_dispatch_lock", None)
+    if factory is None:
+        yield
+    else:
+        async with factory():
+            yield
+
+
 class TestWriteMissHomeAssistantSemantics:
     """Control tests for unchanged HA refresh and debouncer behavior."""
 
@@ -206,6 +221,28 @@ class TestWriteMissHomeAssistantSemantics:
 
 class TestWriteMissAttemptLifecycle:
     """Specify recovery attempts against the real HA coordinator path."""
+
+    async def test_dispatch_lock_blocks_an_intervening_refresh(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A coordinator refresh cannot begin until recovered dispatch completes."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        coordinator = ReservationsCoordinator(hass, entry, AsyncMock(), AsyncMock())
+        with patch.object(coordinator, "_async_update_data", return_value={}) as fetch:
+            try:
+                async with _recovery_dispatch_lock(coordinator):
+                    pending = hass.async_create_task(
+                        coordinator.async_refresh(),
+                        "competing reservation refresh",
+                        eager_start=True,
+                    )
+                    fetch.assert_not_awaited()
+                    assert not pending.done()
+                await pending
+                fetch.assert_awaited_once()
+            finally:
+                await coordinator.async_shutdown()
 
     async def test_attempt_generation_starts_before_fetch(
         self, hass: HomeAssistant

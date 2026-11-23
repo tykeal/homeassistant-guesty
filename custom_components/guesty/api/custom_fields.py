@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
+from typing import TypedDict
 
 from custom_components.guesty.api.client import GuestyApiClient
 from custom_components.guesty.api.const import (
@@ -16,8 +18,8 @@ from custom_components.guesty.api.const import (
     WRITE_ROUTE_V3,
 )
 from custom_components.guesty.api.exceptions import (
-    GuestyActionError,
     GuestyCustomFieldError,
+    GuestyRoutingError,
 )
 from custom_components.guesty.api.legacy_writes import (
     legacy_reservation_path,
@@ -28,6 +30,13 @@ from custom_components.guesty.api.models import (
     GuestyCustomFieldDefinition,
     GuestyCustomFieldResult,
 )
+
+
+class _WriteOptions(TypedDict, total=False):
+    """Optional pre-dispatch authorization for recovered writes."""
+
+    before_send: Callable[[], None]
+
 
 # Validators keyed by field_type → allowed Python types.
 # bool is excluded from number because ``bool`` subclasses ``int``.
@@ -237,6 +246,8 @@ class GuestyCustomFieldsClient:
         value: str | int | float | bool,
         *,
         route: str = WRITE_ROUTE_V3,
+        single_attempt: bool = False,
+        before_write: Callable[[], None] | None = None,
     ) -> GuestyCustomFieldResult:
         """Write a custom field value to a listing or reservation.
 
@@ -253,6 +264,8 @@ class GuestyCustomFieldsClient:
                 ``WRITE_ROUTE_LEGACY`` is permitted only for a
                 reservation the not-found fallback is currently
                 serving (FR-058, FR-059).
+            single_attempt: Do not retry the actual write.
+            before_write: Recheck authorization before dispatch.
 
         Returns:
             GuestyCustomFieldResult indicating success or failure.
@@ -306,7 +319,7 @@ class GuestyCustomFieldsClient:
                 # surfaces the refusal verbatim: the generic
                 # custom-field message would lose the retirement
                 # date and the recovery advice (FR-061).
-                raise GuestyActionError(
+                raise GuestyRoutingError(
                     refusal,
                     target_id=target_id,
                     action_type="set_custom_field",
@@ -331,11 +344,15 @@ class GuestyCustomFieldsClient:
             "customFields": [{"fieldId": field_id, "value": value}],
         }
 
+        options: _WriteOptions = {}
+        if before_write is not None:
+            options["before_send"] = before_write
         response = await self._api_client._request(
             "PUT",
             path,
             json_data=body,
-            single_attempt=routed,
+            single_attempt=routed or single_attempt,
+            **options,
         )
 
         if routed and not response.is_success:
@@ -345,7 +362,7 @@ class GuestyCustomFieldsClient:
                 response,
             )
             if message is not None:
-                raise GuestyActionError(
+                raise GuestyRoutingError(
                     message,
                     target_id=target_id,
                     action_type="set_custom_field",
