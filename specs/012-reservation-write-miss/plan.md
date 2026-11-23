@@ -63,9 +63,9 @@ Pre-research gate: **PASS**.
   a parallel fetch. Existing vendor retries and bounded fallback/guest
   policies remain unchanged; only the recovered write request is single
   attempt.
-- **Phased development**: The implementation must deliver testable
-  coordinator, action, and transport changes in phases, with TDD and a green
-  checkpoint between them.
+- **Phased development**: The implementation phases below deliver a
+  coordinator prerequisite followed by an integrated safe recovery increment,
+  with TDD and a green checkpoint at each phase boundary.
 - **Licensing/commit gates**: New planning documents carry SPDX headers.
   Implementation files must follow REUSE and project lint/type/docstring
   requirements. No commit is part of this planning stage.
@@ -220,6 +220,25 @@ show; do not alter the feature 008 baseline format or comparison policy.
 **Structure Decision**: Keep the feature in the existing integration
 coordinator/service/API client and corresponding pytest suites. It requires
 no new package, endpoint, configuration option, entity, or storage model.
+
+### Implementation phase boundaries
+
+The implementation task phases are distinct from the research/design phases
+above:
+
+1. **Setup**: Use the existing project and dependencies.
+2. **Coordinator lifecycle**: T001–T002 establish and verify real refresh
+   attempt completion and failure semantics before service recovery.
+3. **Integrated safe recovery**: T003–T016 cover all three stories, including
+   identity and routing safeguards, dispatch serialization, concurrent
+   sharing, and single-attempt writes. Recovered dispatch is not enabled
+   before its safeguards are ready; intermediate story milestones are not
+   phase boundaries.
+4. **Documentation and final validation**: T017–T019 add operator guidance,
+   the fix note, and the complete validation and compatibility results.
+
+Each phase ends at its task checkpoint with all CI tests passing before the
+next begins. Unit-level red–green testing remains mandatory within phases.
 
 ### Validation plan (implementation stage)
 
