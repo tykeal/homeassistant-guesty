@@ -15,6 +15,7 @@ from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from typing import TYPE_CHECKING, Any, Final, Literal, TypedDict
 
 import voluptuous as vol
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import (
     HomeAssistant,
     ServiceCall,
@@ -433,7 +434,10 @@ async def execute_reservation_write[WriteResultT](
             options.get(CONF_RESERVATIONS_API, DEFAULT_RESERVATIONS_API)
         )
         if (
-            coordinator.hass.config_entries.async_get_entry(entry.entry_id) is not entry
+            not coordinator.write_miss_available
+            or entry.state is not ConfigEntryState.LOADED
+            or coordinator.hass.config_entries.async_get_entry(entry.entry_id)
+            is not entry
             or coordinator.hass.data.get(DOMAIN, {}).get(entry.entry_id)
             is not entry_data
             or entry_data.get("reservations_coordinator") is not coordinator
@@ -459,7 +463,10 @@ async def execute_reservation_write[WriteResultT](
     def recheck() -> str:
         """Check the current entry, identity and route after awaited work."""
         if recovered and (
-            coordinator.hass.config_entries.async_get_entry(entry.entry_id) is not entry
+            not coordinator.write_miss_available
+            or entry.state is not ConfigEntryState.LOADED
+            or coordinator.hass.config_entries.async_get_entry(entry.entry_id)
+            is not entry
             or coordinator.config_entry is not entry
             or coordinator.hass.data.get(DOMAIN, {}).get(entry.entry_id)
             is not entry_data

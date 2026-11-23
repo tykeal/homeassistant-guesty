@@ -7,16 +7,19 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict, deque
-from collections.abc import AsyncIterator, Collection, Mapping
+from collections.abc import AsyncIterator, Collection, Coroutine, Mapping
 from contextlib import asynccontextmanager
-from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from homeassistant.core import callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryError
+from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.update_coordinator import (
+    REQUEST_REFRESH_DEFAULT_COOLDOWN,
+    REQUEST_REFRESH_DEFAULT_IMMEDIATE,
     DataUpdateCoordinator,
     UpdateFailed,
 )
@@ -27,10 +30,12 @@ from custom_components.guesty.api.const import (
     DEFAULT_PAST_DAYS,
     HOLD_STATUSES,
     RESERVATIONS_API_V3,
+    RESERVATIONS_V3_SEARCH_ENDPOINT,
 )
 from custom_components.guesty.api.exceptions import (
     GuestyApiError,
     GuestyFilterRejectedError,
+    GuestyRateLimitError,
 )
 from custom_components.guesty.api.guest_cache import GuestLookupResult
 from custom_components.guesty.api.models import (
@@ -80,15 +85,54 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-_WRITE_MISS_REFRESH: ContextVar[bool] = ContextVar(
-    "guesty_write_miss_refresh", default=False
-)
-
 # Statuses whose per-listing meaning depends on the stay segment.
 _TEMPORAL_STATUSES: frozenset[str] = frozenset({"confirmed", "checked_in"})
 
 # Identifier pairs named in the single FR-032 abort log line.
 _MAX_LOGGED_CONFLICTS: int = 5
+
+
+class _ReservationRefreshDebouncer(Debouncer[Coroutine[Any, Any, None]]):
+    """Keep debounced requests pending while a recovered write holds the lock."""
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        """Use Home Assistant's normal refresh cooldown and scheduling policy."""
+        super().__init__(
+            hass,
+            _LOGGER,
+            cooldown=REQUEST_REFRESH_DEFAULT_COOLDOWN,
+            immediate=REQUEST_REFRESH_DEFAULT_IMMEDIATE,
+        )
+        self._write_dispatching = False
+        self._write_finished = asyncio.Event()
+        self._write_finished.set()
+        self._cancel_generation = 0
+
+    @callback
+    def async_cancel(self) -> None:
+        """Cancel timers and invalidate any already-deferred timer handler."""
+        self._cancel_generation += 1
+        super().async_cancel()
+
+    @asynccontextmanager
+    async def async_write_lock(self) -> AsyncIterator[None]:
+        """Hold refresh serialization while identifying a non-refresh holder."""
+        async with self.async_lock():
+            self._write_dispatching = True
+            self._write_finished.clear()
+            try:
+                yield
+            finally:
+                self._write_dispatching = False
+                self._write_finished.set()
+
+    async def _handle_timer_finish(self) -> None:
+        """Defer HA's timer handler until a recovered write releases the lock."""
+        generation = self._cancel_generation
+        while self._write_dispatching:
+            await self._write_finished.wait()
+        if generation == self._cancel_generation and not self._shutdown_requested:
+            await super()._handle_timer_finish()
 
 
 class ListingsCoordinator(
@@ -266,12 +310,14 @@ class ReservationsCoordinator(
             CONF_RESERVATION_SCAN_INTERVAL,
             DEFAULT_RESERVATION_SCAN_INTERVAL,
         )
+        self._reservation_debouncer = _ReservationRefreshDebouncer(hass)
         super().__init__(
             hass,
             _LOGGER,
             config_entry=entry,
             name=f"{DOMAIN}_reservations",
             update_interval=timedelta(minutes=interval_minutes),
+            request_refresh_debouncer=self._reservation_debouncer,
         )
 
     @property
@@ -284,10 +330,15 @@ class ReservationsCoordinator(
         """Return the generation of the latest started coordinator attempt."""
         return self._write_miss_attempt_generation
 
+    @property
+    def write_miss_available(self) -> bool:
+        """Report whether shutdown still permits recovery and dispatch."""
+        return not self._shutdown_requested and not self.hass.is_stopping
+
     @asynccontextmanager
     async def async_write_miss_dispatch_lock(self) -> AsyncIterator[None]:
         """Prevent coordinator refreshes throughout a recovered dispatch."""
-        async with self._debounced_refresh.async_lock():
+        async with self._reservation_debouncer.async_write_lock():
             yield
 
     def _write_miss_settings(self) -> tuple[Any, ...]:
@@ -364,6 +415,8 @@ class ReservationsCoordinator(
         async def refresh() -> bool:
             """Share the coordinator lock and consume the first eligible outcome."""
             async with self._debounced_refresh.async_lock():
+                if not self.write_miss_available:
+                    return False
                 if self._write_miss_outcomes:
                     first = self._write_miss_outcomes[0][0]
                     if generation < first - 1:
@@ -380,6 +433,7 @@ class ReservationsCoordinator(
                         if completed > generation:
                             return (
                                 success
+                                and self.write_miss_available
                                 and self.last_update_success
                                 and refresh_options is options
                                 and refresh_settings == settings
@@ -397,13 +451,10 @@ class ReservationsCoordinator(
                     or self._write_miss_settings() != settings
                 ):
                     return False
-                token = _WRITE_MISS_REFRESH.set(True)
-                try:
-                    await self._async_refresh(log_failures=False)
-                finally:
-                    _WRITE_MISS_REFRESH.reset(token)
+                await self._async_refresh(log_failures=False)
                 return (
                     self._write_miss_generation > generation
+                    and self.write_miss_available
                     and bool(self._write_miss_outcomes)
                     and self._write_miss_outcomes[-1][2]
                     and self.config_entry is entry
@@ -412,23 +463,27 @@ class ReservationsCoordinator(
                     and self._write_miss_settings() == settings
                 )
 
-        task = self.hass.async_create_background_task(
-            refresh(), "guesty write-miss refresh", eager_start=True
+        task = entry.async_create_background_task(
+            self.hass, refresh(), "guesty write-miss refresh", eager_start=True
         )
-        return await asyncio.shield(task)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            waiter = asyncio.current_task()
+            if task.cancelled() and waiter is not None and not waiter.cancelling():
+                return False
+            raise
 
     async def _async_update_data(
         self,
     ) -> dict[str, list[GuestyReservation]]:
-        """Contain unexpected recovery errors without exposing exception contents."""
+        """Contain unexpected refresh errors without exposing exception contents."""
         try:
             return await self._async_fetch_reservations()
         except ConfigEntryAuthFailed, ConfigEntryError, UpdateFailed:
             raise
         except Exception:
-            if _WRITE_MISS_REFRESH.get():
-                raise UpdateFailed("Reservation refresh failed") from None
-            raise
+            raise UpdateFailed("Reservation refresh failed") from None
 
     async def _async_fetch_reservations(
         self,
@@ -468,12 +523,13 @@ class ReservationsCoordinator(
             )
         except GuestyFilterRejectedError as exc:
             raise UpdateFailed(
-                f"Guesty rejected the reservation query filters: {exc.message}",
-            ) from exc
-        except GuestyApiError as exc:
-            raise UpdateFailed(
-                f"Error fetching reservations: {exc.message}",
-            ) from exc
+                "Guesty rejected the reservation query filters "
+                f"({RESERVATIONS_V3_SEARCH_ENDPOINT}, HTTP {exc.status_code}).",
+            ) from None
+        except GuestyRateLimitError:
+            raise UpdateFailed("Guesty rate limited reservation requests.") from None
+        except GuestyApiError:
+            raise UpdateFailed("Error fetching reservations from Guesty.") from None
 
         reservations = await self._resolve_v3_reservations(
             fetch_result.reservations,

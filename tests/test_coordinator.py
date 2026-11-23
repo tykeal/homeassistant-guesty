@@ -19,7 +19,7 @@ import httpx
 import pytest
 import respx
 from freezegun.api import FrozenDateTimeFactory
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -242,6 +242,162 @@ class TestWriteMissAttemptLifecycle:
                 await pending
                 fetch.assert_awaited_once()
             finally:
+                await coordinator.async_shutdown()
+
+    @pytest.mark.parametrize("requested", ["before-dispatch", "during-dispatch"])
+    async def test_debounced_refresh_survives_long_dispatch(
+        self, hass: HomeAssistant, requested: str
+    ) -> None:
+        """A timer expiring during a write must refresh after the write finishes."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        coordinator = ReservationsCoordinator(hass, entry, AsyncMock(), AsyncMock())
+        debouncer = coordinator._debounced_refresh
+        debouncer.cooldown = 0.01
+        debouncer.immediate = False
+        timer_started = asyncio.Event()
+        timer_finished = asyncio.Event()
+        fetched = asyncio.Event()
+        original_finish = debouncer._handle_timer_finish
+
+        async def finish_timer() -> None:
+            """Record when the real HA timer handler enters and completes."""
+            timer_started.set()
+            try:
+                await original_finish()
+            finally:
+                timer_finished.set()
+
+        async def fetch() -> dict[str, list[GuestyReservation]]:
+            """Record the normal coordinator refresh."""
+            fetched.set()
+            return {}
+
+        with (
+            patch.object(debouncer, "_handle_timer_finish", side_effect=finish_timer),
+            patch.object(
+                coordinator, "_async_update_data", side_effect=fetch
+            ) as update,
+        ):
+            try:
+                if requested == "before-dispatch":
+                    await coordinator.async_request_refresh()
+                async with coordinator.async_write_miss_dispatch_lock():
+                    if requested == "during-dispatch":
+                        await coordinator.async_request_refresh()
+                    await asyncio.wait_for(timer_started.wait(), 2)
+                    await asyncio.sleep(0)
+                    assert not timer_finished.is_set()
+                    update.assert_not_awaited()
+                await asyncio.wait_for(fetched.wait(), 2)
+                await asyncio.wait_for(timer_finished.wait(), 2)
+                update.assert_awaited_once()
+            finally:
+                await coordinator.async_shutdown()
+
+    @pytest.mark.parametrize("cancel", ["cancel", "shutdown"])
+    async def test_deferred_refresh_honors_debouncer_cancellation(
+        self, hass: HomeAssistant, cancel: str
+    ) -> None:
+        """A cancelled pending request must not run when dispatch releases."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        coordinator = ReservationsCoordinator(hass, entry, AsyncMock(), AsyncMock())
+        debouncer = coordinator._debounced_refresh
+        debouncer.cooldown = 0.01
+        debouncer.immediate = False
+        timer_started = asyncio.Event()
+        timer_finished = asyncio.Event()
+        original_finish = debouncer._handle_timer_finish
+
+        async def finish_timer() -> None:
+            """Record the timer handler even when its deferred work is cancelled."""
+            timer_started.set()
+            try:
+                await original_finish()
+            finally:
+                timer_finished.set()
+
+        with (
+            patch.object(debouncer, "_handle_timer_finish", side_effect=finish_timer),
+            patch.object(coordinator, "_async_update_data", return_value={}) as update,
+        ):
+            try:
+                async with coordinator.async_write_miss_dispatch_lock():
+                    await coordinator.async_request_refresh()
+                    await asyncio.wait_for(timer_started.wait(), 2)
+                    if cancel == "cancel":
+                        debouncer.async_cancel()
+                    else:
+                        await coordinator.async_shutdown()
+                await asyncio.wait_for(timer_finished.wait(), 2)
+                update.assert_not_awaited()
+            finally:
+                await coordinator.async_shutdown()
+
+    @pytest.mark.parametrize("stopping", ["coordinator", "home-assistant"])
+    @pytest.mark.parametrize("stage", ["during-fetch", "before-consumption"])
+    async def test_shutdown_invalidates_a_refresh_attempt(
+        self, hass: HomeAssistant, stopping: str, stage: str
+    ) -> None:
+        """A fetch cannot authorize recovery once shutdown begins."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        coordinator = ReservationsCoordinator(hass, entry, AsyncMock(), AsyncMock())
+        original_state = hass.state
+        fetch_started = asyncio.Event()
+        release_fetch = asyncio.Event()
+        original_refresh = coordinator._async_refresh
+
+        async def stop() -> None:
+            """Start one of the two supported shutdown lifecycles."""
+            if stopping == "coordinator":
+                await coordinator.async_shutdown()
+            else:
+                hass.set_state(CoreState.stopping)
+
+        async def fetch() -> dict[str, list[GuestyReservation]]:
+            """Pause the coordinator fetch while shutdown begins."""
+            fetch_started.set()
+            if stage == "during-fetch":
+                await release_fetch.wait()
+            return {}
+
+        async def refresh(
+            log_failures: bool = True,
+            raise_on_auth_failed: bool = False,
+            scheduled: bool = False,
+            raise_on_entry_error: bool = False,
+        ) -> None:
+            """Initiate shutdown after HA reports success but before acceptance."""
+            await original_refresh(
+                log_failures=log_failures,
+                raise_on_auth_failed=raise_on_auth_failed,
+                scheduled=scheduled,
+                raise_on_entry_error=raise_on_entry_error,
+            )
+            if stage == "before-consumption":
+                await stop()
+
+        with (
+            patch.object(coordinator, "_async_update_data", side_effect=fetch),
+            patch.object(coordinator, "_async_refresh", side_effect=refresh),
+        ):
+            request = asyncio.create_task(
+                coordinator.async_refresh_for_write_miss(
+                    coordinator.write_miss_generation
+                )
+            )
+            try:
+                await asyncio.wait_for(fetch_started.wait(), 2)
+                if stage == "during-fetch":
+                    await stop()
+                release_fetch.set()
+                assert await asyncio.wait_for(request, 2) is False
+            finally:
+                release_fetch.set()
+                await asyncio.gather(request, return_exceptions=True)
+                hass.set_state(original_state)
                 await coordinator.async_shutdown()
 
     async def test_attempt_generation_starts_before_fetch(
@@ -2428,7 +2584,7 @@ class TestReservationsCoordinatorErrorResilience:
         self,
         hass: HomeAssistant,
     ) -> None:
-        """A rejected filter reaches the user with its detail (FR-008)."""
+        """A rejected filter retains safe endpoint and status details."""
         entry = _make_entry()
         entry.add_to_hass(hass)
         api_client = AsyncMock()
@@ -2456,7 +2612,7 @@ class TestReservationsCoordinatorErrorResilience:
         detail = str(excinfo.value)
         assert "/reservations-v3/search" in detail
         assert "400" in detail
-        assert "unsupported filter checkIn" in detail
+        assert "unsupported filter checkIn" not in detail
         api_client.get_reservations.assert_awaited_once()
 
     async def test_filter_rejection_retains_last_known_good(
@@ -2596,7 +2752,7 @@ class TestReservationsCoordinatorErrorResilience:
         hass: HomeAssistant,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Error logged on API failure with error context."""
+        """API failures are logged without raw response text."""
         entry = _make_entry()
         entry.add_to_hass(hass)
         api_client = AsyncMock()
@@ -2615,7 +2771,7 @@ class TestReservationsCoordinatorErrorResilience:
         await coordinator.async_refresh()
         assert coordinator.last_update_success is True
 
-        # API failure with specific error context
+        # API failure may include untrusted response text.
         api_client.get_reservations = AsyncMock(
             side_effect=GuestyResponseError("malformed JSON body"),
         )
@@ -2630,9 +2786,11 @@ class TestReservationsCoordinatorErrorResilience:
         matching = [
             r
             for r in caplog.records
-            if r.levelno == logging.ERROR and "malformed JSON body" in r.getMessage()
+            if r.levelno == logging.ERROR
+            and "Error fetching reservations from Guesty" in r.getMessage()
         ]
         assert len(matching) >= 1
+        assert "malformed JSON body" not in caplog.text
 
 
 # ── T016 + T028 + T029: CustomFieldsDefinitionCoordinator Tests ─────

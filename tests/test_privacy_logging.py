@@ -10,6 +10,7 @@ expose guest details (FR-021, NFR-009).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import UTC, datetime, timedelta
@@ -32,7 +33,10 @@ from custom_components.guesty.api.const import (
     RESERVATIONS_V3_SEARCH_ENDPOINT,
     TOKEN_URL,
 )
-from custom_components.guesty.api.exceptions import GuestyApiError
+from custom_components.guesty.api.exceptions import (
+    GuestyApiError,
+    GuestyFilterRejectedError,
+)
 from custom_components.guesty.api.guest_cache import GuestLookupResult
 from custom_components.guesty.api.models import (
     ActionResult,
@@ -403,6 +407,76 @@ class TestIdentityAbortPrivacy:
 
 class TestWriteMissPrivacy:
     """Recovery must not expose guest details, confirmation codes, or PINs."""
+
+    @pytest.mark.parametrize("error", ["api", "filter", "unexpected"])
+    async def test_joined_refresh_error_is_redacted(
+        self, hass: HomeAssistant, caplog: pytest.LogCaptureFixture, error: str
+    ) -> None:
+        """A pre-existing refresh cannot expose an API response when joined."""
+        entry = await _setup_entry(hass)
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        client = hass.data[DOMAIN][entry.entry_id]["actions_client"]
+        client.set_reservation_status = AsyncMock()
+        started = asyncio.Event()
+        joined = asyncio.Event()
+        release = asyncio.Event()
+        secret = "sample-sensitive-pin-0072"
+        original_recovery = coordinator.async_refresh_for_write_miss
+
+        async def fetch(*args: object, **kwargs: object) -> object:
+            """Pause a regular refresh, then raise an API-derived error."""
+            started.set()
+            await release.wait()
+            if error == "filter":
+                raise GuestyFilterRejectedError(
+                    "rejected",
+                    endpoint="/reservations-v3/search",
+                    status_code=400,
+                    body_excerpt=secret,
+                )
+            if error == "api":
+                raise GuestyApiError(secret)
+            raise RuntimeError(secret)
+
+        async def recovery(generation: int) -> bool:
+            """Observe that the service joins the pre-existing fetch."""
+            joined.set()
+            return bool(await original_recovery(generation))
+
+        with (
+            caplog.at_level(logging.DEBUG),
+            patch(
+                "custom_components.guesty.GuestyApiClient.get_reservations",
+                side_effect=fetch,
+            ),
+            patch.object(coordinator, "async_refresh_for_write_miss", recovery),
+        ):
+            existing = asyncio.create_task(coordinator.async_refresh())
+            action: asyncio.Task[Any] | None = None
+            try:
+                await asyncio.wait_for(started.wait(), 2)
+                action = asyncio.create_task(
+                    hass.services.async_call(
+                        DOMAIN,
+                        "set_reservation_status",
+                        {"reservation_id": "res-new", "status": "checked_in"},
+                        blocking=True,
+                        return_response=True,
+                    )
+                )
+                await asyncio.wait_for(joined.wait(), 2)
+                release.set()
+                await asyncio.wait_for(existing, 2)
+                with pytest.raises(HomeAssistantError) as raised:
+                    await asyncio.wait_for(action, 2)
+                assert secret not in str(raised.value)
+                assert secret not in caplog.text
+                client.set_reservation_status.assert_not_awaited()
+            finally:
+                release.set()
+                await asyncio.gather(existing, return_exceptions=True)
+                if action is not None:
+                    await asyncio.gather(action, return_exceptions=True)
 
     @pytest.mark.parametrize("fails", [False, True])
     async def test_recovery_logs_errors_and_diagnostics_are_redacted(

@@ -19,7 +19,7 @@ import pytest
 import respx
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from httpx import Response
@@ -2494,6 +2494,193 @@ class TestIdentityWritePredicate:
                 "aborted because a confirmation code",
             )
         put.assert_not_awaited()
+
+    @pytest.mark.parametrize("stage", ["preflight", "note-read"])
+    async def test_unload_in_progress_refuses_recovered_write(
+        self, hass: HomeAssistant, stage: str
+    ) -> None:
+        """A real entry unload prevents a new fetch or a write after a note read."""
+        entry = await _setup_entry(hass)
+        entry_data = hass.data[DOMAIN][entry.entry_id]
+        client = entry_data["actions_client"]
+        reading = asyncio.Event()
+        release_read = asyncio.Event()
+        unloading = asyncio.Event()
+        release_unload = asyncio.Event()
+        original_unload = hass.config_entries.async_unload_platforms
+
+        async def read_notes(reservation_id: str) -> dict[str, object]:
+            """Pause the prerequisite read until the entry starts unloading."""
+            reading.set()
+            await release_read.wait()
+            return {}
+
+        async def unload_platforms(*args: Any, **kwargs: Any) -> bool:
+            """Hold the integration data mapping while HA marks it unloading."""
+            unloading.set()
+            await release_unload.wait()
+            return await original_unload(*args, **kwargs)
+
+        with (
+            patch(
+                _PATCH_RESERVATIONS,
+                new_callable=AsyncMock,
+                return_value=make_fetch_result(
+                    [
+                        *make_identity_reservations(*_WRITE_TARGETS),
+                        make_identity_reservation("res-new", "CONF-res-new"),
+                    ]
+                ),
+            ) as fetch,
+            patch.object(client, "_read_v3_notes", side_effect=read_notes),
+            patch.object(client._api_client, "_request", new_callable=AsyncMock) as put,
+            patch.object(
+                hass.config_entries, "async_unload_platforms", unload_platforms
+            ),
+        ):
+            action: asyncio.Task[Any] | None = None
+            unload: asyncio.Task[bool] | None = None
+            try:
+                if stage == "note-read":
+                    action = asyncio.create_task(
+                        hass.services.async_call(
+                            DOMAIN,
+                            "add_reservation_note",
+                            {"reservation_id": "res-new", "note_text": "hello"},
+                            blocking=True,
+                            return_response=True,
+                        )
+                    )
+                    await asyncio.wait_for(reading.wait(), 2)
+                unload = asyncio.create_task(
+                    hass.config_entries.async_unload(entry.entry_id)
+                )
+                await asyncio.wait_for(unloading.wait(), 2)
+                assert entry.state is ConfigEntryState.UNLOAD_IN_PROGRESS
+                assert hass.data[DOMAIN][entry.entry_id] is entry_data
+                if action is None:
+                    action = asyncio.create_task(
+                        hass.services.async_call(
+                            DOMAIN,
+                            "add_reservation_note",
+                            {"reservation_id": "res-new", "note_text": "hello"},
+                            blocking=True,
+                            return_response=True,
+                        )
+                    )
+                release_read.set()
+                with pytest.raises(HomeAssistantError):
+                    await asyncio.wait_for(action, 2)
+                assert fetch.await_count == (0 if stage == "preflight" else 1)
+                put.assert_not_awaited()
+            finally:
+                release_read.set()
+                release_unload.set()
+                if action is not None:
+                    await asyncio.gather(action, return_exceptions=True)
+                if unload is not None:
+                    await asyncio.gather(unload, return_exceptions=True)
+
+    async def test_unload_cancels_recovery_fetch_before_identity_storage(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A recovery task cannot outlive its entry and persist an old baseline."""
+        entry = await _setup_entry(hass)
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        client = self._client(hass, entry)
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+        release = asyncio.Event()
+
+        async def fetch(*args: object, **kwargs: object) -> object:
+            """Pause the API fetch until unload cancels it."""
+            started.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            return make_fetch_result(
+                [
+                    *make_identity_reservations(*_WRITE_TARGETS),
+                    make_identity_reservation("res-new", "CONF-res-new"),
+                ]
+            )
+
+        with (
+            patch(_PATCH_RESERVATIONS, side_effect=fetch),
+            patch.object(
+                coordinator.identity,
+                "async_store",
+                wraps=coordinator.identity.async_store,
+            ) as store,
+        ):
+            action = asyncio.create_task(
+                hass.services.async_call(
+                    DOMAIN,
+                    "set_reservation_status",
+                    {"reservation_id": "res-new", "status": "checked_in"},
+                    blocking=True,
+                    return_response=True,
+                )
+            )
+            try:
+                await asyncio.wait_for(started.wait(), 2)
+                assert await hass.config_entries.async_unload(entry.entry_id)
+                assert cancelled.is_set()
+                with pytest.raises(HomeAssistantError, match="refresh"):
+                    await action
+                store.assert_not_awaited()
+                client.set_reservation_status.assert_not_awaited()
+            finally:
+                release.set()
+                await asyncio.gather(action, return_exceptions=True)
+
+    @pytest.mark.parametrize("stopping", ["coordinator", "home-assistant"])
+    async def test_shutdown_after_note_read_prevents_write(
+        self, hass: HomeAssistant, stopping: str
+    ) -> None:
+        """A successful recovery cannot dispatch after shutdown begins."""
+        entry = await _setup_entry(hass)
+        entry_data = hass.data[DOMAIN][entry.entry_id]
+        coordinator = entry_data["reservations_coordinator"]
+        client = entry_data["actions_client"]
+        original_state = hass.state
+
+        async def read_notes(reservation_id: str) -> dict[str, object]:
+            """Start shutdown while the prerequisite note read is awaited."""
+            if stopping == "coordinator":
+                await coordinator.async_shutdown()
+            else:
+                hass.set_state(CoreState.stopping)
+            return {}
+
+        try:
+            with (
+                patch(
+                    _PATCH_RESERVATIONS,
+                    new_callable=AsyncMock,
+                    return_value=make_fetch_result(
+                        [
+                            *make_identity_reservations(*_WRITE_TARGETS),
+                            make_identity_reservation("res-new", "CONF-res-new"),
+                        ]
+                    ),
+                ),
+                patch.object(client, "_read_v3_notes", side_effect=read_notes),
+                patch.object(
+                    client._api_client, "_request", new_callable=AsyncMock
+                ) as put,
+            ):
+                await self._expect_refusal(
+                    hass,
+                    "add_reservation_note",
+                    {"reservation_id": "res-new", "note_text": "hello"},
+                    "refused",
+                )
+                put.assert_not_awaited()
+        finally:
+            hass.set_state(original_state)
 
     async def test_refresh_waits_through_note_read_and_write(
         self, hass: HomeAssistant
