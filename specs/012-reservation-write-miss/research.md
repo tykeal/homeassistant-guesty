@@ -19,8 +19,10 @@ unverified.
 
 **Decision**: Track refresh attempts on the existing
 `ReservationsCoordinator`, sharing the same debouncer lock and running its
-normal coordinator refresh path only when no qualifying update completed
-after the miss was detected. Record a monotonically increasing in-memory
+normal coordinator refresh path only when no eligible attempt can be joined.
+A joined attempt consumes the action's single refresh even when it fails,
+is skipped or cancelled, is ambiguous, or omits the target. Record a
+monotonically increasing in-memory
 attempt generation and completion outcome; decide success only after the
 coordinator has updated its success state. Do not treat either refresh API's
 `None` return or retained `data` as proof of a fresh result.
@@ -55,8 +57,9 @@ coordinator has updated its success state. Do not treat either refresh API's
   join semantics without introducing an independent API fetch, the write-miss
   helper must track completion after miss detection, including an attempt
   already in progress at detection, and invoke the normal coordinator update
-  only if no qualifying attempt has completed. Because the needed lock and
-  `_async_refresh` hook are protected
+  only if no eligible attempt is available to join. A joined failure does not
+  authorize a write or another update for that action. Because the needed lock
+  and `_async_refresh` hook are protected
   Home Assistant details, keep the adapter isolated and test both supported
   version endpoints before implementation is considered complete.
 
