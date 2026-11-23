@@ -168,7 +168,10 @@ refreshes and writes, and exercise unsuccessful and stale refresh results.
   MUST share an in-progress qualifying refresh when feasible. Each action
   MUST independently evaluate the result and MUST NOT request a second
   refresh within that attempt, including if the shared refresh fails or
-  omits its target.
+  omits its target. Cancelling one waiting action MUST propagate cancellation
+  to that action without cancelling a shared coordinator-owned refresh needed
+  by another waiter. If the refresh itself is cancelled, no waiter may
+  use it as successful authorization.
 - **FR-005**: The refresh MUST use the entry's configured reservation source
   and existing window, status, listing and other applicable selection rules.
   Existing pagination, guest lookup and legacy fallback policies, including

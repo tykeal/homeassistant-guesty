@@ -40,7 +40,9 @@ baseline schema, and normal cache-hit behavior are unchanged.
 - Join a coordinator refresh already in progress at miss detection if it
   completes after detection. Concurrent eligible misses share the same
   attempt where possible; each call independently rechecks its target and
-  guards.
+  guards. Cancellation of one waiter propagates to that action without
+  cancelling the coordinator-owned shared attempt for the other waiters.
+  Cancellation of the attempt itself cannot authorize any waiter.
 - If no qualifying attempt has completed, perform one normal coordinator
   refresh. The per-action limit is one cycle, whether it succeeds, fails, is
   ambiguous, or omits the target.
@@ -107,8 +109,9 @@ retry behavior. Actions without recovery preserve existing retry behavior.
 Test all three eligible actions; invalid requests and all independent
 refusals without refresh; absent/code-less results after refresh; overlapping
 and in-flight refresh sharing; HA-swallowed fetch failure with stale data;
-ambiguity, cancellation, persistence failure, reload/source change, newer
-failure, and changed provenance; fallback served/retained/disabled cases;
+ambiguity, cancellation of one of two waiters, cancellation of the refresh,
+persistence failure, reload/source change, newer failure, changed
+provenance; fallback served/retained/disabled cases;
 note prerequisite failure; listing-write exclusion; exactly one write after
 recovery even when transport retries are normally enabled; unchanged
 cache-hit retry behavior; and secret-free diagnostics/logs.
