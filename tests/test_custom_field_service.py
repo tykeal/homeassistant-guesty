@@ -2631,6 +2631,29 @@ class TestSetCustomFieldIdentityGuard:
             "has not established a reservation identity baseline",
         )
 
+    async def test_retired_retained_miss_explains_retirement(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A missing retained identity reports retirement without a refresh."""
+        entry = await self._setup(hass, make_identity_reservations(*_WRITE_TARGETS))
+        entry_data = hass.data[DOMAIN][entry.entry_id]
+        coordinator = entry_data["reservations_coordinator"]
+        coordinator.fallback_sourced_ids = frozenset({"res-new"})
+        api_client = entry_data["api_client"]
+        with (
+            patch.object(
+                type(api_client),
+                "legacy_write_routing_available",
+                property(lambda _: False),
+            ),
+            patch(
+                "custom_components.guesty.GuestyApiClient.get_reservations",
+                new_callable=AsyncMock,
+            ) as fetch,
+        ):
+            await self._expect_refusal(hass, "res-new", "2027-03-01")
+        fetch.assert_not_awaited()
+
     async def test_recovered_write_error_does_not_log_value(
         self, hass: HomeAssistant, caplog: pytest.LogCaptureFixture
     ) -> None:

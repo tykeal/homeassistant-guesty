@@ -363,6 +363,13 @@ class GuestyActionsClient:
                     get_response,
                     "add_reservation_note",
                 )
+            elif single_attempt:
+                self._raise_legacy_primary_verdict(
+                    reservation_id,
+                    get_response,
+                    "add_reservation_note",
+                    write_sent=False,
+                )
             raise GuestyActionError(
                 self._reservation_error_detail(
                     self._resource_prefix(
@@ -421,6 +428,13 @@ class GuestyActionsClient:
                     reservation_id,
                     put_response,
                     "add_reservation_note",
+                )
+            elif single_attempt:
+                self._raise_legacy_primary_verdict(
+                    reservation_id,
+                    put_response,
+                    "add_reservation_note",
+                    write_sent=True,
                 )
             raise GuestyActionError(
                 self._reservation_error_detail(
@@ -525,6 +539,31 @@ class GuestyActionsClient:
             True when the configured reservation path is legacy.
         """
         return self._api_client.reservations_api == RESERVATIONS_API_LEGACY
+
+    @staticmethod
+    def _raise_legacy_primary_verdict(
+        reservation_id: str,
+        response: httpx.Response,
+        action_type: str,
+        *,
+        write_sent: bool,
+    ) -> None:
+        """Report a safe retirement-shaped answer on a recovered legacy write."""
+        if response.status_code not in (404, 410):
+            return
+        outcome = (
+            "The write was sent and may have been applied; "
+            "check Guesty before retrying."
+            if write_sent
+            else "No write was sent."
+        )
+        raise GuestyRoutingError(
+            f"Guesty returned HTTP {response.status_code} for the legacy reservation "
+            f"resource, which retires on {LEGACY_RESERVATIONS_RETIREMENT_DATE}; "
+            f"set the reservations_api option back to 'v3'. {outcome}",
+            target_id=reservation_id,
+            action_type=action_type,
+        )
 
     async def set_listing_status(
         self,
@@ -849,6 +888,13 @@ class GuestyActionsClient:
                     reservation_id,
                     response,
                     "set_reservation_status",
+                )
+            elif single_attempt:
+                self._raise_legacy_primary_verdict(
+                    reservation_id,
+                    response,
+                    "set_reservation_status",
+                    write_sent=True,
                 )
             raise GuestyActionError(
                 self._reservation_error_detail(

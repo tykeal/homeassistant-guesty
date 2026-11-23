@@ -1992,6 +1992,101 @@ class TestIdentityWritePredicate:
         write.assert_not_awaited()
 
     @pytest.mark.parametrize(
+        ("service", "payload"),
+        [
+            ("add_reservation_note", {"note_text": "hello"}),
+            ("set_reservation_status", {"status": "checked_in"}),
+        ],
+    )
+    async def test_retired_retained_miss_explains_retirement(
+        self, hass: HomeAssistant, service: str, payload: dict[str, str]
+    ) -> None:
+        """A retained but never-served target explains legacy retirement."""
+        entry = await _setup_entry(hass)
+        entry_data = hass.data[DOMAIN][entry.entry_id]
+        coordinator = entry_data["reservations_coordinator"]
+        coordinator.fallback_sourced_ids = frozenset({"res-new"})
+        client = self._client(hass, entry)
+        api_client = entry_data["api_client"]
+        with (
+            patch.object(
+                type(api_client),
+                "legacy_write_routing_available",
+                property(lambda _: False),
+            ),
+            patch(_PATCH_RESERVATIONS, new_callable=AsyncMock) as fetch,
+        ):
+            await self._expect_refusal(
+                hass, service, {"reservation_id": "res-new", **payload}, "2027-03-01"
+            )
+        fetch.assert_not_awaited()
+        assert client.mock_calls == []
+
+    @pytest.mark.parametrize("operation", ["note-read", "note-write", "status"])
+    @pytest.mark.parametrize("status", [404, 410])
+    async def test_recovered_legacy_primary_verdict_is_safe_and_actionable(
+        self, hass: HomeAssistant, operation: str, status: int
+    ) -> None:
+        """A legacy-primary 404/410 preserves advice without response contents."""
+        entry = await _setup_entry(
+            hass, options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY}
+        )
+        entry_data = hass.data[DOMAIN][entry.entry_id]
+        api_client = entry_data["api_client"]
+        methods: list[str] = []
+
+        async def request(method: str, path: str, **kwargs: object) -> Response:
+            """Answer the note read or send the selected retirement verdict."""
+            methods.append(method)
+            if operation == "note-write" and method == "GET":
+                return Response(200, json={"_id": "res-new", "note": ""})
+            return Response(
+                status,
+                json={"error": "SECRET-PIN"},
+                request=httpx.Request(method, f"https://example.test{path}"),
+            )
+
+        service = (
+            "set_reservation_status"
+            if operation == "status"
+            else "add_reservation_note"
+        )
+        payload = (
+            {"status": "checked_in"} if operation == "status" else {"note_text": "hi"}
+        )
+        with (
+            patch(
+                _PATCH_RESERVATIONS,
+                new_callable=AsyncMock,
+                return_value=make_fetch_result(
+                    [
+                        *make_identity_reservations(*_WRITE_TARGETS),
+                        make_identity_reservation("res-new", "CONF-res-new"),
+                    ]
+                ),
+            ),
+            patch.object(api_client, "_request", side_effect=request),
+            pytest.raises(HomeAssistantError) as raised,
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                service,
+                {"reservation_id": "res-new", **payload},
+                blocking=True,
+                return_response=True,
+            )
+        message = str(raised.value)
+        assert "2027-03-01" in message and "v3" in message
+        assert "SECRET-PIN" not in message
+        assert methods == (
+            ["GET"]
+            if operation == "note-read"
+            else ["GET", "PUT"]
+            if operation == "note-write"
+            else ["PUT"]
+        )
+
+    @pytest.mark.parametrize(
         ("key", "changed"),
         [
             (CONF_RESERVATIONS_API, RESERVATIONS_API_LEGACY),

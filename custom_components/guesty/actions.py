@@ -422,8 +422,14 @@ async def execute_reservation_write[WriteResultT](
         # Refuse known routing failures before spending a refresh.
         try:
             select_reservation_write_route(entry_data, reservation_id, action_type)
-        except GuestyActionError:
+        except GuestyActionError as exc:
             coordinator.record_legacy_write(operation, LEGACY_WRITE_REFUSED)
+            if _retired_target(entry_data, reservation_id):
+                raise GuestyActionError(
+                    REFUSAL_LEGACY_RETIRED.format(reservation_id=reservation_id),
+                    target_id=reservation_id,
+                    action_type=action_type,
+                ) from exc
             raise
         generation = coordinator.write_miss_generation
         entry = coordinator.config_entry
