@@ -5,9 +5,8 @@ SPDX-License-Identifier: Apache-2.0
 
 # Implementation Plan: Reservation Identity Write-Miss Refresh
 
-**Branch**: `012-reservation-write-miss-plan1` | **Date**: 2026-11-23
-| **Spec**: [spec.md](spec.md)
-**Input**: `/home/tykeal/repos/personal/homeassistant/worktrees/guesty/write-miss-plan1/specs/012-reservation-write-miss/spec.md`
+**Date**: 2026-11-23 | **Spec**: [spec.md](spec.md)
+**Input**: `specs/012-reservation-write-miss/spec.md`
 
 ## Summary
 
@@ -122,7 +121,10 @@ identifier-specific lookup.
    initiate a second cycle even if that result fails, is ambiguous, or omits
    the target. Otherwise run one normal coordinator refresh against its
    current configured source and existing options. Concurrent eligible
-   misses share the cycle and independently check their own targets.
+   misses share the cycle and independently check their own targets. A
+   cancelled waiter propagates its own cancellation without cancelling the
+   coordinator-owned cycle for other waiters; a cancelled cycle cannot
+   authorize any write.
 4. Treat an attempt as fresh only if it completed after miss detection and
    the completed coordinator result is accepted, successful, unambiguous,
    and belongs to the same live entry/coordinator and source configuration.
@@ -182,8 +184,7 @@ specs/012-reservation-write-miss/
     └── guesty-reservation-write-miss.md
 ```
 
-`tasks.md` is intentionally not created: it belongs to the separate
-Speckit tasks stage, which is outside this request.
+`tasks.md` was generated in the separate Speckit tasks stage.
 
 #### Source and tests (future implementation only)
 
@@ -226,5 +227,5 @@ no new package, endpoint, configuration option, entity, or storage model.
 
 ## Planning Scope
 
-This deliverable ends at Speckit plan stage. No task list, production code,
-specification change, commit, push, or PR is included.
+This plan describes the design. Task ordering and implementation are
+handled in their separate Speckit stages.
