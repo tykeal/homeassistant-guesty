@@ -335,6 +335,60 @@ class TestWriteMissAttemptLifecycle:
             finally:
                 await coordinator.async_shutdown()
 
+    async def test_newer_debounce_timer_retains_its_pending_refresh(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A newer request must survive an older deferred timer finishing."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        coordinator = ReservationsCoordinator(hass, entry, AsyncMock(), AsyncMock())
+        debouncer = coordinator._debounced_refresh
+        debouncer.cooldown = 0.1
+        debouncer.immediate = False
+        first_started = asyncio.Event()
+        first_finished = asyncio.Event()
+        fetched = asyncio.Event()
+        timer_count = 0
+        original_finish = debouncer._handle_timer_finish
+
+        async def finish_timer() -> None:
+            """Record the first timer without controlling the real debouncer."""
+            nonlocal timer_count
+            timer_count += 1
+            first = timer_count == 1
+            if first:
+                first_started.set()
+            try:
+                await original_finish()
+            finally:
+                if first:
+                    first_finished.set()
+
+        async def fetch() -> dict[str, list[GuestyReservation]]:
+            """Record the eventual configured coordinator refresh."""
+            fetched.set()
+            return {}
+
+        with (
+            patch.object(debouncer, "_handle_timer_finish", side_effect=finish_timer),
+            patch.object(
+                coordinator, "_async_update_data", side_effect=fetch
+            ) as update,
+        ):
+            try:
+                async with coordinator.async_write_miss_dispatch_lock():
+                    await coordinator.async_request_refresh()
+                    await asyncio.wait_for(first_started.wait(), 2)
+                    await coordinator.async_request_refresh()
+                    assert debouncer._timer_task is not None
+                    assert debouncer._execute_at_end_of_timer
+                await asyncio.wait_for(first_finished.wait(), 2)
+                assert debouncer._execute_at_end_of_timer
+                await asyncio.wait_for(fetched.wait(), 2)
+                update.assert_awaited_once()
+            finally:
+                await coordinator.async_shutdown()
+
     @pytest.mark.parametrize("stopping", ["coordinator", "home-assistant"])
     @pytest.mark.parametrize("stage", ["during-fetch", "before-consumption"])
     async def test_shutdown_invalidates_a_refresh_attempt(

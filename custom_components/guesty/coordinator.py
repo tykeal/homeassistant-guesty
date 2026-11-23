@@ -131,7 +131,11 @@ class _ReservationRefreshDebouncer(Debouncer[Coroutine[Any, Any, None]]):
         generation = self._cancel_generation
         while self._write_dispatching:
             await self._write_finished.wait()
-        if generation == self._cancel_generation and not self._shutdown_requested:
+        if (
+            generation == self._cancel_generation
+            and not self._shutdown_requested
+            and self._timer_task is None
+        ):
             await super()._handle_timer_finish()
 
 
