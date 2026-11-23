@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, Final
 
 from homeassistant.helpers import entity_registry as er
@@ -118,6 +119,16 @@ REFUSAL_NO_CODE: Final[str] = (
     "so its identity cannot be cross-checked and the write is "
     "refused."
 )
+
+
+class WriteRefusal(Enum):
+    """Typed reasons a reservation identity cannot authorize a write."""
+
+    NO_BASELINE = auto()
+    UNSTORED = auto()
+    UNCONFIRMED = auto()
+    AMBIGUOUS = auto()
+    NO_CODE = auto()
 
 
 def storage_key(entry_id: str) -> str:
@@ -1019,8 +1030,23 @@ class ReservationIdentityGuard:
                 type(exc).__name__,
             )
 
+    def write_refusal_kind(self, reservation_id: str) -> WriteRefusal | None:
+        """Return the typed reason the existing write predicate refuses."""
+        baseline = self._baseline
+        if baseline is None or not baseline.is_usable:
+            return WriteRefusal.NO_BASELINE
+        if self._unstored:
+            return WriteRefusal.UNSTORED
+        if baseline.continuity == CONTINUITY_UNCONFIRMED:
+            return WriteRefusal.UNCONFIRMED
+        if self._ambiguous:
+            return WriteRefusal.AMBIGUOUS
+        if reservation_id not in baseline.current_ids():
+            return WriteRefusal.NO_CODE
+        return None
+
     def write_refusal(self, reservation_id: str) -> str | None:
-        """Evaluate the four-conjunct write predicate (FR-031c).
+        """Explain the four-conjunct write predicate (FR-031c).
 
         Every conjunct is tested independently so that a refusal can
         explain itself: a usable baseline must exist and must have
@@ -1036,18 +1062,16 @@ class ReservationIdentityGuard:
             An explanatory refusal, or None when the write may go
             ahead.
         """
-        baseline = self._baseline
-        if baseline is None or not baseline.is_usable:
-            return REFUSAL_NO_BASELINE
-        if self._unstored:
-            return REFUSAL_UNSTORED
-        if baseline.continuity == CONTINUITY_UNCONFIRMED:
-            return REFUSAL_UNCONFIRMED
-        if self._ambiguous:
-            return REFUSAL_AMBIGUOUS
-        if reservation_id not in baseline.current_ids():
-            return REFUSAL_NO_CODE.format(reservation_id=reservation_id)
-        return None
+        reason = self.write_refusal_kind(reservation_id)
+        if reason is None:
+            return None
+        return {
+            WriteRefusal.NO_BASELINE: REFUSAL_NO_BASELINE,
+            WriteRefusal.UNSTORED: REFUSAL_UNSTORED,
+            WriteRefusal.UNCONFIRMED: REFUSAL_UNCONFIRMED,
+            WriteRefusal.AMBIGUOUS: REFUSAL_AMBIGUOUS,
+            WriteRefusal.NO_CODE: REFUSAL_NO_CODE.format(reservation_id=reservation_id),
+        }[reason]
 
 
 def _retired_bootstrap(

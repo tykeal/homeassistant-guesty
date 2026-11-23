@@ -4,12 +4,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import ExitStack
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 import httpx
 import pytest
@@ -26,6 +27,7 @@ from custom_components.guesty.actions import (
     _SCHEMA_ADD_NOTE,
     ROUTE_LEGACY,
     ROUTE_V3,
+    _identity_miss_kind,
     select_reservation_write_route,
 )
 from custom_components.guesty.api.actions import GuestyActionsClient
@@ -1880,20 +1882,465 @@ class TestIdentityWritePredicate:
         entry = await _setup_entry(hass, reservations=[])
         client = self._client(hass, entry)
 
-        await self._expect_refusal(
-            hass,
-            "add_reservation_note",
-            {"reservation_id": "res-001", "note_text": "hi"},
-            "has not established a reservation identity baseline",
+        with patch(_PATCH_RESERVATIONS, new_callable=AsyncMock) as fetch:
+            await self._expect_refusal(
+                hass,
+                "add_reservation_note",
+                {"reservation_id": "res-001", "note_text": "hi"},
+                "has not established a reservation identity baseline",
+            )
+            await self._expect_refusal(
+                hass,
+                "set_reservation_status",
+                {"reservation_id": "res-001", "status": "checked_in"},
+                "has not established a reservation identity baseline",
+            )
+
+        fetch.assert_not_awaited()
+        assert client.mock_calls == []
+
+    async def test_miss_classifies_current_publication_without_authorizing(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A missing projection and a published code-less target differ."""
+        entry = await _setup_entry(hass)
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        coordinator.data = {"listing-001": [make_identity_reservation("res-nocode")]}
+        assert (
+            _identity_miss_kind(coordinator, "res-nocode") == "present-without-identity"
         )
-        await self._expect_refusal(
-            hass,
-            "set_reservation_status",
-            {"reservation_id": "res-001", "status": "checked_in"},
-            "has not established a reservation identity baseline",
+        assert _identity_miss_kind(coordinator, "res-new") == "absent"
+        assert _identity_miss_kind(coordinator, "res-001") is None
+
+    @pytest.mark.parametrize(
+        ("service", "payload"),
+        [
+            ("add_reservation_note", {"note_text": "hello"}),
+            ("set_reservation_status", {"status": "checked_in"}),
+        ],
+    )
+    async def test_blank_target_refuses_without_refresh(
+        self, hass: HomeAssistant, service: str, payload: dict[str, str]
+    ) -> None:
+        """Whitespace is not a valid target and must not trigger recovery."""
+        entry = await _setup_entry(hass)
+        client = self._client(hass, entry)
+        with patch(_PATCH_RESERVATIONS, new_callable=AsyncMock) as fetch:
+            await self._expect_refusal(
+                hass, service, {"reservation_id": "  ", **payload}, "non-empty"
+            )
+        fetch.assert_not_awaited()
+        assert client.mock_calls == []
+
+    @pytest.mark.parametrize(
+        ("service", "payload", "method"),
+        [
+            ("add_reservation_note", {"note_text": "hello"}, "add_reservation_note"),
+            (
+                "set_reservation_status",
+                {"status": "checked_in"},
+                "set_reservation_status",
+            ),
+        ],
+    )
+    async def test_missing_identity_refreshes_before_write(
+        self,
+        hass: HomeAssistant,
+        service: str,
+        payload: dict[str, str],
+        method: str,
+    ) -> None:
+        """A missing identity gets one refresh and then a guarded write."""
+        entry = await _setup_entry(hass)
+        client = self._client(hass, entry)
+        getattr(client, method).return_value = ActionResult(
+            success=True, target_id="res-new"
+        )
+        reservations = [
+            *make_identity_reservations(*_WRITE_TARGETS),
+            make_identity_reservation("res-new", "CONF-res-new"),
+        ]
+        with patch(
+            _PATCH_RESERVATIONS,
+            new_callable=AsyncMock,
+            return_value=make_fetch_result(reservations),
+        ) as fetch:
+            result = await hass.services.async_call(
+                DOMAIN,
+                service,
+                {"reservation_id": "res-new", **payload},
+                blocking=True,
+                return_response=True,
+            )
+        assert result == {"success": True, "target_id": "res-new"}
+        fetch.assert_awaited_once()
+        getattr(client, method).assert_awaited_once()
+
+    async def test_failed_miss_refresh_never_uses_retained_data(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A failed refresh is a service failure and never sends a write."""
+        entry = await _setup_entry(hass)
+        client = self._client(hass, entry)
+        with patch(
+            _PATCH_RESERVATIONS,
+            new_callable=AsyncMock,
+            side_effect=GuestyApiError("unavailable"),
+        ) as fetch:
+            await self._expect_refusal(
+                hass,
+                "set_reservation_status",
+                {"reservation_id": "res-new", "status": "checked_in"},
+                "refresh",
+            )
+        fetch.assert_awaited_once()
+        assert client.mock_calls == []
+
+    async def test_failed_miss_refresh_does_not_log_response(
+        self, hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A fetch error cannot leak an echoed sensitive value to logs."""
+        entry = await _setup_entry(hass)
+        client = self._client(hass, entry)
+        with patch(
+            _PATCH_RESERVATIONS,
+            new_callable=AsyncMock,
+            side_effect=GuestyApiError("server echoed SECRET-PIN"),
+        ):
+            await self._expect_refusal(
+                hass,
+                "set_reservation_status",
+                {"reservation_id": "res-new", "status": "checked_in"},
+                "refresh",
+            )
+        assert "SECRET-PIN" not in caplog.text
+        assert client.mock_calls == []
+
+    async def test_target_still_missing_after_one_refresh(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A successful refresh without the target refuses without a write."""
+        entry = await _setup_entry(hass)
+        client = self._client(hass, entry)
+        with patch(
+            _PATCH_RESERVATIONS,
+            new_callable=AsyncMock,
+            return_value=make_fetch_result(make_identity_reservations(*_WRITE_TARGETS)),
+        ) as fetch:
+            await self._expect_refusal(
+                hass,
+                "set_reservation_status",
+                {"reservation_id": "res-new", "status": "checked_in"},
+                "has no known confirmation code",
+            )
+        fetch.assert_awaited_once()
+        assert client.mock_calls == []
+
+    async def test_conflicting_refresh_refuses_without_write(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A genuine same-path identity conflict aborts recovery."""
+        entry = await _setup_entry(hass)
+        client = self._client(hass, entry)
+        conflicting = [
+            make_identity_reservation("res-999", "CONF-res-001"),
+            make_identity_reservation("res-new", "CONF-res-new"),
+        ]
+        with patch(
+            _PATCH_RESERVATIONS,
+            new_callable=AsyncMock,
+            return_value=make_fetch_result(conflicting),
+        ) as fetch:
+            await self._expect_refusal(
+                hass,
+                "set_reservation_status",
+                {"reservation_id": "res-new", "status": "checked_in"},
+                "refresh",
+            )
+        fetch.assert_awaited_once()
+        assert client.mock_calls == []
+
+    async def test_refresh_storage_failure_refuses_without_write(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A fetched target cannot authorize an unstored identity baseline."""
+        entry = await _setup_entry(hass)
+        client = self._client(hass, entry)
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        with (
+            patch(
+                _PATCH_RESERVATIONS,
+                new_callable=AsyncMock,
+                return_value=make_fetch_result(
+                    [
+                        *make_identity_reservations(*_WRITE_TARGETS),
+                        make_identity_reservation("res-new", "CONF-res-new"),
+                    ]
+                ),
+            ) as fetch,
+            patch.object(coordinator.identity, "async_store", side_effect=OSError),
+        ):
+            await self._expect_refusal(
+                hass,
+                "set_reservation_status",
+                {"reservation_id": "res-new", "status": "checked_in"},
+                "could not be written to storage",
+            )
+        fetch.assert_awaited_once()
+        assert client.mock_calls == []
+
+    async def test_note_rechecks_guard_after_prerequisite_read(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A note read cannot authorize a write after the guard changes."""
+        entry = await _setup_entry(hass)
+        entry_data = hass.data[DOMAIN][entry.entry_id]
+        coordinator = entry_data["reservations_coordinator"]
+        client = entry_data["actions_client"]
+
+        async def read_notes(reservation_id: str) -> dict[str, object]:
+            """Invalidate identity while a prerequisite read is awaited."""
+            coordinator.identity.mark_ambiguous()
+            return {}
+
+        with (
+            patch(
+                _PATCH_RESERVATIONS,
+                new_callable=AsyncMock,
+                return_value=make_fetch_result(
+                    [
+                        *make_identity_reservations(*_WRITE_TARGETS),
+                        make_identity_reservation("res-new", "CONF-res-new"),
+                    ]
+                ),
+            ),
+            patch.object(client, "_read_v3_notes", side_effect=read_notes),
+            patch.object(client._api_client, "_request", new_callable=AsyncMock) as put,
+        ):
+            await self._expect_refusal(
+                hass,
+                "add_reservation_note",
+                {"reservation_id": "res-new", "note_text": "hello"},
+                "aborted because a confirmation code",
+            )
+        put.assert_not_awaited()
+
+    async def test_refreshed_fallback_target_uses_legacy_route(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A newly served fallback identity keeps its verified legacy route."""
+        entry = await _setup_entry(hass)
+        client = self._client(hass, entry)
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        client.set_reservation_status.return_value = ActionResult(
+            success=True, target_id="res-new"
+        )
+        with patch(
+            _PATCH_RESERVATIONS,
+            new_callable=AsyncMock,
+            return_value=make_fetch_result(
+                [
+                    *make_identity_reservations(*_WRITE_TARGETS),
+                    make_identity_reservation("res-new", "CONF-res-new"),
+                ],
+                fallback_served=("res-new",),
+                fallback_sourced=("res-new",),
+            ),
+        ) as fetch:
+            await hass.services.async_call(
+                DOMAIN,
+                "set_reservation_status",
+                {"reservation_id": "res-new", "status": "checked_in"},
+                blocking=True,
+                return_response=True,
+            )
+        fetch.assert_awaited_once()
+        client.set_reservation_status.assert_awaited_once_with(
+            reservation_id="res-new",
+            status="checked_in",
+            route=ROUTE_LEGACY,
+            single_attempt=True,
+            before_write=ANY,
+        )
+        assert coordinator.legacy_write_counters.status_succeeded == 1
+
+    async def test_concurrent_misses_share_refresh(self, hass: HomeAssistant) -> None:
+        """Concurrent actions share one fetch and recheck separate identities."""
+        entry = await _setup_entry(hass)
+        client = self._client(hass, entry)
+        client.set_reservation_status.return_value = ActionResult(
+            success=True, target_id="res-new"
+        )
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def fetch(**kwargs: Any) -> Any:
+            """Pause the shared coordinator fetch."""
+            started.set()
+            await release.wait()
+            return make_fetch_result(
+                [
+                    *make_identity_reservations(*_WRITE_TARGETS),
+                    make_identity_reservation("res-new", "CONF-res-new"),
+                ]
+            )
+
+        async def call() -> Any:
+            """Call the status service."""
+            return await hass.services.async_call(
+                DOMAIN,
+                "set_reservation_status",
+                {"reservation_id": "res-new", "status": "checked_in"},
+                blocking=True,
+                return_response=True,
+            )
+
+        with patch(_PATCH_RESERVATIONS, side_effect=fetch) as mocked_fetch:
+            first = asyncio.create_task(call())
+            await asyncio.wait_for(started.wait(), 2)
+            second = asyncio.create_task(call())
+            await asyncio.sleep(0)
+            release.set()
+            results = await asyncio.wait_for(asyncio.gather(first, second), 2)
+        assert len(results) == 2
+        mocked_fetch.assert_awaited_once()
+        assert client.set_reservation_status.await_count == 2
+
+    async def test_shared_refresh_rechecks_each_target(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A missing second target cannot borrow the first one's authorization."""
+        entry = await _setup_entry(hass)
+        client = self._client(hass, entry)
+        client.set_reservation_status.return_value = ActionResult(
+            success=True, target_id="res-new"
+        )
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def fetch(**kwargs: Any) -> Any:
+            """Pause one shared fetch that finds only the first target."""
+            started.set()
+            await release.wait()
+            return make_fetch_result(
+                [
+                    *make_identity_reservations(*_WRITE_TARGETS),
+                    make_identity_reservation("res-new", "CONF-res-new"),
+                ]
+            )
+
+        async def call(target: str) -> Any:
+            """Call the status service for one target."""
+            return await hass.services.async_call(
+                DOMAIN,
+                "set_reservation_status",
+                {"reservation_id": target, "status": "checked_in"},
+                blocking=True,
+                return_response=True,
+            )
+
+        with patch(_PATCH_RESERVATIONS, side_effect=fetch) as mocked_fetch:
+            first = asyncio.create_task(call("res-new"))
+            await asyncio.wait_for(started.wait(), 2)
+            second = asyncio.create_task(call("res-omitted"))
+            await asyncio.sleep(0)
+            release.set()
+            results = await asyncio.wait_for(
+                asyncio.gather(first, second, return_exceptions=True), 2
+            )
+        mocked_fetch.assert_awaited_once()
+        assert isinstance(results[1], HomeAssistantError)
+        assert client.set_reservation_status.await_count == 1
+        assert client.set_reservation_status.await_args.kwargs["reservation_id"] == (
+            "res-new"
         )
 
+    @pytest.mark.parametrize("change", ["reload", "failed", "options", "removed"])
+    async def test_recovered_write_refuses_superseded_state(
+        self, hass: HomeAssistant, change: str
+    ) -> None:
+        """The accepted fetch cannot authorize a subsequently invalid state."""
+        entry = await _setup_entry(hass)
+        entry_data = hass.data[DOMAIN][entry.entry_id]
+        coordinator = entry_data["reservations_coordinator"]
+        client = self._client(hass, entry)
+        original = coordinator.async_refresh_for_write_miss
+
+        async def refresh_then_change(generation: int) -> bool:
+            """Change live state after the qualifying refresh."""
+            result = await original(generation)
+            if change == "reload":
+                hass.data[DOMAIN][entry.entry_id] = {}
+            elif change == "failed":
+                coordinator.last_update_success = False
+            elif change == "options":
+                hass.config_entries.async_update_entry(entry, options={"changed": True})
+            else:
+                baseline = coordinator.identity.baseline
+                assert baseline is not None
+                baseline.codes.pop("CONF-res-new")
+            return result is True
+
+        with (
+            patch(
+                _PATCH_RESERVATIONS,
+                new_callable=AsyncMock,
+                return_value=make_fetch_result(
+                    [
+                        *make_identity_reservations(*_WRITE_TARGETS),
+                        make_identity_reservation("res-new", "CONF-res-new"),
+                    ]
+                ),
+            ) as fetch,
+            patch.object(
+                coordinator, "async_refresh_for_write_miss", refresh_then_change
+            ),
+            pytest.raises(HomeAssistantError),
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                "set_reservation_status",
+                {"reservation_id": "res-new", "status": "checked_in"},
+                blocking=True,
+                return_response=True,
+            )
+        if change == "reload":
+            hass.data[DOMAIN][entry.entry_id] = entry_data
+        fetch.assert_awaited_once()
         assert client.mock_calls == []
+
+    async def test_recovered_write_error_hides_response_body(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A response echo does not leak through the service error."""
+        entry = await _setup_entry(hass)
+        client = self._client(hass, entry)
+        client.set_reservation_status.side_effect = GuestyActionError(
+            "response contains SECRET-PIN",
+            target_id="res-new",
+            action_type="set_reservation_status",
+        )
+        with (
+            patch(
+                _PATCH_RESERVATIONS,
+                new_callable=AsyncMock,
+                return_value=make_fetch_result(
+                    [
+                        *make_identity_reservations(*_WRITE_TARGETS),
+                        make_identity_reservation("res-new", "CONF-res-new"),
+                    ]
+                ),
+            ),
+            pytest.raises(HomeAssistantError) as error,
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                "set_reservation_status",
+                {"reservation_id": "res-new", "status": "checked_in"},
+                blocking=True,
+                return_response=True,
+            )
+        assert "SECRET-PIN" not in str(error.value)
 
     async def test_unconfirmed_continuity_refuses_writes(
         self,
@@ -1959,12 +2406,23 @@ class TestIdentityWritePredicate:
         )
         client = self._client(hass, entry)
 
-        await self._expect_refusal(
-            hass,
-            "add_reservation_note",
-            {"reservation_id": "res-nocode", "note_text": "hi"},
-            "has no known confirmation code",
-        )
+        with patch(
+            _PATCH_RESERVATIONS,
+            new_callable=AsyncMock,
+            return_value=make_fetch_result(
+                [
+                    *make_identity_reservations(*_WRITE_TARGETS),
+                    make_identity_reservation("res-nocode"),
+                ]
+            ),
+        ) as fetch:
+            await self._expect_refusal(
+                hass,
+                "add_reservation_note",
+                {"reservation_id": "res-nocode", "note_text": "hi"},
+                "has no known confirmation code",
+            )
+        fetch.assert_awaited_once()
         assert client.mock_calls == []
 
     async def test_permitted_write_still_reaches_the_client(
@@ -1978,14 +2436,16 @@ class TestIdentityWritePredicate:
             return_value=ActionResult(success=True, target_id="res-001"),
         )
 
-        result = await hass.services.async_call(
-            DOMAIN,
-            "add_reservation_note",
-            {"reservation_id": "res-001", "note_text": "hi"},
-            blocking=True,
-            return_response=True,
-        )
+        with patch(_PATCH_RESERVATIONS, new_callable=AsyncMock) as fetch:
+            result = await hass.services.async_call(
+                DOMAIN,
+                "add_reservation_note",
+                {"reservation_id": "res-001", "note_text": "hi"},
+                blocking=True,
+                return_response=True,
+            )
 
+        fetch.assert_not_awaited()
         assert result == {"success": True, "target_id": "res-001"}
         client.add_reservation_note.assert_awaited_once()
 

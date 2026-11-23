@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
+from typing import TypedDict
 
 from custom_components.guesty.api.client import GuestyApiClient
 from custom_components.guesty.api.const import (
@@ -28,6 +30,13 @@ from custom_components.guesty.api.models import (
     GuestyCustomFieldDefinition,
     GuestyCustomFieldResult,
 )
+
+
+class _RequestOptions(TypedDict, total=False):
+    """Optional pre-dispatch authorization for recovered writes."""
+
+    before_send: Callable[[], None]
+
 
 # Validators keyed by field_type → allowed Python types.
 # bool is excluded from number because ``bool`` subclasses ``int``.
@@ -237,6 +246,8 @@ class GuestyCustomFieldsClient:
         value: str | int | float | bool,
         *,
         route: str = WRITE_ROUTE_V3,
+        single_attempt: bool = False,
+        before_write: Callable[[], None] | None = None,
     ) -> GuestyCustomFieldResult:
         """Write a custom field value to a listing or reservation.
 
@@ -253,6 +264,8 @@ class GuestyCustomFieldsClient:
                 ``WRITE_ROUTE_LEGACY`` is permitted only for a
                 reservation the not-found fallback is currently
                 serving (FR-058, FR-059).
+            single_attempt: Disable retries for the actual write.
+            before_write: Recheck authorization after token acquisition.
 
         Returns:
             GuestyCustomFieldResult indicating success or failure.
@@ -331,11 +344,15 @@ class GuestyCustomFieldsClient:
             "customFields": [{"fieldId": field_id, "value": value}],
         }
 
+        options: _RequestOptions = {}
+        if before_write is not None:
+            options["before_send"] = before_write
         response = await self._api_client._request(
             "PUT",
             path,
             json_data=body,
-            single_attempt=routed,
+            single_attempt=routed or single_attempt,
+            **options,
         )
 
         if routed and not response.is_success:

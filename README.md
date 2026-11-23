@@ -125,6 +125,12 @@ explains why. The notice clears by itself as soon as a later refresh
 provides the evidence. Reads are never blocked by this — only
 writes, and only until continuity is confirmed.
 
+When a reservation write has no current identity evidence, the integration
+refreshes reservations once and checks identity and routing again before
+writing. If the refresh fails or the reservation remains unavailable or
+without a confirmation code, the write is refused. New reservations may not
+be available immediately; a write following recovery is not retried.
+
 If you need writes back immediately, roll back to `legacy`.
 
 ## Breaking changes

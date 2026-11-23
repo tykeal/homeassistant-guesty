@@ -4,8 +4,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
@@ -241,6 +242,8 @@ class ReservationsCoordinator(
         # download rather than discarded with the refresh.
         self.last_refresh_diagnostics: dict[str, Any] = {}
         self.bootstrap_pages: int = 0
+        self._write_miss_generation = 0
+        self._write_miss_outcomes: deque[tuple[int, bool]] = deque(maxlen=256)
         interval_minutes = entry.options.get(
             CONF_RESERVATION_SCAN_INTERVAL,
             DEFAULT_RESERVATION_SCAN_INTERVAL,
@@ -252,6 +255,61 @@ class ReservationsCoordinator(
             name=f"{DOMAIN}_reservations",
             update_interval=timedelta(minutes=interval_minutes),
         )
+
+    @property
+    def write_miss_generation(self) -> int:
+        """Return the number of completed coordinator refresh attempts."""
+        return self._write_miss_generation
+
+    async def _async_refresh(
+        self,
+        log_failures: bool = True,
+        raise_on_auth_failed: bool = False,
+        scheduled: bool = False,
+        raise_on_entry_error: bool = False,
+    ) -> None:
+        """Record completed refresh outcomes after Home Assistant processes them."""
+        if self._shutdown_requested or (scheduled and self.hass.is_stopping):
+            return
+        success = False
+        try:
+            await super()._async_refresh(
+                log_failures=log_failures,
+                raise_on_auth_failed=raise_on_auth_failed,
+                scheduled=scheduled,
+                raise_on_entry_error=raise_on_entry_error,
+            )
+            success = self.last_update_success
+        finally:
+            self._write_miss_generation += 1
+            self._write_miss_outcomes.append((self._write_miss_generation, success))
+
+    async def async_refresh_for_write_miss(self, generation: int) -> bool:
+        """Join or initiate one completed refresh after the captured generation."""
+
+        async def refresh() -> bool:
+            """Share the coordinator lock and consume the first eligible outcome."""
+            async with self._debounced_refresh.async_lock():
+                if self._write_miss_outcomes:
+                    first = self._write_miss_outcomes[0][0]
+                    if generation < first - 1:
+                        return False
+                    for completed, success in self._write_miss_outcomes:
+                        if completed > generation:
+                            return success
+                await self._async_refresh(log_failures=False)
+                success = (
+                    self._write_miss_generation > generation
+                    and self._write_miss_outcomes[-1][1]
+                )
+                if not success:
+                    _LOGGER.warning("Reservation write-miss refresh failed or skipped")
+                return success
+
+        task = self.hass.async_create_background_task(
+            refresh(), "guesty reservation write-miss refresh"
+        )
+        return await asyncio.shield(task)
 
     async def _async_update_data(
         self,

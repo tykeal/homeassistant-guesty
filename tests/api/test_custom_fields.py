@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -27,6 +28,7 @@ from custom_components.guesty.api.custom_fields import (
 )
 from custom_components.guesty.api.exceptions import (
     GuestyActionError,
+    GuestyApiError,
     GuestyAuthError,
     GuestyCustomFieldError,
 )
@@ -1098,6 +1100,78 @@ def _legacy_custom_field_url(reservation_id: str = "res-777") -> str:
 
 class TestLegacyRoutedCustomFieldWrites:
     """Routed custom field writes use the catch-all (T129)."""
+
+    @respx.mock
+    async def test_recovered_field_rechecks_after_token_wait(self) -> None:
+        """Changed authorization during token acquisition prevents the PUT."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response())
+        )
+        put = respx.route(method="PUT").mock(return_value=Response(200, json={}))
+        state = {"valid": True}
+
+        def recheck() -> None:
+            """Reject changed identity after authentication."""
+            if not state["valid"]:
+                raise GuestyActionError("changed")
+
+        async with httpx.AsyncClient() as http:
+            client = _v3_custom_fields_client(http)
+            original = client._api_client._token_manager.get_token
+
+            async def token() -> str:
+                """Change identity while preparing the token."""
+                value = await original()
+                state["valid"] = False
+                return value
+
+            with (
+                patch.object(client._api_client._token_manager, "get_token", token),
+                pytest.raises(GuestyActionError, match="changed"),
+            ):
+                await client.set_field(
+                    "reservation",
+                    "res-777",
+                    "cf-a",
+                    "0042",
+                    single_attempt=True,
+                    before_write=recheck,
+                )
+        assert not put.called
+
+    @respx.mock
+    @pytest.mark.parametrize("route_name", ["v3", WRITE_ROUTE_LEGACY])
+    @pytest.mark.parametrize("failure", [401, 429, 500, "connection"])
+    async def test_recovered_write_does_not_retry(
+        self, route_name: str, failure: int | str
+    ) -> None:
+        """A recovered field write makes at most one request on either route."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response())
+        )
+        url = (
+            _legacy_custom_field_url()
+            if route_name == WRITE_ROUTE_LEGACY
+            else f"{BASE_URL}"
+            + RESERVATION_CUSTOM_FIELDS_PATH.format(reservation_id="res-777")
+        )
+        route = respx.put(url)
+        if failure == "connection":
+            route.mock(side_effect=httpx.ConnectError("unavailable"))
+        else:
+            assert isinstance(failure, int)
+            route.mock(return_value=Response(failure, json={"error": "no"}))
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(GuestyApiError):
+                await _v3_custom_fields_client(http).set_field(
+                    target_type="reservation",
+                    target_id="res-777",
+                    field_id="cf-a",
+                    value="0042",
+                    route=route_name,
+                    single_attempt=True,
+                )
+        assert len(route.calls) == 1
 
     @respx.mock
     async def test_routed_write_uses_the_legacy_catch_all(

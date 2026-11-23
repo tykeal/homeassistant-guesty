@@ -30,6 +30,7 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.httpx_client import get_async_client
 
 from custom_components.guesty.actions import (
+    _write_recovery_options,
     execute_reservation_write,
 )
 from custom_components.guesty.api.actions import GuestyActionsClient
@@ -676,17 +677,20 @@ async def async_setup_entry(
 
         try:
             if target_type == CF_TARGET_RESERVATION:
+                if not target_id.strip():
+                    raise HomeAssistantError("target_id must be a non-empty string")
                 result = await execute_reservation_write(
                     entry_data,
                     target_id,
                     operation=LEGACY_WRITE_CUSTOM_FIELD,
                     action_type=SERVICE_SET_CUSTOM_FIELD,
-                    write=lambda route: local_cf_client.set_field(
+                    write=lambda route, single, check: local_cf_client.set_field(
                         target_type=target_type,
                         target_id=target_id,
                         field_id=field_id,
                         value=value,
                         route=route,
+                        **_write_recovery_options(single, check),
                     ),
                 )
             else:
@@ -700,11 +704,9 @@ async def async_setup_entry(
             raise HomeAssistantError(str(err)) from err
         except GuestyCustomFieldError as err:
             _LOGGER.error(
-                "Custom field update failed for %s/%s: %s",
+                "Custom field update failed for %s/%s",
                 err.target_type,
                 err.target_id,
-                err.message,
-                exc_info=err,
             )
             raise HomeAssistantError(
                 f"Custom field update failed for {err.target_type}/{err.target_id}",

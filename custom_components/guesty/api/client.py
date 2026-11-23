@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 import random
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 
 import httpx
 
@@ -435,6 +435,7 @@ class GuestyApiClient:
         params: dict[str, str | int] | None = None,
         json_data: dict[str, object] | list[object] | None = None,
         single_attempt: bool = False,
+        before_send: Callable[[], None] | None = None,
         _retried_auth: bool = False,
     ) -> httpx.Response:
         """Make an authenticated API request with retry logic.
@@ -457,6 +458,7 @@ class GuestyApiClient:
             json_data: Optional JSON body (dict or list).
             single_attempt: Issue the request exactly once, with no
                 transient, rate-limit or token retry.
+            before_send: Recheck authorization after token acquisition.
             _retried_auth: Internal flag to prevent infinite 401 retry.
 
         Returns:
@@ -476,6 +478,8 @@ class GuestyApiClient:
 
         for attempt in range(max_attempts + 1):
             token = await self._token_manager.get_token()
+            if before_send is not None:
+                before_send()
 
             try:
                 response = await self._http.request(
@@ -527,6 +531,7 @@ class GuestyApiClient:
                     path,
                     params=params,
                     json_data=json_data,
+                    before_send=before_send,
                     _retried_auth=True,
                 )
 

@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from typing import TypedDict
 
 import httpx
 
@@ -42,6 +43,13 @@ from custom_components.guesty.api.legacy_writes import (
 from custom_components.guesty.api.models import ActionResult
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+class _RequestOptions(TypedDict, total=False):
+    """Optional transport settings for a recovered write."""
+
+    single_attempt: bool
+    before_send: Callable[[], None]
 
 
 def _identifies(record: Mapping[str, object], reservation_id: str) -> bool:
@@ -87,6 +95,8 @@ class GuestyActionsClient:
         note_text: str,
         *,
         route: str = WRITE_ROUTE_V3,
+        single_attempt: bool = False,
+        before_write: Callable[[], None] | None = None,
     ) -> ActionResult:
         """Add a note to a reservation via read-modify-write.
 
@@ -100,6 +110,8 @@ class GuestyActionsClient:
                 ``WRITE_ROUTE_LEGACY`` is permitted only for a
                 reservation the not-found fallback is currently
                 serving (FR-058).
+            single_attempt: Disable retries for the actual write.
+            before_write: Recheck authorization after reading notes.
 
         Returns:
             ActionResult with the reservation identifier.
@@ -126,13 +138,23 @@ class GuestyActionsClient:
                 reservation_id,
                 note_text,
                 routed=routed,
+                single_attempt=single_attempt,
+                before_write=before_write,
             )
-        return await self._add_note_v3(reservation_id, note_text)
+        return await self._add_note_v3(
+            reservation_id,
+            note_text,
+            single_attempt=single_attempt,
+            before_write=before_write,
+        )
 
     async def _add_note_v3(
         self,
         reservation_id: str,
         note_text: str,
+        *,
+        single_attempt: bool = False,
+        before_write: Callable[[], None] | None = None,
     ) -> ActionResult:
         """Append a note through the dedicated v3 notes resource.
 
@@ -144,6 +166,8 @@ class GuestyActionsClient:
         Args:
             reservation_id: Target reservation identifier.
             note_text: Note text to append.
+            single_attempt: Disable retries for the actual write.
+            before_write: Recheck authorization after reading notes.
 
         Returns:
             ActionResult with the reservation identifier.
@@ -169,10 +193,16 @@ class GuestyActionsClient:
         path = RESERVATION_NOTES_PATH.format(
             reservation_id=reservation_id,
         )
+        if before_write is not None:
+            before_write()
+        options: _RequestOptions = {"single_attempt": True} if single_attempt else {}
+        if before_write is not None:
+            options["before_send"] = before_write
         response = await self._api_client._request(
             "PUT",
             path,
             json_data=body,
+            **options,
         )
         if not response.is_success:
             raise GuestyActionError(
@@ -293,6 +323,8 @@ class GuestyActionsClient:
         note_text: str,
         *,
         routed: bool = False,
+        single_attempt: bool = False,
+        before_write: Callable[[], None] | None = None,
     ) -> ActionResult:
         """Append a note through the legacy catch-all update.
 
@@ -306,6 +338,8 @@ class GuestyActionsClient:
             routed: Whether this is a legacy-routed write for a
                 fallback-served reservation, which is issued once
                 and never retried (FR-063).
+            single_attempt: Disable retries for the actual write.
+            before_write: Recheck authorization after reading notes.
 
         Returns:
             ActionResult with the reservation identifier.
@@ -368,11 +402,16 @@ class GuestyActionsClient:
             )
 
         put_path = legacy_reservation_path(reservation_id)
+        if before_write is not None:
+            before_write()
+        options: _RequestOptions = {"single_attempt": routed or single_attempt}
+        if before_write is not None:
+            options["before_send"] = before_write
         put_response = await self._api_client._request(
             "PUT",
             put_path,
             json_data={"note": combined_note},
-            single_attempt=routed,
+            **options,
         )
 
         if not put_response.is_success:
@@ -690,6 +729,8 @@ class GuestyActionsClient:
         status: str,
         *,
         route: str = WRITE_ROUTE_V3,
+        single_attempt: bool = False,
+        before_write: Callable[[], None] | None = None,
     ) -> ActionResult:
         """Set check-in/check-out status on a reservation.
 
@@ -700,6 +741,8 @@ class GuestyActionsClient:
                 ``WRITE_ROUTE_LEGACY`` is permitted only for a
                 reservation the not-found fallback is currently
                 serving (FR-058).
+            single_attempt: Disable retries for the actual write.
+            before_write: Recheck authorization after token acquisition.
 
         Returns:
             ActionResult with the reservation identifier.
@@ -725,15 +768,21 @@ class GuestyActionsClient:
                 reservation_id,
                 status,
                 routed=routed,
+                single_attempt=single_attempt,
+                before_write=before_write,
             )
 
         path = RESERVATION_STATUS_PATH.format(
             reservation_id=reservation_id,
         )
+        options: _RequestOptions = {"single_attempt": True} if single_attempt else {}
+        if before_write is not None:
+            options["before_send"] = before_write
         response = await self._api_client._request(
             "PUT",
             path,
             json_data={"status": status},
+            **options,
         )
 
         if not response.is_success:
@@ -758,6 +807,8 @@ class GuestyActionsClient:
         status: str,
         *,
         routed: bool = False,
+        single_attempt: bool = False,
+        before_write: Callable[[], None] | None = None,
     ) -> ActionResult:
         """Set a reservation status through the legacy catch-all.
 
@@ -769,6 +820,8 @@ class GuestyActionsClient:
             routed: Whether this is a legacy-routed write for a
                 fallback-served reservation, which is issued once
                 and never retried (FR-063).
+            single_attempt: Disable retries for the actual write.
+            before_write: Recheck authorization after token acquisition.
 
         Returns:
             ActionResult with the reservation identifier.
@@ -777,11 +830,14 @@ class GuestyActionsClient:
             GuestyActionError: On a rejected write.
         """
         path = legacy_reservation_path(reservation_id)
+        options: _RequestOptions = {"single_attempt": routed or single_attempt}
+        if before_write is not None:
+            options["before_send"] = before_write
         response = await self._api_client._request(
             "PUT",
             path,
             json_data={"status": status},
-            single_attempt=routed,
+            **options,
         )
 
         if not response.is_success:
