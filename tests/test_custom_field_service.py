@@ -2718,6 +2718,57 @@ class TestSetCustomFieldIdentityGuard:
             before_write=ANY,
         )
 
+    async def test_refreshed_custom_field_fallback_uses_legacy_route(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A newly served fallback identity keeps its verified route."""
+        await self._setup(hass, make_identity_reservations(*_WRITE_TARGETS))
+        target = make_identity_reservation("res-new", "CONF-res-new")
+        with (
+            patch(
+                "custom_components.guesty.GuestyApiClient.get_reservations",
+                new_callable=AsyncMock,
+                return_value=make_fetch_result(
+                    [*make_identity_reservations(*_WRITE_TARGETS), target],
+                    fallback_served=("res-new",),
+                    fallback_sourced=("res-new",),
+                ),
+            ) as fetch,
+            patch.object(
+                GuestyCustomFieldsClient,
+                "set_field",
+                new_callable=AsyncMock,
+                return_value=GuestyCustomFieldResult(
+                    success=True,
+                    target_type="reservation",
+                    target_id="res-new",
+                    field_id="cf-door-code",
+                ),
+            ) as write,
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_CUSTOM_FIELD,
+                {
+                    "target_type": "reservation",
+                    "target_id": "res-new",
+                    "field_id": "cf-door-code",
+                    "value": "0042",
+                },
+                blocking=True,
+                return_response=True,
+            )
+        fetch.assert_awaited_once()
+        write.assert_awaited_once_with(
+            target_type="reservation",
+            target_id="res-new",
+            field_id="cf-door-code",
+            value="0042",
+            route="legacy",
+            single_attempt=True,
+            before_write=ANY,
+        )
+
     @pytest.mark.parametrize("failed", [True, False])
     async def test_custom_field_miss_refuses_after_failed_or_empty_refresh(
         self, hass: HomeAssistant, failed: bool
@@ -2748,6 +2799,75 @@ class TestSetCustomFieldIdentityGuard:
         ) as fetch:
             await self._expect_refusal(hass, " ", "non-empty")
         fetch.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("guard", "message"),
+        [
+            ("unusable", "identity baseline"),
+            ("unstored", "could not be written to storage"),
+            ("unconfirmed", "continuity is unconfirmed"),
+            ("ambiguous", "aborted because a confirmation code"),
+            ("unroutable", "no write is sent"),
+        ],
+    )
+    async def test_custom_field_independent_refusal_does_not_refresh(
+        self, hass: HomeAssistant, guard: str, message: str
+    ) -> None:
+        """Independent identity and provenance refusals precede recovery."""
+        entry = await self._setup(hass, make_identity_reservations(*_WRITE_TARGETS))
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        baseline = coordinator.identity.baseline
+        assert baseline is not None
+        if guard == "unusable":
+            baseline.codes.clear()
+        elif guard == "unstored":
+            coordinator.identity._unstored = True
+        elif guard == "unconfirmed":
+            baseline.continuity = "unconfirmed"
+        elif guard == "ambiguous":
+            coordinator.identity.mark_ambiguous()
+        else:
+            coordinator.fallback_sourced_ids = frozenset({"res-new"})
+        with patch(
+            "custom_components.guesty.GuestyApiClient.get_reservations",
+            new_callable=AsyncMock,
+        ) as fetch:
+            await self._expect_refusal(hass, "res-new", message)
+        fetch.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("field_id", "value"),
+        [("missing-field", "0042"), ("cf-door-code", False)],
+    )
+    async def test_invalid_custom_field_does_not_refresh(
+        self, hass: HomeAssistant, field_id: str, value: str | bool
+    ) -> None:
+        """An invalid field definition or value fails before recovery."""
+        await self._setup(hass, make_identity_reservations(*_WRITE_TARGETS))
+        with (
+            patch(
+                "custom_components.guesty.GuestyApiClient.get_reservations",
+                new_callable=AsyncMock,
+            ) as fetch,
+            patch.object(
+                GuestyCustomFieldsClient, "set_field", new_callable=AsyncMock
+            ) as write,
+            pytest.raises(HomeAssistantError),
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_CUSTOM_FIELD,
+                {
+                    "target_type": "reservation",
+                    "target_id": "res-new",
+                    "field_id": field_id,
+                    "value": value,
+                },
+                blocking=True,
+                return_response=True,
+            )
+        fetch.assert_not_awaited()
+        write.assert_not_awaited()
 
     async def test_unconfirmed_continuity_refuses(
         self,
