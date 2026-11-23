@@ -44,7 +44,8 @@ An in-memory record associated with one coordinator refresh cycle:
 
 - `generation`: Monotonically increases when a real update begins.
 - `entry_id` / coordinator identity: Scope to the loaded entry.
-- `source_configuration`: Configured path and options, still matching on use.
+- `source_configuration`: Configured path and options, still matching on use,
+  plus an option-update witness held for this attempt.
 - `started` / `completed`: Lifecycle markers; skips are not completed fetches.
 - `outcome`: Accepted success, failure, ambiguity, cancellation, or skip.
 - `data_generation`: Accepted result/provenance; never identity secrets.
@@ -58,6 +59,24 @@ effective values, including defaults; a changed component prevents joining
 or authorizing that attempt. Guest lookup, pagination, and bounded fallback
 continue under the existing configured client policy, and live provenance is
 still checked separately. Do not copy credentials or tokens into this record.
+
+At each refresh start and at miss detection retain a strong reference to the
+live entry's options object and an immutable snapshot of the effective
+selection values. In the locked Home Assistant version, `async_update_entry`
+synchronously replaces that object when options change, before it schedules
+asynchronous update listeners. Require the refresh-start and miss witnesses
+to match; compare the object by identity and the effective values after each
+wait and directly before dispatch, alongside the live entry, coordinator and
+client identities.
+Any options replacement invalidates the recovered write even if values later
+return to their original state; this conservatively includes unrelated option
+updates during the attempt. A reload also invalidates it. A token-only
+`entry.data` update does not replace the options object and must not itself
+invalidate recovery. Do not rely on asynchronous listeners noticing every
+intermediate value, and do not persist or log the witness.
+Verify this replacement behavior against both supported HA versions; if it
+does not hold, use an equally reliable change witness or report a blocked
+compatibility gate rather than trusting value equality.
 
 ### Reservation write attempt
 

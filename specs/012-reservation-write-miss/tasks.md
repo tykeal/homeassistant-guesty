@@ -47,7 +47,17 @@ refresh attempt before any service relies on a cache-miss recovery result.
 
 **Checkpoint**: Coordinator attempt tests pass against real HA refresh/debounce semantics; a completed attempt is distinguishable from a skipped or failed one.
 
-## Phase 3: User Story 1 — Recover From a Missing Identity (Priority: P1)
+## Phase 3: Safe Recovery Across All Three User Stories
+
+The three stories form one phase because a recovered write must not be
+enabled until post-wait authorization, dispatch locking and recovery-only
+one-shot transport are all in place. Develop and behaviorally red-test those
+prerequisites before enabling service dispatch; use independently testable
+units without relying on a disabled service as the reason for a red test.
+The intermediate story milestones below are not phase checkpoints. Complete
+all tasks and the final phase checkpoint before advancing.
+
+### User Story 1 — Recover From a Missing Identity (Priority: P1)
 
 **Goal**: A valid, otherwise eligible reservation miss can use one accepted
 configured-source refresh for note, status, or reservation custom-field writes.
@@ -63,9 +73,11 @@ specific failure and no write.
 - [ ] T004 [P] [US1] Add failing service-level tests in `tests/test_custom_field_service.py` for reservation custom-field misses with absent and code-less targets, successful recovery, failed/stale refreshes, and missing/code-less post-refresh results. Before implementing recovery, verify invalid target/field/value and every independent baseline, storage, continuity, ambiguity and known-route refusal cause no refresh and no write. Assert listing custom-field writes never enter recovery and each reservation attempt performs no more than one coordinated refresh (FR-001–FR-007, FR-016; US1-S1–S3, US3-S3; SC-001, SC-003, SC-006).
 - [ ] T005 [US1] Implement a shared typed miss classification and the one-refresh recovery flow in `custom_components/guesty/actions.py` and `custom_components/guesty/__init__.py`. Use it for all three reservation writes on the existing configured `ReservationsCoordinator`; validate inputs and independent refusals first; distinguish cache hit, absent target, and present code-less target; await/join one attempt; and report refresh failure/staleness separately from a target still absent or code-less. Do not refresh listings or other operations (FR-001–FR-007, FR-013, FR-015–FR-016; US1-S1–S3, US3-S3).
 
-**Checkpoint**: All three reservation write types recover from a safe miss or fail clearly without a write; cache hits and listing writes remain unchanged.
+**Intermediate milestone**: Tests cover all three write types, failed refreshes,
+cache hits and listing writes. Do not enable recovered dispatch until the
+remaining story safeguards in this phase are implemented and tested.
 
-## Phase 4: User Story 2 — Preserve Identity and Routing Safety (Priority: P1)
+### User Story 2 — Preserve Identity and Routing Safety (Priority: P1)
 
 **Goal**: Refresh recovery never bypasses persisted identity, continuity,
 ambiguity, source provenance, or route availability protections.
@@ -83,13 +95,25 @@ no write; allowed writes use the latest accepted route.
   in the refresh attempt data model. T007 must also assert privacy for
   successful recovery logs and diagnostics, not only failure paths.
 
+  T006 must test supported Home Assistant option updates A→B→A, including
+  back-to-back updates before update listeners run, for the source, window,
+  and selected-listing values. Assert that recovery refuses after any options
+  replacement or reload even if effective values match again; token-only
+  data updates must not themselves cause refusal. Include real HA semantics.
+  Add cache-hit controls and recovery tests proving fetched current identity
+  evidence is treated identically for selected and unselected listings and
+  locally trimmed results; absence of publication is not a new refusal.
+
 - [ ] T008 [US2] Implement preflight and post-refresh authorization in `custom_components/guesty/actions.py` and `custom_components/guesty/__init__.py`. Re-evaluate the existing identity guard, persisted baseline and unstored state, continuity, ambiguity, current target/code evidence, and known route before recovery and again after it. Preserve `identity.py` baseline/comparison semantics; never create, promote, clear, or bypass a baseline. Keep failure categories actionable and sanitize recovery diagnostics rather than forwarding raw response details (FR-002, FR-006–FR-012, FR-015; US2-S1–S5).
 - [ ] T009 [US2] Add failing tests in `tests/test_actions.py` and `tests/api/test_actions.py` that pause the note prerequisite read, then invalidate a guard before dispatch or attempt a concurrent coordinator refresh after route selection. Assert that refresh waits through the write, note read precedes write, failed read sends no write, action cancellation propagates, and routing/authorization is rechecked after every awaited read and refresh. Cover stale entry mappings, live-entry lookup, coordinator identity and source changes before dispatch (FR-007–FR-008, FR-014–FR-015; US2-S4; US3-S2; SC-004–SC-005).
 - [ ] T010 [US2] Implement final recovery-write authorization in `custom_components/guesty/actions.py` and `custom_components/guesty/api/actions.py`: acquire `_debounced_refresh.async_lock()` without reentering it and hold it from final authorization through the actual PUT, including the note GET; recheck after the note GET and select the current route immediately before the PUT. Verify the live entry mapping, coordinator identity and source; reject reload, source change, failed/ambiguous superseding refresh, missing/code-less target, or any failed guard. Do not convert action cancellation into a service success (FR-007–FR-008, FR-014–FR-015; US2-S4; SC-004–SC-005).
 
-**Checkpoint**: Recovery does not weaken feature 008 identity, persistence, continuity, ambiguity, fallback, or route decisions, including after waits.
+**Intermediate milestone**: Tests and prerequisites preserve feature 008
+identity, persistence, continuity, ambiguity, fallback and route decisions,
+including after waits. Recovered dispatch remains disabled until all required
+dispatch and transport safeguards are present.
 
-## Phase 5: User Story 3 — Bound Recovery Work and Report Outcomes (Priority: P2)
+### User Story 3 — Bound Recovery Work and Report Outcomes (Priority: P2)
 
 **Goal**: Overlapping misses share eligible work, and recovery writes do not
 repeat an externally visible change while ordinary cache-hit behavior remains
@@ -110,7 +134,7 @@ transient write failures for recovered and cache-hit calls separately.
 
 **Checkpoint**: Concurrent eligible calls share one qualifying refresh, every recovered action issues at most one actual write, and cache-hit retry behavior is unchanged.
 
-## Phase 6: Documentation and Cross-Cutting Validation
+## Phase 4: Documentation and Cross-Cutting Validation
 
 **Purpose**: Document the bounded user-visible behavior and validate the
 implementation without implying live Guesty verification.
@@ -128,24 +152,25 @@ implementation without implying live Guesty verification.
 - **Foundational (Phase 2)**: T001's new lifecycle behavior tests must fail
   for the intended reason before T002; its existing HA behavior controls may
   pass on baseline. The coordinator attempt lifecycle blocks all write stories.
-- **User Story 1 (Phase 3)**: T003 and T004 may be authored/tested in parallel
-  after T002; T005 follows both tests.
-- **User Story 2 (Phase 4)**: T006 and T007 may be authored/tested in parallel
-  after T005; T008 follows both. T009 must fail before T010.
-- **User Story 3 (Phase 5)**: T011 must fail before T012. After T012,
-  T013–T015 may be developed independently; T016 follows all three tests.
-- **Documentation and validation (Phase 6)**: T017 and T018 may proceed in
+- **Safe recovery (Phase 3)**: T003–T016 retain their listed scenarios.
+  Test each new or changed behavior before its code, and build the guard,
+  dispatch-lock and single-attempt prerequisites before T005 enables any
+  recovered write. T003 and T004 precede T005; T006 and T007 precede T008;
+  T009 precedes T010; T011 precedes T012; and T013–T015 precede T016.
+  Tests for dispatch and transport must reach their intended behavioral
+  assertions without requiring an unsafe recovered service to be enabled.
+  Complete and validate all three stories together at the phase checkpoint.
+- **Documentation and validation (Phase 4)**: T017 and T018 may proceed in
   parallel after behavior is settled. T019 follows implementation, tests,
   and documentation.
 
 ### User Story Dependencies
 
 - **US1 (P1)** depends on the coordinator lifecycle in Phase 2.
-- **US2 (P1)** depends on US1 recovery flow so it can prove every existing
-  guard and route is reapplied around that flow.
-- **US3 (P2)** depends on the refresh and authorization paths in US1/US2;
-  it validates sharing and write-count bounds without changing ordinary
-  cache-hit behavior.
+- **US2 (P1)** tests the recovery flow and its safety prerequisites within
+  the same phase, before recovered dispatch is enabled.
+- **US3 (P2)** tests shared refresh and one-shot transport in the same phase
+  without changing ordinary cache-hit behavior.
 
 ### Traceability
 
@@ -189,13 +214,13 @@ the numbered acceptance scenarios in each story in `spec.md`.
 
 1. Complete T001–T002 and validate attempt completion using real HA
    coordination semantics.
-2. Deliver US1 as the MVP increment, with TDD coverage for all three write
-   types and for failures that must not write.
-3. Complete US2 before considering any recovered write safe; preserve
-   feature 008 persistence, continuity, ambiguity, and provenance semantics.
-4. Complete US3 to establish shared-refresh and at-most-one-write bounds,
-   while proving ordinary cache-hit retry behavior remains unchanged.
-5. Add accurate operator documentation and release notes, then run all
+2. Develop the three stories as one phase, with behavioral red tests before
+   each unit and baseline-green controls for unchanged protections. Build
+   and test identity, dispatch-lock, and one-shot transport prerequisites
+   before enabling any recovered write.
+3. Validate all three stories together at the phase checkpoint, including
+   shared refresh and unchanged cache-hit retry behavior.
+4. Add accurate operator documentation and release notes, then run all
    required validations without live Guesty calls.
 
 ## Task Status and Commit Discipline

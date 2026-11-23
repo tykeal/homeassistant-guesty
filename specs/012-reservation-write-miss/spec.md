@@ -136,9 +136,12 @@ refreshes and writes, and exercise unsuccessful and stale refresh results.
 - A failed re-check after a fallback was successfully served in this session
   retains its existing validated served record; a first failed fallback
   lookup does not create one.
-- A target may remain outside the configured filters or unavailable from
-  the configured source. The action fails; no later indexing or eventual
-  success is promised.
+- A target may remain absent from current identity evidence because it is
+  outside the configured fetch filters or unavailable from the source. The
+  action fails; no later indexing or eventual success is promised. A fetched,
+  coded target need not be published: selected-listing attribution or the
+  local date trim alone does not add a reservation-write restriction. The
+  existing identity and provenance guards still decide whether it is writable.
 
 ## Requirements *(mandatory)*
 

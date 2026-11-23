@@ -86,7 +86,9 @@ performs another one. The implementation therefore needs a small
 coordinator-owned refresh-attempt/generation helper that serializes on the
 same Home Assistant debouncer lock, checks whether an update completed after
 the miss, and invokes the coordinator's normal `_async_refresh` path only
-when no qualifying attempt completed. It must observe completion after HA
+when no eligible attempt is available to join. Joining one consumes the
+limit regardless of its outcome; failure never starts a second attempt.
+It must observe completion after HA
 has updated `last_update_success`, not infer success from the method's
 `None` return or retained `data`.
 
@@ -139,7 +141,11 @@ identifier-specific lookup.
    `_unstored` state, continuity, ambiguity, target presence, current
    confirmation-code evidence, and route. The latest accepted coordinator
    state controls provenance. Never use a pre-await route or a successful
-   result superseded by a failed/ambiguous refresh.
+   result superseded by a failed/ambiguous refresh. Check the option-update
+   witness defined in the data model as well as effective values: an
+   A→B→A change or reload invalidates recovery even if values match again.
+   The same identity and provenance guards apply to cache hits and recovered
+   writes; selected-listing publication and local trimming add no new guard.
 6. For recovery writes, acquire the same
    `_debounced_refresh.async_lock()` used by coordinator updates for final
    authorization and hold it through the actual write. Release the refresh

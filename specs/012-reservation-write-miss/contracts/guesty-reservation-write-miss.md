@@ -43,9 +43,10 @@ baseline schema, and normal cache-hit behavior are unchanged.
   guards. Cancellation of one waiter propagates to that action without
   cancelling the coordinator-owned shared attempt for the other waiters.
   Cancellation of the attempt itself cannot authorize any waiter.
-- If no qualifying attempt has completed, perform one normal coordinator
-  refresh. The per-action limit is one cycle, whether it succeeds, fails, is
-  ambiguous, or omits the target.
+- If no attempt that could complete after miss detection is available to
+  join, perform one normal coordinator refresh. Joining an attempt consumes
+  the one-cycle limit even if it fails, is cancelled, is ambiguous, is
+  skipped, or omits the target; do not start a second refresh in that action.
 - The refresh retains existing window, status, listing, pagination,
   supplementary guest lookup, legacy fallback cap/recheck/retention, cache,
   and transport retry behavior. It performs no per-ID or speculative
@@ -79,6 +80,12 @@ current refresh uses the current accepted provenance: v3 uses the v3
 resource; fallback-sourced targets use legacy only when successfully served
 in this session and the legacy route remains available. Retained-only
 fallback targets do not route to either source.
+
+Use the same current identity and routing safeguards as a cache-hit write.
+Publication is not an additional write-authorization boundary: a fetched,
+coded target excluded from publication by selected-listing attribution or
+local date trimming may still be writable if those safeguards pass. Do not
+change the configured fetch and selection rules or add targeted requests.
 
 For a recovery action, hold the coordinator's
 `_debounced_refresh.async_lock()` from final authorization through the
