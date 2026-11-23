@@ -221,10 +221,12 @@ refreshes and writes, and exercise unsuccessful and stale refresh results.
   This specification supersedes **only** feature 008 FR-034's prohibition
   on a write miss initiating one coordinated refresh; it does not add a new
   legacy exception or expand the one-time bootstrap allowance.
-- **FR-014**: An invoked action MUST issue at most one actual reservation
-  write, never automatically retry it, and never retry it against another
-  source. Existing note read-before-write and failure handling remain in
-  force; a failed prerequisite read produces no write.
+- **FR-014**: An action that performed or shared a miss-triggered refresh
+  MUST issue at most one actual reservation write, never automatically
+  retry it, and never retry it against another source. Existing behavior for
+  actions without a miss-triggered refresh remains unchanged. Existing note
+  read-before-write and failure handling remain in force; a failed
+  prerequisite read produces no write.
 - **FR-015**: User-visible failures MUST distinguish an unsuccessful or
   stale refresh, a still-missing identity, and a failed identity or routing
   guard, and provide an actionable explanation without exposing PINs,
@@ -245,7 +247,8 @@ refreshes and writes, and exercise unsuccessful and stale refresh results.
   configuration entry, potentially shared by overlapping actions and
   subject to existing source and fallback policies.
 - **Write attempt**: One user- or automation-invoked reservation action,
-  with at most one qualifying recovery refresh and one actual write.
+  with at most one qualifying recovery refresh and, after such a refresh,
+  at most one actual write.
 
 ## Success Criteria *(mandatory)*
 
@@ -270,8 +273,8 @@ refreshes and writes, and exercise unsuccessful and stale refresh results.
   fallback and changed-provenance cases, 100% of permitted writes use the
   current valid route and 100% of unsafe routes send zero writes.
 - **SC-006**: Across tested listing writes and non-miss refusals, zero
-  miss-triggered refreshes occur; across tested actual write failures,
-  zero automatic write retries occur.
+  miss-triggered refreshes occur; across tested actual write failures
+  after a recovery refresh, zero automatic write retries occur.
 - **SC-007**: All tested failure messages identify the applicable failure
   category and a next step, while exposing no PIN, confirmation code,
   guest personal data or credentials in logs or diagnostics.
