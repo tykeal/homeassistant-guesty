@@ -37,6 +37,9 @@ in addition to the final validation in T019.
 **Purpose**: Use the existing Home Assistant integration, test suites, and
 locked dependencies. No project initialization or new dependency is needed.
 
+**Checkpoint**: Confirm the existing project and locked dependencies are
+available and all CI tests pass before beginning the coordinator lifecycle.
+
 ## Phase 2: Foundational — Coordinator Refresh Attempt Lifecycle
 
 **Purpose**: Establish a coordinator-owned, testable definition of a real
@@ -155,7 +158,10 @@ implementation without implying live Guesty verification.
 - **Safe recovery (Phase 3)**: T003–T016 retain their listed scenarios.
   Test each new or changed behavior before its code, and build the guard,
   dispatch-lock and single-attempt prerequisites before T005 enables any
-  recovered write. T003 and T004 precede T005; T006 and T007 precede T008;
+  recovered write. T008, T010, T012, and T016 must be implemented and
+  behaviorally verified before T005 enables recovered dispatch; any earlier
+  T005 scaffolding must not dispatch recovered writes. T003 and T004 precede
+  T005; T006 and T007 precede T008;
   T009 precedes T010; T011 precedes T012; and T013–T015 precede T016.
   Tests for dispatch and transport must reach their intended behavioral
   assertions without requiring an unsafe recovered service to be enabled.
