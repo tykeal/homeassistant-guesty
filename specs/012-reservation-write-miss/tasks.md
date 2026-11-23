@@ -23,9 +23,9 @@ Do not treat retained coordinator data or an API method's `None` return as
 proof that a refresh succeeded.
 
 **Organization**: Tasks follow the shared coordinator prerequisite and then
-the independently testable user stories from spec.md. IDs are in dependency
-order. Every task remains unchecked until its work and required verification
-are complete.
+the user stories from spec.md. IDs provide traceability, not execution order;
+dependencies are stated explicitly below. Every task remains unchecked until
+its work and required verification are complete.
 
 **Phase gates**: At each phase boundary, complete the phase checkpoint and
 confirm that all CI tests pass before beginning the next phase. Report and
@@ -58,7 +58,12 @@ one-shot transport are all in place. Develop and behaviorally red-test those
 prerequisites before enabling service dispatch; use independently testable
 units without relying on a disabled service as the reason for a red test.
 The intermediate story milestones below are not phase checkpoints. Complete
-all tasks and the final phase checkpoint before advancing.
+all tasks and the final phase checkpoint before advancing. Observe the new
+T003 and T004 service success-path tests fail for their intended missing
+recovery behavior before implementing any relevant code; make them green
+after the safeguards are verified and recovered dispatch is enabled. Other
+phase-internal milestones need not have every test green, but commits must
+remain runnable and the whole phase must be green before Phase 4.
 
 ### User Story 1 — Recover From a Missing Identity (Priority: P1)
 
@@ -146,6 +151,10 @@ implementation without implying live Guesty verification.
 - [ ] T018 [P] Update the reservation-write guidance in `README.md` to explain eligible cache-miss recovery, the unchanged fail-closed identity/provenance rules, and the absence of an eventual-indexing guarantee. Do not imply writes are retried or that listing writes refresh (FR-001–FR-016; US1-S1–S3, US2-S1–S5, US3-S1–S3; SC-001–SC-007).
 - [ ] T019 Run focused suites from `specs/012-reservation-write-miss/quickstart.md`, then `uv run pytest tests/ -x -q`, `uv run ruff check custom_components/ tests/ scripts/`, `uv run --group releasenotes mypy custom_components/ tests/ scripts/`, `uv run pre-commit run --all-files`, and `uv run --group releasenotes reno lint`. Run coordinator compatibility tests in the locked HA 2026.10.4 environment and an isolated compatible HA 2026.4.0 environment without changing `uv.lock`; record actual versions and results, or report a blocked gate if the latter cannot be constructed. Do not perform or claim live Guesty verification (FR-003–FR-006, FR-013–FR-016; SC-001–SC-007).
 
+**Checkpoint**: T017–T019 are complete, all required local and CI tests
+pass, and compatibility results are recorded. No live Guesty verification is
+performed or claimed; a blocked validation gate is not a completed checkpoint.
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies
@@ -160,11 +169,14 @@ implementation without implying live Guesty verification.
   dispatch-lock and single-attempt prerequisites before T005 enables any
   recovered write. T008, T010, T012, and T016 must be implemented and
   behaviorally verified before T005 enables recovered dispatch; any earlier
-  T005 scaffolding must not dispatch recovered writes. T003 and T004 precede
-  T005; T006 and T007 precede T008;
+  T005 scaffolding must not dispatch recovered writes, and T005 is not
+  complete until final enablement and verification. T003 and T004 precede
+  any relevant recovery code; T006 and T007 precede T008;
   T009 precedes T010; T011 precedes T012; and T013–T015 precede T016.
   Tests for dispatch and transport must reach their intended behavioral
-  assertions without requiring an unsafe recovered service to be enabled.
+  assertions without requiring an unsafe recovered service to be enabled,
+  using independently exercised units or controlled test seams as needed.
+  Neither masked failures nor skipped tests count as passing verification.
   Complete and validate all three stories together at the phase checkpoint.
 - **Documentation and validation (Phase 4)**: T017 and T018 may proceed in
   parallel after behavior is settled. T019 follows implementation, tests,
