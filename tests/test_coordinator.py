@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -17,7 +18,7 @@ import pytest
 import respx
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.update_coordinator import UpdateFailed
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.guesty.api.auth import GuestyTokenManager
@@ -122,6 +123,544 @@ def _make_entry(**overrides: object) -> MockConfigEntry:
         unique_id="test-client-id",
         **overrides,  # type: ignore[arg-type]
     )
+
+
+async def _request_write_miss_refresh(
+    coordinator: ReservationsCoordinator,
+    generation: int,
+) -> bool:
+    """Request recovery, using the existing direct refresh on the baseline."""
+    recovery = getattr(coordinator, "async_refresh_for_write_miss", None)
+    if recovery is not None:
+        return bool(await recovery(generation))
+    await coordinator.async_refresh()
+    return coordinator.last_update_success
+
+
+class TestWriteMissHomeAssistantSemantics:
+    """Control tests for unchanged HA refresh and debouncer behavior."""
+
+    async def test_request_returns_early_and_direct_refresh_fetches_again(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A debounced request returns while a direct refresh waits and refetches."""
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def fetch() -> int:
+            """Pause the first fetch so both refresh paths overlap."""
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                started.set()
+                await release.wait()
+            return calls
+
+        coordinator = DataUpdateCoordinator(
+            hass,
+            logging.getLogger(__name__),
+            config_entry=None,
+            name="write_miss_semantics",
+            update_method=fetch,
+        )
+        first = asyncio.create_task(coordinator.async_refresh())
+        second: asyncio.Task[None] | None = None
+        try:
+            await asyncio.wait_for(started.wait(), 2)
+            await asyncio.wait_for(coordinator.async_request_refresh(), 2)
+            assert calls == 1
+            assert not first.done()
+            second = asyncio.create_task(coordinator.async_refresh())
+            release.set()
+            await asyncio.wait_for(asyncio.gather(first, second), 2)
+            assert calls == 2
+            assert coordinator.data == 2
+            assert coordinator.last_update_success is True
+        finally:
+            release.set()
+            await coordinator.async_shutdown()
+
+    async def test_failure_retains_data_and_shutdown_skips(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A swallowed failure retains data and a shutdown call is not a fetch."""
+        fetch = AsyncMock(side_effect=[{"old": 1}, UpdateFailed("failed")])
+        coordinator = DataUpdateCoordinator(
+            hass,
+            logging.getLogger(__name__),
+            config_entry=None,
+            name="write_miss_semantics",
+            update_method=fetch,
+        )
+        await coordinator.async_refresh()
+        assert coordinator.data == {"old": 1}
+        assert coordinator.last_update_success is True
+        await coordinator.async_refresh()
+        assert coordinator.data == {"old": 1}
+        assert coordinator.last_update_success is False
+        await coordinator.async_shutdown()
+        await coordinator.async_refresh()
+        assert fetch.await_count == 2
+
+
+class TestWriteMissAttemptLifecycle:
+    """Specify recovery attempts against the real HA coordinator path."""
+
+    async def test_attempt_generation_starts_before_fetch(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A real attempt has its own generation before the fetch completes."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        coordinator = ReservationsCoordinator(hass, entry, AsyncMock(), AsyncMock())
+        initial = getattr(coordinator, "write_miss_attempt_generation", 0)
+        observed: list[int] = []
+
+        async def fetch() -> dict[str, list[GuestyReservation]]:
+            """Record the attempt generation during the in-progress fetch."""
+            observed.append(getattr(coordinator, "write_miss_attempt_generation", 0))
+            return {}
+
+        with patch.object(coordinator, "_async_update_data", side_effect=fetch):
+            try:
+                await coordinator.async_refresh()
+                assert observed == [initial + 1]
+                assert coordinator.write_miss_attempt_generation == observed[0]
+            finally:
+                await coordinator.async_shutdown()
+
+    @pytest.mark.parametrize("fails", [False, True])
+    async def test_inflight_attempt_is_consumed_once(
+        self, hass: HomeAssistant, fails: bool
+    ) -> None:
+        """Joining an in-flight attempt never starts another, even on failure."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        coordinator = ReservationsCoordinator(hass, entry, AsyncMock(), AsyncMock())
+        started = asyncio.Event()
+        waiter_started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def fetch() -> dict[str, list[GuestyReservation]]:
+            """Pause the first fetch; an unwanted second fetch would succeed."""
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                started.set()
+                await release.wait()
+                if fails:
+                    raise UpdateFailed("failed")
+            return {}
+
+        async def recover(generation: int) -> bool:
+            """Start the action's refresh while the scheduled fetch is active."""
+            waiter_started.set()
+            return await _request_write_miss_refresh(coordinator, generation)
+
+        with patch.object(coordinator, "_async_update_data", side_effect=fetch):
+            first = asyncio.create_task(coordinator.async_refresh())
+            waiter: asyncio.Task[bool] | None = None
+            try:
+                await asyncio.wait_for(started.wait(), 2)
+                generation = getattr(coordinator, "write_miss_generation", 0)
+                waiter = asyncio.create_task(recover(generation))
+                await asyncio.wait_for(waiter_started.wait(), 2)
+                assert not waiter.done()
+                release.set()
+                result = await asyncio.wait_for(waiter, 2)
+                await asyncio.wait_for(first, 2)
+                assert result is not fails
+                assert calls == 1
+            finally:
+                release.set()
+                await coordinator.async_shutdown()
+
+    async def test_cancelled_waiter_does_not_cancel_shared_attempt(
+        self, hass: HomeAssistant
+    ) -> None:
+        """One cancelled action must not cancel or duplicate another's refresh."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        coordinator = ReservationsCoordinator(hass, entry, AsyncMock(), AsyncMock())
+        started = asyncio.Event()
+        second_started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def fetch() -> dict[str, list[GuestyReservation]]:
+            """Pause the shared coordinator work."""
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+            return {}
+
+        async def recover_second(generation: int) -> bool:
+            """Register a second waiter before cancelling the first."""
+            second_started.set()
+            return await _request_write_miss_refresh(coordinator, generation)
+
+        with patch.object(coordinator, "_async_update_data", side_effect=fetch):
+            generation = getattr(coordinator, "write_miss_generation", 0)
+            first = asyncio.create_task(
+                _request_write_miss_refresh(coordinator, generation)
+            )
+            second: asyncio.Task[bool] | None = None
+            try:
+                await asyncio.wait_for(started.wait(), 2)
+                second = asyncio.create_task(recover_second(generation))
+                await asyncio.wait_for(second_started.wait(), 2)
+                first.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await first
+                release.set()
+                assert await asyncio.wait_for(second, 2) is True
+                assert calls == 1
+            finally:
+                release.set()
+                await coordinator.async_shutdown()
+
+    async def test_later_success_does_not_replace_joined_failure(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A waiter consumes the first post-detection outcome, not a later success."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        coordinator = ReservationsCoordinator(hass, entry, AsyncMock(), AsyncMock())
+        started = asyncio.Event()
+        later_started = asyncio.Event()
+        waiter_started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def fetch() -> dict[str, list[GuestyReservation]]:
+            """Fail the first update; a separately requested later update succeeds."""
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                started.set()
+                await release.wait()
+                raise UpdateFailed("failed")
+            return {}
+
+        async def later_refresh() -> None:
+            """Queue a later update before the action requests recovery."""
+            later_started.set()
+            await coordinator.async_refresh()
+
+        async def recover(generation: int) -> bool:
+            """Queue the action behind the existing updates."""
+            waiter_started.set()
+            return await _request_write_miss_refresh(coordinator, generation)
+
+        with patch.object(coordinator, "_async_update_data", side_effect=fetch):
+            first = asyncio.create_task(coordinator.async_refresh())
+            later: asyncio.Task[None] | None = None
+            waiter: asyncio.Task[bool] | None = None
+            try:
+                await asyncio.wait_for(started.wait(), 2)
+                generation = getattr(coordinator, "write_miss_generation", 0)
+                later = asyncio.create_task(later_refresh())
+                await asyncio.wait_for(later_started.wait(), 2)
+                waiter = asyncio.create_task(recover(generation))
+                await asyncio.wait_for(waiter_started.wait(), 2)
+                release.set()
+                assert await asyncio.wait_for(waiter, 2) is False
+                await asyncio.wait_for(asyncio.gather(first, later), 2)
+                assert calls == 2
+            finally:
+                release.set()
+                await coordinator.async_shutdown()
+
+    async def test_cancelled_joined_attempt_cannot_authorize(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A cancelled in-flight refresh consumes the attempt without a write."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        coordinator = ReservationsCoordinator(hass, entry, AsyncMock(), AsyncMock())
+        started = asyncio.Event()
+        waiter_started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def fetch() -> dict[str, list[GuestyReservation]]:
+            """Pause the first update until its owning task is cancelled."""
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+            return {}
+
+        async def recover(generation: int) -> bool:
+            """Join the in-flight update before it is cancelled."""
+            waiter_started.set()
+            return await _request_write_miss_refresh(coordinator, generation)
+
+        with patch.object(coordinator, "_async_update_data", side_effect=fetch):
+            first = asyncio.create_task(coordinator.async_refresh())
+            waiter: asyncio.Task[bool] | None = None
+            try:
+                await asyncio.wait_for(started.wait(), 2)
+                generation = getattr(coordinator, "write_miss_generation", 0)
+                waiter = asyncio.create_task(recover(generation))
+                await asyncio.wait_for(waiter_started.wait(), 2)
+                first.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await first
+                release.set()
+                assert await asyncio.wait_for(waiter, 2) is False
+                assert calls == 1
+            finally:
+                release.set()
+                await coordinator.async_shutdown()
+
+    async def test_later_failure_invalidates_joined_success(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A newer failed refresh cannot leave an older success authorized."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        coordinator = ReservationsCoordinator(hass, entry, AsyncMock(), AsyncMock())
+        started = asyncio.Event()
+        later_started = asyncio.Event()
+        waiter_started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def fetch() -> dict[str, list[GuestyReservation]]:
+            """Complete the joined refresh, then fail an already queued refresh."""
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                started.set()
+                await release.wait()
+                return {}
+            raise UpdateFailed("failed")
+
+        async def later_refresh() -> None:
+            """Queue a later update before the action requests recovery."""
+            later_started.set()
+            await coordinator.async_refresh()
+
+        async def recover(generation: int) -> bool:
+            """Queue the action behind the existing updates."""
+            waiter_started.set()
+            return await _request_write_miss_refresh(coordinator, generation)
+
+        with patch.object(coordinator, "_async_update_data", side_effect=fetch):
+            first = asyncio.create_task(coordinator.async_refresh())
+            try:
+                await asyncio.wait_for(started.wait(), 2)
+                generation = getattr(coordinator, "write_miss_generation", 0)
+                later = asyncio.create_task(later_refresh())
+                await asyncio.wait_for(later_started.wait(), 2)
+                waiter = asyncio.create_task(recover(generation))
+                await asyncio.wait_for(waiter_started.wait(), 2)
+                release.set()
+                assert await asyncio.wait_for(waiter, 2) is False
+                await asyncio.wait_for(asyncio.gather(first, later), 2)
+                assert calls == 2
+                assert coordinator.last_update_success is False
+            finally:
+                release.set()
+                await coordinator.async_shutdown()
+
+    async def test_skipped_update_cannot_authorize_retained_data(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A shut-down coordinator cannot treat its old success as a new fetch."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        coordinator = ReservationsCoordinator(hass, entry, AsyncMock(), AsyncMock())
+        coordinator.data = {"old": []}
+        await coordinator.async_shutdown()
+        generation = getattr(coordinator, "write_miss_generation", 0)
+        with patch.object(coordinator, "_async_update_data") as update:
+            assert await _request_write_miss_refresh(coordinator, generation) is False
+            update.assert_not_awaited()
+        assert coordinator.data == {"old": []}
+
+    async def test_skipped_refresh_preserves_ha_cleanup(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A skipped refresh still lets HA perform its normal timer cleanup."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        coordinator = ReservationsCoordinator(hass, entry, AsyncMock(), AsyncMock())
+        await coordinator.async_shutdown()
+        timer = hass.loop.call_later(3600, lambda: None)
+        coordinator._unsub_refresh = timer.cancel
+        try:
+            await coordinator.async_refresh()
+            assert timer.cancelled()
+        finally:
+            timer.cancel()
+
+    async def test_token_data_update_does_not_invalidate_options(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A token-only data update is not an options or source change."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        coordinator = ReservationsCoordinator(hass, entry, AsyncMock(), AsyncMock())
+
+        async def fetch() -> dict[str, list[GuestyReservation]]:
+            """Update token storage while a normal refresh is in progress."""
+            hass.config_entries.async_update_entry(
+                entry, data={**entry.data, "cached_token": {"access_token": "test"}}
+            )
+            return {}
+
+        with patch.object(coordinator, "_async_update_data", side_effect=fetch):
+            try:
+                generation = getattr(coordinator, "write_miss_generation", 0)
+                assert (
+                    await _request_write_miss_refresh(coordinator, generation) is True
+                )
+            finally:
+                await coordinator.async_shutdown()
+
+    @pytest.mark.parametrize("error_type", [GuestyResponseError, RuntimeError])
+    async def test_recovery_failure_does_not_log_error_contents(
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+        error_type: type[Exception],
+    ) -> None:
+        """A recovery fetch never logs sensitive API or unexpected error text."""
+        secret = "sample-confirmation-009472"
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        client = AsyncMock()
+        client.get_reservations.side_effect = error_type(secret)
+        coordinator = ReservationsCoordinator(hass, entry, client, AsyncMock())
+        generation = getattr(coordinator, "write_miss_generation", 0)
+        try:
+            with caplog.at_level(logging.DEBUG):
+                assert (
+                    await _request_write_miss_refresh(coordinator, generation) is False
+                )
+            assert secret not in caplog.text
+        finally:
+            await coordinator.async_shutdown()
+
+    async def test_mutated_selection_snapshot_refuses(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A changed selection is detected despite an unchanged options object."""
+        selection = ["listing-1"]
+        entry = _make_entry(options={CONF_SELECTED_LISTINGS: selection})
+        entry.add_to_hass(hass)
+        coordinator = ReservationsCoordinator(hass, entry, AsyncMock(), AsyncMock())
+
+        async def fetch() -> dict[str, list[GuestyReservation]]:
+            """Mutate a nested selection during the request."""
+            selection.append("listing-2")
+            return {}
+
+        generation = getattr(coordinator, "write_miss_generation", 0)
+        with patch.object(coordinator, "_async_update_data", side_effect=fetch):
+            try:
+                assert (
+                    await _request_write_miss_refresh(coordinator, generation) is False
+                )
+            finally:
+                await coordinator.async_shutdown()
+
+    async def test_client_replacement_invalidates_refresh(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A fetch started by a replaced client cannot authorize recovery."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        coordinator = ReservationsCoordinator(hass, entry, AsyncMock(), AsyncMock())
+
+        async def fetch() -> dict[str, list[GuestyReservation]]:
+            """Replace the coordinator client during its refresh."""
+            coordinator.api_client = AsyncMock()
+            return {}
+
+        generation = getattr(coordinator, "write_miss_generation", 0)
+        with patch.object(coordinator, "_async_update_data", side_effect=fetch):
+            try:
+                assert (
+                    await _request_write_miss_refresh(coordinator, generation) is False
+                )
+            finally:
+                await coordinator.async_shutdown()
+
+    async def test_evicted_attempt_outcome_fails_closed(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A missing first completion cannot be replaced by a later success."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        coordinator = ReservationsCoordinator(hass, entry, AsyncMock(), AsyncMock())
+        generation = getattr(coordinator, "write_miss_generation", 0)
+        with patch.object(coordinator, "_async_update_data", return_value={}) as update:
+            try:
+                for _ in range(257):
+                    await coordinator.async_refresh()
+                assert (
+                    await _request_write_miss_refresh(coordinator, generation) is False
+                )
+                assert update.await_count == 257
+            finally:
+                await coordinator.async_shutdown()
+
+    @pytest.mark.parametrize(
+        ("key", "changed"),
+        [
+            (CONF_RESERVATIONS_API, RESERVATIONS_API_LEGACY),
+            (CONF_PAST_DAYS, 77),
+            (CONF_FUTURE_DAYS, 88),
+            (CONF_SELECTED_LISTINGS, ["another-listing"]),
+        ],
+    )
+    async def test_inflight_option_change_and_revert_refuses(
+        self, hass: HomeAssistant, key: str, changed: object
+    ) -> None:
+        """A changed-and-reverted setting cannot authorize an in-flight attempt."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        coordinator = ReservationsCoordinator(hass, entry, AsyncMock(), AsyncMock())
+        started = asyncio.Event()
+        waiter_started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def fetch() -> dict[str, list[GuestyReservation]]:
+            """Hold the update across both synchronous HA option changes."""
+            started.set()
+            await release.wait()
+            return {}
+
+        async def recover(generation: int) -> bool:
+            """Join the refresh started before the options changed."""
+            waiter_started.set()
+            return await _request_write_miss_refresh(coordinator, generation)
+
+        with patch.object(coordinator, "_async_update_data", side_effect=fetch):
+            first = asyncio.create_task(coordinator.async_refresh())
+            waiter: asyncio.Task[bool] | None = None
+            try:
+                await asyncio.wait_for(started.wait(), 2)
+                generation = getattr(coordinator, "write_miss_generation", 0)
+                waiter = asyncio.create_task(recover(generation))
+                await asyncio.wait_for(waiter_started.wait(), 2)
+                options = dict(entry.options)
+                hass.config_entries.async_update_entry(
+                    entry, options={**options, key: changed}
+                )
+                hass.config_entries.async_update_entry(entry, options=options)
+                release.set()
+                assert await asyncio.wait_for(waiter, 2) is False
+                await asyncio.wait_for(first, 2)
+            finally:
+                release.set()
+                await coordinator.async_shutdown()
 
 
 class TestListingsCoordinator:
