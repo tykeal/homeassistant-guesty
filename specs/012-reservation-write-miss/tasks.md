@@ -64,9 +64,10 @@ The intermediate story milestones below are not phase checkpoints. Complete
 all tasks and the final phase checkpoint before advancing. Observe the new
 T003 and T004 service success-path tests fail for their intended missing
 recovery behavior before implementing any relevant code; make them green
-after the safeguards are verified and recovered dispatch is enabled. Other
-phase-internal milestones need not have every test green, but commits must
-remain runnable and the whole phase must be green before Phase 4.
+after the safeguards are verified and recovered dispatch is enabled.
+Phase-internal uncommitted red tests may remain red while safeguards are
+built, but every committed test must pass and the whole phase must be green
+at its checkpoint before Phase 4.
 
 ### User Story 1 — Recover From a Missing Identity (Priority: P1)
 
