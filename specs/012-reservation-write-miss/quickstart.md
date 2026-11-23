@@ -40,8 +40,12 @@ first cover:
 
 The implementation relies on the coordinator lock/completion behavior
 observed in Home Assistant 2026.4.0 (the declared minimum) and 2026.10.4 (the
-current lockfile environment). Keep tests for these supported endpoints. A
-failed, cancelled, or skipped HA refresh must never be treated as success
+current lockfile environment). Run the compatibility tests in the locked
+environment and in an isolated compatible 2026.4.0 environment without
+changing `uv.lock`; record the actual installed versions and outcomes. If
+the minimum-version environment cannot be built, report that gate as
+blocked. A failed, cancelled, or skipped HA refresh must never be treated
+as success
 because `async_refresh()` returned or stale coordinator data remains
 available.
 
