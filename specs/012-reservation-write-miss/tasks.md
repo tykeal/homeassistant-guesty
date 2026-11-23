@@ -13,8 +13,12 @@ SPDX-License-Identifier: Apache-2.0
 data-model.md, contracts/guesty-reservation-write-miss.md, quickstart.md)
 
 **Testing**: Tests are required by the specification and project constitution.
-For every production-code task, first add the listed regression tests and
-confirm they fail for the intended reason; then implement the minimum change.
+For every production-code task, first add the listed tests for each new or
+changed behavior and observe a behavioral failure for the intended reason
+before implementing the minimum change. Existing-behavior protections are
+baseline controls: run and record them before the corresponding code change,
+and keep them green afterward. References to failing tests in the tasks below
+apply to new or changed behavior, not to baseline-green controls.
 Do not treat retained coordinator data or an API method's `None` return as
 proof that a refresh succeeded.
 
@@ -111,8 +115,9 @@ implementation without implying live Guesty verification.
 
 - **Setup (Phase 1)**: Uses the existing project; no setup changes are
   required.
-- **Foundational (Phase 2)**: T001 must fail for the intended reason before
-  T002; the coordinator attempt lifecycle blocks all write stories.
+- **Foundational (Phase 2)**: T001's new lifecycle behavior tests must fail
+  for the intended reason before T002; its existing HA behavior controls may
+  pass on baseline. The coordinator attempt lifecycle blocks all write stories.
 - **User Story 1 (Phase 3)**: T003 and T004 may be authored/tested in parallel
   after T002; T005 follows both tests.
 - **User Story 2 (Phase 4)**: T006 and T007 may be authored/tested in parallel
