@@ -140,12 +140,15 @@ identifier-specific lookup.
    confirmation-code evidence, and route. The latest accepted coordinator
    state controls provenance. Never use a pre-await route or a successful
    result superseded by a failed/ambiguous refresh.
-6. For recovery writes, serialize final authorization with coordinator
-   refreshes through the actual write dispatch. Keep the note's existing
-   read-before-write; a failed prerequisite read means no write. Revalidate
-   after the note read and before the write, and use the route current for
-   that accepted generation. Do not widen this synchronization or alter
-   normal cache-hit actions.
+6. For recovery writes, acquire the same
+   `_debounced_refresh.async_lock()` used by coordinator updates for final
+   authorization and hold it through the actual write. Release the refresh
+   helper's lock before acquiring it for authorization; it is not
+   reentrant. For notes, hold it across the prerequisite read and write:
+   a failed read means no write. Revalidate after the read and before the
+   write, and use the route current for that accepted generation. A
+   concurrent refresh must wait for this critical section. Do not widen
+   this synchronization or alter normal cache-hit actions.
 7. Once recovery has qualified, issue at most one actual reservation write.
    Pass the API client's existing `single_attempt` mode for the write,
    regardless of whether current provenance selects v3 or legacy. Do not
@@ -221,7 +224,12 @@ no new package, endpoint, configuration option, entity, or storage model.
   and project pre-commit/REUSE checks.
 - Verify Home Assistant version behavior for 2026.4.0 and the lockfile's
   2026.10.4, particularly when updates fail, are cancelled, or are
-  concurrently waiting on the coordinator lock.
+  concurrently waiting on the coordinator lock. Run the compatibility
+  tests once in the locked project environment and once in an isolated
+  compatible 2026.4.0 environment without changing the project's lockfile.
+  Record the actual installed HA version and results for each run. If a
+  compatible test environment cannot be constructed, report the gate as
+  blocked rather than claiming support based solely on source inspection.
 - Do not perform live Guesty verification; it is unrelated to this
   cache-miss behavior and feature 008's vendor assumptions remain as-is.
 

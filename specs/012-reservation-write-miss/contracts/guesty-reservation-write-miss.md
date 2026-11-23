@@ -80,11 +80,12 @@ resource; fallback-sourced targets use legacy only when successfully served
 in this session and the legacy route remains available. Retained-only
 fallback targets do not route to either source.
 
-For a recovery action, serialize the final authorization against coordinator
-refreshes through write dispatch. The note operation preserves its existing
-read-before-write and aborts if its prerequisite read fails. Recheck after
-the awaited prerequisite read and select the route from the current accepted
-generation immediately before dispatch.
+For a recovery action, hold the coordinator's
+`_debounced_refresh.async_lock()` from final authorization through the
+actual write. Do not reenter it while holding it. The note operation holds
+the lock across its existing read-before-write and aborts if its prerequisite
+read fails. Recheck after the awaited prerequisite read and select the route
+from the current accepted generation immediately before dispatch.
 
 After recovery, make at most one actual reservation write. The actual PUT
 uses the existing API client's single-attempt mode for either v3 or legacy,
