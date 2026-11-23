@@ -2015,6 +2015,41 @@ class TestIdentityWritePredicate:
         fetch.assert_awaited_once()
         getattr(client, method).assert_awaited_once()
 
+    async def test_codeless_identity_can_be_confirmed_by_refresh(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A previously code-less target becomes writable only after confirmation."""
+        entry = await _setup_entry(
+            hass,
+            reservations=[
+                *make_identity_reservations(*_WRITE_TARGETS),
+                make_identity_reservation("res-new"),
+            ],
+        )
+        client = self._client(hass, entry)
+        client.set_reservation_status.return_value = ActionResult(
+            success=True, target_id="res-new"
+        )
+        with patch(
+            _PATCH_RESERVATIONS,
+            new_callable=AsyncMock,
+            return_value=make_fetch_result(
+                [
+                    *make_identity_reservations(*_WRITE_TARGETS),
+                    make_identity_reservation("res-new", "CONF-res-new"),
+                ]
+            ),
+        ) as fetch:
+            await hass.services.async_call(
+                DOMAIN,
+                "set_reservation_status",
+                {"reservation_id": "res-new", "status": "checked_in"},
+                blocking=True,
+                return_response=True,
+            )
+        fetch.assert_awaited_once()
+        client.set_reservation_status.assert_awaited_once()
+
     async def test_failed_miss_refresh_never_uses_retained_data(
         self, hass: HomeAssistant
     ) -> None:
@@ -2217,6 +2252,61 @@ class TestIdentityWritePredicate:
                 "aborted because a confirmation code",
             )
         put.assert_not_awaited()
+
+    async def test_refresh_waits_through_note_read_and_write(
+        self, hass: HomeAssistant
+    ) -> None:
+        """The note read and write remain under the coordinator dispatch lock."""
+        entry = await _setup_entry(hass)
+        entry_data = hass.data[DOMAIN][entry.entry_id]
+        coordinator = entry_data["reservations_coordinator"]
+        client = entry_data["actions_client"]
+        reading = asyncio.Event()
+        release = asyncio.Event()
+
+        async def read_notes(reservation_id: str) -> dict[str, object]:
+            """Pause the note read until a later refresh is waiting."""
+            reading.set()
+            await release.wait()
+            return {}
+
+        with (
+            patch(
+                _PATCH_RESERVATIONS,
+                new_callable=AsyncMock,
+                return_value=make_fetch_result(
+                    [
+                        *make_identity_reservations(*_WRITE_TARGETS),
+                        make_identity_reservation("res-new", "CONF-res-new"),
+                    ]
+                ),
+            ) as fetch,
+            patch.object(client, "_read_v3_notes", side_effect=read_notes),
+            patch.object(
+                client._api_client,
+                "_request",
+                new_callable=AsyncMock,
+                return_value=Response(200, json={}),
+            ) as put,
+        ):
+            action = asyncio.create_task(
+                hass.services.async_call(
+                    DOMAIN,
+                    "add_reservation_note",
+                    {"reservation_id": "res-new", "note_text": "hello"},
+                    blocking=True,
+                    return_response=True,
+                )
+            )
+            await asyncio.wait_for(reading.wait(), 2)
+            subsequent = asyncio.create_task(coordinator.async_refresh())
+            await asyncio.sleep(0)
+            assert fetch.await_count == 1
+            assert not subsequent.done()
+            release.set()
+            await asyncio.wait_for(asyncio.gather(action, subsequent), 2)
+            assert fetch.await_count == 2
+        put.assert_awaited_once()
 
     async def test_refreshed_fallback_target_uses_legacy_route(
         self, hass: HomeAssistant

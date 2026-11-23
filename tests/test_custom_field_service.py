@@ -2769,6 +2769,72 @@ class TestSetCustomFieldIdentityGuard:
             before_write=ANY,
         )
 
+    @pytest.mark.parametrize("legacy", [False, True])
+    @pytest.mark.parametrize("operation", ["note", "status", "field"])
+    async def test_recovered_service_reaches_single_attempt_transport(
+        self, hass: HomeAssistant, legacy: bool, operation: str
+    ) -> None:
+        """Each recovered service reaches one actual routed write request."""
+        entry = await self._setup(hass, make_identity_reservations(*_WRITE_TARGETS))
+        entry_data = hass.data[DOMAIN][entry.entry_id]
+        api_client = entry_data["api_client"]
+        fetch_result = make_fetch_result(
+            [
+                *make_identity_reservations(*_WRITE_TARGETS),
+                make_identity_reservation("res-new", "CONF-res-new"),
+            ],
+            fallback_served=("res-new",) if legacy else (),
+            fallback_sourced=("res-new",) if legacy else (),
+        )
+        writes: list[dict[str, object]] = []
+
+        async def request(method: str, path: str, **kwargs: object) -> Response:
+            """Answer the note read, then fail the actual write."""
+            if method == "GET":
+                if legacy:
+                    return Response(200, json={"_id": "res-new", "note": ""})
+                return Response(
+                    200,
+                    json={"results": [{"reservationId": "res-new", "notes": {}}]},
+                )
+            writes.append({"path": path, **kwargs})
+            raise GuestyApiError("unavailable")
+
+        if operation == "note":
+            service = "add_reservation_note"
+            payload: dict[str, object] = {
+                "reservation_id": "res-new",
+                "note_text": "hello",
+            }
+        elif operation == "status":
+            service = "set_reservation_status"
+            payload = {"reservation_id": "res-new", "status": "checked_in"}
+        else:
+            service = SERVICE_SET_CUSTOM_FIELD
+            payload = {
+                "target_type": "reservation",
+                "target_id": "res-new",
+                "field_id": "cf-door-code",
+                "value": "0042",
+            }
+        with (
+            patch(
+                "custom_components.guesty.GuestyApiClient.get_reservations",
+                new_callable=AsyncMock,
+                return_value=fetch_result,
+            ) as fetch,
+            patch.object(api_client, "_request", side_effect=request),
+            pytest.raises(HomeAssistantError),
+        ):
+            await hass.services.async_call(
+                DOMAIN, service, payload, blocking=True, return_response=True
+            )
+        fetch.assert_awaited_once()
+        assert len(writes) == 1
+        assert writes[0]["single_attempt"] is True
+        assert callable(writes[0]["before_send"])
+        assert ("/reservations-v3/" in str(writes[0]["path"])) is not legacy
+
     @pytest.mark.parametrize("failed", [True, False])
     async def test_custom_field_miss_refuses_after_failed_or_empty_refresh(
         self, hass: HomeAssistant, failed: bool
