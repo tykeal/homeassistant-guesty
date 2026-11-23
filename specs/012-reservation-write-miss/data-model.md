@@ -51,6 +51,14 @@ An in-memory record associated with one coordinator refresh cycle:
 
 This state is not persisted and is not exposed in diagnostics.
 
+The configuration match includes the live entry and coordinator/client
+identity, the effective reservation API path, the past/future reservation
+window, and the selected-listings option used for publication. Compare
+effective values, including defaults; a changed component prevents joining
+or authorizing that attempt. Guest lookup, pagination, and bounded fallback
+continue under the existing configured client policy, and live provenance is
+still checked separately. Do not copy credentials or tokens into this record.
+
 ### Reservation write attempt
 
 One invocation of note, status, or reservation custom-field service:

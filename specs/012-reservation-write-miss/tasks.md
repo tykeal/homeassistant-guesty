@@ -27,6 +27,11 @@ the independently testable user stories from spec.md. IDs are in dependency
 order. Every task remains unchecked until its work and required verification
 are complete.
 
+**Phase gates**: At each phase boundary, complete the phase checkpoint and
+confirm that all CI tests pass before beginning the next phase. Report and
+resolve any failed or blocked CI test rather than advancing. This gate is
+in addition to the final validation in T019.
+
 ## Phase 1: Setup
 
 **Purpose**: Use the existing Home Assistant integration, test suites, and
@@ -73,6 +78,11 @@ no write; allowed writes use the latest accepted route.
 
 - [ ] T006 [P] [US2] Add failing regression tests in `tests/test_actions.py` and `tests/test_coordinator.py` for missing/unusable/unpersisted baseline, unconfirmed continuity, divergence, same-source conflict, duplicate-code ambiguity, bootstrap/cross-path evidence, known unroutable targets, changed source configuration, entry reload, and a later failed or ambiguous refresh superseding an earlier success. Verify refusals known at preflight do not trigger recovery and refusals detected later prevent a write; accepted refreshes preserve the configured source, window, filters, guest lookup policy, pagination, and bounded legacy fallback behavior without an identifier-specific request (FR-002, FR-005–FR-010, FR-012–FR-013; US2-S1–S5; SC-002, SC-004).
 - [ ] T007 [P] [US2] Add failing tests in `tests/test_custom_field_service.py` and `tests/test_privacy_logging.py` for equivalent reservation custom-field preflight and guard refusals, first-failed versus previously served fallback lookup, fallback route disabled/retired, and a mocked error response containing a sentinel PIN/custom-field value. Assert the sentinel, confirmation codes, guest data, and credentials are absent from service errors, logs, and diagnostics (FR-002, FR-007, FR-009–FR-012, FR-015; US2-S1–S5; SC-002, SC-005, SC-007).
+
+  T006 must exercise changes to each source-configuration component defined
+  in the refresh attempt data model. T007 must also assert privacy for
+  successful recovery logs and diagnostics, not only failure paths.
+
 - [ ] T008 [US2] Implement preflight and post-refresh authorization in `custom_components/guesty/actions.py` and `custom_components/guesty/__init__.py`. Re-evaluate the existing identity guard, persisted baseline and unstored state, continuity, ambiguity, current target/code evidence, and known route before recovery and again after it. Preserve `identity.py` baseline/comparison semantics; never create, promote, clear, or bypass a baseline. Keep failure categories actionable and sanitize recovery diagnostics rather than forwarding raw response details (FR-002, FR-006–FR-012, FR-015; US2-S1–S5).
 - [ ] T009 [US2] Add failing tests in `tests/test_actions.py` and `tests/api/test_actions.py` that pause the note prerequisite read, then invalidate a guard before dispatch or attempt a concurrent coordinator refresh after route selection. Assert that refresh waits through the write, note read precedes write, failed read sends no write, action cancellation propagates, and routing/authorization is rechecked after every awaited read and refresh. Cover stale entry mappings, live-entry lookup, coordinator identity and source changes before dispatch (FR-007–FR-008, FR-014–FR-015; US2-S4; US3-S2; SC-004–SC-005).
 - [ ] T010 [US2] Implement final recovery-write authorization in `custom_components/guesty/actions.py` and `custom_components/guesty/api/actions.py`: acquire `_debounced_refresh.async_lock()` without reentering it and hold it from final authorization through the actual PUT, including the note GET; recheck after the note GET and select the current route immediately before the PUT. Verify the live entry mapping, coordinator identity and source; reject reload, source change, failed/ambiguous superseding refresh, missing/code-less target, or any failed guard. Do not convert action cancellation into a service success (FR-007–FR-008, FR-014–FR-015; US2-S4; SC-004–SC-005).

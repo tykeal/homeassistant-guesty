@@ -217,6 +217,9 @@ no new package, endpoint, configuration option, entity, or storage model.
 
 ### Validation plan (implementation stage)
 
+- At each phase boundary, complete its checkpoint and confirm all CI tests
+  pass before beginning the next phase, as required by the constitution.
+  Resolve or report failed or blocked CI tests without advancing.
 - Run focused tests from the repository root as detailed in
   `quickstart.md`, then `uv run pytest tests/`.
 - Run `uv run ruff check custom_components/ tests/ scripts/`,
