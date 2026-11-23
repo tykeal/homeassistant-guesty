@@ -54,9 +54,10 @@ baseline schema, and normal cache-hit behavior are unchanged.
   live entry and source configuration. An earlier completed, skipped,
   throttled, failed, cancelled, stale, or superseded result does not qualify.
   Retained last-known-good `data` is never proof of freshness.
-- If entry/source configuration changes, a later refresh fails or is
-  ambiguous, or the qualifying result is superseded before write dispatch,
-  refuse instead of using earlier authorization.
+- If entry/source configuration changes or a later refresh fails or is
+  ambiguous, refuse instead of using earlier authorization. If a newer
+  accepted refresh supersedes the qualifying result, recheck all guards
+  and use the newer result's current provenance.
 
 ## Post-refresh authorization and write
 
