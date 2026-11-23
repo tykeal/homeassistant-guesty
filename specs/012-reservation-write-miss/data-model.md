@@ -42,12 +42,14 @@ Feature 008 still decides whether a fallback target is actually routable.
 
 An in-memory record associated with one coordinator refresh cycle:
 
-- `generation`: Monotonically increases when a real update begins.
-- `entry_id` / coordinator identity: Scope to the loaded entry.
-- `source_configuration`: Configured path and options, still matching on use.
-- `started` / `completed`: Lifecycle markers; skips are not completed fetches.
-- `outcome`: Accepted success, failure, ambiguity, cancellation, or skip.
-- `data_generation`: Accepted result/provenance; never identity secrets.
+- `generation`: Monotonically increases when an update finishes or is
+  cancelled. A bounded journal retains completion outcomes, and a waiter
+  fails closed if its first qualifying outcome is no longer available.
+- The coordinator instance scopes attempts to one loaded entry. A write
+  separately checks that the live entry and its source options still match.
+- Skipped refreshes do not increment the generation or qualify as a fetch.
+- `outcome`: Successful completion or failure, including ambiguity and
+  cancellation; no identity secrets are retained.
 
 This state is not persisted and is not exposed in diagnostics.
 
@@ -59,8 +61,9 @@ One invocation of note, status, or reservation custom-field service:
 - `operation`: Note, status, or reservation custom field.
 - `preflight`: Input validation and independent identity/routing refusals.
 - `miss_kind`: Target absent or present but without current identity evidence.
-- `start_generation`: Attempt sequence and in-flight status at miss detection.
-- `qualified_generation`: The single completed accepted attempt used.
+- `start_generation`: Most recent completion at miss detection.
+- The first later completion is consumed, including when its fetch started
+  before miss detection; a later success cannot replace an earlier failure.
 - `write_route`: Re-evaluated immediately before dispatch, not before waiting.
 - `write_count`: Zero before dispatch, at most one after qualifying recovery.
 

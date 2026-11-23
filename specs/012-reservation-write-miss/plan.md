@@ -128,8 +128,10 @@ identifier-specific lookup.
 4. Treat an attempt as fresh only if it completed after miss detection and
    the completed coordinator result is accepted, successful, unambiguous,
    and belongs to the same live entry/coordinator and source configuration.
-   An attempt already in progress at detection can qualify even though its
-   generation started earlier. HA catches many update exceptions and keeps
+   An attempt already in progress at detection can qualify when it completes
+   afterward. The completion sequence and bounded outcome journal preserve
+   the first qualifying result; missing journal history fails closed. HA
+   catches many update exceptions and keeps
    stale `data`; require both the attempt completion marker and current
    `last_update_success`. A skipped/shutdown attempt, cancelled fetch,
    exception, stale result, reload, or source change is a refusal. Propagate
