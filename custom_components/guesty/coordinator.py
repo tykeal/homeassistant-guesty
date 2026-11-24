@@ -4,29 +4,45 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections import defaultdict
-from collections.abc import Collection, Mapping
+from collections import defaultdict, deque
+from collections.abc import AsyncIterator, Collection, Coroutine, Mapping
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryError
+from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.update_coordinator import (
+    REQUEST_REFRESH_DEFAULT_COOLDOWN,
+    REQUEST_REFRESH_DEFAULT_IMMEDIATE,
     DataUpdateCoordinator,
     UpdateFailed,
 )
 
-from custom_components.guesty.api.client import resolve_reservations_api
+from custom_components.guesty.api.client import (
+    private_http_logging,
+    resolve_reservations_api,
+)
 from custom_components.guesty.api.const import (
     DEFAULT_FUTURE_DAYS,
     DEFAULT_PAST_DAYS,
     HOLD_STATUSES,
     RESERVATIONS_API_V3,
+    RESERVATIONS_V3_SEARCH_ENDPOINT,
 )
 from custom_components.guesty.api.exceptions import (
     GuestyApiError,
+    GuestyAuthError,
+    GuestyConnectionError,
     GuestyFilterRejectedError,
+    GuestyPermissionError,
+    GuestyRateLimitError,
+    GuestyResponseError,
 )
 from custom_components.guesty.api.guest_cache import GuestLookupResult
 from custom_components.guesty.api.models import (
@@ -76,11 +92,67 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
+_WRITE_MISS_REFRESH: ContextVar[bool] = ContextVar(
+    "guesty_write_miss_refresh", default=False
+)
+
 # Statuses whose per-listing meaning depends on the stay segment.
 _TEMPORAL_STATUSES: frozenset[str] = frozenset({"confirmed", "checked_in"})
 
 # Identifier pairs named in the single FR-032 abort log line.
 _MAX_LOGGED_CONFLICTS: int = 5
+
+RESERVATION_SEARCH_REJECTED_MESSAGE = (
+    f"Guesty rejected {RESERVATIONS_V3_SEARCH_ENDPOINT} with HTTP 400. "
+    "Check your reservation search settings and contact support."
+)
+
+
+class ReservationSearchRejected(UpdateFailed):
+    """Report a rejected reservation search without response content."""
+
+
+class _ReservationDebouncer(Debouncer[Coroutine[Any, Any, None]]):
+    """Keep debounced requests pending while a recovered write owns the lock."""
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        """Create a debouncer with Home Assistant's normal refresh settings."""
+        super().__init__(
+            hass,
+            _LOGGER,
+            cooldown=REQUEST_REFRESH_DEFAULT_COOLDOWN,
+            immediate=REQUEST_REFRESH_DEFAULT_IMMEDIATE,
+        )
+        self._recovery_dispatch_active = False
+        self._cancel_generation = 0
+
+    @asynccontextmanager
+    async def async_recovery_dispatch_lock(self) -> AsyncIterator[None]:
+        """Serialize dispatch without letting a scheduled request disappear."""
+        async with self.async_lock():
+            self._recovery_dispatch_active = True
+            try:
+                yield
+            finally:
+                self._recovery_dispatch_active = False
+
+    def async_cancel(self) -> None:
+        """Invalidate a timer already waiting behind a recovered write."""
+        self._cancel_generation += 1
+        super().async_cancel()
+
+    async def _handle_timer_finish(self) -> None:
+        """Defer a pending refresh instead of treating a write as a refresh."""
+        if self._recovery_dispatch_active:
+            generation = self._cancel_generation
+            async with self.async_lock():
+                if (
+                    generation != self._cancel_generation
+                    or self._shutdown_requested
+                    or self._timer_task is not None
+                ):
+                    return
+        await super()._handle_timer_finish()
 
 
 class ListingsCoordinator(
@@ -241,6 +313,20 @@ class ReservationsCoordinator(
         # download rather than discarded with the refresh.
         self.last_refresh_diagnostics: dict[str, Any] = {}
         self.bootstrap_pages: int = 0
+        self._write_miss_generation = 0
+        self._write_miss_attempt_generation = 0
+        self._write_miss_tasks: set[asyncio.Task[bool]] = set()
+        self._write_miss_outcomes: deque[
+            tuple[
+                int,
+                int,
+                bool,
+                Mapping[str, Any],
+                tuple[Any, ...],
+                ConfigEntry,
+                GuestyApiClient,
+            ]
+        ] = deque(maxlen=256)
         interval_minutes = entry.options.get(
             CONF_RESERVATION_SCAN_INTERVAL,
             DEFAULT_RESERVATION_SCAN_INTERVAL,
@@ -251,9 +337,190 @@ class ReservationsCoordinator(
             config_entry=entry,
             name=f"{DOMAIN}_reservations",
             update_interval=timedelta(minutes=interval_minutes),
+            request_refresh_debouncer=_ReservationDebouncer(hass),
         )
 
+    @property
+    def write_miss_generation(self) -> int:
+        """Return the number of completed coordinator refresh attempts."""
+        return self._write_miss_generation
+
+    @property
+    def write_miss_attempt_generation(self) -> int:
+        """Return the generation of the latest started coordinator attempt."""
+        return self._write_miss_attempt_generation
+
+    @asynccontextmanager
+    async def async_write_miss_dispatch_lock(self) -> AsyncIterator[None]:
+        """Serialize a recovered write with coordinator refreshes."""
+        assert isinstance(self._debounced_refresh, _ReservationDebouncer)
+        async with self._debounced_refresh.async_recovery_dispatch_lock():
+            yield
+
+    async def async_shutdown(self) -> None:
+        """Stop shared recovery fetches before this entry can be unloaded."""
+        await super().async_shutdown()
+        current = asyncio.current_task()
+        tasks = [task for task in self._write_miss_tasks if task is not current]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _write_miss_settings(self) -> tuple[Any, ...]:
+        """Capture effective source and selection values without credentials."""
+        options = self.config_entry.options
+        selected = options.get(CONF_SELECTED_LISTINGS)
+        return (
+            resolve_reservations_api(
+                options.get(CONF_RESERVATIONS_API, DEFAULT_RESERVATIONS_API)
+            ),
+            options.get(CONF_PAST_DAYS, DEFAULT_PAST_DAYS),
+            options.get(CONF_FUTURE_DAYS, DEFAULT_FUTURE_DAYS),
+            None if selected is None else frozenset(selected),
+        )
+
+    async def _async_refresh(
+        self,
+        log_failures: bool = True,
+        raise_on_auth_failed: bool = False,
+        scheduled: bool = False,
+        raise_on_entry_error: bool = False,
+    ) -> None:
+        """Record completed refresh outcomes after Home Assistant processes them."""
+        if self._shutdown_requested or (scheduled and self.hass.is_stopping):
+            await super()._async_refresh(
+                log_failures=log_failures,
+                raise_on_auth_failed=raise_on_auth_failed,
+                scheduled=scheduled,
+                raise_on_entry_error=raise_on_entry_error,
+            )
+            return
+        entry = self.config_entry
+        client = self.api_client
+        options = entry.options
+        settings = self._write_miss_settings()
+        self._write_miss_attempt_generation += 1
+        attempt = self._write_miss_attempt_generation
+        success = False
+        try:
+            await super()._async_refresh(
+                log_failures=log_failures,
+                raise_on_auth_failed=raise_on_auth_failed,
+                scheduled=scheduled,
+                raise_on_entry_error=raise_on_entry_error,
+            )
+            success = (
+                self.last_update_success
+                and self.config_entry is entry
+                and self.api_client is client
+                and self.config_entry.options is options
+                and self._write_miss_settings() == settings
+            )
+        finally:
+            self._write_miss_generation += 1
+            self._write_miss_outcomes.append(
+                (
+                    self._write_miss_generation,
+                    attempt,
+                    success,
+                    options,
+                    settings,
+                    entry,
+                    client,
+                )
+            )
+
+    async def async_refresh_for_write_miss(self, generation: int) -> bool:
+        """Join or initiate one completed refresh after the captured generation."""
+        entry = self.config_entry
+        client = self.api_client
+        options = entry.options
+        settings = self._write_miss_settings()
+
+        async def refresh() -> bool:
+            """Share the coordinator lock and consume the first eligible outcome."""
+            async with self._debounced_refresh.async_lock():
+                if self._shutdown_requested or self.hass.is_stopping:
+                    return False
+                if self._write_miss_outcomes:
+                    first = self._write_miss_outcomes[0][0]
+                    if generation < first - 1:
+                        return False
+                    for (
+                        completed,
+                        _attempt,
+                        success,
+                        refresh_options,
+                        refresh_settings,
+                        refresh_entry,
+                        refresh_client,
+                    ) in self._write_miss_outcomes:
+                        if completed > generation:
+                            return (
+                                success
+                                and self.last_update_success
+                                and refresh_options is options
+                                and refresh_settings == settings
+                                and refresh_entry is entry
+                                and refresh_client is client
+                                and self.config_entry is entry
+                                and self.api_client is client
+                                and self.config_entry.options is options
+                                and self._write_miss_settings() == settings
+                            )
+                if (
+                    self.config_entry is not entry
+                    or self.api_client is not client
+                    or self.config_entry.options is not options
+                    or self._write_miss_settings() != settings
+                ):
+                    return False
+                token = _WRITE_MISS_REFRESH.set(True)
+                try:
+                    await self._async_refresh(log_failures=False)
+                finally:
+                    _WRITE_MISS_REFRESH.reset(token)
+                return (
+                    self._write_miss_generation > generation
+                    and bool(self._write_miss_outcomes)
+                    and self._write_miss_outcomes[-1][2]
+                    and not self._shutdown_requested
+                    and not self.hass.is_stopping
+                    and self.config_entry is entry
+                    and self.api_client is client
+                    and self.config_entry.options is options
+                    and self._write_miss_settings() == settings
+                )
+
+        task = self.hass.async_create_background_task(
+            refresh(), "guesty write-miss refresh", eager_start=True
+        )
+        self._write_miss_tasks.add(task)
+        task.add_done_callback(self._write_miss_tasks.discard)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is None or current.cancelling():
+                raise
+            return False
+
     async def _async_update_data(
+        self,
+    ) -> dict[str, list[GuestyReservation]]:
+        """Contain unexpected recovery errors without exposing exception contents."""
+        try:
+            with private_http_logging(True):
+                return await self._async_fetch_reservations()
+        except ConfigEntryAuthFailed, ConfigEntryError, UpdateFailed:
+            raise
+        except Exception:
+            if _WRITE_MISS_REFRESH.get():
+                raise UpdateFailed("Reservation refresh failed") from None
+            raise
+
+    async def _async_fetch_reservations(
         self,
     ) -> dict[str, list[GuestyReservation]]:
         """Fetch reservations and publish them per tracked listing.
@@ -289,14 +556,32 @@ class ReservationsCoordinator(
                 future_days=future_days,
                 candidates=self._fallback_candidates(),
             )
-        except GuestyFilterRejectedError as exc:
-            raise UpdateFailed(
-                f"Guesty rejected the reservation query filters: {exc.message}",
-            ) from exc
+        except GuestyFilterRejectedError:
+            raise ReservationSearchRejected(
+                RESERVATION_SEARCH_REJECTED_MESSAGE
+            ) from None
         except GuestyApiError as exc:
+            if isinstance(exc, GuestyPermissionError):
+                category = "permission"
+            elif isinstance(exc, GuestyAuthError):
+                category = "authentication"
+            elif isinstance(exc, GuestyRateLimitError):
+                category = "rate limit (rate limited)"
+            elif isinstance(exc, GuestyConnectionError):
+                category = "connection"
+            elif isinstance(exc, GuestyResponseError):
+                category = "response"
+            else:
+                category = "API"
             raise UpdateFailed(
-                f"Error fetching reservations: {exc.message}",
-            ) from exc
+                f"Guesty reservation {category} error; check the integration "
+                "and retry.",
+            ) from None
+        except Exception:
+            raise UpdateFailed(
+                "Unexpected error fetching reservations; check the integration "
+                "and retry.",
+            ) from None
 
         reservations = await self._resolve_v3_reservations(
             fetch_result.reservations,

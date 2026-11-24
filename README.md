@@ -125,6 +125,15 @@ explains why. The notice clears by itself as soon as a later refresh
 provides the evidence. Reads are never blocked by this — only
 writes, and only until continuity is confirmed.
 
+If an otherwise eligible reservation write targets a booking missing
+from the current identity cache, the integration may refresh the
+configured reservation source once and check again. The write still
+requires current identity and routing evidence; a failed refresh or
+insufficient evidence refuses it without sending a write. A refresh
+cannot guarantee that a newly created booking is already indexed by
+Guesty. A recovered write is sent at most once and is not automatically
+retried. Listing custom-field writes do not trigger this refresh.
+
 If you need writes back immediately, roll back to `legacy`.
 
 ## Breaking changes

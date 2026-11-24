@@ -1,0 +1,11 @@
+---
+# SPDX-FileCopyrightText: 2026 Andrew Grimberg <tykeal@bardicgrove.org>
+# SPDX-License-Identifier: Apache-2.0
+
+fixes:
+  - |
+    An eligible reservation write targeting a missing identity may
+    trigger one refresh using the configured reservation source.
+    The write remains fail-closed if the refresh fails or identity
+    and routing evidence is insufficient. Guesty may not yet have
+    indexed a newly created booking.

@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
 import voluptuous as vol
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import (
     HomeAssistant,
     ServiceCall,
@@ -22,6 +24,8 @@ from homeassistant.core import (
 )
 from homeassistant.exceptions import HomeAssistantError
 
+from custom_components.guesty.api.actions import GuestyActionsClient
+from custom_components.guesty.api.client import resolve_reservations_api
 from custom_components.guesty.api.const import (
     LEGACY_RESERVATIONS_RETIREMENT_DATE,
     LEGACY_WRITE_FAILED,
@@ -38,19 +42,32 @@ from custom_components.guesty.api.const import (
 from custom_components.guesty.api.exceptions import (
     GuestyActionError,
     GuestyApiError,
+    GuestyPrerequisiteReadError,
+    GuestyRecoveryAuthError,
+    GuestyRecoveryConnectionError,
+    GuestyRecoveryPermissionError,
+    GuestyRecoveryTokenConnectionError,
+    GuestyRecoveryTokenError,
+    GuestyRecoveryWriteError,
+    GuestyRoutingError,
 )
 from custom_components.guesty.api.legacy_writes import (
     REFUSAL_LEGACY_RETIRED,
 )
 from custom_components.guesty.api.models import ActionResult
-from custom_components.guesty.const import DOMAIN
+from custom_components.guesty.const import (
+    CONF_RESERVATIONS_API,
+    DEFAULT_RESERVATIONS_API,
+    DOMAIN,
+)
+from custom_components.guesty.coordinator import (
+    RESERVATION_SEARCH_REJECTED_MESSAGE,
+    ReservationSearchRejected,
+)
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
 
-    from custom_components.guesty.api.actions import (
-        GuestyActionsClient,
-    )
     from custom_components.guesty.api.client import GuestyApiClient
     from custom_components.guesty.coordinator import (
         ReservationsCoordinator,
@@ -89,6 +106,18 @@ REFUSAL_NOT_REACHABLE: Final[str] = (
     "validated against either resource, so no write is sent. Retry "
     "after the next successful refresh."
 )
+
+
+class ReservationIdentityMissError(GuestyActionError):
+    """A target lacks current identity evidence, not necessarily a route."""
+
+
+class ReservationIdentityAbsentError(ReservationIdentityMissError):
+    """A target lacks current identity evidence and is not published."""
+
+
+class ReservationIdentityPresentError(ReservationIdentityMissError):
+    """A published target lacks current identity evidence."""
 
 
 # ── Voluptuous schemas ──────────────────────────────────────────────
@@ -228,10 +257,22 @@ def guard_reservation_write(
         GuestyActionError: When the identity cannot be confirmed.
     """
     coordinator: ReservationsCoordinator = entry_data["reservations_coordinator"]
-    refusal = coordinator.identity.write_refusal(reservation_id)
+    refusal = coordinator.identity.classify_write_refusal(reservation_id)
     if refusal is not None:
-        raise GuestyActionError(
-            refusal,
+        error_type = GuestyActionError
+        if refusal.missing_current_code and reservation_id.strip():
+            present = any(
+                reservation.id == reservation_id
+                for reservations in (coordinator.data or {}).values()
+                for reservation in reservations
+            )
+            error_type = (
+                ReservationIdentityPresentError
+                if present
+                else ReservationIdentityAbsentError
+            )
+        raise error_type(
+            refusal.message,
             target_id=reservation_id,
             action_type=action_type,
         )
@@ -319,6 +360,186 @@ def _retired_target(
     return not api_client.legacy_write_routing_available
 
 
+@dataclass(frozen=True, slots=True)
+class _RecoveryWitness:
+    """Keep live references needed to authorize one recovered write."""
+
+    entry_data: Mapping[str, Any]
+    coordinator: ReservationsCoordinator
+    entry: ConfigEntry
+    api_client: GuestyApiClient
+    actions_client: object
+    cf_client: object
+    options: Mapping[str, Any]
+    settings: tuple[Any, ...]
+    generation: int
+
+
+def _capture_recovery_witness(entry_data: Mapping[str, Any]) -> _RecoveryWitness:
+    """Capture entry, client, options and refresh generation before waiting."""
+    coordinator: ReservationsCoordinator = entry_data["reservations_coordinator"]
+    entry = coordinator.config_entry
+    return _RecoveryWitness(
+        entry_data=entry_data,
+        coordinator=coordinator,
+        entry=entry,
+        api_client=coordinator.api_client,
+        actions_client=entry_data.get("actions_client"),
+        cf_client=entry_data.get("cf_client"),
+        options=entry.options,
+        settings=coordinator._write_miss_settings(),
+        generation=coordinator.write_miss_generation,
+    )
+
+
+def _check_recovery_witness(
+    witness: _RecoveryWitness, reservation_id: str, action_type: str
+) -> str:
+    """Recheck accepted refresh, live configuration, identity and route."""
+    coordinator = witness.coordinator
+    entry = witness.entry
+    hass = coordinator.hass
+    entry_data = witness.entry_data
+    live_data = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    if (
+        entry.options is not witness.options
+        or coordinator._write_miss_settings() != witness.settings
+        or coordinator.reservations_path != witness.settings[0]
+        or witness.api_client.reservations_api != witness.settings[0]
+    ):
+        raise GuestyActionError(
+            "The reservation configuration changed; reload before retrying.",
+            target_id=reservation_id,
+            action_type=action_type,
+        )
+    if (
+        entry.state is not ConfigEntryState.LOADED
+        or hass.config_entries.async_get_entry(entry.entry_id) is not entry
+        or live_data is not entry_data
+        or entry_data.get("reservations_coordinator") is not coordinator
+        or entry_data.get("api_client") is not witness.api_client
+        or coordinator.config_entry is not entry
+        or coordinator.api_client is not witness.api_client
+        or entry_data.get("actions_client") is not witness.actions_client
+        or entry_data.get("cf_client") is not witness.cf_client
+        or coordinator._shutdown_requested
+        or hass.is_stopping
+    ):
+        raise GuestyActionError(
+            "The Guesty entry is no longer loaded; reload before retrying.",
+            target_id=reservation_id,
+            action_type=action_type,
+        )
+    outcomes = coordinator._write_miss_outcomes
+    if (
+        not coordinator.last_update_success
+        or not outcomes
+        or witness.generation < outcomes[0][0] - 1
+        or not any(generation > witness.generation for generation, *_ in outcomes)
+        or any(
+            not success
+            or options is not witness.options
+            or settings != witness.settings
+            or refresh_entry is not witness.entry
+            or refresh_client is not witness.api_client
+            for (
+                generation,
+                _,
+                success,
+                options,
+                settings,
+                refresh_entry,
+                refresh_client,
+            ) in outcomes
+            if generation > witness.generation
+        )
+    ):
+        raise GuestyActionError(
+            "The reservation refresh failed or was superseded; no write was sent.",
+            target_id=reservation_id,
+            action_type=action_type,
+        )
+    guard_reservation_write(entry_data, reservation_id, action_type)
+    return select_reservation_write_route(entry_data, reservation_id, action_type)
+
+
+class _RecoveryGuardRefusal(GuestyActionError):
+    """A safe identity, configuration or route refusal during dispatch."""
+
+
+async def _execute_recovered_reservation_write[WriteResultT](
+    witness: _RecoveryWitness,
+    reservation_id: str,
+    *,
+    operation: str,
+    action_type: str,
+    write: Callable[[str, bool, Callable[[], None] | None], Awaitable[WriteResultT]],
+) -> WriteResultT:
+    """Authorize and serialize one recovered write against live state."""
+    coordinator = witness.coordinator
+    async with coordinator.async_write_miss_dispatch_lock():
+        route = _check_recovery_witness(witness, reservation_id, action_type)
+
+        def recheck() -> None:
+            """Refuse if authorization or route changed after an awaited step."""
+            try:
+                latest_route = _check_recovery_witness(
+                    witness, reservation_id, action_type
+                )
+                if latest_route != route:
+                    raise GuestyActionError(
+                        "Reservation routing changed; the write was refused.",
+                        target_id=reservation_id,
+                        action_type=action_type,
+                    )
+            except GuestyActionError as exc:
+                raise _RecoveryGuardRefusal(
+                    f"{exc.message} The write was refused; no write was sent.",
+                    target_id=reservation_id,
+                    action_type=action_type,
+                ) from None
+
+        if route == ROUTE_LEGACY:
+            _LOGGER.warning(
+                "Sending %s for reservation %s to the legacy Guesty "
+                "reservation resource: it is missing from the reservations "
+                "v3 results and is currently being served by the "
+                "not-found fallback. The legacy resources retire on %s.",
+                action_type,
+                reservation_id,
+                LEGACY_RESERVATIONS_RETIREMENT_DATE,
+            )
+        try:
+            result = await write(route, True, recheck)
+        except GuestyApiError as exc:
+            if route == ROUTE_LEGACY and not isinstance(exc, _RecoveryGuardRefusal):
+                coordinator.record_legacy_write(operation, LEGACY_WRITE_FAILED)
+            if isinstance(
+                exc,
+                (
+                    _RecoveryGuardRefusal,
+                    GuestyRoutingError,
+                    GuestyPrerequisiteReadError,
+                    GuestyRecoveryAuthError,
+                    GuestyRecoveryPermissionError,
+                    GuestyRecoveryConnectionError,
+                    GuestyRecoveryTokenConnectionError,
+                    GuestyRecoveryTokenError,
+                    GuestyRecoveryWriteError,
+                ),
+            ):
+                raise
+            raise GuestyActionError(
+                "The reservation write may have reached Guesty; it was not "
+                "retried. Check Guesty before retrying.",
+                target_id=reservation_id,
+                action_type=action_type,
+            ) from None
+        if route == ROUTE_LEGACY:
+            coordinator.record_legacy_write(operation, LEGACY_WRITE_SUCCEEDED)
+        return result
+
+
 async def execute_reservation_write[WriteResultT](
     entry_data: Mapping[str, Any],
     reservation_id: str,
@@ -326,6 +547,10 @@ async def execute_reservation_write[WriteResultT](
     operation: str,
     action_type: str,
     write: Callable[[str], Awaitable[WriteResultT]],
+    recovery_write: Callable[
+        [str, bool, Callable[[], None] | None], Awaitable[WriteResultT]
+    ]
+    | None = None,
 ) -> WriteResultT:
     """Guard, route, announce and count one reservation write.
 
@@ -340,6 +565,7 @@ async def execute_reservation_write[WriteResultT](
         operation: One of ``LEGACY_WRITE_OPERATIONS``, for counting.
         action_type: The service name, for error reporting.
         write: Coroutine function taking the chosen route.
+        recovery_write: One-shot write with an authorization recheck.
 
     Returns:
         Whatever the write returned.
@@ -348,6 +574,12 @@ async def execute_reservation_write[WriteResultT](
         GuestyActionError: When the write is refused before it is
             sent.
     """
+    if not reservation_id.strip():
+        raise GuestyActionError(
+            "reservation_id must be non-empty",
+            target_id=reservation_id,
+            action_type=action_type,
+        )
     coordinator: ReservationsCoordinator = entry_data["reservations_coordinator"]
     try:
         guard_reservation_write(entry_data, reservation_id, action_type)
@@ -367,6 +599,73 @@ async def execute_reservation_write[WriteResultT](
                 target_id=reservation_id,
                 action_type=action_type,
             ) from exc
+        if isinstance(exc, ReservationIdentityMissError):
+            _LOGGER.debug(
+                "Refreshing reservation write miss (%s)",
+                "present-without-identity"
+                if isinstance(exc, ReservationIdentityPresentError)
+                else "absent-from-cache",
+            )
+            try:
+                select_reservation_write_route(entry_data, reservation_id, action_type)
+            except GuestyActionError:
+                coordinator.record_legacy_write(operation, LEGACY_WRITE_REFUSED)
+                raise
+            configured_source = resolve_reservations_api(
+                coordinator.config_entry.options.get(
+                    CONF_RESERVATIONS_API, DEFAULT_RESERVATIONS_API
+                )
+            )
+            if configured_source != coordinator.reservations_path:
+                raise GuestyActionError(
+                    "The reservation source has changed; reload the integration "
+                    "before retrying.",
+                    target_id=reservation_id,
+                    action_type=action_type,
+                ) from None
+            live_data = coordinator.hass.data.get(DOMAIN, {}).get(
+                coordinator.config_entry.entry_id
+            )
+            if (
+                live_data is not entry_data
+                or live_data.get("reservations_coordinator") is not coordinator
+                or coordinator.config_entry.state is not ConfigEntryState.LOADED
+                or coordinator._shutdown_requested
+                or coordinator.hass.is_stopping
+            ):
+                raise GuestyActionError(
+                    "The Guesty entry is no longer loaded; reload before retrying.",
+                    target_id=reservation_id,
+                    action_type=action_type,
+                ) from None
+            witness = _capture_recovery_witness(entry_data)
+            if not await coordinator.async_refresh_for_write_miss(witness.generation):
+                if isinstance(coordinator.last_exception, ReservationSearchRejected):
+                    raise GuestyActionError(
+                        f"{RESERVATION_SEARCH_REJECTED_MESSAGE} No write was sent.",
+                        target_id=reservation_id,
+                        action_type=action_type,
+                    ) from None
+                raise GuestyActionError(
+                    "The reservation refresh failed or was not accepted; "
+                    "no write was sent. Retry after a successful refresh.",
+                    target_id=reservation_id,
+                    action_type=action_type,
+                ) from None
+            if recovery_write is None:
+                raise GuestyActionError(
+                    "The reservation refresh completed, but this write cannot yet "
+                    "be safely recovered; no write was sent.",
+                    target_id=reservation_id,
+                    action_type=action_type,
+                ) from None
+            return await _execute_recovered_reservation_write(
+                witness,
+                reservation_id,
+                operation=operation,
+                action_type=action_type,
+                write=recovery_write,
+            )
         raise
     try:
         route = select_reservation_write_route(
@@ -441,6 +740,7 @@ async def _handle_add_note(
     reservation_id: str = call.data["reservation_id"]
     note_text: str = call.data["note_text"]
     try:
+        GuestyActionsClient._validate_reservation_note(reservation_id, note_text)
         result = await execute_reservation_write(
             entry_data,
             reservation_id,
@@ -450,6 +750,13 @@ async def _handle_add_note(
                 reservation_id=reservation_id,
                 note_text=note_text,
                 route=route,
+            ),
+            recovery_write=lambda route, single, check: client.add_reservation_note(
+                reservation_id=reservation_id,
+                note_text=note_text,
+                route=route,
+                single_attempt=single,
+                before_write=check,
             ),
         )
     except (GuestyActionError, GuestyApiError, ValueError) as exc:
@@ -572,6 +879,13 @@ async def _handle_set_reservation_status(
                 reservation_id=reservation_id,
                 status=status,
                 route=route,
+            ),
+            recovery_write=lambda route, single, check: client.set_reservation_status(
+                reservation_id=reservation_id,
+                status=status,
+                route=route,
+                single_attempt=single,
+                before_write=check,
             ),
         )
     except (GuestyActionError, GuestyApiError, ValueError) as exc:

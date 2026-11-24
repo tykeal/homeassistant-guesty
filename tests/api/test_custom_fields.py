@@ -4,8 +4,10 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -16,6 +18,7 @@ from custom_components.guesty.api.auth import GuestyTokenManager
 from custom_components.guesty.api.client import GuestyApiClient
 from custom_components.guesty.api.const import (
     BASE_URL,
+    LISTING_CUSTOM_FIELDS_PATH,
     RESERVATION_BY_ID_LEGACY_PATH,
     RESERVATION_CUSTOM_FIELDS_PATH,
     RESERVATIONS_API_V3,
@@ -27,6 +30,7 @@ from custom_components.guesty.api.custom_fields import (
 )
 from custom_components.guesty.api.exceptions import (
     GuestyActionError,
+    GuestyApiError,
     GuestyAuthError,
     GuestyCustomFieldError,
 )
@@ -1094,6 +1098,173 @@ def _legacy_custom_field_url(reservation_id: str = "res-777") -> str:
         reservation_id=reservation_id,
     )
     return f"{BASE_URL}{path}"
+
+
+class TestRecoveredCustomFieldWrites:
+    """Transport-level one-shot controls without enabling service recovery."""
+
+    @respx.mock
+    async def test_recovered_legacy_retirement_has_distinct_refusal_type(self) -> None:
+        """A field retirement verdict remains a typed routing refusal."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response())
+        )
+        write = respx.put(_legacy_custom_field_url()).mock(
+            return_value=Response(410, json={})
+        )
+        async with httpx.AsyncClient() as http:
+            client = _v3_custom_fields_client(http)
+            with pytest.raises(GuestyActionError) as raised:
+                await client.set_field(
+                    "reservation",
+                    "res-777",
+                    "cf-a",
+                    "0042",
+                    route=WRITE_ROUTE_LEGACY,
+                    single_attempt=True,
+                )
+            assert client._api_client.legacy_write_routing_available is False
+        assert len(write.calls) == 1
+        assert type(raised.value) is not GuestyActionError
+        assert "2027-03-01" in str(raised.value)
+
+    @respx.mock
+    @pytest.mark.parametrize("route_name", ["v3", WRITE_ROUTE_LEGACY])
+    @pytest.mark.parametrize("status", [422, 500])
+    async def test_recovered_rejection_is_safe(
+        self, route_name: str, status: int
+    ) -> None:
+        """A failed actual recovered field PUT never exposes response data."""
+        secret = "private-write-response-sentinel"
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response())
+        )
+        put = respx.route(method="PUT").mock(return_value=Response(status, text=secret))
+        async with httpx.AsyncClient() as http:
+            method = _v3_custom_fields_client(http).set_field
+            with pytest.raises(GuestyApiError) as raised:
+                await method(
+                    "reservation",
+                    "res-777",
+                    "cf-a",
+                    "0042",
+                    route=route_name,
+                    single_attempt=True,
+                )
+        assert len(put.calls) == 1
+        assert secret not in str(raised.value)
+        assert getattr(raised.value, "stage", None) == "write"
+        assert "not retried" in str(raised.value).lower()
+
+    @respx.mock
+    @pytest.mark.parametrize("route_name", ["v3", WRITE_ROUTE_LEGACY])
+    async def test_token_time_guard_prevents_field_put(self, route_name: str) -> None:
+        """A recovery field recheck after token acquisition prevents the PUT."""
+        put = respx.route(method="PUT").mock(return_value=Response(200))
+        valid = True
+
+        def recheck() -> None:
+            """Reject changed identity authorization."""
+            if not valid:
+                raise GuestyActionError("changed")
+
+        async with httpx.AsyncClient() as http:
+            client = _v3_custom_fields_client(http)
+
+            async def token() -> str:
+                """Invalidate authorization while obtaining a token."""
+                nonlocal valid
+                valid = False
+                return "test-token"
+
+            method = client.set_field
+            options: dict[str, Any] = {}
+            if "single_attempt" in inspect.signature(method).parameters:
+                options["single_attempt"] = True
+            if "before_write" in inspect.signature(method).parameters:
+                options["before_write"] = recheck
+            with patch.object(client._api_client._token_manager, "get_token", token):
+                try:
+                    await method(
+                        "reservation",
+                        "res-777",
+                        "cf-a",
+                        "0042",
+                        route=route_name,
+                        **options,
+                    )
+                except GuestyActionError as exc:
+                    assert str(exc) == "changed"
+        assert not valid
+        assert not put.called
+
+    @respx.mock
+    @pytest.mark.parametrize("route_name", ["v3", WRITE_ROUTE_LEGACY])
+    @pytest.mark.parametrize("failure", [401, 429, 500, "connection"])
+    async def test_recovered_field_is_single_attempt(
+        self, route_name: str, failure: int | str
+    ) -> None:
+        """A recovered field write never retries on either route."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response())
+        )
+        path = RESERVATION_CUSTOM_FIELDS_PATH.format(reservation_id="res-777")
+        url = (
+            _legacy_custom_field_url()
+            if route_name == WRITE_ROUTE_LEGACY
+            else f"{BASE_URL}{path}"
+        )
+        write = respx.put(url)
+        if failure == "connection":
+            write.mock(side_effect=httpx.ConnectError("unavailable"))
+        else:
+            assert isinstance(failure, int)
+            write.mock(return_value=Response(failure, json={"error": "no"}))
+        async with httpx.AsyncClient() as http:
+            method = _v3_custom_fields_client(http).set_field
+            options: dict[str, Any] = (
+                {"single_attempt": True}
+                if "single_attempt" in inspect.signature(method).parameters
+                else {}
+            )
+            with (
+                patch("asyncio.sleep", new_callable=AsyncMock),
+                pytest.raises(GuestyApiError),
+            ):
+                await method(
+                    "reservation",
+                    "res-777",
+                    "cf-a",
+                    "0042",
+                    route=route_name,
+                    **options,
+                )
+        assert len(write.calls) == 1
+
+    @respx.mock
+    @pytest.mark.parametrize("target_type", ["reservation", "listing"])
+    async def test_ordinary_field_write_retains_retry_policy(
+        self, target_type: str
+    ) -> None:
+        """Cache-hit and listing writes retain ordinary retry policy."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response())
+        )
+        target_id = "res-777" if target_type == "reservation" else "lst-777"
+        path = (
+            RESERVATION_CUSTOM_FIELDS_PATH.format(reservation_id=target_id)
+            if target_type == "reservation"
+            else LISTING_CUSTOM_FIELDS_PATH.format(listing_id=target_id)
+        )
+        write = respx.put(f"{BASE_URL}{path}").mock(return_value=Response(500))
+        async with httpx.AsyncClient() as http:
+            method = _v3_custom_fields_client(http).set_field
+            with (
+                patch("asyncio.sleep", new_callable=AsyncMock),
+                pytest.raises(GuestyApiError),
+            ):
+                await method(target_type, target_id, "cf-a", "0042")
+        assert len(write.calls) > 1
 
 
 class TestLegacyRoutedCustomFieldWrites:
