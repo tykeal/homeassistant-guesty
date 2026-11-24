@@ -69,6 +69,7 @@ from custom_components.guesty.coordinator import (
     CustomFieldsDefinitionCoordinator,
     ListingsCoordinator,
     ReservationsCoordinator,
+    ReservationSearchRejected,
     _apply_same_date_handoffs,
     _reservation_sort_key,
     _within_window,
@@ -569,8 +570,9 @@ class TestWriteMissAttemptLifecycle:
                 release.set()
                 await coordinator.async_shutdown()
 
+    @pytest.mark.parametrize("rejected", [False, True])
     async def test_later_success_does_not_replace_joined_failure(
-        self, hass: HomeAssistant
+        self, hass: HomeAssistant, rejected: bool
     ) -> None:
         """A waiter consumes the first post-detection outcome, not a later success."""
         entry = _make_entry()
@@ -581,6 +583,7 @@ class TestWriteMissAttemptLifecycle:
         waiter_started = asyncio.Event()
         release = asyncio.Event()
         calls = 0
+        waiters = 0
 
         async def fetch() -> dict[str, list[GuestyReservation]]:
             """Fail the first update; a separately requested later update succeeds."""
@@ -589,6 +592,8 @@ class TestWriteMissAttemptLifecycle:
             if calls == 1:
                 started.set()
                 await release.wait()
+                if rejected:
+                    raise ReservationSearchRejected("safe filter failure")
                 raise UpdateFailed("failed")
             return {}
 
@@ -599,35 +604,49 @@ class TestWriteMissAttemptLifecycle:
 
         async def recover(generation: int) -> bool:
             """Queue the action behind the existing updates."""
-            waiter_started.set()
+            nonlocal waiters
+            waiters += 1
+            if waiters == 2:
+                waiter_started.set()
             return await _request_write_miss_refresh(coordinator, generation)
 
         with patch.object(coordinator, "_async_update_data", side_effect=fetch):
             first = asyncio.create_task(coordinator.async_refresh())
             later: asyncio.Task[None] | None = None
             waiter: asyncio.Task[bool] | None = None
+            second_waiter: asyncio.Task[bool] | None = None
             try:
                 await asyncio.wait_for(started.wait(), 2)
                 generation = getattr(coordinator, "write_miss_generation", 0)
                 later = asyncio.create_task(later_refresh())
                 await asyncio.wait_for(later_started.wait(), 2)
                 waiter = asyncio.create_task(recover(generation))
+                second_waiter = asyncio.create_task(recover(generation))
                 await asyncio.wait_for(waiter_started.wait(), 2)
                 release.set()
-                assert await asyncio.wait_for(waiter, 2) is False
+                for pending in (waiter, second_waiter):
+                    if rejected:
+                        with pytest.raises(ReservationSearchRejected, match="HTTP 400"):
+                            await asyncio.wait_for(pending, 2)
+                    else:
+                        assert await asyncio.wait_for(pending, 2) is False
                 await asyncio.wait_for(asyncio.gather(first, later), 2)
                 assert calls == 2
             finally:
                 release.set()
                 await coordinator.async_shutdown()
 
+    @pytest.mark.parametrize("prior_rejection", [False, True])
     async def test_cancelled_joined_attempt_cannot_authorize(
-        self, hass: HomeAssistant
+        self, hass: HomeAssistant, prior_rejection: bool
     ) -> None:
         """A cancelled in-flight refresh consumes the attempt without a write."""
         entry = _make_entry()
         entry.add_to_hass(hass)
         coordinator = ReservationsCoordinator(hass, entry, AsyncMock(), AsyncMock())
+        if prior_rejection:
+            coordinator.last_exception = ReservationSearchRejected("earlier failure")
+            coordinator.last_update_success = False
         started = asyncio.Event()
         waiter_started = asyncio.Event()
         release = asyncio.Event()
@@ -2638,7 +2657,7 @@ class TestReservationsCoordinatorErrorResilience:
         self,
         hass: HomeAssistant,
     ) -> None:
-        """A rejected filter retains safe endpoint and status details."""
+        """A rejected search reports safe, actionable context."""
         entry = _make_entry()
         entry.add_to_hass(hass)
         api_client = AsyncMock()
@@ -2667,7 +2686,31 @@ class TestReservationsCoordinatorErrorResilience:
         assert "/reservations-v3/search" in detail
         assert "400" in detail
         assert "unsupported filter checkIn" not in detail
+        assert "search settings" in detail
+        assert "contact support" in detail
         api_client.get_reservations.assert_awaited_once()
+
+    async def test_auth_failure_remains_actionable_without_credentials(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A fetch authentication failure stays distinct without exposing text."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        api_client = AsyncMock()
+        api_client.get_reservations.side_effect = GuestyAuthError("credential-sentinel")
+        coordinator = ReservationsCoordinator(
+            hass=hass,
+            entry=entry,
+            api_client=api_client,
+            listings_coordinator=AsyncMock(),
+        )
+
+        with pytest.raises(UpdateFailed) as raised:
+            await coordinator._async_update_data()
+
+        assert "credential-sentinel" not in str(raised.value)
+        assert "authentication" in str(raised.value).lower()
+        assert "credentials" in str(raised.value).lower()
 
     async def test_filter_rejection_retains_last_known_good(
         self,

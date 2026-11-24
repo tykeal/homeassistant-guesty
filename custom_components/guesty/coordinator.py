@@ -34,6 +34,7 @@ from custom_components.guesty.api.const import (
 )
 from custom_components.guesty.api.exceptions import (
     GuestyApiError,
+    GuestyAuthError,
     GuestyFilterRejectedError,
     GuestyRateLimitError,
 )
@@ -90,6 +91,15 @@ _TEMPORAL_STATUSES: frozenset[str] = frozenset({"confirmed", "checked_in"})
 
 # Identifier pairs named in the single FR-032 abort log line.
 _MAX_LOGGED_CONFLICTS: int = 5
+
+RESERVATION_SEARCH_REJECTED = (
+    f"Guesty rejected the reservation search ({RESERVATIONS_V3_SEARCH_ENDPOINT}, "
+    "HTTP 400). Check search settings or contact support."
+)
+
+
+class ReservationSearchRejected(UpdateFailed):
+    """Report a rejected reservation search without response contents."""
 
 
 class _ReservationRefreshDebouncer(Debouncer[Coroutine[Any, Any, None]]):
@@ -304,6 +314,7 @@ class ReservationsCoordinator(
                 int,
                 int,
                 bool,
+                bool,
                 Mapping[str, Any],
                 tuple[Any, ...],
                 ConfigEntry,
@@ -381,6 +392,7 @@ class ReservationsCoordinator(
         self._write_miss_attempt_generation += 1
         attempt = self._write_miss_attempt_generation
         success = False
+        completed = False
         try:
             await super()._async_refresh(
                 log_failures=log_failures,
@@ -388,6 +400,7 @@ class ReservationsCoordinator(
                 scheduled=scheduled,
                 raise_on_entry_error=raise_on_entry_error,
             )
+            completed = True
             success = (
                 self.last_update_success
                 and self.config_entry is entry
@@ -402,6 +415,9 @@ class ReservationsCoordinator(
                     self._write_miss_generation,
                     attempt,
                     success,
+                    completed
+                    and not self.last_update_success
+                    and isinstance(self.last_exception, ReservationSearchRejected),
                     options,
                     settings,
                     entry,
@@ -429,12 +445,27 @@ class ReservationsCoordinator(
                         completed,
                         _attempt,
                         success,
+                        rejected,
                         refresh_options,
                         refresh_settings,
                         refresh_entry,
                         refresh_client,
                     ) in self._write_miss_outcomes:
                         if completed > generation:
+                            if (
+                                rejected
+                                and refresh_options is options
+                                and refresh_settings == settings
+                                and refresh_entry is entry
+                                and refresh_client is client
+                                and self.config_entry is entry
+                                and self.api_client is client
+                                and self.config_entry.options is options
+                                and self._write_miss_settings() == settings
+                            ):
+                                raise ReservationSearchRejected(
+                                    RESERVATION_SEARCH_REJECTED
+                                )
                             return (
                                 success
                                 and self.write_miss_available
@@ -456,6 +487,16 @@ class ReservationsCoordinator(
                 ):
                     return False
                 await self._async_refresh(log_failures=False)
+                if (
+                    self._write_miss_generation > generation
+                    and self._write_miss_outcomes
+                    and self._write_miss_outcomes[-1][3]
+                    and self.config_entry is entry
+                    and self.api_client is client
+                    and self.config_entry.options is options
+                    and self._write_miss_settings() == settings
+                ):
+                    raise ReservationSearchRejected(RESERVATION_SEARCH_REJECTED)
                 return (
                     self._write_miss_generation > generation
                     and self.write_miss_available
@@ -525,10 +566,11 @@ class ReservationsCoordinator(
                 future_days=future_days,
                 candidates=self._fallback_candidates(),
             )
-        except GuestyFilterRejectedError as exc:
+        except GuestyFilterRejectedError:
+            raise ReservationSearchRejected(RESERVATION_SEARCH_REJECTED) from None
+        except GuestyAuthError:
             raise UpdateFailed(
-                "Guesty rejected the reservation query filters "
-                f"({RESERVATIONS_V3_SEARCH_ENDPOINT}, HTTP {exc.status_code}).",
+                "Guesty authentication failed. Check the integration credentials."
             ) from None
         except GuestyRateLimitError:
             raise UpdateFailed("Guesty rate limited reservation requests.") from None

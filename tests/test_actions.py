@@ -18,6 +18,7 @@ import httpx
 import pytest
 import respx
 import voluptuous as vol
+from freezegun.api import FrozenDateTimeFactory
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -40,6 +41,8 @@ from custom_components.guesty.api.const import (
     CALENDAR_ENDPOINT,
     LISTINGS_ENDPOINT,
     RESERVATIONS_ENDPOINT,
+    RESERVATIONS_PAGE_SIZE,
+    RESERVATIONS_V3_SEARCH_ENDPOINT,
     TASKS_ENDPOINT,
     TOKEN_URL,
 )
@@ -70,6 +73,9 @@ from tests.conftest import (
     make_identity_reservation,
     make_identity_reservations,
     make_token_response,
+    make_v3_reservation,
+    make_v3_search_page,
+    make_v3_segment,
 )
 
 # ── Patch targets ───────────────────────────────────────────────────
@@ -1929,6 +1935,37 @@ class TestIdentityWritePredicate:
         assert client.mock_calls == []
 
     @pytest.mark.parametrize(
+        ("service", "payload", "error"),
+        [
+            ("add_reservation_note", {"note_text": ""}, HomeAssistantError),
+            ("set_reservation_status", {"status": "invalid"}, vol.Invalid),
+        ],
+    )
+    async def test_invalid_action_refuses_without_refresh(
+        self,
+        hass: HomeAssistant,
+        service: str,
+        payload: dict[str, str],
+        error: type[Exception],
+    ) -> None:
+        """Invalid action input cannot refresh or write a missing target."""
+        entry = await _setup_entry(hass)
+        client = self._client(hass, entry)
+        with (
+            patch(_PATCH_RESERVATIONS, new_callable=AsyncMock) as fetch,
+            pytest.raises(error),
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                service,
+                {"reservation_id": "res-new", **payload},
+                blocking=True,
+                return_response=True,
+            )
+        fetch.assert_not_awaited()
+        assert client.mock_calls == []
+
+    @pytest.mark.parametrize(
         ("guard", "message"),
         [
             ("unusable", "identity baseline"),
@@ -2188,6 +2225,98 @@ class TestIdentityWritePredicate:
         assert result == {"success": True, "target_id": "res-new"}
         fetch.assert_awaited_once()
         getattr(client, method).assert_awaited_once()
+
+    async def test_recovery_uses_configured_v3_fetch_and_pagination(
+        self, hass: HomeAssistant, freezer: FrozenDateTimeFactory
+    ) -> None:
+        """A service miss uses normal v3 windows, paging and guest lookup."""
+        freezer.move_to("2026-11-23 12:00:00+00:00")
+        entry = await _setup_entry(
+            hass,
+            options={
+                CONF_RESERVATIONS_API: RESERVATIONS_API_V3,
+                CONF_PAST_DAYS: 5,
+                CONF_FUTURE_DAYS: 12,
+                CONF_SELECTED_LISTINGS: ["listing-001"],
+            },
+        )
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        listing = GuestyListing.from_api_dict(
+            {"_id": "listing-001", "title": "Selected", "timezone": "UTC"}
+        )
+        assert listing is not None
+        coordinator.listings_coordinator.data = {listing.id: listing}
+        coordinator.listings_coordinator.timing_listings = {listing.id: listing}
+        client = self._client(hass, entry)
+        client.set_reservation_status.return_value = ActionResult(
+            success=True, target_id="z-target"
+        )
+        start = datetime.now(UTC) + timedelta(days=1)
+        end = start + timedelta(days=2)
+        segment = make_v3_segment(
+            checkIn=start.isoformat(),
+            checkOut=end.isoformat(),
+            checkInDateLocalized=start.date().isoformat(),
+            checkOutDateLocalized=end.date().isoformat(),
+        )
+        ids = sorted([*_WRITE_TARGETS, *[f"item-{n:03}" for n in range(96)]])
+        first_page = [
+            make_v3_reservation(
+                reservation_id,
+                segments=[segment],
+                guest_id=None,
+                confirmationCode=f"CONF-{reservation_id}",
+            )
+            for reservation_id in ids
+        ]
+        target = make_v3_reservation(
+            "z-target",
+            segments=[segment],
+            guest_id="guest-001",
+            confirmationCode="CONF-z-target",
+        )
+        requests: list[tuple[str, str, dict[str, Any]]] = []
+
+        async def request(method: str, path: str, **kwargs: Any) -> Response:
+            """Answer only configured source pages and the one guest lookup."""
+            requests.append((method, path, kwargs))
+            if path == RESERVATIONS_V3_SEARCH_ENDPOINT:
+                skip = kwargs["params"]["skip"]
+                if skip == 0:
+                    return Response(
+                        200, json=make_v3_search_page(first_page, has_more=True)
+                    )
+                assert skip == RESERVATIONS_PAGE_SIZE
+                return Response(
+                    200,
+                    json=make_v3_search_page([target], skip=RESERVATIONS_PAGE_SIZE),
+                )
+            assert path == "/guests-crud/guest-001"
+            return Response(200, json={"_id": "guest-001", "fullName": "Test"})
+
+        with patch.object(coordinator.api_client, "_request", side_effect=request):
+            result = await hass.services.async_call(
+                DOMAIN,
+                "set_reservation_status",
+                {"reservation_id": "z-target", "status": "checked_in"},
+                blocking=True,
+                return_response=True,
+            )
+        assert result == {"success": True, "target_id": "z-target"}
+        assert [(method, path) for method, path, _ in requests] == [
+            ("GET", RESERVATIONS_V3_SEARCH_ENDPOINT),
+            ("GET", RESERVATIONS_V3_SEARCH_ENDPOINT),
+            ("GET", "/guests-crud/guest-001"),
+        ]
+        params = requests[0][2]["params"]
+        assert params["filter[checkOut][gte]"] == "2026-11-17"
+        assert params["filter[checkIn][lte]"] == "2026-12-06"
+        assert params["filter[status][in]"] == (
+            "canceled,checked_in,checked_out,completed,confirmed"
+        )
+        assert params["skip"] == 0
+        assert requests[1][2]["params"]["skip"] == RESERVATIONS_PAGE_SIZE
+        client.set_reservation_status.assert_awaited_once()
 
     async def test_codeless_identity_can_be_confirmed_by_refresh(
         self, hass: HomeAssistant

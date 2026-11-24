@@ -52,6 +52,10 @@ from custom_components.guesty.const import (
     DEFAULT_RESERVATIONS_API,
     DOMAIN,
 )
+from custom_components.guesty.coordinator import (
+    RESERVATION_SEARCH_REJECTED,
+    ReservationSearchRejected,
+)
 from custom_components.guesty.identity import WriteRefusal
 
 if TYPE_CHECKING:
@@ -457,7 +461,15 @@ async def execute_reservation_write[WriteResultT](
                 target_id=reservation_id,
                 action_type=action_type,
             )
-        if not await coordinator.async_refresh_for_write_miss(generation):
+        try:
+            refreshed = await coordinator.async_refresh_for_write_miss(generation)
+        except ReservationSearchRejected:
+            raise GuestyActionError(
+                f"{RESERVATION_SEARCH_REJECTED} The write was refused.",
+                target_id=reservation_id,
+                action_type=action_type,
+            ) from None
+        if not refreshed:
             raise GuestyActionError(
                 "The reservation refresh failed or did not complete; "
                 "the write was refused. Retry after a successful refresh.",

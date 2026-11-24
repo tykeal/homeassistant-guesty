@@ -9,11 +9,14 @@ import contextlib
 import time
 from collections.abc import AsyncGenerator, Generator
 from contextlib import ExitStack
+from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import ANY, AsyncMock, patch
 
 import httpx
 import pytest
 import respx
+from freezegun.api import FrozenDateTimeFactory
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
@@ -22,11 +25,13 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.guesty.api.const import (
     BASE_URL,
+    LEGACY_FALLBACK_RECHECK_SECONDS,
     RESERVATION_BY_ID_LEGACY_PATH,
     RESERVATION_CUSTOM_FIELDS_PATH,
     RESERVATION_NOTES_PATH,
     RESERVATION_STATUS_PATH,
     RESERVATIONS_V3_ENDPOINT,
+    RESERVATIONS_V3_SEARCH_ENDPOINT,
     TOKEN_URL,
     WRITE_ROUTE_LEGACY,
     WRITE_ROUTE_V3,
@@ -40,10 +45,12 @@ from custom_components.guesty.api.exceptions import (
     GuestyAuthError,
     GuestyConnectionError,
     GuestyCustomFieldError,
+    GuestyFilterRejectedError,
 )
 from custom_components.guesty.api.models import (
     GuestyCustomFieldDefinition,
     GuestyCustomFieldResult,
+    GuestyListing,
     GuestyReservation,
 )
 from custom_components.guesty.const import (
@@ -59,7 +66,11 @@ from tests.conftest import (
     make_fetch_result,
     make_identity_reservation,
     make_identity_reservations,
+    make_legacy_reservation_by_id,
     make_token_response,
+    make_v3_reservation,
+    make_v3_search_page,
+    make_v3_segment,
     sample_custom_field_definitions,
 )
 
@@ -3075,6 +3086,297 @@ class TestSetCustomFieldIdentityGuard:
                 "refresh" if failed else "has no known confirmation code",
             )
         fetch.assert_awaited_once()
+
+    @pytest.mark.parametrize("previously_served", [False, True])
+    async def test_real_fallback_failure_preserves_custom_field_routing(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+        previously_served: bool,
+    ) -> None:
+        """Only a successful prior legacy lookup authorizes retained writes."""
+        freezer.move_to("2026-11-23 12:00:00+00:00")
+        entry = await self._setup(
+            hass,
+            make_identity_reservations(*_WRITE_TARGETS),
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_V3},
+        )
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        listing = GuestyListing.from_api_dict(
+            {
+                "_id": "listing-001",
+                "title": "Selected",
+                "timezone": "UTC",
+                "defaultCheckInTime": "15:00",
+                "defaultCheckOutTime": "11:00",
+            }
+        )
+        assert listing is not None
+        coordinator.listings_coordinator.data = {listing.id: listing}
+        coordinator.listings_coordinator.timing_listings = {listing.id: listing}
+        begin = datetime.now(UTC) + timedelta(days=1)
+        end = begin + timedelta(days=2)
+        segment = make_v3_segment(
+            checkIn=begin.isoformat(),
+            checkOut=end.isoformat(),
+            checkInDateLocalized=begin.date().isoformat(),
+            checkOutDateLocalized=end.date().isoformat(),
+        )
+        originals = [
+            make_v3_reservation(
+                reservation_id,
+                segments=[segment],
+                guest_id=None,
+                confirmationCode=f"CONF-{reservation_id}",
+            )
+            for reservation_id in sorted(_WRITE_TARGETS)
+        ]
+        fallback_calls = 0
+        include_target = True
+
+        async def request(method: str, path: str, **kwargs: Any) -> Response:
+            """Answer real search pages and one legacy fallback candidate."""
+            nonlocal fallback_calls
+            assert method == "GET"
+            if path == RESERVATIONS_V3_SEARCH_ENDPOINT:
+                results = [
+                    record
+                    for record in originals
+                    if include_target or record["reservationId"] != "res-456"
+                ]
+                return Response(200, json=make_v3_search_page(results))
+            assert path == RESERVATION_BY_ID_LEGACY_PATH.format(
+                reservation_id="res-456"
+            )
+            fallback_calls += 1
+            if previously_served and fallback_calls == 1:
+                return Response(
+                    200,
+                    json=make_legacy_reservation_by_id(
+                        "res-456",
+                        checkIn=begin.isoformat(),
+                        checkOut=end.isoformat(),
+                        checkInDateLocalized=begin.date().isoformat(),
+                        checkOutDateLocalized=end.date().isoformat(),
+                        confirmationCode="CONF-res-456",
+                    ),
+                )
+            return Response(500, json={"error": "temporarily unavailable"})
+
+        with patch.object(coordinator.api_client, "_request", side_effect=request):
+            await coordinator.async_refresh()
+            assert "res-456" in coordinator._fallback_candidates()
+            include_target = False
+            await coordinator.async_refresh()
+            if previously_served:
+                freezer.tick(timedelta(seconds=LEGACY_FALLBACK_RECHECK_SECONDS + 1))
+                await coordinator.async_refresh()
+            assert coordinator.last_update_success
+            assert coordinator.last_fallback_counters.failed == 1
+            assert fallback_calls == (2 if previously_served else 1)
+            with patch.object(
+                GuestyCustomFieldsClient,
+                "set_field",
+                new_callable=AsyncMock,
+                return_value=GuestyCustomFieldResult(
+                    success=True,
+                    target_type="reservation",
+                    target_id="res-456",
+                    field_id="cf-door-code",
+                ),
+            ) as write:
+                if previously_served:
+                    result = await hass.services.async_call(
+                        DOMAIN,
+                        SERVICE_SET_CUSTOM_FIELD,
+                        {
+                            "target_type": "reservation",
+                            "target_id": "res-456",
+                            "field_id": "cf-door-code",
+                            "value": "0042",
+                        },
+                        blocking=True,
+                        return_response=True,
+                    )
+                    assert result is not None and result["result"] == "success"
+                    write.assert_awaited_once()
+                    assert write.await_args is not None
+                    assert write.await_args.kwargs["route"] == WRITE_ROUTE_LEGACY
+                else:
+                    with pytest.raises(HomeAssistantError):
+                        await hass.services.async_call(
+                            DOMAIN,
+                            SERVICE_SET_CUSTOM_FIELD,
+                            {
+                                "target_type": "reservation",
+                                "target_id": "res-456",
+                                "field_id": "cf-door-code",
+                                "value": "0042",
+                            },
+                            blocking=True,
+                            return_response=True,
+                        )
+                    write.assert_not_awaited()
+            assert fallback_calls == (2 if previously_served else 1)
+
+    @pytest.mark.parametrize("previously_served", [False, True])
+    async def test_custom_field_miss_rechecks_real_fallback_failure(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+        previously_served: bool,
+    ) -> None:
+        """A code-less target remains refused after a real failed fallback."""
+        freezer.move_to("2026-11-23 12:00:00+00:00")
+        entry = await self._setup(
+            hass,
+            make_identity_reservations(*_WRITE_TARGETS),
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_V3},
+        )
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        listing = GuestyListing.from_api_dict(
+            {
+                "_id": "listing-001",
+                "title": "Selected",
+                "timezone": "UTC",
+                "defaultCheckInTime": "15:00",
+                "defaultCheckOutTime": "11:00",
+            }
+        )
+        assert listing is not None
+        coordinator.listings_coordinator.data = {listing.id: listing}
+        coordinator.listings_coordinator.timing_listings = {listing.id: listing}
+        begin = datetime.now(UTC) + timedelta(days=1)
+        end = begin + timedelta(days=2)
+        segment = make_v3_segment(
+            checkIn=begin.isoformat(),
+            checkOut=end.isoformat(),
+            checkInDateLocalized=begin.date().isoformat(),
+            checkOutDateLocalized=end.date().isoformat(),
+        )
+        originals = [
+            make_v3_reservation(
+                reservation_id,
+                segments=[segment],
+                guest_id=None,
+                confirmationCode=(
+                    None if reservation_id == "res-new" else f"CONF-{reservation_id}"
+                ),
+            )
+            for reservation_id in sorted([*_WRITE_TARGETS, "res-new"])
+        ]
+        include_target = True
+        search_calls = 0
+        fallback_calls = 0
+
+        async def request(method: str, path: str, **kwargs: Any) -> Response:
+            """Answer a normal v3 search and the legacy fallback lookup."""
+            nonlocal search_calls, fallback_calls
+            assert method == "GET"
+            if path == RESERVATIONS_V3_SEARCH_ENDPOINT:
+                search_calls += 1
+                return Response(
+                    200,
+                    json=make_v3_search_page(
+                        [
+                            record
+                            for record in originals
+                            if include_target or record["reservationId"] != "res-new"
+                        ]
+                    ),
+                )
+            assert path == RESERVATION_BY_ID_LEGACY_PATH.format(
+                reservation_id="res-new"
+            )
+            fallback_calls += 1
+            if previously_served and fallback_calls == 1:
+                return Response(
+                    200,
+                    json=make_legacy_reservation_by_id(
+                        "res-new",
+                        checkIn=begin.isoformat(),
+                        checkOut=end.isoformat(),
+                        checkInDateLocalized=begin.date().isoformat(),
+                        checkOutDateLocalized=end.date().isoformat(),
+                        confirmationCode=None,
+                    ),
+                )
+            return Response(500, json={"error": "temporarily unavailable"})
+
+        with patch.object(coordinator.api_client, "_request", side_effect=request):
+            await coordinator.async_refresh()
+            assert "res-new" in coordinator._fallback_candidates()
+            include_target = False
+            if previously_served:
+                await coordinator.async_refresh()
+                assert "res-new" in coordinator.fallback_served_ids
+                freezer.tick(timedelta(seconds=LEGACY_FALLBACK_RECHECK_SECONDS + 1))
+            before_search = search_calls
+            with patch.object(
+                GuestyCustomFieldsClient, "set_field", new_callable=AsyncMock
+            ) as write:
+                with pytest.raises(HomeAssistantError):
+                    await hass.services.async_call(
+                        DOMAIN,
+                        SERVICE_SET_CUSTOM_FIELD,
+                        {
+                            "target_type": "reservation",
+                            "target_id": "res-new",
+                            "field_id": "cf-door-code",
+                            "value": "0042",
+                        },
+                        blocking=True,
+                        return_response=True,
+                    )
+                write.assert_not_awaited()
+            assert search_calls == before_search + 1
+            assert fallback_calls == (2 if previously_served else 1)
+            assert coordinator.last_fallback_counters.failed == 1
+            assert ("res-new" in coordinator.fallback_served_ids) is previously_served
+
+    async def test_custom_field_miss_reports_safe_filter_failure(
+        self, hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A search rejection cannot leak a custom-field value or write it."""
+        await self._setup(hass, make_identity_reservations(*_WRITE_TARGETS))
+        secret = "sample-sensitive-pin-0072"
+        with (
+            patch(
+                "custom_components.guesty.GuestyApiClient.get_reservations",
+                new_callable=AsyncMock,
+                side_effect=GuestyFilterRejectedError(
+                    secret,
+                    endpoint="/reservations-v3/search",
+                    status_code=400,
+                    body_excerpt=secret,
+                ),
+            ) as fetch,
+            patch.object(
+                GuestyCustomFieldsClient, "set_field", new_callable=AsyncMock
+            ) as write,
+            pytest.raises(HomeAssistantError) as error,
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_CUSTOM_FIELD,
+                {
+                    "target_type": "reservation",
+                    "target_id": "res-new",
+                    "field_id": "cf-door-code",
+                    "value": secret,
+                },
+                blocking=True,
+                return_response=True,
+            )
+        fetch.assert_awaited_once()
+        write.assert_not_awaited()
+        detail = str(error.value)
+        assert secret not in detail
+        assert secret not in caplog.text
+        assert "/reservations-v3/search" in detail
+        assert "400" in detail
+        assert "search settings" in detail
+        assert "contact support" in detail
 
     async def test_blank_custom_field_target_does_not_refresh(
         self, hass: HomeAssistant

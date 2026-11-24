@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import traceback
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -408,6 +409,224 @@ class TestIdentityAbortPrivacy:
 class TestWriteMissPrivacy:
     """Recovery must not expose guest details, confirmation codes, or PINs."""
 
+    @pytest.mark.parametrize("scheduled", [False, True])
+    async def test_filter_failure_reports_safe_refresh_details(
+        self, hass: HomeAssistant, caplog: pytest.LogCaptureFixture, scheduled: bool
+    ) -> None:
+        """Scheduled and direct refreshes safely report rejected searches."""
+        entry = await _setup_entry(hass)
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        previous = coordinator.data
+        secrets = ("sample-sensitive-pin-0072", *PII, FAKE_CLIENT_SECRET)
+        secret = " ".join(secrets)
+        rejection = GuestyFilterRejectedError(
+            secret,
+            endpoint="/untrusted-endpoint",
+            status_code=400,
+            body_excerpt=secret,
+        )
+        with (
+            caplog.at_level(logging.DEBUG),
+            patch.object(
+                coordinator.api_client,
+                "get_reservations",
+                new_callable=AsyncMock,
+                side_effect=rejection,
+            ) as fetch,
+            patch.object(
+                coordinator.api_client, "resolve_guests", new_callable=AsyncMock
+            ) as guests,
+        ):
+            if scheduled:
+                await coordinator._async_refresh(scheduled=True)
+            else:
+                await coordinator.async_refresh()
+            diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+        fetch.assert_awaited_once()
+        guests.assert_not_awaited()
+        assert coordinator.last_update_success is False
+        assert coordinator.data is previous
+        rendered_tracebacks = "".join(
+            "".join(traceback.format_exception(*record.exc_info))
+            for record in caplog.records
+            if record.exc_info
+        )
+        for value in secrets:
+            assert value not in str(coordinator.last_exception)
+            assert value not in caplog.text
+            assert value not in rendered_tracebacks
+            assert value not in json.dumps(diagnostics, default=str)
+        assert "/untrusted-endpoint" not in str(coordinator.last_exception)
+        detail = str(coordinator.last_exception)
+        assert "/reservations-v3/search" in detail
+        assert "400" in detail
+        assert "search settings" in detail
+        assert "contact support" in detail
+        assert "/reservations-v3/search" in caplog.text
+        assert "HTTP 400" in caplog.text
+        assert "search settings" in caplog.text
+        assert "contact support" in caplog.text
+
+    async def test_write_miss_filter_error_reports_safe_details(
+        self, hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A recovery-owned rejected search refuses with safe guidance."""
+        entry = await _setup_entry(hass)
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        previous = coordinator.data
+        client = hass.data[DOMAIN][entry.entry_id]["actions_client"]
+        client.set_reservation_status = AsyncMock()
+        secrets = ("sample-sensitive-pin-0072", *PII, FAKE_CLIENT_SECRET)
+        secret = " ".join(secrets)
+        with (
+            caplog.at_level(logging.DEBUG),
+            patch.object(
+                coordinator.api_client,
+                "get_reservations",
+                new_callable=AsyncMock,
+                side_effect=GuestyFilterRejectedError(
+                    secret,
+                    endpoint="/untrusted-endpoint",
+                    status_code=400,
+                    body_excerpt=secret,
+                ),
+            ) as fetch,
+        ):
+            with pytest.raises(HomeAssistantError) as raised:
+                await hass.services.async_call(
+                    DOMAIN,
+                    "set_reservation_status",
+                    {"reservation_id": "res-new", "status": "checked_in"},
+                    blocking=True,
+                    return_response=True,
+                )
+            diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+        fetch.assert_awaited_once()
+        client.set_reservation_status.assert_not_awaited()
+        assert coordinator.data is previous
+        assert coordinator.last_update_success is False
+        rendered_tracebacks = "".join(
+            "".join(traceback.format_exception(*record.exc_info))
+            for record in caplog.records
+            if record.exc_info
+        )
+        for value in secrets:
+            assert value not in str(raised.value)
+            assert value not in caplog.text
+            assert value not in rendered_tracebacks
+            assert value not in json.dumps(diagnostics, default=str)
+        detail = str(raised.value)
+        assert "/reservations-v3/search" in detail
+        assert "400" in detail
+        assert "search settings" in detail
+        assert "contact support" in detail
+
+    @pytest.mark.parametrize("mode", ["scheduled", "direct", "recovery", "joined"])
+    async def test_rejected_v3_search_has_no_followup(
+        self, hass: HomeAssistant, caplog: pytest.LogCaptureFixture, mode: str
+    ) -> None:
+        """Each real v3 refresh stops after the controlled first-page rejection."""
+        entry = await _setup_entry(hass, options={CONF_RESERVATIONS_API: "v3"})
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        client = coordinator.api_client
+        actions = hass.data[DOMAIN][entry.entry_id]["actions_client"]
+        actions.set_reservation_status = AsyncMock()
+        secrets = ("sample-sensitive-pin-0072", *PII, FAKE_CLIENT_SECRET)
+        secret = " ".join(secrets)
+        previous = coordinator.data
+        started = asyncio.Event()
+        joined = asyncio.Event()
+        release = asyncio.Event()
+        original_recovery = coordinator.async_refresh_for_write_miss
+
+        async def reject(*args: object, **kwargs: object) -> Response:
+            """Pause the already-running request until the service joins it."""
+            if mode == "joined":
+                started.set()
+                await release.wait()
+            return Response(400, text=secret)
+
+        async def observe_recovery(generation: int) -> bool:
+            """Observe recovery joining the refresh before releasing it."""
+            joined.set()
+            return bool(await original_recovery(generation))
+
+        with (
+            caplog.at_level(logging.DEBUG),
+            patch.object(
+                client,
+                "_request",
+                new_callable=AsyncMock,
+                side_effect=reject,
+            ) as request,
+            patch.object(coordinator, "async_refresh_for_write_miss", observe_recovery),
+        ):
+
+            async def write() -> None:
+                """Request a missing reservation write."""
+                await hass.services.async_call(
+                    DOMAIN,
+                    "set_reservation_status",
+                    {"reservation_id": "res-new", "status": "checked_in"},
+                    blocking=True,
+                    return_response=True,
+                )
+
+            existing: asyncio.Task[None] | None = None
+            action: asyncio.Task[None] | None = None
+            try:
+                if mode == "scheduled":
+                    await coordinator._async_refresh(scheduled=True)
+                elif mode == "direct":
+                    await coordinator.async_refresh()
+                else:
+                    if mode == "joined":
+                        existing = asyncio.create_task(coordinator.async_refresh())
+                        await asyncio.wait_for(started.wait(), 2)
+                        action = asyncio.create_task(write())
+                        await asyncio.wait_for(joined.wait(), 2)
+                        release.set()
+                    with pytest.raises(HomeAssistantError) as raised:
+                        if action is None:
+                            await write()
+                        else:
+                            await asyncio.wait_for(action, 2)
+                    detail = str(raised.value)
+                    assert "/reservations-v3/search" in detail
+                    assert "HTTP 400" in detail
+                    assert "search settings" in detail
+                    assert "contact support" in detail
+                    for value in secrets:
+                        assert value not in detail
+                diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+            finally:
+                release.set()
+                if existing is not None:
+                    await asyncio.gather(existing, return_exceptions=True)
+                if action is not None:
+                    await asyncio.gather(action, return_exceptions=True)
+        request.assert_awaited_once()
+        assert request.await_args is not None
+        assert request.await_args.args[:2] == ("GET", RESERVATIONS_V3_SEARCH_ENDPOINT)
+        assert coordinator.data is previous
+        assert coordinator.last_update_success is False
+        actions.set_reservation_status.assert_not_awaited()
+        detail = str(coordinator.last_exception)
+        assert "/reservations-v3/search" in detail
+        assert "HTTP 400" in detail
+        assert "search settings" in detail
+        assert "contact support" in detail
+        rendered_tracebacks = "".join(
+            "".join(traceback.format_exception(*record.exc_info))
+            for record in caplog.records
+            if record.exc_info
+        )
+        for value in secrets:
+            assert value not in detail
+            assert value not in caplog.text
+            assert value not in rendered_tracebacks
+            assert value not in json.dumps(diagnostics, default=str)
+
     @pytest.mark.parametrize("error", ["api", "filter", "unexpected"])
     async def test_joined_refresh_error_is_redacted(
         self, hass: HomeAssistant, caplog: pytest.LogCaptureFixture, error: str
@@ -415,12 +634,14 @@ class TestWriteMissPrivacy:
         """A pre-existing refresh cannot expose an API response when joined."""
         entry = await _setup_entry(hass)
         coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        previous = coordinator.data
         client = hass.data[DOMAIN][entry.entry_id]["actions_client"]
         client.set_reservation_status = AsyncMock()
         started = asyncio.Event()
         joined = asyncio.Event()
         release = asyncio.Event()
-        secret = "sample-sensitive-pin-0072"
+        secrets = ("sample-sensitive-pin-0072", *PII, FAKE_CLIENT_SECRET)
+        secret = " ".join(secrets)
         original_recovery = coordinator.async_refresh_for_write_miss
 
         async def fetch(*args: object, **kwargs: object) -> object:
@@ -448,7 +669,7 @@ class TestWriteMissPrivacy:
             patch(
                 "custom_components.guesty.GuestyApiClient.get_reservations",
                 side_effect=fetch,
-            ),
+            ) as mocked_fetch,
             patch.object(coordinator, "async_refresh_for_write_miss", recovery),
         ):
             existing = asyncio.create_task(coordinator.async_refresh())
@@ -469,9 +690,31 @@ class TestWriteMissPrivacy:
                 await asyncio.wait_for(existing, 2)
                 with pytest.raises(HomeAssistantError) as raised:
                     await asyncio.wait_for(action, 2)
-                assert secret not in str(raised.value)
-                assert secret not in caplog.text
+                diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+                rendered_tracebacks = "".join(
+                    "".join(traceback.format_exception(*record.exc_info))
+                    for record in caplog.records
+                    if record.exc_info
+                )
+                for value in secrets:
+                    assert value not in str(raised.value)
+                    assert value not in caplog.text
+                    assert value not in rendered_tracebacks
+                    assert value not in json.dumps(diagnostics, default=str)
+                mocked_fetch.assert_awaited_once()
+                assert coordinator.data is previous
+                assert coordinator.last_update_success is False
                 client.set_reservation_status.assert_not_awaited()
+                if error == "filter":
+                    detail = str(raised.value)
+                    assert "/reservations-v3/search" in detail
+                    assert "400" in detail
+                    assert "search settings" in detail
+                    assert "contact support" in detail
+                    assert "/reservations-v3/search" in caplog.text
+                    assert "HTTP 400" in caplog.text
+                    assert "search settings" in caplog.text
+                    assert "contact support" in caplog.text
             finally:
                 release.set()
                 await asyncio.gather(existing, return_exceptions=True)
