@@ -395,6 +395,10 @@ selected.
   **never** retried with filters removed, in
   `tests/api/test_reservations_v3.py` and `tests/test_coordinator.py`
   (FR-008, US4 scenario 3).
+
+  Historical completion reflects the original intact-detail requirement.
+  The revised FR-008 replaces that coordinator behavior with safe
+  endpoint/status/guidance; feature 012 T007 covers its new regressions.
 - [x] T032 [P] [US4] Write frozen-clock window tests: a configured
   30-past/365-future window excludes out-of-window fixtures present in
   the fake backend, and a stay whose check-in is 200 days in the past
@@ -446,6 +450,10 @@ selected.
   `reservations_api="v3"`, and convert `GuestyFilterRejectedError` to
   `UpdateFailed` with the rejection detail preserved in
   `custom_components/guesty/coordinator.py` (FR-008). Depends on T039.
+
+  Historical completion reflects the original behavior. The revised FR-008
+  supersedes intact coordinator detail; feature 012 T007–T008 track the
+  privacy-safe replacement without changing the API exception contract.
 
 **Checkpoint**: the v3 search is callable, pages deterministically,
 fails loudly on any inconsistency, and emits counters — all against

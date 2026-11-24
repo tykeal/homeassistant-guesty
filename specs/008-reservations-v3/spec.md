@@ -245,10 +245,11 @@ reservation present in the fake backend is not returned.
    form v3 documents, and reservations outside the window are not returned.
 2. **Given** a configured status filter, **When** a refresh occurs, **Then**
    the outgoing request carries a status filter in the form v3 documents.
-3. **Given** the backend rejects a filter with HTTP 400, **When** a refresh
-   occurs, **Then** the refresh fails loudly with the rejection detail,
-   previously known reservation data is retained, and the integration does
-   **not** silently fall back to an unfiltered fetch.
+3. **Given** the backend rejects the search with HTTP 400, **When** a refresh
+   occurs, **Then** the refresh fails loudly with the fixed search endpoint,
+   status and actionable guidance, previously known reservation data is
+   retained, and the integration does **not** fall back to an unfiltered
+   fetch or expose the untrusted response body.
 
 ---
 
@@ -594,8 +595,16 @@ legacy write resource rather than to v3.
 - **FR-007**: System MUST NOT send a field projection on the v3 search, which
   does not support one.
 - **FR-008**: System MUST treat an HTTP 400 from the v3 search as a hard
-  failure that surfaces the rejection detail to the user, and MUST NOT retry
-  the request with filters removed.
+  failure, retain last-known-good reservation data, and MUST NOT retry the
+  request with filters removed. Coordinator failure reporting MUST surface
+  the fixed `/reservations-v3/search` endpoint, HTTP 400 and actionable
+  guidance to check search settings or contact support. It MUST NOT expose
+  the untrusted response body, infer a specific rejected filter, or disclose
+  guest data, confirmation codes, PINs or credentials in service errors,
+  logs or diagnostics. This applies to scheduled, directly triggered and
+  recovery-joined refreshes regardless of who initiated the attempt.
+  This replaces the earlier requirement to surface the raw rejection
+  detail intact: an arbitrary response body cannot be safely logged.
 
 #### Listing attribution
 

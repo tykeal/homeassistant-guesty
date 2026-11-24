@@ -200,6 +200,10 @@ refreshes and writes, and exercise unsuccessful and stale refresh results.
   changes, or the latest refresh fails or becomes ambiguous before the
   write, the action MUST fail closed instead of relying on the earlier
   qualifying result.
+  Any Home Assistant options-object replacement during the attempt MUST
+  invalidate recovery, including unrelated changes and A→B→A updates;
+  token-only entry-data updates MUST NOT themselves invalidate recovery.
+  This conservative witness does not add a listing authorization boundary.
 - **FR-009**: Feature 008 identity baseline creation, storage, reload and
   persistence failure behavior MUST remain unchanged. An empty, absent or
   unpersisted baseline MUST NOT authorize a write. Recovery MUST NOT
@@ -237,7 +241,12 @@ refreshes and writes, and exercise unsuccessful and stale refresh results.
   stale refresh, a still-missing identity, and a failed identity or routing
   guard, and provide an actionable explanation without exposing PINs,
   confirmation codes, guest personal data or credentials in logs or
-  diagnostics.
+  diagnostics. For a v3 search HTTP 400, report the fixed search endpoint,
+  status and guidance to check search settings or contact support, without
+  exposing the untrusted body or inferring the rejected filter. The same
+  privacy rule applies when an ordinary refresh is joined by recovery.
+  Distinct safe local identity and routing errors, other actionable
+  categories, authentication handling and cancellation remain unchanged.
 - **FR-016**: Recovery MUST NOT impose a new arbitrary cooldown or require
   a particular age of cached data. A later separately invoked action may
   independently qualify for one refresh; no promise of eventual upstream
