@@ -128,22 +128,35 @@ no write; allowed writes use the latest accepted route.
 
   T007 must also exercise a v3 search HTTP 400 with a sentinel response body
   for scheduled, directly triggered and already-running joined refreshes.
-  Assert service errors, logs (including DEBUG tracebacks) and diagnostics
-  contain no sentinel, guest data, confirmation codes, PINs or credentials.
-  Verify fixed endpoint, status and check-settings/contact-support guidance,
-  retained last-known-good state, no unfiltered retry and no recovery write.
-  Preserve distinct safe local identity/route errors, other actionable
-  categories, authentication handling and cancellation (feature 008 FR-008;
-  FR-006 and FR-015).
+  Inspect service and coordinator errors, logged tracebacks (including
+  DEBUG) and diagnostics for each case; assert no sentinel, guest data,
+  confirmation codes, PINs or credentials. Verify fixed endpoint, HTTP 400
+  and check-settings/contact-support guidance, retained last-known-good
+  state, no unfiltered retry and no recovery write. In each controlled HTTP
+  400 case, assert at most one coordinator fetch attempt and no guest,
+  fallback or follow-up lookup after the failure; successful refreshes may
+  still use normal API pagination. Preserve distinct safe local identity/
+  route errors, other actionable categories, authentication handling and
+  cancellation (feature 008 FR-008; FR-006 and FR-015).
+
+  The old body-in-error expectation in
+  `tests/test_coordinator.py::TestReservationsCoordinatorErrorResilience::test_filter_rejection_surfaces_detail`
+  is superseded, not a baseline-green unchanged-behavior control. Replace it
+  with a regression asserting the safe endpoint/status/guidance and sentinel
+  absence while retaining hard failure and no unfiltered retry. Observe the
+  new behavioral failure before implementing the changed reporting.
 
 - [ ] T008 [US2] Implement preflight and post-refresh authorization in `custom_components/guesty/actions.py` and `custom_components/guesty/__init__.py`. Re-evaluate the existing identity guard, persisted baseline and unstored state, continuity, ambiguity, current target/code evidence, and known route before recovery and again after it. Preserve `identity.py` baseline/comparison semantics; never create, promote, clear, or bypass a baseline. Keep failure categories actionable and sanitize recovery diagnostics rather than forwarding raw response details (FR-002, FR-006–FR-012, FR-015; US2-S1–S5).
 
   Implement the revised feature 008 FR-008 in
   `custom_components/guesty/coordinator.py`: replace raw-body HTTP 400
-  reporting for every coordinator refresh with the specified safe context,
-  suppress unsafe exception chaining, and preserve other categories and
-  cancellation. Service reporting for a joined failure must use the same
-  safe endpoint/status/guidance; do not authorize a write.
+  reporting for every coordinator refresh with context constructed from
+  trusted fixed endpoint/status/guidance, not `exc.message` or `str(exc)`.
+  Suppress the response-bearing exception chain in normally formatted or
+  logged tracebacks and diagnostics (`from None` or equivalent), and preserve
+  other categories and cancellation. Service reporting for a joined failure
+  must use the same safe endpoint/status/guidance; do not authorize a write.
+  Do not change the separately specified API-layer exception string contract.
 - [ ] T009 [US2] Add failing tests in `tests/test_actions.py` and `tests/api/test_actions.py` that pause the note prerequisite read, then invalidate a guard before dispatch or attempt a concurrent coordinator refresh after route selection. Assert that refresh waits through the write, note read precedes write, failed read sends no write, action cancellation propagates, and routing/authorization is rechecked after every awaited read and refresh. Cover stale entry mappings, live-entry lookup, coordinator identity and source changes before dispatch (FR-007–FR-008, FR-014–FR-015; US2-S4; US3-S2; SC-004–SC-005).
 - [ ] T010 [US2] Implement final recovery-write authorization in `custom_components/guesty/actions.py` and `custom_components/guesty/api/actions.py`: acquire `_debounced_refresh.async_lock()` without reentering it and hold it from final authorization through the actual PUT, including the note GET; recheck after the note GET and select the current route immediately before the PUT. Verify the live entry mapping, coordinator identity and source; reject reload, source change, failed/ambiguous superseding refresh, missing/code-less target, or any failed guard. Do not convert action cancellation into a service success (FR-007–FR-008, FR-014–FR-015; US2-S4; SC-004–SC-005).
 
