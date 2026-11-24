@@ -1008,8 +1008,11 @@ what makes the differential test possible.
   and publishes nothing (FR-006).
 - **HTTP 400** — API unit: raises the typed error with its excerpt; coordinator
   and recovery tests: report safe endpoint/status/guidance without leaking
-  sentinel body contents, retain data, and never retry unfiltered or write
-  after a rejected refresh (FR-008, US4-3).
+  sentinel body contents into errors, logged tracebacks or diagnostics, retain
+  data, and never retry unfiltered or write after a rejected refresh. The
+  controlled rejection tests use at most one coordinator fetch attempt and
+  assert no guest, fallback or follow-up lookup after the failure; normal
+  pagination in successful refreshes remains permitted (FR-008, US4-3).
 - **Window** — unit with a frozen clock: out-of-window fixtures absent,
   a 200-day-old in-progress stay present (SC-004, SC-005).
 - **Trim** — unit with a frozen clock: padded boundary results dropped,

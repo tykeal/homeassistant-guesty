@@ -153,10 +153,13 @@ the endpoint, status and a truncated untrusted body excerpt. The excerpt
 must not reach service errors, logs or diagnostics. Coordinator failure
 reporting instead identifies the fixed search endpoint and HTTP 400 and
 advises checking search settings or contacting support, without inferring
-which filter failed. This applies whether the refresh was scheduled,
-directly triggered or joined by a recovery write. It is **never** reported
-as an empty result and **never** retried with filters removed; last-known-good
-data is retained and a joining recovery write is refused (FR-008).
+which filter failed. Construct that report from trusted fixed values, not
+`exc.message` or `str(exc)`, and do not chain the response-bearing exception
+into normally formatted or logged tracebacks or diagnostics. This applies
+whether the refresh was scheduled, directly triggered or joined by a
+recovery write. It is **never** reported as an empty result and **never**
+retried with filters removed; last-known-good data is retained and a joining
+recovery write is refused (FR-008).
 
 ## Deferred: listing-filter chunking (OQ-008 only)
 
