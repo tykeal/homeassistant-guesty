@@ -76,6 +76,43 @@ Phase-internal uncommitted red tests may remain red while safeguards are
 built, but every committed test must pass and the whole phase must be green
 at its checkpoint before the documentation and final validation gate.
 
+For each new or changed production unit, observe a meaningful failing
+behavioral test for that unit before changing it, then make that test green.
+Run unchanged preflight and retry protections as baseline-green controls.
+An unavailable interface, a skipped assertion, or a refusal caused only by
+disabled recovered dispatch is not a behavioral red. Record the selector,
+observation and time for each red and its subsequent green; never infer the
+order from a later run.
+
+Exercise the composed recovery authorization and one-shot dispatch at a
+real lower-level seam before public miss dispatch is enabled: complete a
+real coordinator refresh, then invoke the existing common
+`execute_reservation_write` with a real API client and an intercepted actual
+HTTP PUT. In the test, retain the refresh/entry/source witness and simulate
+its invalidation or a retryable write response. Observe whether the
+ordinary executor sends a PUT after invalidation or repeats a PUT. Record
+this as an **ordinary-path lower-level baseline**, not evidence that an
+existing recovered service dispatched or that ordinary cache-hit behavior
+is incorrect. A test of the desired recovery policy must actually fail on
+the observed ordinary path before it can serve as a red; a passing baseline
+is a control, not a red. Its assertion must reach the actual guard/route or
+HTTP behavior, not fail because a proposed interface is absent. Preserve
+the ordinary executor's existing cache-hit behavior; the recovery-specific
+executor or helper developed from these reds must actually be used by the
+public service. Independently test guard, live-entry and source witnesses,
+route selection, dispatch locking and one-shot behavior; do not use this
+seam to bypass their individual behavioral reds.
+
+Under constitution IX, full service-integration scenarios that require
+safe recovered dispatch may follow their independently red-tested
+prerequisites. They remain mandatory before the Phase 2 checkpoint; do not
+count disabled-service failures as their behavioral reds or passing tests.
+The T006/T007 and T011 scenarios at independently callable seams are unit
+prerequisites; their full-service counterparts may be deferred under the
+same rule. A deferred acceptance test may pass on its first execution, but
+its associated production units must each already have their own genuine
+preceding behavioral red.
+
 ### User Story 1 — Recover From a Missing Identity (Priority: P1)
 
 **Goal**: A valid, otherwise eligible reservation miss can use one accepted
@@ -186,8 +223,16 @@ transient write failures for recovered and cache-hit calls separately.
 - [ ] T012 Implement per-attempt joining and shared completion handling in `custom_components/guesty/coordinator.py` and `custom_components/guesty/actions.py`. Preserve the same-entry/source boundary and one-refresh limit while allowing an already-running, same-generation update to qualify when it completes after detection. Sharing refresh work must not share target authorization (FR-003–FR-004, FR-016; US3-S1; SC-003).
 - [ ] T013 [P] Add failing transport tests in `tests/api/test_actions.py` for recovered v3 and legacy note/status PUTs under retryable authentication, rate-limit, connection, and transient-server failures. Assert at most one actual PUT, the note prerequisite GET retains its existing retry policy, and ordinary calls retain their current retry behavior (FR-014; US3-S2; SC-006).
 - [ ] T014 [P] Add failing transport tests in `tests/api/test_custom_fields.py` for recovered v3 and legacy reservation custom-field PUTs under retryable failures. Assert one actual write only for recovery, while default/cache-hit custom-field requests retain existing retry behavior and listing writes remain outside recovery (FR-001, FR-014; US3-S2–S3; SC-006).
-- [ ] T015 Add failing integration tests in `tests/test_actions.py` and `tests/test_custom_field_service.py` proving recovery's one-shot mode reaches each of the three actual reservation writes through both v3 and legacy routes selected after the wait, with no retry against either route; prove cache-hit writes do not opt into one-shot mode and listing writes do not refresh (FR-001, FR-014; US2-S4, US3-S2–S3; SC-005–SC-006).
+- [ ] T015 Add integration tests in `tests/test_actions.py` and `tests/test_custom_field_service.py` proving recovery's one-shot mode reaches each of the three actual reservation writes through both v3 and legacy routes selected after the wait, with no retry against either route; prove cache-hit writes do not opt into one-shot mode and listing writes do not refresh (FR-001, FR-014; US2-S4, US3-S2–S3; SC-005–SC-006).
 - [ ] T016 Implement recovery-only single-attempt plumbing in `custom_components/guesty/actions.py`, `custom_components/guesty/api/actions.py`, `custom_components/guesty/api/custom_fields.py`, and `custom_components/guesty/__init__.py`. Apply the mode to the actual note/status/custom-field PUT for both v3 and legacy routes; keep note prerequisite reads and reservation refresh transport policy unchanged; leave cache-hit and listing retries unchanged (FR-001, FR-014; US3-S2–S3; SC-006).
+
+  T015's full service-to-HTTP cases may be exercised after safe public
+  recovery dispatch exists. Use actual mocked HTTP for all three services
+  on both routes, including retryable failures, and complete every T015
+  assertion before the phase checkpoint. A disabled-service failure is not
+  a T015 behavioral red. T016's individual transport and plumbing units
+  still require their own preceding behavioral reds, including the
+  lower-level executor seam above, before their production code changes.
 
 **Checkpoint**: Concurrent eligible calls share one qualifying refresh, every recovered action issues at most one actual write, and cache-hit retry behavior is unchanged.
 
@@ -226,14 +271,23 @@ performed or claimed; a blocked validation gate is not a completed checkpoint.
   recovered write. T008, T010, T012, and T016 must be implemented and
   behaviorally verified before T005 enables recovered dispatch; any earlier
   T005 scaffolding must not dispatch recovered writes, and T005 is not
-  complete until final enablement and verification. T003 and T004 precede
-  any relevant recovery code; T006 and T007 precede T008;
-  T009 precedes T010; T011 precedes T012; and T013–T015 precede T016.
+  complete until final enablement and verification. The T003 and T004
+  service success-path reds and specified preflight controls precede any
+  relevant recovery code. For T008, T010, T012, and T016, the
+  corresponding T006–T007, T009, T011, and T013–T014 scenarios must
+  provide meaningful behavioral reds for each changed production unit.
+  Record unchanged legacy one-shot behavior as a baseline-green control.
+  Independently tested API
+  single-attempt, before-send, lock, post-wait guard and privacy units may
+  be built before public recovery integration, after their specific reds.
+  Full T006/T007/T011 service scenarios and T015 service-to-HTTP scenarios
+  that require safe recovered dispatch may follow its enablement; they
+  cannot substitute for unit reds and must all pass at the phase checkpoint.
   Tests for dispatch and transport must reach their intended behavioral
-  assertions without requiring an unsafe recovered service to be enabled,
-  using independently exercised units or controlled test seams as needed.
+  assertions using independently exercised units or controlled real seams.
   Neither masked failures nor skipped tests count as passing verification.
-  Complete and validate all three stories together at the phase checkpoint.
+  Complete and validate all three stories together at the phase checkpoint,
+  retaining the CI and compatibility gates in T019.
 - **Documentation and final validation gate**: T017 and T018 may proceed in
   parallel after behavior is settled. T019 follows implementation, tests,
   and documentation.
@@ -276,12 +330,14 @@ the numbered acceptance scenarios in each story in `spec.md`.
 
 - **US1**: T003 (`tests/test_actions.py`) and T004
   (`tests/test_custom_field_service.py`) are separate service test suites;
-  both precede T005.
+  their success-path reds and preflight controls precede relevant T005 code.
 - **US2**: T006 (action/coordinator tests) and T007 (custom-field/privacy
-  tests) touch separate test modules and precede T008.
+  tests) touch separate test modules; their lower-level reds precede their
+  T008 units, while full-service scenarios may follow safe dispatch.
 - **US3**: T013 (`tests/api/test_actions.py`) and T014
   (`tests/api/test_custom_fields.py`) are separate transport suites; T015
-  covers service-to-transport propagation before T016.
+  covers full service-to-transport propagation after safe dispatch exists.
+  Its corresponding lower-level plumbing reds precede each T016 unit.
 - **Docs**: T017 and T018 modify separate documentation files.
 
 ### Implementation Strategy
