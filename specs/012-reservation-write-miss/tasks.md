@@ -39,8 +39,10 @@ that SHA, and checkpoint-specific local validation results. A skipped,
 cancelled, missing, pending or failed test is not a pass; document any
 intentionally inapplicable conditional job and why it was not applicable.
 A later green run on a different SHA does not establish an earlier gate.
+The setup and final gates retain the same checkpoint and evidence rules;
+relabeling them does not establish that their checks were completed.
 
-## Phase 1: Setup
+## Setup prerequisite gate
 
 **Purpose**: Use the existing Home Assistant integration, test suites, and
 locked dependencies. No project initialization or new dependency is needed.
@@ -48,7 +50,7 @@ locked dependencies. No project initialization or new dependency is needed.
 **Checkpoint**: Confirm the existing project and locked dependencies are
 available and all CI tests pass before beginning the coordinator lifecycle.
 
-## Phase 2: Foundational — Coordinator Refresh Attempt Lifecycle
+## Phase 1: Foundational — Coordinator Refresh Attempt Lifecycle
 
 **Purpose**: Establish a coordinator-owned, testable definition of a real
 refresh attempt before any service relies on a cache-miss recovery result.
@@ -58,7 +60,7 @@ refresh attempt before any service relies on a cache-miss recovery result.
 
 **Checkpoint**: Coordinator attempt tests pass against real HA refresh/debounce semantics; a completed attempt is distinguishable from a skipped or failed one.
 
-## Phase 3: Safe Recovery Across All Three User Stories
+## Phase 2: Safe Recovery Across All Three User Stories
 
 The three stories form one phase because a recovered write must not be
 enabled until post-wait authorization, dispatch locking and recovery-only
@@ -72,7 +74,7 @@ recovery behavior before implementing any relevant code; make them green
 after the safeguards are verified and recovered dispatch is enabled.
 Phase-internal uncommitted red tests may remain red while safeguards are
 built, but every committed test must pass and the whole phase must be green
-at its checkpoint before Phase 4.
+at its checkpoint before the documentation and final validation gate.
 
 ### User Story 1 — Recover From a Missing Identity (Priority: P1)
 
@@ -189,7 +191,7 @@ transient write failures for recovered and cache-hit calls separately.
 
 **Checkpoint**: Concurrent eligible calls share one qualifying refresh, every recovered action issues at most one actual write, and cache-hit retry behavior is unchanged.
 
-## Phase 4: Documentation and Cross-Cutting Validation
+## Documentation and final validation gate
 
 **Purpose**: Document the bounded user-visible behavior and validate the
 implementation without implying live Guesty verification.
@@ -198,7 +200,10 @@ implementation without implying live Guesty verification.
 - [ ] T018 [P] Update the reservation-write guidance in `README.md` to explain eligible cache-miss recovery, the unchanged fail-closed identity/provenance rules, and the absence of an eventual-indexing guarantee. Do not imply writes are retried or that listing writes refresh (FR-001–FR-016; US1-S1–S3, US2-S1–S5, US3-S1–S3; SC-001–SC-007).
 - [ ] T019 Run focused suites from `specs/012-reservation-write-miss/quickstart.md`, then `uv run pytest tests/ -x -q`, `uv run ruff check custom_components/ tests/ scripts/`, `uv run --group releasenotes mypy custom_components/ tests/ scripts/`, `uv run pre-commit run --all-files`, and `uv run --group releasenotes reno lint`. Run coordinator compatibility tests in the locked HA 2026.10.4 environment and an isolated compatible HA 2026.4.0 environment without changing `uv.lock`; record actual versions and results, or report a blocked gate if the latter cannot be constructed. Do not perform or claim live Guesty verification (FR-003–FR-006, FR-013–FR-016; SC-001–SC-007).
 
-  Reporting a blocked gate does not complete T019 or Phase 4. A failed
+  Run the supported options-replacement and A→B→A witness tests in both
+  environments and record the version and result of each run.
+
+  Reporting a blocked gate does not complete T019 or the final gate. A failed
   compatibility test or inability to construct the HA 2026.4.0 environment
   remains blocked pending resolution, not an automatic exception.
 
@@ -210,12 +215,12 @@ performed or claimed; a blocked validation gate is not a completed checkpoint.
 
 ### Phase Dependencies
 
-- **Setup (Phase 1)**: Uses the existing project; no setup changes are
+- **Setup prerequisite gate**: Uses the existing project; no setup changes are
   required.
-- **Foundational (Phase 2)**: T001's new lifecycle behavior tests must fail
+- **Foundational (Phase 1)**: T001's new lifecycle behavior tests must fail
   for the intended reason before T002; its existing HA behavior controls may
   pass on baseline. The coordinator attempt lifecycle blocks all write stories.
-- **Safe recovery (Phase 3)**: T003–T016 retain their listed scenarios.
+- **Safe recovery (Phase 2)**: T003–T016 retain their listed scenarios.
   Test each new or changed behavior before its code, and build the guard,
   dispatch-lock and single-attempt prerequisites before T005 enables any
   recovered write. T008, T010, T012, and T016 must be implemented and
@@ -229,13 +234,13 @@ performed or claimed; a blocked validation gate is not a completed checkpoint.
   using independently exercised units or controlled test seams as needed.
   Neither masked failures nor skipped tests count as passing verification.
   Complete and validate all three stories together at the phase checkpoint.
-- **Documentation and validation (Phase 4)**: T017 and T018 may proceed in
+- **Documentation and final validation gate**: T017 and T018 may proceed in
   parallel after behavior is settled. T019 follows implementation, tests,
   and documentation.
 
 ### User Story Dependencies
 
-- **US1 (P1)** depends on the coordinator lifecycle in Phase 2.
+- **US1 (P1)** depends on the coordinator lifecycle in Phase 1.
 - **US2 (P1)** tests the recovery flow and its safety prerequisites within
   the same phase, before recovered dispatch is enabled.
 - **US3 (P2)** tests shared refresh and one-shot transport in the same phase
