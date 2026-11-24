@@ -387,9 +387,16 @@ after 2027-03-01.
 `GuestyFilterRejectedError`, deriving from `GuestyResponseError` and
 carrying the endpoint, the HTTP status and a truncated response excerpt.
 
-Raised on HTTP 400 from the v3 search. The coordinator converts it to
-`UpdateFailed` with the detail intact, and never retries without filters
-(FR-008).
+Raised on HTTP 400 from the v3 search. The API-layer exception retains its
+truncated excerpt for typed client semantics, but it is untrusted and must
+not be forwarded to service errors, logs or diagnostics. For all coordinator
+refreshes, including scheduled, directly triggered and recovery-joined
+attempts, the coordinator converts it to `UpdateFailed` with only the fixed
+search endpoint, HTTP 400 and guidance to check search settings or contact
+support. Suppress exception chaining where it could expose the excerpt.
+This replaces the previous intact-detail coordinator requirement; it does not
+alter other error categories or cancellation. The refresh retains prior data
+and never retries without filters (FR-008).
 
 ## 8. Entity surface
 

@@ -61,6 +61,10 @@ baseline schema, and normal cache-hit behavior are unchanged.
   ambiguous, refuse instead of using earlier authorization. If a newer
   accepted refresh supersedes the qualifying result, recheck all guards
   and use the newer result's current provenance.
+- Any options-object replacement invalidates the recovered write, including
+  unrelated options and A→B→A changes; a token-only entry-data update does
+  not itself invalidate recovery. This is a conservative change witness,
+  not a new selected-listing write restriction.
 
 ## Post-refresh authorization and write
 
@@ -105,6 +109,12 @@ retry behavior. Actions without recovery preserve existing retry behavior.
 - Success is reported only when the actual write succeeds.
 - Refresh failure/staleness, target still absent/code-less, and identity or
   routing refusals are distinguishable actionable service errors.
+- A v3 search HTTP 400 reports the fixed `/reservations-v3/search` endpoint,
+  HTTP 400 and guidance to check search settings or contact support, without
+  exposing or classifying the body. This applies to ordinary refreshes and
+  refreshes already running when recovery joins; a rejected refresh cannot
+  authorize a write. Other safe actionable categories and cancellation retain
+  their existing handling.
 - Rejected writes and failed note reads are errors, never success; a failed
   prerequisite read sends no write.
 - Do not expose raw API response bodies, confirmation codes, PIN/custom-field

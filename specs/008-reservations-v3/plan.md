@@ -295,10 +295,13 @@ bridge project's confirmed-absence machinery is not needed here.
 
 HTTP 400 is treated as a hard failure (FR-008). A new
 `GuestyFilterRejectedError` carries the endpoint and a truncated response
-excerpt, and the coordinator surfaces it through `UpdateFailed` so the
-user sees *why*. The request is never retried with filters stripped: a
-silently unfiltered fetch is precisely the #204 failure mode this
-migration exists to end.
+excerpt at the API layer. The coordinator instead surfaces the fixed search
+endpoint, HTTP 400 and guidance to check search settings or contact support
+through `UpdateFailed`, without exposing the untrusted excerpt. This replaces
+the earlier intact-detail behavior for all coordinator refreshes, including
+scheduled, directly triggered and recovery-joined attempts. The request is
+never retried with filters stripped: a silently unfiltered fetch is precisely
+the #204 failure mode this migration exists to end.
 
 ### Client-side date trim (FR-002a)
 
@@ -1003,8 +1006,10 @@ what makes the differential test possible.
   (FR-003a).
 - **Page guard** — unit: each of the nine checks aborts, retains data
   and publishes nothing (FR-006).
-- **HTTP 400** — unit: raises with detail, with no unfiltered retry
-  (FR-008, US4-3).
+- **HTTP 400** — API unit: raises the typed error with its excerpt; coordinator
+  and recovery tests: report safe endpoint/status/guidance without leaking
+  sentinel body contents, retain data, and never retry unfiltered or write
+  after a rejected refresh (FR-008, US4-3).
 - **Window** — unit with a frozen clock: out-of-window fixtures absent,
   a 200-day-old in-progress stay present (SC-004, SC-005).
 - **Trim** — unit with a frozen clock: padded boundary results dropped,

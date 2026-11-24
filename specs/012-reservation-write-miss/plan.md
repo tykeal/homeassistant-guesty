@@ -245,6 +245,12 @@ next begins. Unit-level red–green testing remains mandatory within phases.
 - At each phase boundary, complete its checkpoint and confirm all CI tests
   pass before beginning the next phase, as required by the constitution.
   Resolve or report failed or blocked CI tests without advancing.
+  Record the exact phase-boundary commit SHA, CI run/check URLs and
+  conclusions for all applicable CI test jobs on that SHA, and the
+  checkpoint-specific local validation results. A skipped, cancelled,
+  missing, pending or failed test is not a pass; document any intentionally
+  inapplicable conditional job and why it was not applicable. A later
+  successful run on another SHA does not establish an earlier gate.
 - Run focused tests from the repository root as detailed in
   `quickstart.md`, then `uv run pytest tests/`.
 - Run `uv run ruff check custom_components/ tests/ scripts/`,

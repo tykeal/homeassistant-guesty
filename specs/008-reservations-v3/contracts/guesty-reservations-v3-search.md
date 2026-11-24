@@ -148,9 +148,15 @@ log (FR-024, `data-model.md` §1.4). Dropping it here would hide it
 from the diagnostics counters and would put a publication policy in
 a retrieval component.
 
-An HTTP 400 raises `GuestyFilterRejectedError`, naming the endpoint and
-a truncated body excerpt. It is **never** reported as an empty result
-and **never** retried with the filters removed (FR-008).
+An HTTP 400 raises `GuestyFilterRejectedError` at the API layer, carrying
+the endpoint, status and a truncated untrusted body excerpt. The excerpt
+must not reach service errors, logs or diagnostics. Coordinator failure
+reporting instead identifies the fixed search endpoint and HTTP 400 and
+advises checking search settings or contacting support, without inferring
+which filter failed. This applies whether the refresh was scheduled,
+directly triggered or joined by a recovery write. It is **never** reported
+as an empty result and **never** retried with filters removed; last-known-good
+data is retained and a joining recovery write is refused (FR-008).
 
 ## Deferred: listing-filter chunking (OQ-008 only)
 
