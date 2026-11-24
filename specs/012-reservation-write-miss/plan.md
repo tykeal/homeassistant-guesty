@@ -223,28 +223,40 @@ no new package, endpoint, configuration option, entity, or storage model.
 
 ### Implementation phase boundaries
 
-The implementation task phases are distinct from the research/design phases
-above:
+The implementation task phases are distinct from the research/design
+preparation above. Setup is a prerequisite gate, not a functional development
+phase: use the existing project and dependencies and pass its existing
+checkpoint before the coordinator lifecycle.
 
-1. **Setup**: Use the existing project and dependencies.
-2. **Coordinator lifecycle**: T001–T002 establish and verify real refresh
+1. **Coordinator lifecycle**: T001–T002 establish and verify real refresh
    attempt completion and failure semantics before service recovery.
-3. **Integrated safe recovery**: T003–T016 cover all three stories, including
+2. **Integrated safe recovery**: T003–T016 cover all three stories, including
    identity and routing safeguards, dispatch serialization, concurrent
    sharing, and single-attempt writes. Recovered dispatch is not enabled
    before its safeguards are ready; intermediate story milestones are not
    phase boundaries.
-4. **Documentation and final validation**: T017–T019 add operator guidance,
-   the fix note, and the complete validation and compatibility results.
+
+Documentation and final validation are a final gate, not a functional
+development phase. T017–T019 add operator guidance, the fix note, and the
+complete validation and compatibility results after safe recovery.
 
 Each phase ends at its task checkpoint with all CI tests passing before the
-next begins. Unit-level red–green testing remains mandatory within phases.
+next begins. The setup and final gates retain their existing checkpoints
+and evidence requirements; relabeling does not retroactively establish
+their completion or remove a required check. Unit-level red–green testing
+remains mandatory within phases.
 
 ### Validation plan (implementation stage)
 
 - At each phase boundary, complete its checkpoint and confirm all CI tests
   pass before beginning the next phase, as required by the constitution.
   Resolve or report failed or blocked CI tests without advancing.
+  Record the exact phase-boundary commit SHA, CI run/check URLs and
+  conclusions for all applicable CI test jobs on that SHA, and the
+  checkpoint-specific local validation results. A skipped, cancelled,
+  missing, pending or failed test is not a pass; document any intentionally
+  inapplicable conditional job and why it was not applicable. A later
+  successful run on another SHA does not establish an earlier gate.
 - Run focused tests from the repository root as detailed in
   `quickstart.md`, then `uv run pytest tests/`.
 - Run `uv run ruff check custom_components/ tests/ scripts/`,
@@ -252,9 +264,10 @@ next begins. Unit-level red–green testing remains mandatory within phases.
   and project pre-commit/REUSE checks.
 - Verify Home Assistant version behavior for 2026.4.0 and the lockfile's
   2026.10.4, particularly when updates fail, are cancelled, or are
-  concurrently waiting on the coordinator lock. Run the compatibility
-  tests once in the locked project environment and once in an isolated
-  compatible 2026.4.0 environment without changing the project's lockfile.
+  concurrently waiting on the coordinator lock. Include the supported
+  options-replacement and A→B→A witness tests in both versions. Run the
+  compatibility tests once in the locked project environment and once in an
+  isolated compatible 2026.4.0 environment without changing the lockfile.
   Record the actual installed HA version and results for each run. If a
   compatible test environment cannot be constructed, report the gate as
   blocked rather than claiming support based solely on source inspection.

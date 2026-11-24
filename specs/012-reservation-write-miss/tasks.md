@@ -33,9 +33,16 @@ its work and required verification are complete.
 **Phase gates**: At each phase boundary, complete the phase checkpoint and
 confirm that all CI tests pass before beginning the next phase. Report and
 resolve any failed or blocked CI test rather than advancing. This gate is
-in addition to the final validation in T019.
+in addition to the final validation in T019. Record the phase-boundary commit
+SHA, CI run/check URLs and conclusions for all applicable CI test jobs on
+that SHA, and checkpoint-specific local validation results. A skipped,
+cancelled, missing, pending or failed test is not a pass; document any
+intentionally inapplicable conditional job and why it was not applicable.
+A later green run on a different SHA does not establish an earlier gate.
+The setup and final gates retain the same checkpoint and evidence rules;
+relabeling them does not establish that their checks were completed.
 
-## Phase 1: Setup
+## Setup prerequisite gate
 
 **Purpose**: Use the existing Home Assistant integration, test suites, and
 locked dependencies. No project initialization or new dependency is needed.
@@ -43,7 +50,7 @@ locked dependencies. No project initialization or new dependency is needed.
 **Checkpoint**: Confirm the existing project and locked dependencies are
 available and all CI tests pass before beginning the coordinator lifecycle.
 
-## Phase 2: Foundational — Coordinator Refresh Attempt Lifecycle
+## Phase 1: Foundational — Coordinator Refresh Attempt Lifecycle
 
 **Purpose**: Establish a coordinator-owned, testable definition of a real
 refresh attempt before any service relies on a cache-miss recovery result.
@@ -53,7 +60,7 @@ refresh attempt before any service relies on a cache-miss recovery result.
 
 **Checkpoint**: Coordinator attempt tests pass against real HA refresh/debounce semantics; a completed attempt is distinguishable from a skipped or failed one.
 
-## Phase 3: Safe Recovery Across All Three User Stories
+## Phase 2: Safe Recovery Across All Three User Stories
 
 The three stories form one phase because a recovered write must not be
 enabled until post-wait authorization, dispatch locking and recovery-only
@@ -67,7 +74,7 @@ recovery behavior before implementing any relevant code; make them green
 after the safeguards are verified and recovered dispatch is enabled.
 Phase-internal uncommitted red tests may remain red while safeguards are
 built, but every committed test must pass and the whole phase must be green
-at its checkpoint before Phase 4.
+at its checkpoint before the documentation and final validation gate.
 
 ### User Story 1 — Recover From a Missing Identity (Priority: P1)
 
@@ -114,13 +121,47 @@ no write; allowed writes use the latest accepted route.
   T006 must test supported Home Assistant option updates A→B→A, including
   back-to-back updates before update listeners run, for the source, window,
   and selected-listing values. Assert that recovery refuses after any options
-  replacement or reload even if effective values match again; token-only
-  data updates must not themselves cause refusal. Include real HA semantics.
+  replacement, including an unrelated option, or reload even if effective
+  values match again; token-only data updates must not themselves cause
+  refusal. Include real HA semantics.
   Add cache-hit controls and recovery tests proving fetched current identity
   evidence is treated identically for selected and unselected listings and
   locally trimmed results; absence of publication is not a new refusal.
 
+  T007 must also exercise a v3 search HTTP 400 with a sentinel response body
+  for scheduled, directly triggered and already-running joined refreshes.
+  Inspect service and coordinator errors, logged tracebacks (including
+  DEBUG) and diagnostics for each case; assert no sentinel, guest data,
+  confirmation codes, PINs or credentials. Verify fixed endpoint, HTTP 400
+  and check-settings/contact-support guidance, retained last-known-good
+  state, no unfiltered retry and no recovery write. In each controlled HTTP
+  400 case, assert at most one coordinator fetch attempt and no guest,
+  fallback or follow-up lookup after the failure; successful refreshes may
+  still use normal API pagination. Preserve distinct safe local identity/
+  route errors, other actionable categories, authentication handling and
+  cancellation (feature 008 FR-008; FR-006 and FR-015).
+
+  The old body-in-error expectation in
+  `tests/test_coordinator.py::TestReservationsCoordinatorErrorResilience::test_filter_rejection_surfaces_detail`
+  is superseded, not a baseline-green unchanged-behavior control. Replace it
+  with a regression asserting the safe endpoint/status/guidance and sentinel
+  absence while retaining hard failure and no unfiltered retry. Observe the
+  new behavioral failure before implementing the changed reporting.
+
 - [ ] T008 [US2] Implement preflight and post-refresh authorization in `custom_components/guesty/actions.py` and `custom_components/guesty/__init__.py`. Re-evaluate the existing identity guard, persisted baseline and unstored state, continuity, ambiguity, current target/code evidence, and known route before recovery and again after it. Preserve `identity.py` baseline/comparison semantics; never create, promote, clear, or bypass a baseline. Keep failure categories actionable and sanitize recovery diagnostics rather than forwarding raw response details (FR-002, FR-006–FR-012, FR-015; US2-S1–S5).
+
+  Implement the revised feature 008 FR-008 in
+  `custom_components/guesty/coordinator.py`: replace raw-body HTTP 400
+  reporting for every coordinator refresh with context constructed from
+  trusted fixed endpoint/status/guidance, not `exc.message` or `str(exc)`.
+  Suppress the response-bearing exception chain in normally formatted or
+  logged tracebacks and diagnostics (`from None` or equivalent), and preserve
+  other categories and cancellation. Service reporting for a joined failure
+  must use the same safe endpoint/status/guidance; do not authorize a write.
+  Keep the API-layer endpoint, status and body-excerpt attribute contract
+  unchanged. String formatting is not a specified basis for coordinator
+  reporting; do not require changes to the library exception's current string
+  representation.
 - [ ] T009 [US2] Add failing tests in `tests/test_actions.py` and `tests/api/test_actions.py` that pause the note prerequisite read, then invalidate a guard before dispatch or attempt a concurrent coordinator refresh after route selection. Assert that refresh waits through the write, note read precedes write, failed read sends no write, action cancellation propagates, and routing/authorization is rechecked after every awaited read and refresh. Cover stale entry mappings, live-entry lookup, coordinator identity and source changes before dispatch (FR-007–FR-008, FR-014–FR-015; US2-S4; US3-S2; SC-004–SC-005).
 - [ ] T010 [US2] Implement final recovery-write authorization in `custom_components/guesty/actions.py` and `custom_components/guesty/api/actions.py`: acquire `_debounced_refresh.async_lock()` without reentering it and hold it from final authorization through the actual PUT, including the note GET; recheck after the note GET and select the current route immediately before the PUT. Verify the live entry mapping, coordinator identity and source; reject reload, source change, failed/ambiguous superseding refresh, missing/code-less target, or any failed guard. Do not convert action cancellation into a service success (FR-007–FR-008, FR-014–FR-015; US2-S4; SC-004–SC-005).
 
@@ -150,7 +191,7 @@ transient write failures for recovered and cache-hit calls separately.
 
 **Checkpoint**: Concurrent eligible calls share one qualifying refresh, every recovered action issues at most one actual write, and cache-hit retry behavior is unchanged.
 
-## Phase 4: Documentation and Cross-Cutting Validation
+## Documentation and final validation gate
 
 **Purpose**: Document the bounded user-visible behavior and validate the
 implementation without implying live Guesty verification.
@@ -159,7 +200,10 @@ implementation without implying live Guesty verification.
 - [ ] T018 [P] Update the reservation-write guidance in `README.md` to explain eligible cache-miss recovery, the unchanged fail-closed identity/provenance rules, and the absence of an eventual-indexing guarantee. Do not imply writes are retried or that listing writes refresh (FR-001–FR-016; US1-S1–S3, US2-S1–S5, US3-S1–S3; SC-001–SC-007).
 - [ ] T019 Run focused suites from `specs/012-reservation-write-miss/quickstart.md`, then `uv run pytest tests/ -x -q`, `uv run ruff check custom_components/ tests/ scripts/`, `uv run --group releasenotes mypy custom_components/ tests/ scripts/`, `uv run pre-commit run --all-files`, and `uv run --group releasenotes reno lint`. Run coordinator compatibility tests in the locked HA 2026.10.4 environment and an isolated compatible HA 2026.4.0 environment without changing `uv.lock`; record actual versions and results, or report a blocked gate if the latter cannot be constructed. Do not perform or claim live Guesty verification (FR-003–FR-006, FR-013–FR-016; SC-001–SC-007).
 
-  Reporting a blocked gate does not complete T019 or Phase 4. A failed
+  Run the supported options-replacement and A→B→A witness tests in both
+  environments and record the version and result of each run.
+
+  Reporting a blocked gate does not complete T019 or the final gate. A failed
   compatibility test or inability to construct the HA 2026.4.0 environment
   remains blocked pending resolution, not an automatic exception.
 
@@ -171,12 +215,12 @@ performed or claimed; a blocked validation gate is not a completed checkpoint.
 
 ### Phase Dependencies
 
-- **Setup (Phase 1)**: Uses the existing project; no setup changes are
+- **Setup prerequisite gate**: Uses the existing project; no setup changes are
   required.
-- **Foundational (Phase 2)**: T001's new lifecycle behavior tests must fail
+- **Foundational (Phase 1)**: T001's new lifecycle behavior tests must fail
   for the intended reason before T002; its existing HA behavior controls may
   pass on baseline. The coordinator attempt lifecycle blocks all write stories.
-- **Safe recovery (Phase 3)**: T003–T016 retain their listed scenarios.
+- **Safe recovery (Phase 2)**: T003–T016 retain their listed scenarios.
   Test each new or changed behavior before its code, and build the guard,
   dispatch-lock and single-attempt prerequisites before T005 enables any
   recovered write. T008, T010, T012, and T016 must be implemented and
@@ -190,13 +234,13 @@ performed or claimed; a blocked validation gate is not a completed checkpoint.
   using independently exercised units or controlled test seams as needed.
   Neither masked failures nor skipped tests count as passing verification.
   Complete and validate all three stories together at the phase checkpoint.
-- **Documentation and validation (Phase 4)**: T017 and T018 may proceed in
+- **Documentation and final validation gate**: T017 and T018 may proceed in
   parallel after behavior is settled. T019 follows implementation, tests,
   and documentation.
 
 ### User Story Dependencies
 
-- **US1 (P1)** depends on the coordinator lifecycle in Phase 2.
+- **US1 (P1)** depends on the coordinator lifecycle in Phase 1.
 - **US2 (P1)** tests the recovery flow and its safety prerequisites within
   the same phase, before recovered dispatch is enabled.
 - **US3 (P2)** tests shared refresh and one-shot transport in the same phase
