@@ -4,14 +4,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Collection, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryError
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
@@ -75,6 +78,10 @@ if TYPE_CHECKING:
     )
 
 _LOGGER = logging.getLogger(__name__)
+
+_WRITE_MISS_REFRESH: ContextVar[bool] = ContextVar(
+    "guesty_write_miss_refresh", default=False
+)
 
 # Statuses whose per-listing meaning depends on the stay segment.
 _TEMPORAL_STATUSES: frozenset[str] = frozenset({"confirmed", "checked_in"})
@@ -241,6 +248,19 @@ class ReservationsCoordinator(
         # download rather than discarded with the refresh.
         self.last_refresh_diagnostics: dict[str, Any] = {}
         self.bootstrap_pages: int = 0
+        self._write_miss_generation = 0
+        self._write_miss_attempt_generation = 0
+        self._write_miss_outcomes: deque[
+            tuple[
+                int,
+                int,
+                bool,
+                Mapping[str, Any],
+                tuple[Any, ...],
+                ConfigEntry,
+                GuestyApiClient,
+            ]
+        ] = deque(maxlen=256)
         interval_minutes = entry.options.get(
             CONF_RESERVATION_SCAN_INTERVAL,
             DEFAULT_RESERVATION_SCAN_INTERVAL,
@@ -253,7 +273,157 @@ class ReservationsCoordinator(
             update_interval=timedelta(minutes=interval_minutes),
         )
 
+    @property
+    def write_miss_generation(self) -> int:
+        """Return the number of completed coordinator refresh attempts."""
+        return self._write_miss_generation
+
+    @property
+    def write_miss_attempt_generation(self) -> int:
+        """Return the generation of the latest started coordinator attempt."""
+        return self._write_miss_attempt_generation
+
+    def _write_miss_settings(self) -> tuple[Any, ...]:
+        """Capture effective source and selection values without credentials."""
+        options = self.config_entry.options
+        selected = options.get(CONF_SELECTED_LISTINGS)
+        return (
+            resolve_reservations_api(
+                options.get(CONF_RESERVATIONS_API, DEFAULT_RESERVATIONS_API)
+            ),
+            options.get(CONF_PAST_DAYS, DEFAULT_PAST_DAYS),
+            options.get(CONF_FUTURE_DAYS, DEFAULT_FUTURE_DAYS),
+            None if selected is None else frozenset(selected),
+        )
+
+    async def _async_refresh(
+        self,
+        log_failures: bool = True,
+        raise_on_auth_failed: bool = False,
+        scheduled: bool = False,
+        raise_on_entry_error: bool = False,
+    ) -> None:
+        """Record completed refresh outcomes after Home Assistant processes them."""
+        if self._shutdown_requested or (scheduled and self.hass.is_stopping):
+            await super()._async_refresh(
+                log_failures=log_failures,
+                raise_on_auth_failed=raise_on_auth_failed,
+                scheduled=scheduled,
+                raise_on_entry_error=raise_on_entry_error,
+            )
+            return
+        entry = self.config_entry
+        client = self.api_client
+        options = entry.options
+        settings = self._write_miss_settings()
+        self._write_miss_attempt_generation += 1
+        attempt = self._write_miss_attempt_generation
+        success = False
+        try:
+            await super()._async_refresh(
+                log_failures=log_failures,
+                raise_on_auth_failed=raise_on_auth_failed,
+                scheduled=scheduled,
+                raise_on_entry_error=raise_on_entry_error,
+            )
+            success = (
+                self.last_update_success
+                and self.config_entry is entry
+                and self.api_client is client
+                and self.config_entry.options is options
+                and self._write_miss_settings() == settings
+            )
+        finally:
+            self._write_miss_generation += 1
+            self._write_miss_outcomes.append(
+                (
+                    self._write_miss_generation,
+                    attempt,
+                    success,
+                    options,
+                    settings,
+                    entry,
+                    client,
+                )
+            )
+
+    async def async_refresh_for_write_miss(self, generation: int) -> bool:
+        """Join or initiate one completed refresh after the captured generation."""
+        entry = self.config_entry
+        client = self.api_client
+        options = entry.options
+        settings = self._write_miss_settings()
+
+        async def refresh() -> bool:
+            """Share the coordinator lock and consume the first eligible outcome."""
+            async with self._debounced_refresh.async_lock():
+                if self._write_miss_outcomes:
+                    first = self._write_miss_outcomes[0][0]
+                    if generation < first - 1:
+                        return False
+                    for (
+                        completed,
+                        _attempt,
+                        success,
+                        refresh_options,
+                        refresh_settings,
+                        refresh_entry,
+                        refresh_client,
+                    ) in self._write_miss_outcomes:
+                        if completed > generation:
+                            return (
+                                success
+                                and self.last_update_success
+                                and refresh_options is options
+                                and refresh_settings == settings
+                                and refresh_entry is entry
+                                and refresh_client is client
+                                and self.config_entry is entry
+                                and self.api_client is client
+                                and self.config_entry.options is options
+                                and self._write_miss_settings() == settings
+                            )
+                if (
+                    self.config_entry is not entry
+                    or self.api_client is not client
+                    or self.config_entry.options is not options
+                    or self._write_miss_settings() != settings
+                ):
+                    return False
+                token = _WRITE_MISS_REFRESH.set(True)
+                try:
+                    await self._async_refresh(log_failures=False)
+                finally:
+                    _WRITE_MISS_REFRESH.reset(token)
+                return (
+                    self._write_miss_generation > generation
+                    and bool(self._write_miss_outcomes)
+                    and self._write_miss_outcomes[-1][2]
+                    and self.config_entry is entry
+                    and self.api_client is client
+                    and self.config_entry.options is options
+                    and self._write_miss_settings() == settings
+                )
+
+        task = self.hass.async_create_background_task(
+            refresh(), "guesty write-miss refresh", eager_start=True
+        )
+        return await asyncio.shield(task)
+
     async def _async_update_data(
+        self,
+    ) -> dict[str, list[GuestyReservation]]:
+        """Contain unexpected recovery errors without exposing exception contents."""
+        try:
+            return await self._async_fetch_reservations()
+        except ConfigEntryAuthFailed, ConfigEntryError, UpdateFailed:
+            raise
+        except Exception:
+            if _WRITE_MISS_REFRESH.get():
+                raise UpdateFailed("Reservation refresh failed") from None
+            raise
+
+    async def _async_fetch_reservations(
         self,
     ) -> dict[str, list[GuestyReservation]]:
         """Fetch reservations and publish them per tracked listing.
