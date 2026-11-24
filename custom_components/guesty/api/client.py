@@ -6,7 +6,10 @@ from __future__ import annotations
 
 import logging
 import random
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 
 import httpx
 
@@ -29,7 +32,14 @@ from custom_components.guesty.api.const import (
 from custom_components.guesty.api.exceptions import (
     GuestyAuthError,
     GuestyConnectionError,
+    GuestyPermissionError,
     GuestyRateLimitError,
+    GuestyRecoveryAuthError,
+    GuestyRecoveryConnectionError,
+    GuestyRecoveryPermissionError,
+    GuestyRecoveryPreSendConnectionError,
+    GuestyRecoveryTokenConnectionError,
+    GuestyRecoveryTokenError,
     GuestyResponseError,
 )
 from custom_components.guesty.api.guest_cache import (
@@ -54,6 +64,72 @@ from custom_components.guesty.api.reservations_v3 import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class _PrivateHttpScope:
+    """Track a privacy scope shared by copied asynchronous contexts."""
+
+    active: bool = True
+
+
+_PRIVATE_HTTP_LOGS: ContextVar[tuple[_PrivateHttpScope, ...]] = ContextVar(
+    "guesty_private_http_logs", default=()
+)
+
+
+def _recovery_transport_failure(
+    exc: httpx.TransportError,
+) -> GuestyRecoveryConnectionError:
+    """Classify safe connection setup failures separately from uncertain writes."""
+    if isinstance(
+        exc,
+        (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, httpx.ProxyError),
+    ):
+        return GuestyRecoveryPreSendConnectionError(
+            "The Guesty connection failed; the reservation write was not sent "
+            "and was not retried.",
+        )
+    return GuestyRecoveryConnectionError(
+        "The reservation write may have reached Guesty; it was "
+        "not retried. Check Guesty before retrying.",
+    )
+
+
+class _PrivateHttpLogFilter(logging.Filter):
+    """Keep HTTP transport details out of privacy-scoped logging."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Allow unrelated tasks' transport logs through unchanged."""
+        return not any(scope.active for scope in _PRIVATE_HTTP_LOGS.get())
+
+
+_PRIVATE_HTTP_LOG_FILTER = _PrivateHttpLogFilter()
+
+
+@contextmanager
+def private_http_logging(enabled: bool) -> Iterator[None]:
+    """Suppress sensitive HTTP library logs only in this asynchronous context."""
+    if not enabled:
+        yield
+        return
+    for name in (
+        "httpx",
+        "httpcore.connection",
+        "httpcore.http11",
+        "httpcore.http2",
+        "httpcore.proxy",
+        "httpcore.socks",
+    ):
+        logging.getLogger(name).addFilter(_PRIVATE_HTTP_LOG_FILTER)
+    scope = _PrivateHttpScope()
+    token = _PRIVATE_HTTP_LOGS.set((*_PRIVATE_HTTP_LOGS.get(), scope))
+    try:
+        yield
+    finally:
+        scope.active = False
+        _PRIVATE_HTTP_LOGS.reset(token)
+
 
 _RESERVATION_API_VALUES: frozenset[str] = frozenset(
     {RESERVATIONS_API_V3, RESERVATIONS_API_LEGACY},
@@ -435,6 +511,8 @@ class GuestyApiClient:
         params: dict[str, str | int] | None = None,
         json_data: dict[str, object] | list[object] | None = None,
         single_attempt: bool = False,
+        before_send: Callable[[], None] | None = None,
+        recovery_write: bool = False,
         _retried_auth: bool = False,
     ) -> httpx.Response:
         """Make an authenticated API request with retry logic.
@@ -457,6 +535,8 @@ class GuestyApiClient:
             json_data: Optional JSON body (dict or list).
             single_attempt: Issue the request exactly once, with no
                 transient, rate-limit or token retry.
+            before_send: Recheck authorization after token acquisition.
+            recovery_write: Apply recovery-only failure handling and no retries.
             _retried_auth: Internal flag to prevent infinite 401 retry.
 
         Returns:
@@ -472,23 +552,76 @@ class GuestyApiClient:
 
         url = f"{self._base_url}{path}"
         backoff = INITIAL_BACKOFF
+        single_attempt = single_attempt or recovery_write
         max_attempts = 0 if single_attempt else MAX_RETRIES
 
         for attempt in range(max_attempts + 1):
-            token = await self._token_manager.get_token()
+            try:
+                with private_http_logging(recovery_write):
+                    token = await self._token_manager.get_token()
+            except GuestyPermissionError:
+                if not recovery_write:
+                    raise
+                raise GuestyRecoveryPermissionError(
+                    "Insufficient permission to acquire a Guesty token; "
+                    "the write was not sent.",
+                    stage="token",
+                ) from None
+            except GuestyAuthError:
+                if not recovery_write:
+                    raise
+                raise GuestyRecoveryAuthError(
+                    "Guesty authentication failed; the write was not sent.",
+                    stage="token",
+                ) from None
+            except GuestyConnectionError:
+                if not recovery_write:
+                    raise
+                raise GuestyRecoveryTokenConnectionError(
+                    "Guesty token connection failed; the write was not sent.",
+                ) from None
+            except GuestyRateLimitError:
+                if not recovery_write:
+                    raise
+                raise GuestyRecoveryTokenError(rate_limited=True) from None
+            except httpx.TransportError:
+                if not recovery_write:
+                    raise
+                raise GuestyRecoveryTokenConnectionError(
+                    "Guesty token connection failed; the write was not sent.",
+                ) from None
+            except Exception:
+                if not recovery_write:
+                    raise
+                raise GuestyRecoveryTokenError() from None
+            if recovery_write and (
+                not token
+                or not token.isascii()
+                or token[-1] in " \t"
+                or any(ord(char) < 32 or ord(char) == 127 for char in token)
+            ):
+                raise GuestyRecoveryAuthError(
+                    "Guesty supplied an invalid token; the write was not sent.",
+                    stage="token",
+                ) from None
+            if before_send is not None:
+                before_send()
 
             try:
-                response = await self._http.request(
-                    method,
-                    url,
-                    params=params,
-                    json=json_data,
-                    headers={
-                        "Authorization": f"Bearer {token}",
-                        "Accept": "application/json",
-                    },
-                )
+                with private_http_logging(recovery_write):
+                    response = await self._http.request(
+                        method,
+                        url,
+                        params=params,
+                        json=json_data,
+                        headers={
+                            "Authorization": f"Bearer {token}",
+                            "Accept": "application/json",
+                        },
+                    )
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                if recovery_write:
+                    raise _recovery_transport_failure(exc) from None
                 if single_attempt:
                     raise GuestyConnectionError(
                         f"Failed to connect to Guesty API: {exc}",
@@ -513,8 +646,18 @@ class GuestyApiClient:
                     MAX_BACKOFF,
                 )
                 continue
+            except httpx.TransportError as exc:
+                if not recovery_write:
+                    raise
+                raise _recovery_transport_failure(exc) from None
 
             if response.status_code == 401:
+                if recovery_write:
+                    raise GuestyRecoveryAuthError(
+                        "Guesty authentication failed for the reservation write; "
+                        "the write was not retried.",
+                        stage="write",
+                    ) from None
                 if single_attempt:
                     return response
                 if _retried_auth:
@@ -558,7 +701,13 @@ class GuestyApiClient:
                 continue
 
             if response.status_code == 403:
-                raise GuestyAuthError(
+                if recovery_write:
+                    raise GuestyRecoveryPermissionError(
+                        "Insufficient permission for the reservation write; "
+                        "the write was not retried.",
+                        stage="write",
+                    ) from None
+                raise GuestyPermissionError(
                     "Insufficient permissions for this API endpoint",
                 )
 

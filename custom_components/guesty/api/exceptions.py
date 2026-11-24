@@ -6,7 +6,16 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from custom_components.guesty.api.const import MAX_ERROR_BODY_EXCERPT
+from custom_components.guesty.api.const import (
+    LEGACY_RESERVATIONS_RETIREMENT_DATE,
+    MAX_ERROR_BODY_EXCERPT,
+)
+
+_LEGACY_RECOVERY_GUIDANCE = (
+    " The legacy Guesty reservation resources retire on "
+    f"{LEGACY_RESERVATIONS_RETIREMENT_DATE}; set the reservations_api "
+    "option back to 'v3'."
+)
 
 
 class GuestyApiError(Exception):
@@ -28,6 +37,32 @@ class GuestyApiError(Exception):
 
 class GuestyAuthError(GuestyApiError):
     """Authentication error: invalid credentials, expired token, 401/403."""
+
+
+class GuestyPermissionError(GuestyAuthError):
+    """The authenticated client lacks permission for the operation."""
+
+
+class GuestyRecoveryAuthError(GuestyAuthError):
+    """Authentication failure in a recovered reservation write."""
+
+    category = "authentication"
+
+    def __init__(self, message: str, *, stage: str) -> None:
+        """Record whether authentication failed before or during the write."""
+        self.stage = stage
+        super().__init__(message)
+
+
+class GuestyRecoveryPermissionError(GuestyPermissionError):
+    """Permission failure in a recovered reservation write."""
+
+    category = "permission"
+
+    def __init__(self, message: str, *, stage: str) -> None:
+        """Record whether authorization failed before or during the write."""
+        self.stage = stage
+        super().__init__(message)
 
 
 class GuestyRateLimitError(GuestyApiError):
@@ -59,6 +94,52 @@ class GuestyRateLimitError(GuestyApiError):
 
 class GuestyConnectionError(GuestyApiError):
     """Network-level failure: DNS, TCP, TLS, or timeout."""
+
+
+class GuestyRecoveryTokenConnectionError(GuestyConnectionError):
+    """Token connection failed before a recovered write was sent."""
+
+    stage = "token"
+    category = "connection"
+
+
+class GuestyRecoveryTokenError(GuestyApiError):
+    """Token acquisition failed before a recovered write was sent."""
+
+    stage = "token"
+
+    def __init__(self, *, rate_limited: bool = False) -> None:
+        """Report a safe token failure without untrusted details."""
+        self.category = "rate_limit" if rate_limited else "response"
+        detail = "rate limit" if rate_limited else "acquisition"
+        super().__init__(f"Guesty token {detail} failed; the write was not sent.")
+
+
+class GuestyRecoveryConnectionError(GuestyConnectionError):
+    """Transport failure after a recovered write request was attempted."""
+
+    stage = "write"
+    category = "connection"
+
+
+class GuestyRecoveryPreSendConnectionError(GuestyRecoveryConnectionError):
+    """Connection setup failed before a recovered write could be sent."""
+
+
+class GuestyRecoveryWriteError(GuestyApiError):
+    """A recovered write was rejected without exposing the response body."""
+
+    stage = "write"
+    category = "response"
+
+    def __init__(self, status_code: int, *, legacy_retirement: bool = False) -> None:
+        """Report a safe status and that the write was not retried."""
+        self.status_code = status_code
+        super().__init__(
+            f"Guesty rejected the reservation write with HTTP {status_code}; "
+            "the write was not retried. Check Guesty before retrying."
+            + (_LEGACY_RECOVERY_GUIDANCE if legacy_retirement else "")
+        )
 
 
 class GuestyResponseError(GuestyApiError):
@@ -204,3 +285,25 @@ class GuestyActionError(GuestyApiError):
         super().__init__(message)
         self.target_id = target_id
         self.action_type = action_type
+
+
+class GuestyRoutingError(GuestyActionError):
+    """A trusted legacy routing refusal or retirement verdict."""
+
+
+class GuestyPrerequisiteReadError(GuestyActionError):
+    """A recovered note read failed before any write was sent."""
+
+    stage = "read"
+
+    def __init__(
+        self, category: str, *, target_id: str, legacy_retirement: bool = False
+    ) -> None:
+        """Report a safe prerequisite category without response contents."""
+        self.category = category
+        super().__init__(
+            f"Reservation note {category} failed; the write was not sent."
+            + (_LEGACY_RECOVERY_GUIDANCE if legacy_retirement else ""),
+            target_id=target_id,
+            action_type="add_reservation_note",
+        )

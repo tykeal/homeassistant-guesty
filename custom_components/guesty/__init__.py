@@ -46,6 +46,12 @@ from custom_components.guesty.api.exceptions import (
     GuestyApiError,
     GuestyCustomFieldError,
     GuestyMessageError,
+    GuestyRecoveryAuthError,
+    GuestyRecoveryConnectionError,
+    GuestyRecoveryPermissionError,
+    GuestyRecoveryTokenConnectionError,
+    GuestyRecoveryTokenError,
+    GuestyRecoveryWriteError,
 )
 from custom_components.guesty.api.messaging import GuestyMessagingClient
 from custom_components.guesty.api.models import CachedToken, TokenStorage
@@ -688,6 +694,17 @@ async def async_setup_entry(
                         value=value,
                         route=route,
                     ),
+                    recovery_write=lambda route, single, check: (
+                        local_cf_client.set_field(
+                            target_type=target_type,
+                            target_id=target_id,
+                            field_id=field_id,
+                            value=value,
+                            route=route,
+                            single_attempt=single,
+                            before_write=check,
+                        )
+                    ),
                 )
             else:
                 result = await local_cf_client.set_field(
@@ -698,6 +715,15 @@ async def async_setup_entry(
                 )
         except GuestyActionError as err:
             raise HomeAssistantError(str(err)) from err
+        except (
+            GuestyRecoveryAuthError,
+            GuestyRecoveryPermissionError,
+            GuestyRecoveryConnectionError,
+            GuestyRecoveryTokenConnectionError,
+            GuestyRecoveryTokenError,
+            GuestyRecoveryWriteError,
+        ) as err:
+            raise HomeAssistantError(str(err)) from None
         except GuestyCustomFieldError as err:
             _LOGGER.error(
                 "Custom field update failed for %s/%s: %s",

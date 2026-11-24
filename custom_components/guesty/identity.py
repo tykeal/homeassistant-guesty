@@ -120,6 +120,14 @@ REFUSAL_NO_CODE: Final[str] = (
 )
 
 
+@dataclass(frozen=True)
+class IdentityWriteRefusal:
+    """A write refusal and whether current identity evidence is missing."""
+
+    message: str
+    missing_current_code: bool = False
+
+
 def storage_key(entry_id: str) -> str:
     """Build the ``Store`` key for one config entry's baseline.
 
@@ -1036,17 +1044,27 @@ class ReservationIdentityGuard:
             An explanatory refusal, or None when the write may go
             ahead.
         """
+        refusal = self.classify_write_refusal(reservation_id)
+        return refusal.message if refusal is not None else None
+
+    def classify_write_refusal(
+        self, reservation_id: str
+    ) -> IdentityWriteRefusal | None:
+        """Return the existing write refusal with a typed missing-code marker."""
         baseline = self._baseline
         if baseline is None or not baseline.is_usable:
-            return REFUSAL_NO_BASELINE
+            return IdentityWriteRefusal(REFUSAL_NO_BASELINE)
         if self._unstored:
-            return REFUSAL_UNSTORED
+            return IdentityWriteRefusal(REFUSAL_UNSTORED)
         if baseline.continuity == CONTINUITY_UNCONFIRMED:
-            return REFUSAL_UNCONFIRMED
+            return IdentityWriteRefusal(REFUSAL_UNCONFIRMED)
         if self._ambiguous:
-            return REFUSAL_AMBIGUOUS
+            return IdentityWriteRefusal(REFUSAL_AMBIGUOUS)
         if reservation_id not in baseline.current_ids():
-            return REFUSAL_NO_CODE.format(reservation_id=reservation_id)
+            return IdentityWriteRefusal(
+                REFUSAL_NO_CODE.format(reservation_id=reservation_id),
+                missing_current_code=True,
+            )
         return None
 
 

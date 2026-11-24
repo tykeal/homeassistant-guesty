@@ -7,7 +7,10 @@ Also includes Phase 4 (T025) transient failure retry tests.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
+import traceback
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -20,6 +23,7 @@ from httpx import Response
 from custom_components.guesty.api.auth import GuestyTokenManager
 from custom_components.guesty.api.client import (
     GuestyApiClient,
+    private_http_logging,
     resolve_reservations_api,
 )
 from custom_components.guesty.api.const import (
@@ -29,8 +33,10 @@ from custom_components.guesty.api.const import (
     TOKEN_URL,
 )
 from custom_components.guesty.api.exceptions import (
+    GuestyApiError,
     GuestyAuthError,
     GuestyConnectionError,
+    GuestyPermissionError,
     GuestyResponseError,
 )
 from custom_components.guesty.api.models import (
@@ -82,6 +88,652 @@ def _make_client(
         **kwargs,
     )
     return client, token_manager, storage
+
+
+class TestRecoveredWriteTransport:
+    """Safety of a single attempted recovered write request."""
+
+    async def test_inherited_logging_scope_expires_with_parent(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A child task or callback must not inherit suppression permanently."""
+        logger = logging.getLogger("httpcore.http11")
+        release = asyncio.Event()
+        callback_done = asyncio.Event()
+
+        async def child() -> None:
+            """Log only after the parent has left its privacy scope."""
+            await release.wait()
+            logger.debug("child-after-scope")
+
+        def callback() -> None:
+            """A scheduled callback carries the same copied context."""
+            logger.debug("callback-after-scope")
+            callback_done.set()
+
+        with caplog.at_level(logging.DEBUG):
+            with private_http_logging(True):
+                logger.debug("private-in-scope")
+                task = asyncio.create_task(child())
+                asyncio.get_running_loop().call_soon(callback)
+            release.set()
+            await task
+            await asyncio.wait_for(callback_done.wait(), 2)
+        assert "private-in-scope" not in caplog.text
+        assert "child-after-scope" in caplog.text
+        assert "callback-after-scope" in caplog.text
+
+    async def test_child_privacy_scope_survives_parent_exit(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A child with its own active scope stays private after the parent exits."""
+        logger = logging.getLogger("httpcore.http11")
+        child_started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def child() -> None:
+            """Keep an independent nested privacy scope until released."""
+            with private_http_logging(True):
+                child_started.set()
+                await release.wait()
+                logger.debug("child-private")
+            logger.debug("child-unprotected")
+
+        with caplog.at_level(logging.DEBUG):
+            with private_http_logging(True):
+                task = asyncio.create_task(child())
+                await asyncio.wait_for(child_started.wait(), 2)
+            release.set()
+            await task
+        assert "child-private" not in caplog.text
+        assert "child-unprotected" in caplog.text
+
+    async def test_copied_inner_scope_respects_active_outer_scope(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A child stays private while the enclosing parent scope remains active."""
+        logger = logging.getLogger("httpcore.http11")
+        release = asyncio.Event()
+
+        async def child() -> None:
+            """Run after the nested scope ends but before the outer scope ends."""
+            await release.wait()
+            logger.debug("outer-private")
+
+        with caplog.at_level(logging.DEBUG):
+            with private_http_logging(True):
+                with private_http_logging(True):
+                    task = asyncio.create_task(child())
+                release.set()
+                await task
+            logger.debug("after-outer")
+        assert "outer-private" not in caplog.text
+        assert "after-outer" in caplog.text
+
+    async def test_invalid_bearer_header_is_redacted(
+        self, caplog: pytest.LogCaptureFixture, socket_enabled: None
+    ) -> None:
+        """Real h11 validation cannot reveal a malformed bearer credential."""
+        secret = "private-malformed-bearer-sentinel"
+        connected = asyncio.Event()
+        socket_data: list[bytes] = []
+
+        async def accept(
+            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ) -> None:
+            """Record bytes received by the local HTTP peer."""
+            connected.set()
+            try:
+                socket_data.append(await reader.read(4096))
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        server = await asyncio.start_server(accept, "127.0.0.1", 0)
+        assert server.sockets is not None
+        port = server.sockets[0].getsockname()[1]
+        client, manager, _ = _make_client()
+        client._base_url = f"http://127.0.0.1:{port}"
+        try:
+            with (
+                caplog.at_level(logging.DEBUG),
+                patch.object(manager, "get_token", return_value=f"{secret}\ninvalid"),
+                patch.object(
+                    client._http, "request", wraps=client._http.request
+                ) as put,
+                pytest.raises(Exception) as raised,
+            ):
+                await client._request("PUT", "/reservations/test", recovery_write=True)
+            assert secret not in caplog.text
+            assert isinstance(raised.value, GuestyAuthError)
+            assert getattr(raised.value, "stage", None) == "token"
+            assert "write was not sent" in str(raised.value).lower()
+            assert secret not in str(raised.value)
+            assert secret not in "".join(traceback.format_exception(raised.value))
+            assert secret not in caplog.text
+            put.assert_not_awaited()
+            assert not connected.is_set()
+            assert not socket_data
+        finally:
+            await client._http.aclose()
+            server.close()
+            await server.wait_closed()
+
+    async def test_real_proxy_error_is_redacted(
+        self, caplog: pytest.LogCaptureFixture, socket_enabled: None
+    ) -> None:
+        """Real proxy response data must not leak via HTTPcore debug logs."""
+        secret = "private-proxy-sentinel"
+        requests: list[bytes] = []
+        finished = asyncio.Event()
+
+        async def reject_proxy(
+            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ) -> None:
+            """Reject a real HTTPS CONNECT with an untrusted reason phrase."""
+            try:
+                requests.append(await reader.readuntil(b"\r\n\r\n"))
+                writer.write(
+                    f"HTTP/1.1 407 {secret}\r\nContent-Length: 0\r\n\r\n".encode()
+                )
+                await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+                finished.set()
+
+        server = await asyncio.start_server(reject_proxy, "127.0.0.1", 0)
+        assert server.sockets is not None
+        port = server.sockets[0].getsockname()[1]
+        client, manager, _ = _make_client()
+        await client._http.aclose()
+        client._http = httpx.AsyncClient(proxy=f"http://127.0.0.1:{port}")
+        try:
+            with (
+                caplog.at_level(logging.DEBUG),
+                patch.object(manager, "get_token", return_value="token"),
+                patch.object(
+                    client._http, "request", wraps=client._http.request
+                ) as put,
+                pytest.raises(Exception) as raised,
+            ):
+                await client._request("PUT", "/reservations/test", recovery_write=True)
+            assert secret not in caplog.text
+            assert isinstance(raised.value, GuestyConnectionError)
+            assert getattr(raised.value, "stage", None) == "write"
+            assert "write was not sent" in str(raised.value).lower()
+            assert "not retried" in str(raised.value).lower()
+            assert secret not in str(raised.value)
+            assert secret not in "".join(traceback.format_exception(raised.value))
+            assert secret not in caplog.text
+            put.assert_awaited_once()
+            await asyncio.wait_for(finished.wait(), 2)
+            assert len(requests) == 1
+        finally:
+            await client._http.aclose()
+            server.close()
+            await server.wait_closed()
+
+    async def test_real_token_proxy_error_is_redacted(
+        self, caplog: pytest.LogCaptureFixture, socket_enabled: None
+    ) -> None:
+        """A proxy rejection while acquiring the token is safe at DEBUG."""
+        secret = "private-token-proxy-sentinel"
+        requests: list[bytes] = []
+        finished = asyncio.Event()
+
+        async def reject_proxy(
+            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ) -> None:
+            """Reject the local HTTPS CONNECT using an untrusted reason."""
+            try:
+                requests.append(await reader.readuntil(b"\r\n\r\n"))
+                writer.write(
+                    f"HTTP/1.1 407 {secret}\r\nContent-Length: 0\r\n\r\n".encode()
+                )
+                await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+                finished.set()
+
+        server = await asyncio.start_server(reject_proxy, "127.0.0.1", 0)
+        assert server.sockets is not None
+        port = server.sockets[0].getsockname()[1]
+        client, manager, _ = _make_client()
+        await client._http.aclose()
+        client._http = httpx.AsyncClient(proxy=f"http://127.0.0.1:{port}")
+        manager._http = client._http
+        try:
+            with (
+                caplog.at_level(logging.DEBUG),
+                pytest.raises(GuestyApiError) as raised,
+            ):
+                await client._request("PUT", "/reservations/test", recovery_write=True)
+            assert secret not in caplog.text
+            assert secret not in "".join(traceback.format_exception(raised.value))
+            assert getattr(raised.value, "stage", None) == "token"
+            assert "write was not sent" in str(raised.value).lower()
+            await asyncio.wait_for(finished.wait(), 2)
+            assert len(requests) == 1
+            assert requests[0].startswith(b"CONNECT ")
+        finally:
+            await client._http.aclose()
+            server.close()
+            await server.wait_closed()
+
+    async def test_unrelated_http_debug_logs_survive_concurrent_recovery(
+        self, caplog: pytest.LogCaptureFixture, socket_enabled: None
+    ) -> None:
+        """Transport filtering is scoped to the recovery task, not global."""
+        secret = "private-recovery-proxy-sentinel"
+        ordinary = "ordinary-proxy-log-control"
+        both_started = asyncio.Event()
+        release = asyncio.Event()
+        requests: list[bytes] = []
+
+        async def reject_proxy(
+            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ) -> None:
+            """Keep both proxy connections in flight at the same time."""
+            try:
+                request = await reader.readuntil(b"\r\n\r\n")
+                requests.append(request)
+                if len(requests) == 2:
+                    both_started.set()
+                await release.wait()
+                reason = secret if b"recovered.invalid" in request else ordinary
+                writer.write(
+                    f"HTTP/1.1 407 {reason}\r\nContent-Length: 0\r\n\r\n".encode()
+                )
+                await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        server = await asyncio.start_server(reject_proxy, "127.0.0.1", 0)
+        assert server.sockets is not None
+        port = server.sockets[0].getsockname()[1]
+        recovered, recovered_manager, _ = _make_client()
+        normal, normal_manager, _ = _make_client()
+        await recovered._http.aclose()
+        await normal._http.aclose()
+        recovered._http = httpx.AsyncClient(proxy=f"http://127.0.0.1:{port}")
+        normal._http = httpx.AsyncClient(proxy=f"http://127.0.0.1:{port}")
+        recovered._base_url = "https://recovered.invalid"
+        normal._base_url = "https://ordinary.invalid"
+        tasks: list[asyncio.Task[httpx.Response]] = []
+        try:
+            with (
+                caplog.at_level(logging.DEBUG),
+                patch.object(recovered_manager, "get_token", return_value="token"),
+                patch.object(normal_manager, "get_token", return_value="token"),
+            ):
+                tasks = [
+                    asyncio.create_task(
+                        recovered._request("PUT", "/test", recovery_write=True)
+                    ),
+                    asyncio.create_task(normal._request("PUT", "/test")),
+                ]
+                await asyncio.wait_for(both_started.wait(), 2)
+                release.set()
+                results = await asyncio.wait_for(
+                    asyncio.gather(*tasks, return_exceptions=True), 2
+                )
+            assert isinstance(results[0], GuestyConnectionError)
+            assert isinstance(results[1], httpx.ProxyError)
+            assert secret not in caplog.text
+            assert ordinary in caplog.text
+            assert len(requests) == 2
+        finally:
+            release.set()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            await recovered._http.aclose()
+            await normal._http.aclose()
+            server.close()
+            await server.wait_closed()
+
+    @respx.mock
+    @pytest.mark.parametrize("failure", ["403", "429", "500", "exhausted", "transport"])
+    async def test_real_token_failure_is_safe_and_unsent(
+        self, failure: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Token failures cannot be mistaken for an attempted reservation PUT."""
+        secret = "private-token-response-sentinel"
+        client, manager, _ = _make_client()
+        token = respx.post(TOKEN_URL)
+        if failure == "transport":
+            token.mock(side_effect=httpx.ReadError(secret))
+        else:
+            token.mock(
+                return_value=Response(
+                    429 if failure == "exhausted" else int(failure), text=secret
+                )
+            )
+        if failure == "exhausted":
+            manager._request_count = 5
+            manager._window_start = datetime.now(UTC)
+        put = respx.put(f"{BASE_URL}/reservations/test").mock(
+            return_value=Response(200)
+        )
+        try:
+            with caplog.at_level(logging.DEBUG), pytest.raises(Exception) as raised:
+                await client._request("PUT", "/reservations/test", recovery_write=True)
+            assert isinstance(raised.value, GuestyApiError)
+            assert getattr(raised.value, "stage", None) == "token"
+            assert "write was not sent" in str(raised.value).lower()
+            assert "may have reached" not in str(raised.value).lower()
+            assert not put.called
+            assert len(token.calls) == (0 if failure == "exhausted" else 1)
+            assert secret not in str(raised.value)
+            assert secret not in "".join(traceback.format_exception(raised.value))
+            assert secret not in caplog.text
+        finally:
+            await client._http.aclose()
+
+    async def test_token_storage_failure_is_safe_and_unsent(self) -> None:
+        """A storage failure during token acquisition never reaches the PUT."""
+        secret = "private-token-storage-sentinel"
+        client, _, storage = _make_client()
+        try:
+            with (
+                patch.object(
+                    storage, "load_request_count", side_effect=OSError(secret)
+                ),
+                patch.object(client._http, "request", new_callable=AsyncMock) as put,
+                pytest.raises(Exception) as raised,
+            ):
+                await client._request("PUT", "/reservations/test", recovery_write=True)
+            assert isinstance(raised.value, GuestyApiError)
+            assert getattr(raised.value, "stage", None) == "token"
+            assert "write was not sent" in str(raised.value).lower()
+            assert secret not in "".join(traceback.format_exception(raised.value))
+            put.assert_not_awaited()
+        finally:
+            await client._http.aclose()
+
+    @staticmethod
+    def _recovery_options(client: GuestyApiClient) -> dict[str, Any]:
+        """Use the pre-send hook when available, without requiring its existence."""
+        options: dict[str, Any] = {"single_attempt": True}
+        if "before_send" in inspect.signature(client._request).parameters:
+            options["before_send"] = lambda: None
+        if "recovery_write" in inspect.signature(client._request).parameters:
+            options["recovery_write"] = True
+        return options
+
+    async def test_permission_rejection_is_distinct_from_authentication(self) -> None:
+        """A 403 is an actionable permission failure, distinct from a 401."""
+        client, manager, _ = _make_client()
+        request = AsyncMock(
+            side_effect=[
+                Response(403, text="private-response-sentinel"),
+                Response(401, text="private-response-sentinel"),
+            ]
+        )
+        try:
+            with (
+                patch.object(manager, "get_token", return_value="token"),
+                patch.object(client._http, "request", request),
+            ):
+                with pytest.raises(GuestyAuthError) as permission:
+                    await client._request(
+                        "PUT", "/reservations/test", single_attempt=True
+                    )
+                with pytest.raises(GuestyAuthError) as authentication:
+                    await client._request(
+                        "PUT", "/reservations/test", _retried_auth=True
+                    )
+            assert request.await_count == 2
+            assert "private-response-sentinel" not in str(permission.value)
+            assert "private-response-sentinel" not in str(authentication.value)
+            assert (
+                type(permission.value) is not type(authentication.value)
+                or getattr(permission.value, "status_code", None) == 403
+                or getattr(permission.value, "category", None) == "permission"
+            )
+        finally:
+            await client._http.aclose()
+
+    @pytest.mark.parametrize(
+        "error_type",
+        [
+            httpx.ReadError,
+            httpx.WriteError,
+            httpx.RemoteProtocolError,
+            httpx.ReadTimeout,
+            httpx.WriteTimeout,
+            httpx.LocalProtocolError,
+        ],
+    )
+    async def test_post_send_transport_failure_is_typed_and_safe(
+        self, error_type: type[httpx.TransportError]
+    ) -> None:
+        """A transport failure after entering the request is not retried or leaked."""
+        client, manager, _ = _make_client()
+        request = AsyncMock(side_effect=error_type("private-response-sentinel"))
+        with (
+            patch.object(manager, "get_token", return_value="token"),
+            patch.object(client._http, "request", request),
+            pytest.raises(GuestyConnectionError) as excinfo,
+        ):
+            await client._request(
+                "PUT", "/reservations/test", **self._recovery_options(client)
+            )
+        request.assert_awaited_once()
+        assert "private-response-sentinel" not in str(excinfo.value)
+        assert getattr(excinfo.value, "stage", None) == "write"
+        assert getattr(excinfo.value, "category", None) == "connection"
+        assert "may have reached guesty" in str(excinfo.value).lower()
+        assert "not retried" in str(excinfo.value).lower()
+        await client._http.aclose()
+
+    @pytest.mark.parametrize(
+        "error_type",
+        [httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, httpx.ProxyError],
+    )
+    async def test_presend_transport_failure_is_typed_and_safe(
+        self, error_type: type[httpx.TransportError], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Connection setup failures state that no recovered write was sent."""
+        client, manager, _ = _make_client()
+        secret = "private-transport-sentinel"
+        request = AsyncMock(side_effect=error_type(secret))
+        try:
+            with (
+                caplog.at_level(logging.DEBUG),
+                patch.object(manager, "get_token", return_value="token"),
+                patch.object(client._http, "request", request),
+                pytest.raises(GuestyConnectionError) as raised,
+            ):
+                await client._request("PUT", "/reservations/test", recovery_write=True)
+            request.assert_awaited_once()
+            assert getattr(raised.value, "stage", None) == "write"
+            assert getattr(raised.value, "category", None) == "connection"
+            assert "write was not sent" in str(raised.value).lower()
+            assert "not retried" in str(raised.value).lower()
+            assert secret not in str(raised.value)
+            assert secret not in "".join(traceback.format_exception(raised.value))
+            assert secret not in caplog.text
+        finally:
+            await client._http.aclose()
+
+    async def test_token_failure_is_safely_identified_as_pre_send(self) -> None:
+        """A failed token lookup reports that no write was sent."""
+        client, manager, _ = _make_client()
+        request = AsyncMock()
+        with (
+            patch.object(
+                manager,
+                "get_token",
+                side_effect=GuestyAuthError("private-response-sentinel"),
+            ),
+            patch.object(client._http, "request", request),
+            pytest.raises(GuestyApiError) as excinfo,
+        ):
+            await client._request(
+                "PUT", "/reservations/test", **self._recovery_options(client)
+            )
+        request.assert_not_awaited()
+        assert "private-response-sentinel" not in str(excinfo.value)
+        assert getattr(excinfo.value, "stage", None) == "token"
+        assert getattr(excinfo.value, "category", None) == "authentication"
+        assert "write was not sent" in str(excinfo.value).lower()
+        await client._http.aclose()
+
+    async def test_token_permission_failure_is_pre_send(self) -> None:
+        """Token permission failure remains distinct and sends no write."""
+        client, manager, _ = _make_client()
+        request = AsyncMock()
+        with (
+            patch.object(
+                manager,
+                "get_token",
+                side_effect=GuestyPermissionError("private-response-sentinel"),
+            ),
+            patch.object(client._http, "request", request),
+            pytest.raises(GuestyPermissionError) as excinfo,
+        ):
+            await client._request(
+                "PUT", "/reservations/test", **self._recovery_options(client)
+            )
+        request.assert_not_awaited()
+        assert "private-response-sentinel" not in str(excinfo.value)
+        assert getattr(excinfo.value, "stage", None) == "token"
+        assert getattr(excinfo.value, "category", None) == "permission"
+        assert "write was not sent" in str(excinfo.value).lower()
+        await client._http.aclose()
+
+    async def test_token_connection_failure_is_pre_send(self) -> None:
+        """A failed token connection reports that the write was not sent."""
+        client, manager, _ = _make_client()
+        request = AsyncMock()
+        with (
+            patch.object(
+                manager,
+                "get_token",
+                side_effect=GuestyConnectionError("private-response-sentinel"),
+            ),
+            patch.object(client._http, "request", request),
+            pytest.raises(GuestyConnectionError) as excinfo,
+        ):
+            await client._request(
+                "PUT", "/reservations/test", **self._recovery_options(client)
+            )
+        request.assert_not_awaited()
+        assert "private-response-sentinel" not in str(excinfo.value)
+        assert getattr(excinfo.value, "stage", None) == "token"
+        assert getattr(excinfo.value, "category", None) == "connection"
+        assert "write was not sent" in str(excinfo.value).lower()
+        await client._http.aclose()
+
+    async def test_single_attempt_401_reports_safe_authentication(self) -> None:
+        """A recovered PUT 401 preserves authentication as an actionable category."""
+        client, manager, _ = _make_client()
+        request = AsyncMock(
+            return_value=Response(401, text="private-response-sentinel")
+        )
+        with (
+            patch.object(manager, "get_token", return_value="token"),
+            patch.object(client._http, "request", request),
+            pytest.raises(GuestyAuthError) as excinfo,
+        ):
+            await client._request(
+                "PUT", "/reservations/test", **self._recovery_options(client)
+            )
+        request.assert_awaited_once()
+        assert "private-response-sentinel" not in str(excinfo.value)
+        await client._http.aclose()
+
+    async def test_recovered_403_is_a_safe_write_permission_error(self) -> None:
+        """A rejected recovered PUT reports permission and its write stage."""
+        client, manager, _ = _make_client()
+        request = AsyncMock(
+            return_value=Response(403, text="private-response-sentinel")
+        )
+        with (
+            patch.object(manager, "get_token", return_value="token"),
+            patch.object(client._http, "request", request),
+            pytest.raises(GuestyPermissionError) as excinfo,
+        ):
+            await client._request(
+                "PUT", "/reservations/test", **self._recovery_options(client)
+            )
+        request.assert_awaited_once()
+        assert "private-response-sentinel" not in str(excinfo.value)
+        assert getattr(excinfo.value, "stage", None) == "write"
+        assert getattr(excinfo.value, "category", None) == "permission"
+        await client._http.aclose()
+
+    @pytest.mark.parametrize("status", [401, 403])
+    async def test_recovered_auth_rejection_reports_no_retry(self, status: int) -> None:
+        """A returned authentication rejection is distinguished from a retry."""
+        client, manager, _ = _make_client()
+        request = AsyncMock(return_value=Response(status, text="private-sentinel"))
+        with (
+            patch.object(manager, "get_token", return_value="token"),
+            patch.object(client._http, "request", request),
+            pytest.raises(GuestyAuthError) as raised,
+        ):
+            await client._request(
+                "PUT", "/reservations/test", **self._recovery_options(client)
+            )
+        request.assert_awaited_once()
+        assert "not retried" in str(raised.value).lower()
+        assert "private-sentinel" not in str(raised.value)
+        await client._http.aclose()
+
+    async def test_normal_transport_error_policy_is_unchanged(self) -> None:
+        """A non-recovery ReadError propagates with its previous retry behavior."""
+        client, manager, _ = _make_client()
+        request = AsyncMock(side_effect=httpx.ReadError("connection"))
+        with (
+            patch.object(manager, "get_token", return_value="token"),
+            patch.object(client._http, "request", request),
+            pytest.raises(httpx.ReadError),
+        ):
+            await client._request("PUT", "/reservations/test")
+        request.assert_awaited_once()
+        await client._http.aclose()
+
+    async def test_cancelled_token_lookup_is_not_wrapped(self) -> None:
+        """Cancellation remains cancellation and does not send the write."""
+        client, manager, _ = _make_client()
+        request = AsyncMock()
+        with (
+            patch.object(manager, "get_token", side_effect=asyncio.CancelledError),
+            patch.object(client._http, "request", request),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await client._request(
+                "PUT", "/reservations/test", **self._recovery_options(client)
+            )
+        request.assert_not_awaited()
+        await client._http.aclose()
+
+    async def test_guard_after_token_can_prevent_dispatch(self) -> None:
+        """A recheck after token acquisition can stop the PUT before dispatch."""
+        client, manager, _ = _make_client()
+        token = AsyncMock(return_value="token")
+        request = AsyncMock(return_value=Response(200))
+
+        def recheck() -> None:
+            """Model an identity guard which changed while token was awaited."""
+            raise GuestyResponseError("guard changed")
+
+        options = self._recovery_options(client)
+        if "before_send" in options:
+            options["before_send"] = recheck
+        with (
+            patch.object(manager, "get_token", token),
+            patch.object(client._http, "request", request),
+            pytest.raises(GuestyResponseError, match="guard changed"),
+        ):
+            await client._request("PUT", "/reservations/test", **options)
+        token.assert_awaited_once()
+        request.assert_not_awaited()
+        await client._http.aclose()
 
 
 class TestTestConnection:
