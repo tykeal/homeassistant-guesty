@@ -2636,11 +2636,16 @@ class TestSetCustomFieldIdentityGuard:
     async def test_no_baseline_refuses(self, hass: HomeAssistant) -> None:
         """Without a baseline there is nothing to verify against."""
         await self._setup(hass, [])
-        await self._expect_refusal(
-            hass,
-            "res-456",
-            "has not established a reservation identity baseline",
-        )
+        with patch(
+            "custom_components.guesty.GuestyApiClient.get_reservations",
+            new_callable=AsyncMock,
+        ) as fetch:
+            await self._expect_refusal(
+                hass,
+                "res-456",
+                "has not established a reservation identity baseline",
+            )
+        fetch.assert_not_awaited()
 
     async def test_retired_retained_miss_explains_retirement(
         self, hass: HomeAssistant

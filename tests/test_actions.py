@@ -1975,8 +1975,20 @@ class TestIdentityWritePredicate:
             ("unroutable", "no write is sent"),
         ],
     )
+    @pytest.mark.parametrize(
+        ("service", "payload"),
+        [
+            ("add_reservation_note", {"note_text": "hello"}),
+            ("set_reservation_status", {"status": "checked_in"}),
+        ],
+    )
     async def test_independent_refusal_does_not_refresh(
-        self, hass: HomeAssistant, guard: str, message: str
+        self,
+        hass: HomeAssistant,
+        guard: str,
+        message: str,
+        service: str,
+        payload: dict[str, str],
     ) -> None:
         """A non-miss safety refusal cannot trigger an extra fetch."""
         entry = await _setup_entry(hass)
@@ -1997,8 +2009,8 @@ class TestIdentityWritePredicate:
         with patch(_PATCH_RESERVATIONS, new_callable=AsyncMock) as fetch:
             await self._expect_refusal(
                 hass,
-                "set_reservation_status",
-                {"reservation_id": "res-new", "status": "checked_in"},
+                service,
+                {"reservation_id": "res-new", **payload},
                 message,
             )
         fetch.assert_not_awaited()
@@ -2516,8 +2528,15 @@ class TestIdentityWritePredicate:
                 "single_attempt" not in client.set_reservation_status.await_args.kwargs
             )
 
+    @pytest.mark.parametrize(
+        ("service", "payload"),
+        [
+            ("add_reservation_note", {"note_text": "hello"}),
+            ("set_reservation_status", {"status": "checked_in"}),
+        ],
+    )
     async def test_failed_miss_refresh_never_uses_retained_data(
-        self, hass: HomeAssistant
+        self, hass: HomeAssistant, service: str, payload: dict[str, str]
     ) -> None:
         """A failed refresh is a service failure and never sends a write."""
         entry = await _setup_entry(hass)
@@ -2529,8 +2548,8 @@ class TestIdentityWritePredicate:
         ) as fetch:
             await self._expect_refusal(
                 hass,
-                "set_reservation_status",
-                {"reservation_id": "res-new", "status": "checked_in"},
+                service,
+                {"reservation_id": "res-new", **payload},
                 "refresh",
             )
         fetch.assert_awaited_once()
@@ -2556,8 +2575,15 @@ class TestIdentityWritePredicate:
         assert "SECRET-PIN" not in caplog.text
         assert client.mock_calls == []
 
+    @pytest.mark.parametrize(
+        ("service", "payload"),
+        [
+            ("add_reservation_note", {"note_text": "hello"}),
+            ("set_reservation_status", {"status": "checked_in"}),
+        ],
+    )
     async def test_target_still_missing_after_one_refresh(
-        self, hass: HomeAssistant
+        self, hass: HomeAssistant, service: str, payload: dict[str, str]
     ) -> None:
         """A successful refresh without the target refuses without a write."""
         entry = await _setup_entry(hass)
@@ -2569,8 +2595,8 @@ class TestIdentityWritePredicate:
         ) as fetch:
             await self._expect_refusal(
                 hass,
-                "set_reservation_status",
-                {"reservation_id": "res-new", "status": "checked_in"},
+                service,
+                {"reservation_id": "res-new", **payload},
                 "has no known confirmation code",
             )
         fetch.assert_awaited_once()
