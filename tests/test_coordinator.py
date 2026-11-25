@@ -567,6 +567,172 @@ class TestWriteMissAttemptLifecycle:
             finally:
                 await coordinator.async_shutdown()
 
+    @pytest.mark.parametrize("stopping", ["none", "coordinator", "home-assistant"])
+    async def test_shutdown_after_shared_task_finishes_before_waiter_resumes(
+        self, hass: HomeAssistant, stopping: str
+    ) -> None:
+        """A waiter rechecks shutdown after consuming a completed shared task."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        coordinator = ReservationsCoordinator(hass, entry, AsyncMock(), AsyncMock())
+        original_state = hass.state
+        started = asyncio.Event()
+        release = asyncio.Event()
+        observations: list[tuple[bool, bool, bool]] = []
+        stopping_observed: list[bool] = []
+        shutdown_task: asyncio.Task[None] | None = None
+
+        async def fetch() -> dict[str, list[GuestyReservation]]:
+            """Pause the shared refresh until its completion callback is installed."""
+            started.set()
+            await release.wait()
+            return {}
+
+        with patch.object(
+            coordinator, "_async_update_data", side_effect=fetch
+        ) as update:
+            waiter = asyncio.create_task(
+                coordinator.async_refresh_for_write_miss(
+                    coordinator.write_miss_generation
+                )
+            )
+            try:
+                await asyncio.wait_for(started.wait(), 2)
+                shared = next(iter(coordinator._write_miss_tasks))
+
+                def stop_after_completion(task: asyncio.Task[bool]) -> None:
+                    """Stop after the shared result, before its waiter resumes."""
+                    nonlocal shutdown_task
+                    observations.append((task.done(), task.result(), waiter.done()))
+                    if stopping == "coordinator":
+                        shutdown_task = asyncio.create_task(
+                            coordinator.async_shutdown(), eager_start=True
+                        )
+                    elif stopping == "home-assistant":
+                        hass.set_state(CoreState.stopping)
+                    stopping_observed.append(
+                        coordinator._shutdown_requested or hass.is_stopping
+                    )
+
+                shared.add_done_callback(stop_after_completion)
+                release.set()
+                result = await asyncio.wait_for(waiter, 2)
+                assert observations == [(True, True, False)]
+                assert stopping_observed == [stopping != "none"]
+                if shutdown_task is not None:
+                    await shutdown_task
+                assert result is (stopping == "none")
+                update.assert_awaited_once()
+            finally:
+                release.set()
+                await asyncio.gather(waiter, return_exceptions=True)
+                hass.set_state(original_state)
+                await coordinator.async_shutdown()
+
+    @pytest.mark.parametrize(
+        ("change", "expected_witness"),
+        [
+            ("none", (True, True, True, True)),
+            ("token-data", (True, True, True, True)),
+            ("options", (True, True, False, True)),
+            ("options-reverted", (True, True, False, True)),
+            ("source", (True, True, False, False)),
+            ("selection", (True, True, True, False)),
+            ("entry", (False, True, False, True)),
+            ("client", (True, False, True, True)),
+        ],
+    )
+    async def test_changed_witness_after_shared_task_finishes(
+        self,
+        hass: HomeAssistant,
+        change: str,
+        expected_witness: tuple[bool, bool, bool, bool],
+    ) -> None:
+        """A waiter rejects a witness changed after the shared task completed."""
+        selection = ["listing-1"]
+        entry = _make_entry(options={CONF_SELECTED_LISTINGS: selection})
+        entry.add_to_hass(hass)
+        client = AsyncMock()
+        coordinator = ReservationsCoordinator(hass, entry, client, AsyncMock())
+        options = entry.options
+        settings = coordinator._write_miss_settings()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        ordering: list[tuple[bool, bool, bool]] = []
+        witnesses: list[tuple[bool, bool, bool, bool]] = []
+
+        async def fetch() -> dict[str, list[GuestyReservation]]:
+            """Pause the real coordinator refresh before it completes."""
+            started.set()
+            await release.wait()
+            return {}
+
+        with patch.object(
+            coordinator, "_async_update_data", side_effect=fetch
+        ) as update:
+            waiter = asyncio.create_task(
+                coordinator.async_refresh_for_write_miss(
+                    coordinator.write_miss_generation
+                )
+            )
+            try:
+                await asyncio.wait_for(started.wait(), 2)
+                shared = next(iter(coordinator._write_miss_tasks))
+
+                def change_after_completion(task: asyncio.Task[bool]) -> None:
+                    """Change the witness after success, before the waiter runs."""
+                    ordering.append((task.done(), task.result(), waiter.done()))
+                    if change == "token-data":
+                        hass.config_entries.async_update_entry(
+                            entry,
+                            data={**entry.data, "cached_token": {"value": "test"}},
+                        )
+                    elif change == "options":
+                        hass.config_entries.async_update_entry(
+                            entry, options={**options, CONF_SCAN_INTERVAL: 67}
+                        )
+                    elif change == "options-reverted":
+                        hass.config_entries.async_update_entry(
+                            entry, options={**options, CONF_PAST_DAYS: 77}
+                        )
+                        hass.config_entries.async_update_entry(
+                            entry, options=dict(options)
+                        )
+                    elif change == "source":
+                        hass.config_entries.async_update_entry(
+                            entry,
+                            options={
+                                **options,
+                                CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY,
+                            },
+                        )
+                    elif change == "selection":
+                        selection.append("listing-2")
+                    elif change == "entry":
+                        coordinator.config_entry = _make_entry(options=dict(options))
+                    elif change == "client":
+                        coordinator.api_client = AsyncMock()
+                    witnesses.append(
+                        (
+                            coordinator.config_entry is entry,
+                            coordinator.api_client is client,
+                            coordinator.config_entry.options is options,
+                            coordinator._write_miss_settings() == settings,
+                        )
+                    )
+
+                shared.add_done_callback(change_after_completion)
+                release.set()
+                result = await asyncio.wait_for(waiter, 2)
+                assert ordering == [(True, True, False)]
+                assert witnesses == [expected_witness]
+                assert result is (change in {"none", "token-data"})
+                update.assert_awaited_once()
+            finally:
+                release.set()
+                await asyncio.gather(waiter, return_exceptions=True)
+                await coordinator.async_shutdown()
+
     @pytest.mark.parametrize("stopping", ["coordinator", "home-assistant"])
     @pytest.mark.parametrize("stage", ["during-fetch", "before-consumption"])
     async def test_shutdown_invalidates_a_refresh_attempt(

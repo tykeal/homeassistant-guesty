@@ -496,7 +496,16 @@ class ReservationsCoordinator(
         self._write_miss_tasks.add(task)
         task.add_done_callback(self._write_miss_tasks.discard)
         try:
-            return await asyncio.shield(task)
+            result = await asyncio.shield(task)
+            return (
+                result
+                and not self._shutdown_requested
+                and not self.hass.is_stopping
+                and self.config_entry is entry
+                and self.api_client is client
+                and self.config_entry.options is options
+                and self._write_miss_settings() == settings
+            )
         except asyncio.CancelledError:
             current = asyncio.current_task()
             if current is None or current.cancelling():
