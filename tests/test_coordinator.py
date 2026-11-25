@@ -225,6 +225,156 @@ class TestWriteMissHomeAssistantSemantics:
 class TestWriteMissAttemptLifecycle:
     """Real coordinator outcomes needed for safe recovery."""
 
+    @pytest.mark.parametrize("recovery", [False, True])
+    async def test_scheduled_polls_keep_unexpected_error_details(
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+        recovery: bool,
+    ) -> None:
+        """Real scheduled polls retain ordinary tracebacks after a recovery."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        coordinator = ReservationsCoordinator(hass, entry, AsyncMock(), AsyncMock())
+        coordinator.update_interval = timedelta(seconds=0.1)
+        coordinator._microsecond = hass.loop.time() % 1
+        updates: asyncio.Queue[tuple[bool, BaseException | None]] = asyncio.Queue()
+        notifications = 0
+
+        def listen() -> None:
+            """Record updates and stop polling after the last expected one."""
+            nonlocal notifications
+            notifications += 1
+            updates.put_nowait(
+                (coordinator.last_update_success, coordinator.last_exception)
+            )
+            if notifications == 4:
+                remove_listener()
+
+        remove_listener = coordinator.async_add_listener(listen)
+        first_error = "ordinary-poll-first-error"
+        second_error = "ordinary-poll-second-error"
+        with patch.object(
+            coordinator,
+            "_async_fetch_reservations",
+            side_effect=[{}, RuntimeError(first_error), {}, RuntimeError(second_error)],
+        ) as fetch:
+            try:
+                with caplog.at_level(logging.ERROR):
+                    if recovery:
+                        assert await coordinator.async_refresh_for_write_miss(
+                            coordinator.write_miss_generation
+                        )
+                    else:
+                        await coordinator.async_refresh()
+                    assert (await asyncio.wait_for(updates.get(), 2))[0]
+                    first = await asyncio.wait_for(updates.get(), 2)
+                    success = await asyncio.wait_for(updates.get(), 2)
+                    second = await asyncio.wait_for(updates.get(), 2)
+                assert not first[0]
+                assert isinstance(first[1], RuntimeError)
+                assert str(first[1]) == first_error
+                assert success[0]
+                assert not second[0]
+                assert isinstance(second[1], RuntimeError)
+                assert str(second[1]) == second_error
+                assert first_error in caplog.text
+                assert second_error in caplog.text
+                assert "Traceback" in caplog.text
+                assert fetch.await_count == 4
+            finally:
+                await coordinator.async_shutdown()
+
+    async def test_refresh_queued_by_recovery_listener_is_ordinary(
+        self, hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A separate refresh task spawned during recovery keeps normal errors."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        coordinator = ReservationsCoordinator(hass, entry, AsyncMock(), AsyncMock())
+        queued: asyncio.Future[asyncio.Task[None]] = hass.loop.create_future()
+
+        def listen() -> None:
+            """Queue a distinct ordinary refresh in the recovery task's context."""
+            if not queued.done():
+                queued.set_result(
+                    hass.async_create_background_task(
+                        coordinator.async_refresh(),
+                        "ordinary refresh queued by recovery listener",
+                        eager_start=True,
+                    )
+                )
+
+        coordinator.async_add_listener(listen)
+        detail = "ordinary-queued-refresh-error"
+        with patch.object(
+            coordinator,
+            "_async_fetch_reservations",
+            side_effect=[{}, RuntimeError(detail)],
+        ):
+            try:
+                with caplog.at_level(logging.ERROR):
+                    assert await coordinator.async_refresh_for_write_miss(
+                        coordinator.write_miss_generation
+                    )
+                    task = await asyncio.wait_for(queued, 2)
+                    await asyncio.wait_for(task, 2)
+                assert isinstance(coordinator.last_exception, RuntimeError)
+                assert str(coordinator.last_exception) == detail
+                assert detail in caplog.text
+                assert "Traceback" in caplog.text
+            finally:
+                await coordinator.async_shutdown()
+
+    async def test_shared_recovery_failure_remains_private_after_cancellation(
+        self, hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Cancelling one waiter cannot expose a shared recovery's error chain."""
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        coordinator = ReservationsCoordinator(hass, entry, AsyncMock(), AsyncMock())
+        started = asyncio.Event()
+        release = asyncio.Event()
+        secret = "recovery-private-error-chain"
+
+        async def fail() -> dict[str, list[GuestyReservation]]:
+            """Pause the shared recovery before raising a chained error."""
+            started.set()
+            await release.wait()
+            try:
+                raise ValueError(secret)
+            except ValueError as exc:
+                raise RuntimeError(secret) from exc
+
+        with patch.object(coordinator, "_async_fetch_reservations", side_effect=fail):
+            generation = coordinator.write_miss_generation
+            first = asyncio.create_task(
+                coordinator.async_refresh_for_write_miss(generation)
+            )
+            second: asyncio.Task[bool] | None = None
+            try:
+                with caplog.at_level(logging.DEBUG):
+                    await asyncio.wait_for(started.wait(), 2)
+                    second = asyncio.create_task(
+                        coordinator.async_refresh_for_write_miss(generation)
+                    )
+                    await asyncio.sleep(0)
+                    first.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await first
+                    release.set()
+                    assert await asyncio.wait_for(second, 2) is False
+                assert isinstance(coordinator.last_exception, UpdateFailed)
+                assert coordinator.last_exception.__suppress_context__
+                assert secret not in str(coordinator.last_exception)
+                assert secret not in "".join(
+                    traceback.format_exception(coordinator.last_exception)
+                )
+                assert secret not in caplog.text
+            finally:
+                release.set()
+                await coordinator.async_shutdown()
+
     async def test_multiple_expired_timers_coalesce_behind_dispatch(
         self, hass: HomeAssistant
     ) -> None:
