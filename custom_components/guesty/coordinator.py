@@ -9,7 +9,6 @@ import logging
 from collections import defaultdict, deque
 from collections.abc import AsyncIterator, Collection, Coroutine, Mapping
 from contextlib import asynccontextmanager
-from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -91,10 +90,6 @@ if TYPE_CHECKING:
     )
 
 _LOGGER = logging.getLogger(__name__)
-
-_WRITE_MISS_REFRESH: ContextVar[bool] = ContextVar(
-    "guesty_write_miss_refresh", default=False
-)
 
 # Statuses whose per-listing meaning depends on the stay segment.
 _TEMPORAL_STATUSES: frozenset[str] = frozenset({"confirmed", "checked_in"})
@@ -316,6 +311,7 @@ class ReservationsCoordinator(
         self._write_miss_generation = 0
         self._write_miss_attempt_generation = 0
         self._write_miss_tasks: set[asyncio.Task[bool]] = set()
+        self._write_miss_refresh_task: asyncio.Task[Any] | None = None
         self._write_miss_outcomes: deque[
             tuple[
                 int,
@@ -476,11 +472,12 @@ class ReservationsCoordinator(
                     or self._write_miss_settings() != settings
                 ):
                     return False
-                token = _WRITE_MISS_REFRESH.set(True)
+                # Task identity is not inherited by HA's future poll tasks.
+                self._write_miss_refresh_task = asyncio.current_task()
                 try:
                     await self._async_refresh(log_failures=False)
                 finally:
-                    _WRITE_MISS_REFRESH.reset(token)
+                    self._write_miss_refresh_task = None
                 return (
                     self._write_miss_generation > generation
                     and bool(self._write_miss_outcomes)
@@ -516,7 +513,10 @@ class ReservationsCoordinator(
         except ConfigEntryAuthFailed, ConfigEntryError, UpdateFailed:
             raise
         except Exception:
-            if _WRITE_MISS_REFRESH.get():
+            if (
+                self._write_miss_refresh_task is not None
+                and asyncio.current_task() is self._write_miss_refresh_task
+            ):
                 raise UpdateFailed("Reservation refresh failed") from None
             raise
 
