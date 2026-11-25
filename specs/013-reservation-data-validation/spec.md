@@ -223,7 +223,9 @@ resolved policy, including refresh and migration boundaries.
 6. **Given** a failed refresh and previously verified data not shown to be
    invalid, **When** reservation information is displayed, **Then** the
    last-verified data remains visible and clearly marked stale, not newly
-   verified or current.
+   verified or current. The reservation sensor remains unavailable while
+   its eligible stale details and stale indication remain visible in its
+   attributes.
 7. **Given** a previously valid reservation or segment that a successful
    refresh shows is invalid, **When** that result is accepted, **Then** the
    bad data is removed rather than presented as a stale fallback, while
@@ -237,7 +239,9 @@ resolved policy, including refresh and migration boundaries.
    refresh do not satisfy those checks or authorize the write.
 10. **Given** previously stale data and a later successful refresh, **When**
     the current result is accepted, **Then** verified data is no longer
-    labeled stale, and data now shown invalid is not restored.
+    labeled stale, and data now shown invalid is not restored. The
+    reservation sensor becomes available only if its existing availability
+    checks also pass.
 11. **Given** an independently verified late-created current reservation
     with a `confirmed` or `checked_in` source status, **When** its write
     safeguards are met, **Then** creation after scheduled check-in alone
@@ -573,7 +577,12 @@ synthetic sensitive values.
   observable stale indication for consumers. The failed refresh MUST NOT be
   represented as a successful verification or make stale data satisfy any
   freshness, identity, continuity, or routing guard it would otherwise
-  fail. If there is no last-verified data, the system MUST NOT invent it.
+  fail. The reservation sensor MUST remain unavailable after an overall
+  failed refresh, while exposing eligible stale details and their stale
+  indication in its attributes, so its state does not imply live occupancy.
+  It MUST NOT become available again until a later refresh succeeds and
+  the existing availability checks pass. If there is no last-verified
+  data, the system MUST NOT invent it.
   Before publication, stale data MUST still satisfy the current listing,
   status, and date-window filters using verified evidence. A stay whose
   verified checkout has conclusively passed MUST NOT remain current or
@@ -762,7 +771,10 @@ synthetic sensitive values.
   last-verified snapshots are marked stale after a failed refresh, zero
   failures are treated as successful reverification or bypass a write
   guard, and zero records or segments shown invalid by a later accepted
-  refresh are restored from a stale snapshot.
+  refresh are restored from a stale snapshot. During an overall refresh
+  failure, the reservation sensor is unavailable and its eligible stale
+  details and indication remain visible in its attributes; it becomes
+  available again only after success and its existing checks pass.
 - **SC-011**: In synthetic complete, safe responses containing one malformed
   record, 100% of independently verified records remain eligible and the
   malformed record is excluded. In examples with unverifiable completeness,
