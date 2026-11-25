@@ -1,0 +1,9 @@
+---
+# SPDX-FileCopyrightText: 2026 Andrew Grimberg <tykeal@bardicgrove.org>
+# SPDX-License-Identifier: Apache-2.0
+
+fixes:
+  - |
+    Reservation write-miss recovery now rejects a completed refresh if
+    the coordinator shuts down, Home Assistant begins stopping, or the
+    relevant configuration changes before its result is received.
