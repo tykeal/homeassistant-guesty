@@ -63,7 +63,14 @@ issue #223 until the behavior is verified on a live system.
   earlier rejection, nor a target retired as confirmed absent under feature
   008 FR-052. A rejection or confirmed absence is explicit negative
   evidence; two sources disagreeing about existence is ambiguous, and
-  feature 008 forbids masking a genuine cancellation or deletion. Feature
+  feature 008 forbids masking a genuine cancellation or deletion. The check
+  uses the retirement evidence the system currently holds; existing storage
+  does not keep retirements durably, and adding such storage would change
+  feature 008 and 012 storage behavior outside this narrow scope. As with
+  an unknown confirmation code, lost retirement history is not treated as
+  proof of existence, but it does not by itself block a record that is
+  otherwise independently verified, in an allowed status, and unconflicted.
+  Feature
   013 requires correction to arrive through a new accepted refresh; a second
   read of the same source must not override it or promote conflict-only
   evidence.
@@ -237,9 +244,10 @@ and inspect the action failure, logs, and diagnostics.
 **Acceptance Scenarios**:
 
 1. **Given** each fallback outcome, **When** it is reported, **Then** the
-   message or log distinguishes "absent from search, found by identifier",
-   "not found by identifier", and "found but refused" with a category for
-   the refusal reason and a next step.
+   message or log distinguishes "found by identifier" (qualified as absent
+   from search or present without a code), "not found by identifier", and
+   "found but refused" with a category for the refusal reason and a next
+   step.
 2. **Given** synthetic confirmation codes, PINs, guest data, credentials, and
    raw response content, **When** any outcome is logged or reported,
    **Then** none of those values appears.
@@ -292,10 +300,13 @@ and inspect the action failure, logs, and diagnostics.
   such as a retained-only or disabled-route fallback target, still applies
   before the read. A target returned but
   rejected by that refresh under feature 013, whose identifier has any
-  retained feature 013 conflict-only evidence, or that was retired as
-  confirmed absent under feature 008 FR-052 (in the current session or
-  persisted), MUST NOT qualify. If that negative evidence cannot be
-  checked, the read MUST NOT be issued and the action fails closed.
+  retained feature 013 conflict-only evidence, or that the system
+  currently holds as confirmed absent under feature 008 FR-052, MUST NOT
+  qualify. If held negative evidence cannot be checked, the read MUST NOT
+  be issued and the action fails closed. This feature adds no new durable
+  retirement record and does not change feature 008 or 012 storage;
+  retirement evidence no longer held (for example after a reload) is not
+  available to this check.
 - **FR-003**: The fallback MUST apply only when the entry's configured
   reservation source is v3 and the target has no current, retained, or
   served fallback (legacy) provenance. It MUST NOT add, alter, or re-route
@@ -356,8 +367,9 @@ and inspect the action failure, logs, and diagnostics.
 - **FR-011**: Overlapping actions MUST each perform their own at-most-one
   read and independent decision. No new cooldown, shared by-identifier
   result, or cached-data age requirement is introduced.
-- **FR-012**: Outcomes MUST distinguish "absent from search, found by
-  identifier" (written or write failed), "not found by identifier"
+- **FR-012**: Outcomes MUST distinguish "found by identifier" (written or
+  write failed), qualified by whether the target was absent from the search
+  or present in it without a confirmation code, "not found by identifier"
   (including a mismatched or empty result), and "found but refused" with a
   privacy-safe reason category (malformed, no code, disallowed status,
   identity conflict, guard or witness failure) plus read failures
@@ -427,7 +439,8 @@ and inspect the action failure, logs, and diagnostics.
   conflict-only evidence, or fallback candidates.
 - **SC-005**: Valid records excluded only by listing selection or the
   local date window are written in 100% of tested otherwise-safe cases.
-- **SC-006**: Across all tested outcomes, the three outcome categories are
+- **SC-006**: Across all tested outcomes, the three outcome categories,
+  and the absent versus code-less qualifier for found records, are
   distinguishable and zero confirmation codes, PINs, guest data,
   credentials, or raw payloads appear in errors, logs, or diagnostics.
 

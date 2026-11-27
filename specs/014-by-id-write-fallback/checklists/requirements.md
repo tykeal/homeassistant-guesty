@@ -46,7 +46,7 @@ SPDX-License-Identifier: Apache-2.0
   by-identifier record.
 - Derived fail-closed decisions are recorded with rationale in the spec:
   targets rejected by the qualifying refresh, targets with conflict-only
-  evidence, confirmed-absent targets, and fallback-provenance targets do
+  evidence, held confirmed-absent targets, and fallback-provenance targets do
   not qualify; responses must
   contain exactly one matching record; note writes reuse the single read
   and fail closed if a newer refresh discards it; the read is
