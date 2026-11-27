@@ -138,7 +138,7 @@ failure refuses with no write.
 5. If the qualifier is `codeless`, the record's ID and verified
    `(listing_id, parent_listing_id)` association set must equal the
    snapshot record's, and neither set may be unverifiable (a non-string
-   parent). Otherwise: `identity_conflict`.
+   listing or parent ID). Otherwise: `identity_conflict`.
 
 The code is used only for step 4. It is never a lookup key or a write
 key.

@@ -124,7 +124,8 @@ refresh's identity record succeeds. It is cleared on unload. It holds:
     parent_listing_id)` association pairs, one per segment (or the
     top-level listing with `None` when there are no segments), or
     `None` when any segment's `parent_listing_id` is neither a string
-    nor `None` (unverifiable; building it never fails the refresh);
+    nor `None`, or a segment-less record's top-level `listing_id` is
+    not a string (unverifiable; building it never fails the refresh);
   - `v3`: whether the record's ID is in `returned_ids`. It is not
     taken from `is_v3`, because retained v3 records the fallback
     republishes keep `is_v3=True`.
