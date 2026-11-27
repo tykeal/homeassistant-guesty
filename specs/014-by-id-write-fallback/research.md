@@ -41,12 +41,14 @@ Split the work so that everything not dependent on 013 can land first:
 
 Model the 013 needs as one thin adapter with three operations:
 
-- rejected IDs for an accepted refresh;
+- rejected IDs for an accepted refresh, delivered through
+  `ReservationFetchResult.rejected_ids`; absence from that set is
+  relied on only while the adapter reports available;
 - a conflict-only query, including availability and bound-exceeded
   state;
 - a single-record validator.
 
-Until 013 provides these, the adapter reports **unavailable**. FR-002
+Until 013 provides all three, the adapter reports **unavailable**. FR-002
 ("held negative evidence cannot be checked") and FR-006 ("evidence cannot
 be checked") then refuse before any read is issued. Under US2 scenario 7
 the existing 012 refusal applies, so the feature is inert and the

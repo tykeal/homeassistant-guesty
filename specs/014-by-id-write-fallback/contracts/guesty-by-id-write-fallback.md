@@ -78,7 +78,8 @@ Responses map to results as follows:
 
 - **Candidate record**: a 2xx JSON object whose `results` is a list of
   exactly one object, whose `reservationId` is a string equal to
-  `reservation_id`, and whose `pagination.hasMore` is not `true`.
+  `reservation_id`, and that either has no `pagination` key or has
+  `pagination.hasMore` exactly `false`.
 - **`not_found`**: a 2xx response with `results == []`.
 - **`mismatched`**, reported as not found: a 2xx response with one object
   whose `reservationId` differs.
@@ -136,7 +137,8 @@ failure refuses with no write.
    counts as empty.
 5. If the qualifier is `codeless`, the record's ID and verified
    `(listing_id, parent_listing_id)` association set must equal the
-   snapshot record's. Otherwise: `identity_conflict`.
+   snapshot record's, and neither set may be unverifiable (a non-string
+   listing or parent ID). Otherwise: `identity_conflict`.
 
 The code is used only for step 4. It is never a lookup key or a write
 key.
@@ -193,7 +195,8 @@ no trace in any of these:
 
 ## Outcomes and privacy
 
-Each outcome produces a `HomeAssistantError` whose text names the outcome
+Each failure outcome other than "not eligible" produces a
+`HomeAssistantError` whose text names the outcome
 class, the qualifier when one applies, the category, the reservation ID,
 and a corrective hint. Examples of the hint:
 
@@ -330,7 +333,12 @@ token endpoint, and every write resource.
    - the code mapped to another ID in each of the seven maps,
      including an out-of-status legacy-observed record with a different
      ID (`fallback_observed_codes`);
-   - the target mapped to another code in each map;
+   - the target mapped to another code in each map (only the legacy and
+     bootstrap maps can hold this before the action; the other baseline
+     maps and conflict-only evidence must gain it during the read, and
+     the snapshot maps are tested directly against authorization,
+     because beforehand the target would be written normally or refused
+     by qualification);
    - a code duplicating another ID's code;
    - each unavailable source: no snapshot, an unusable or `_unstored`
      baseline, and the 013 adapter unavailable;

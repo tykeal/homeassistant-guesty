@@ -204,7 +204,8 @@ Steps 1–3 are the existing 012 flow and are unchanged.
    `actions_client.read_reservation_by_id(target)` sends exactly one
    `GET /reservations-v3` with `params={"reservationIds": target}`,
    `single_attempt=True`, and `private_http_logging(True)`. It has no 401
-   renewal and no retry. Failures map to `GuestyByIdReadError(category)`.
+   renewal and no retry. Failures map to
+   `GuestyByIdReadError(category, target_id)`.
 7. **Strict parse and authorization** (no request):
    - The envelope is a JSON object whose `results` is a list of exactly
      one object, and `reservationId` equals the target exactly.
@@ -276,7 +277,7 @@ Steps 1–3 are the existing 012 flow and are unchanged.
    "found but refused" with category `guard_witness`. Only then are the
    remaining write errors
    (the `GuestyRecovery*` errors, `GuestyRecoveryWriteError`, and any
-   other `GuestyApiError`) are wrapped in one new by-ID outcome error
+   other `GuestyApiError`) wrapped in one new by-ID outcome error
    that carries:
    - the outcome class "found by ID, write failed";
    - the qualifier (`absent` or `codeless`);
@@ -366,7 +367,7 @@ custom_components/guesty/
 └── api/
     ├── actions.py        # read_reservation_by_id + strict parser;
     │                     # add_reservation_note(prefetched_notes=...)
-    ├── exceptions.py     # GuestyByIdReadError(category)
+    ├── exceptions.py     # GuestyByIdReadError(category, target_id)
     ├── client.py         # legacy_observed/retired_reservations
     ├── models.py         # ReservationFetchResult returned_ids,
     │                     # rejected_ids, fallback_observed

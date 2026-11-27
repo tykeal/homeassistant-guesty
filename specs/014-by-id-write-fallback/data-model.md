@@ -122,7 +122,10 @@ refresh's identity record succeeds. It is cleared on unload. It holds:
   - `hold`: whether the status is in `HOLD_STATUSES`;
   - `listing_ids`: a frozenset of verified `(listing_id,
     parent_listing_id)` association pairs, one per segment (or the
-    top-level listing with `None` when there are no segments);
+    top-level listing with `None` when there are no segments), or
+    `None` when any segment's `parent_listing_id` is neither a string
+    nor `None`, or a segment-less record's top-level `listing_id` is
+    not a string (unverifiable; building it never fails the refresh);
   - `v3`: whether the record's ID is in `returned_ids`. It is not
     taken from `is_v3`, because retained v3 records the fallback
     republishes keep `is_v3=True`.
@@ -159,8 +162,9 @@ The 013 evidence adapter (`ConflictEvidence` port) is a thin internal
 interface. It is satisfied by feature 013 when that feature merges, and it
 returns "unavailable" until then.
 
-- `available()`: returns `False` if the evidence is unavailable or the
-  FR-008c bound was exceeded.
+- `available()`: returns `False` if the evidence is unavailable, the
+  FR-008c bound was exceeded, or any of the three 013 interfaces
+  (rejected IDs, conflict-only evidence, record validator) is missing.
 - `codes_for(id)` and `ids_for(code)`: read-only conflict-only mappings.
 - `validate_record(raw, action)`: returns `valid` or a rejection, under
   the 013 accepted-refresh rules. These include FR-008d for each raw
