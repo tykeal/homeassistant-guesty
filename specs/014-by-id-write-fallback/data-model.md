@@ -120,7 +120,9 @@ refresh's identity record succeeds. It is cleared on unload. It holds:
 - `records`: one entry per accepted record, holding:
   - `code_kind`: `none`, `empty`, `string`, or `invalid`;
   - `hold`: whether the status is in `HOLD_STATUSES`;
-  - `listing_ids`: a frozenset of verified segment listings;
+  - `listing_ids`: a frozenset of verified `(listing_id,
+    parent_listing_id)` association pairs, one per segment (or the
+    top-level listing with `None` when there are no segments);
   - `v3`: whether the record's ID is in `returned_ids`. It is not
     taken from `is_v3`, because retained v3 records the fallback
     republishes keep `is_v3=True`.
@@ -175,9 +177,15 @@ stored on any object that outlives the attempt.
 | `qualifier` | `absent` or `codeless` |
 | `record` | Validated `GuestyReservation` |
 | `code` | Non-empty string; used only for the conflict check |
-| `listing_ids` | Verified listing set |
-| `notes` | Raw `notes` object, for note writes only |
+| `listing_ids` | Verified (listing, parent listing) pairs |
+| `notes` | Validated str-keyed mapping; missing or null is `{}` |
 | `snapshot_attempt` | Snapshot attempt it was authorized against |
+
+For note writes, a missing or `null` `notes` normalizes to `{}`, a
+non-object `notes` is `malformed`, and non-string keys are dropped as
+`_read_v3_notes` does. The value passed as `prefetched_notes` is
+therefore never `None`, which is reserved for ordinary writes that
+still read.
 
 ### Write attempt (extended)
 

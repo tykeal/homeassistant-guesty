@@ -90,7 +90,10 @@ Responses map to results as follows:
   - more than one item;
   - a non-object item;
   - a non-string ID;
-  - `hasMore: true`.
+  - a `pagination` key whose value is not an object, or whose `hasMore`
+    is missing, `null`, non-boolean (for example `"true"`), or `true`.
+    Only an absent `pagination` key or `hasMore` exactly `false` is
+    accepted.
 - **`authentication`**: 401, 403, a token auth or permission error, or
   any other unclassified token failure.
 - **`rate_limit`**: 429, or the local token request budget
@@ -131,8 +134,9 @@ failure refuses with no write.
    usable or is `_unstored`, or when the 013 adapter is unavailable or
    over its bound. A `None` legacy, bootstrap, or fallback sub-map
    counts as empty.
-5. If the qualifier is `codeless`, the record's ID and verified listing
-   set must equal the snapshot record's. Otherwise: `identity_conflict`.
+5. If the qualifier is `codeless`, the record's ID and verified
+   `(listing_id, parent_listing_id)` association set must equal the
+   snapshot record's. Otherwise: `identity_conflict`.
 
 The code is used only for step 4. It is never a lookup key or a write
 key.
@@ -161,6 +165,8 @@ key.
 - Exactly one v3 write is sent, in recovery mode (`single_attempt=True`).
   A note write sends the verified record's note fields plus the appended
   text through `PUT /reservations-v3/{id}/notes`, with no read of its own.
+  `prefetched_notes` is always a mapping on this path (missing or `null`
+  notes become `{}`), never `None`, so no second GET can occur.
   Status writes use `PUT /reservations-v3/{id}/status`, and custom-field
   writes use `PUT /reservations-v3/{id}/custom-fields`.
 - A rejected or unknown-outcome write is reported as "found by ID, write
@@ -293,7 +299,9 @@ token endpoint, and every write resource.
    - confirmed absent, in the live pruned set and in the snapshot's
      `fallback_absent` for the same accepted refresh;
    - a missing or stale snapshot.
-5. **Read outcomes** (exactly one GET and zero writes) for each of these:
+5. **Read outcomes** (zero writes; exactly one by-ID GET once the read
+   is dispatched, and zero by-ID GETs for a token-acquisition failure,
+   which exits `_request` before the read is sent) for each of these:
    - `[]`;
    - mismatched;
    - two records;
@@ -302,6 +310,8 @@ token endpoint, and every write resource.
    - a bare list;
    - non-list `results`;
    - `hasMore: true`;
+   - `pagination: null`, `pagination: []`, `pagination: {}`,
+     `hasMore: null`, and `hasMore: "true"`;
    - non-JSON;
    - 400, 401 (no token refresh), 403, 404, 429 (no retry), 500, and 503;
    - a token request that is rejected (`authentication`), blocked by the
@@ -312,6 +322,7 @@ token endpoint, and every write resource.
    - a malformed record or segment (via the 013 validator double);
    - missing status;
    - a non-string status (number, list, or object);
+   - a non-object `notes` on a note write (`malformed`);
    - `alteration`, unknown, and missing statuses, with a sentinel
      unknown status asserted absent from logs;
    - `completed` and `cancelled` accepted as in a refresh;
@@ -323,7 +334,9 @@ token endpoint, and every write resource.
    - a code duplicating another ID's code;
    - each unavailable source: no snapshot, an unusable or `_unstored`
      baseline, and the 013 adapter unavailable;
-   - a `None` sub-map treated as empty, which does not refuse.
+   - a `None` sub-map treated as empty, which does not refuse;
+   - a code-less qualifier whose by-ID segment has the same unit
+     `listingId` but a different parent listing (`identity_conflict`).
 7. **Recheck**: each of these fails with zero writes:
    - entry reload during the read;
    - the baseline becomes unstored, or continuity or ambiguity changes,

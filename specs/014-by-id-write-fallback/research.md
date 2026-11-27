@@ -342,9 +342,12 @@ The response is authorizing evidence only if all of these hold:
 - the element's `reservationId` is a string exactly equal to the target.
   `id` and `_id` are not consulted.
 
-If a `pagination` object is present, it must not report `hasMore: true`.
-A bare dict, a bare list, a non-list `results`, more than one element, a
-non-object element, or a `hasMore: true` pagination is `malformed`. An
+If a `pagination` key is present, its value must be an object whose
+`hasMore` is exactly the boolean `false`; a missing, `null`, or
+non-boolean `hasMore`, or a non-object `pagination`, does not establish
+completeness. A bare dict, a bare list, a non-list `results`, more than
+one element, a non-object element, or any such pagination is
+`malformed`. An
 empty `results` is `not_found`, and a single record whose ID differs is
 `mismatched`. Mismatched is reported to the user under "not found by
 identifier", as FR-012 requires.
@@ -445,9 +448,14 @@ query, so no baseline state is mutated.
 ### R9 decision
 
 The snapshot keeps, for every accepted v3 record, its ID and its
-verified listing-association set: the `listingId` values of its validated
-stay segments. For a code-less qualifier, the by-ID record's parsed ID and
-listing set must equal the snapshot's. Otherwise the action is refused
+verified listing-association set: one `(listing_id, parent_listing_id)`
+pair per validated stay segment, or `(listing_id, None)` from the top
+level for a record without segments. Comparing only `listingId` is not
+enough, because `_attribute_segments` in `coordinator.py` attributes a
+segment to its parent listing when the unit itself is untracked, so a
+same-unit, different-parent record could be attributed to a different
+tracked listing. For a code-less qualifier, the by-ID record's parsed
+ID and association set must equal the snapshot's. Otherwise the action is refused
 with `identity_conflict`.
 
 ## R10 — Lock scope and the newer-refresh branch
@@ -489,9 +497,13 @@ lock is an implementation detail.
 Extend `add_reservation_note` and `_add_note_v3` with keyword-only
 `prefetched_notes: Mapping[str, object] | None`. When it is set, skip
 `_read_v3_notes` and echo every writable note field from the verified
-record, as `_add_note_v3` does today. Extend the `recovery_write` callable
-type in `execute_reservation_write` to accept an optional `notes`
-argument:
+record, as `_add_note_v3` does today. `None` is reserved for ordinary
+writes. On the by-ID path the value is always a mapping: a missing or
+`null` record `notes` becomes `{}`, a non-object `notes` refuses as
+`malformed`, and non-string keys are dropped as in `_read_v3_notes`.
+So a reservation without notes still gets exactly one GET. Extend the
+`recovery_write` callable type in `execute_reservation_write` to accept
+an optional `notes` argument:
 
 - `_handle_add_note` forwards it.
 - `_handle_set_reservation_status` and the custom-field handler in

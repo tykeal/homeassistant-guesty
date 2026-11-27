@@ -247,7 +247,9 @@ Steps 1–3 are the existing 012 flow and are unchanged.
      evidence" and counts as empty, as it does in the existing
      comparison.
    - For a code-less snapshot record (FR-007), the identifier and the
-     verified listing-association set must equal the snapshot's.
+     verified listing-association set, as `(listing_id,
+     parent_listing_id)` pairs (research R9), must equal the
+     snapshot's.
 8. **Pre-write recheck**: `before_write` reruns these checks:
    - `_check_recovery_context`.
    - `coordinator.identity.classify_write_refusal`. The result must be
@@ -523,9 +525,13 @@ the key ones:
     source change, failed or ambiguous newer refresh);
   - a newer accepted refresh for a note write;
   - a newer refresh giving fallback provenance.
-- **Request counts** (SC-003): One GET in every read case, including
-  failures and note writes, with zero retries. Assert using respx call
-  counts, and assert that a 401 triggers no token request.
+- **Request counts** (SC-003): One by-ID GET in every case where the
+  read is dispatched, including failures and note writes (also a note
+  write on a record with missing or `null` notes), with zero retries. A
+  token-acquisition failure exits `_request` before the read is sent,
+  so it asserts zero by-ID GETs and the read-failure outcome. Assert
+  using respx call counts, and assert that a 401 triggers no token
+  request.
 - **Privacy** (SC-006): Inject sentinel codes, PINs, guest names, raw
   body markers, and an unknown sentinel status. Assert they are absent
   from `caplog`, the raised error text, and
