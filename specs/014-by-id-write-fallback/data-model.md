@@ -122,7 +122,9 @@ refresh's identity record succeeds. It is cleared on unload. It holds:
   - `hold`: whether the status is in `HOLD_STATUSES`;
   - `listing_ids`: a frozenset of verified `(listing_id,
     parent_listing_id)` association pairs, one per segment (or the
-    top-level listing with `None` when there are no segments);
+    top-level listing with `None` when there are no segments), or
+    `None` when any segment's `parent_listing_id` is neither a string
+    nor `None` (unverifiable; building it never fails the refresh);
   - `v3`: whether the record's ID is in `returned_ids`. It is not
     taken from `is_v3`, because retained v3 records the fallback
     republishes keep `is_v3=True`.
