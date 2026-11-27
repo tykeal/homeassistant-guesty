@@ -159,8 +159,9 @@ The 013 evidence adapter (`ConflictEvidence` port) is a thin internal
 interface. It is satisfied by feature 013 when that feature merges, and it
 returns "unavailable" until then.
 
-- `available()`: returns `False` if the evidence is unavailable or the
-  FR-008c bound was exceeded.
+- `available()`: returns `False` if the evidence is unavailable, the
+  FR-008c bound was exceeded, or any of the three 013 interfaces
+  (rejected IDs, conflict-only evidence, record validator) is missing.
 - `codes_for(id)` and `ids_for(code)`: read-only conflict-only mappings.
 - `validate_record(raw, action)`: returns `valid` or a rejection, under
   the 013 accepted-refresh rules. These include FR-008d for each raw
