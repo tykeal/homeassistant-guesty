@@ -50,6 +50,11 @@ from custom_components.guesty.api.models import (
 from custom_components.guesty.api.reservations_fallback import (
     ReservationFallbackSource,
 )
+from custom_components.guesty.api.validation import (
+    ValidationTally,
+    assess_v3_record,
+    recognize_v3_status,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -159,6 +164,7 @@ class V3ReservationSource:
             past_days=past_days,
             future_days=future_days,
             statuses=statuses,
+            rejected=result.rejected_ids,
         )
         return replace(
             result,
@@ -174,6 +180,25 @@ class V3ReservationSource:
             ),
             observed_reservations=outcome.observed_reservations,
             fallback_observed=outcome.observed,
+            rejected_codes=tuple(
+                sorted({*result.rejected_codes, *outcome.rejected_codes}),
+            ),
+            rejected_check_out_bounds=MappingProxyType(
+                dict(
+                    sorted(
+                        {
+                            **result.rejected_check_out_bounds,
+                            **outcome.rejected_check_out_bounds,
+                        }.items(),
+                    ),
+                ),
+            ),
+            exclusions=tuple(
+                sorted({*result.exclusions, *outcome.exclusions}),
+            ),
+            fallback_invalid_ids=outcome.invalid,
+            stale_ids=outcome.stale,
+            validation=result.validation.merged(outcome.validation),
         )
 
     async def _fetch_all_pages(
@@ -405,32 +430,39 @@ def _validate_identifiers(
 def _map_results(
     pages: list[list[dict[str, Any]]],
 ) -> ReservationFetchResult:
-    """Map validated pages into a reservation fetch result.
+    """Map identifier-validated pages into a reservation fetch result.
 
-    A reservation the parser cannot use is skipped — the parser
-    logs why — rather than failing the refresh, because one
-    unusable record must not hide every other reservation.
+    Each record is assessed independently: a rejected record is
+    isolated rather than failing the refresh, and a partially valid
+    record publishes only its verified segments. Both are reported in
+    ``rejected_ids`` by identifier, never by payload value.
 
     Args:
         pages: One list of raw reservation dicts per fetched page.
 
     Returns:
-        The mapped reservations and the diagnostics counters.
+        The mapped reservations, the rejection report and the
+        diagnostics counters.
     """
     reservations: list[GuestyReservation] = []
     status_counts: Counter[str] = Counter()
     segment_histogram: Counter[int] = Counter()
     returned: set[str] = set()
+    tally = ValidationTally()
 
     for page in pages:
         for item in page:
+            if not isinstance(item, dict):
+                continue
             raw_id = item.get("reservationId")
             if isinstance(raw_id, str):
                 returned.add(raw_id)
-            raw_status = item.get("status")
-            if isinstance(raw_status, str):
-                status_counts[raw_status] += 1
+            status_counts[
+                recognize_v3_status(item.get("status")) or "unrecognized"
+            ] += 1
 
+            assessment = assess_v3_record(item)
+            tally.add_assessment(assessment, item.get("checkOut"))
             reservation = GuestyReservation.from_v3_api_dict(item)
             if reservation is None:
                 continue
@@ -445,9 +477,9 @@ def _map_results(
         segment_histogram=MappingProxyType(dict(segment_histogram)),
         observed_ids=tuple(reservation.id for reservation in reservations),
         returned_ids=tuple(sorted(returned)),
-        # Interim rejected set: raw minus parsed. Feature 013 supplies
-        # the full set, including raw-segment rejections (research R1).
-        rejected_ids=tuple(
-            sorted(returned - {reservation.id for reservation in reservations}),
-        ),
+        rejected_ids=tally.sorted_rejected_ids(),
+        rejected_codes=tally.sorted_rejected_codes(),
+        rejected_check_out_bounds=tally.check_out_bounds(),
+        validation=tally.summary(),
+        exclusions=tally.sorted_exclusions(),
     )

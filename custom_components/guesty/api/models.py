@@ -9,7 +9,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, fields, replace
 from datetime import UTC, date, datetime, timedelta
 from types import MappingProxyType
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, runtime_checkable
 
 from custom_components.guesty.api.const import (
     KNOWN_CHANNEL_TYPES,
@@ -17,6 +17,9 @@ from custom_components.guesty.api.const import (
     V3_STATUS_FILTER_MAP,
     V3_STATUS_MAP,
 )
+
+if TYPE_CHECKING:
+    from custom_components.guesty.api.validation import ValidationReason
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -714,6 +717,8 @@ class GuestyReservation:
         raw_stay_count: Number of entries in the original V3 stay array.
         reservation_status: Source lifecycle status when temporal status
             cannot be determined.
+        partial: Whether any raw V3 stay segment was rejected; only the
+            verified segments are kept.
     """
 
     id: str
@@ -739,6 +744,7 @@ class GuestyReservation:
     is_v3: bool = False
     raw_stay_count: int | None = None
     reservation_status: str | None = None
+    partial: bool = False
 
     @property
     def timing_status(self) -> str:
@@ -839,133 +845,102 @@ class GuestyReservation:
     ) -> GuestyReservation | None:
         """Create a GuestyReservation from a v3 search result.
 
-        Returns None when ``reservationId`` or ``status`` is missing,
-        or when no usable ``stay`` segment remains. ``money`` is
-        always None on the v3 path, and ``nights_count`` is derived
-        from the localized dates.
+        The model is built only from the verified parts of
+        ``assess_v3_record``. Returns None for a rejected record. A
+        partially valid record keeps only its verified segments, and
+        its reservation-level dates, night count and party size are
+        None. A ``nightsCount`` that is not a non-negative integer is
+        None; a missing one is derived from the verified dates.
+        ``money`` is always None on the v3 path. Nothing is
+        logged, so no payload value can leak.
 
         Args:
             data: Reservation dictionary from the v3 search response.
 
         Returns:
-            A GuestyReservation instance, or None if invalid.
+            A GuestyReservation instance, or None if rejected.
         """
-        reservation_id = data.get("reservationId") or ""
-        if not reservation_id:
-            _LOGGER.warning(
-                "Skipping v3 reservation with missing reservationId",
-            )
-            return None
-
-        raw_status = data.get("status") or ""
-        if not raw_status:
-            _LOGGER.warning(
-                "Skipping v3 reservation %s with missing status",
-                reservation_id,
-            )
-            return None
-
-        raw_stay = data.get("stay")
-        if not isinstance(raw_stay, list):
-            raw_stay = []
-
-        fallback_check_in = _parse_iso_datetime(data.get("checkIn"))
-        fallback_check_out = _parse_iso_datetime(data.get("checkOut"))
-        feature_010_eligible = (
-            len(raw_stay) == 1
-            and isinstance(raw_stay[0], dict)
-            and bool(raw_stay[0].get("listingId"))
-            and raw_stay[0].get("checkIn") is None
-            and raw_stay[0].get("checkOut") is None
-            and fallback_check_in is not None
-            and fallback_check_out is not None
-            and fallback_check_out > fallback_check_in
+        # Deferred: validation imports this module's segment model.
+        from custom_components.guesty.api.validation import (
+            assess_v3_record,
+            non_negative_count,
         )
 
-        stay_list: list[GuestyStaySegment] = []
-        for raw_position, item in enumerate(raw_stay):
-            if not isinstance(item, dict):
-                continue
-            segment = GuestyStaySegment.from_api_dict(
-                item,
-                raw_position=raw_position,
-            )
-            if segment is None:
-                continue
-            check_in_local = _valid_local_date(item.get("checkInDateLocalized"))
-            check_out_local = _valid_local_date(item.get("checkOutDateLocalized"))
-            if feature_010_eligible:
-                if check_in_local is None:
-                    check_in_local = _valid_local_date(
-                        data.get("checkInDateLocalized"),
-                    )
-                if check_out_local is None:
-                    check_out_local = _valid_local_date(
-                        data.get("checkOutDateLocalized"),
-                    )
-                if check_in_local is None and fallback_check_in is not None:
-                    check_in_local = fallback_check_in.date().isoformat()
-                if check_out_local is None and fallback_check_out is not None:
-                    check_out_local = fallback_check_out.date().isoformat()
-            stay_list.append(
-                replace(
-                    segment,
-                    check_in_local=check_in_local,
-                    check_out_local=check_out_local,
-                ),
-            )
-        stay = tuple(stay_list)
-        if not stay:
-            _LOGGER.warning(
-                "Skipping v3 reservation %s with no usable stay segment",
-                reservation_id,
-            )
+        assessment = assess_v3_record(data)
+        if (
+            not assessment.accepted
+            or assessment.reservation_id is None
+            or assessment.status is None
+        ):
             return None
+        stay = assessment.verified_segments
+        partial = assessment.partial
 
-        check_in: datetime | None = None
-        check_out: datetime | None = None
-        check_in_local = stay[0].check_in_local
-        check_out_local = stay[-1].check_out_local
-
-        nights_count = data.get("nightsCount")
-        if not isinstance(nights_count, int):
-            nights_count = derive_nights_count(
-                check_in_local,
-                check_out_local,
+        check_in_local: str | None = None
+        check_out_local: str | None = None
+        nights_count: int | None = None
+        guests_count: int | None = None
+        if not partial:
+            check_in_local = stay[0].check_in_local
+            check_out_local = stay[-1].check_out_local
+            raw_nights = data.get("nightsCount")
+            # Only a missing count is derived, from the verified dates.
+            nights_count = (
+                derive_nights_count(check_in_local, check_out_local)
+                if raw_nights is None
+                else non_negative_count(raw_nights)
             )
+            guests_count = stay[0].guests_count
 
         notes = data.get("notes")
-        note = notes.get("other") if isinstance(notes, dict) else None
+        note = _optional_str(notes.get("other")) if isinstance(notes, dict) else None
 
         guest_id = data.get("guestId")
-        guest = GuestyGuest(guest_id=guest_id) if guest_id else None
+        guest = (
+            GuestyGuest(guest_id=guest_id)
+            if isinstance(guest_id, str) and guest_id
+            else None
+        )
 
         custom_fields = MappingProxyType(
             _parse_custom_fields_array(data.get("customFields", [])),
         )
 
         return cls(
-            id=reservation_id,
+            id=assessment.reservation_id,
             listing_id=stay[0].listing_id,
-            status=map_v3_status(raw_status, reservation_id),
-            check_in=check_in,
-            check_out=check_out,
+            status=assessment.status,
+            check_in=None,
+            check_out=None,
             confirmation_code=data.get("confirmationCode"),
             check_in_local=check_in_local,
             check_out_local=check_out_local,
-            planned_arrival=data.get("plannedArrival"),
-            planned_departure=data.get("plannedDeparture"),
+            planned_arrival=_optional_str(data.get("plannedArrival")),
+            planned_departure=_optional_str(data.get("plannedDeparture")),
             nights_count=nights_count,
-            guests_count=stay[0].guests_count,
-            source=data.get("source"),
+            guests_count=guests_count,
+            source=_optional_str(data.get("source")),
             note=note,
             guest=guest,
             money=None,
             custom_fields=custom_fields,
             stay=stay,
             is_v3=True,
-            raw_stay_count=len(raw_stay),
+            raw_stay_count=assessment.raw_stay_count,
+            partial=partial,
         )
+
+
+def _optional_str(value: Any) -> str | None:
+    """Return an optional field only when it is a string.
+
+    Args:
+        value: The raw optional field value.
+
+    Returns:
+        The string, or None for any other type.
+    """
+    return value if isinstance(value, str) else None
 
 
 def map_v3_status(raw_status: str, reservation_id: str = "") -> str:
@@ -1155,11 +1130,17 @@ class FallbackCounters:
     NFR-009). Defined here because ``ReservationFetchResult``
     carries it and the fallback module imports this one.
 
+    An ``_INVALID`` lookup (a document for the requested ID that
+    fails validation) counts in ``attempted`` only; it is reported by
+    identifier in ``FallbackOutcome.invalid``, never as succeeded,
+    failed or confirmed absent.
+
     Attributes:
-        attempted: Legacy by-id lookups issued this refresh.
+        attempted: Legacy by-id lookups issued this refresh, including
+            invalid ones and the lookup that met a retirement answer.
         served: Reservations published from an existing record or
             from retained values, costing no request this refresh.
-        succeeded: Lookups that returned a usable document.
+        succeeded: Lookups that returned a verified document.
         confirmed_absent: Lookups legacy answered as not found,
             retiring the candidate for good (FR-052).
         failed: Lookups that failed for any other reason (FR-054).
@@ -1248,6 +1229,58 @@ class LegacyWriteCounters:
         return counts
 
 
+class RejectedCode(NamedTuple):
+    """A confirmation code carried by a rejected reservation record.
+
+    Attributes:
+        reservation_id: The rejected record's identifier.
+        code: Its non-empty string confirmation code.
+    """
+
+    reservation_id: str
+    code: str
+
+
+@dataclass(frozen=True)
+class ValidationSummary:
+    """Counts of the validation outcomes of one refresh.
+
+    Holds counts only, never identifiers or payload values.
+
+    Attributes:
+        rejected_records: Records rejected at record level.
+        partial_records: Records published with only some segments.
+        rejected_segments: Raw segments rejected across all records.
+        reasons: Occurrences of each record and segment reason.
+    """
+
+    rejected_records: int = 0
+    partial_records: int = 0
+    rejected_segments: int = 0
+    reasons: Mapping[ValidationReason, int] = field(
+        default_factory=lambda: MappingProxyType({}),
+    )
+
+    def merged(self, other: ValidationSummary) -> ValidationSummary:
+        """Return the sum of this summary and another.
+
+        Args:
+            other: The summary to add, such as the fallback's.
+
+        Returns:
+            A summary holding both sets of counts.
+        """
+        reasons = dict(self.reasons)
+        for reason, count in other.reasons.items():
+            reasons[reason] = reasons.get(reason, 0) + count
+        return ValidationSummary(
+            rejected_records=self.rejected_records + other.rejected_records,
+            partial_records=self.partial_records + other.partial_records,
+            rejected_segments=self.rejected_segments + other.rejected_segments,
+            reasons=MappingProxyType(reasons),
+        )
+
+
 @dataclass(frozen=True)
 class ReservationFetchResult:
     """Result of one reservation retrieval, whatever the source.
@@ -1260,7 +1293,8 @@ class ReservationFetchResult:
     Attributes:
         reservations: Validated, mapped reservations.
         pages: Number of API pages fetched.
-        status_counts: Histogram of raw, pre-mapping statuses.
+        status_counts: Histogram of mapped recognized statuses plus one
+            ``unrecognized`` bucket. No raw value is ever a key.
         segment_histogram: Histogram of stay-segment counts per
             reservation. Empty for sources without stay segments.
         fallback: Legacy not-found fallback counters (FR-057).
@@ -1279,11 +1313,24 @@ class ReservationFetchResult:
         returned_ids: Every string ``reservationId`` on the raw v3
             search pages, accepted or rejected, sorted and unique.
             Never merged with legacy lookups.
-        rejected_ids: Raw v3 identifiers the source returned but did
-            not accept (raw minus parsed until feature 013 supplies
-            its rejected set), sorted and unique.
+        rejected_ids: Batch-verified identifiers whose record was
+            rejected or is only partially valid, holds included,
+            sorted and unique. A subset of ``returned_ids`` on v3.
         fallback_observed: Identifiers a successful legacy by-ID
             lookup returned this refresh, whatever their status.
+        rejected_codes: Sorted ``(reservation_id, code)`` pairs of
+            rejected or partial non-hold records with a non-empty
+            string code, merged with the fallback's invalid lookups.
+            Internal; never logged or reported.
+        rejected_check_out_bounds: Retirement-only check-out bound per
+            coded rejected record that has one.
+        validation: Validation counts for this refresh.
+        exclusions: Sorted, unique ``(reason, reservation_id)`` keys of
+            rejected or partial records and their rejected segments.
+        fallback_invalid_ids: Identifiers whose legacy by-ID document
+            was returned but failed validation this refresh.
+        stale_ids: Fallback-published identifiers whose latest lookup
+            failed.
     """
 
     reservations: tuple[GuestyReservation, ...] = ()
@@ -1305,6 +1352,16 @@ class ReservationFetchResult:
     returned_ids: tuple[str, ...] = ()
     rejected_ids: tuple[str, ...] = ()
     fallback_observed: tuple[str, ...] = ()
+    rejected_codes: tuple[RejectedCode, ...] = ()
+    rejected_check_out_bounds: Mapping[str, str] = field(
+        default_factory=lambda: MappingProxyType({}),
+    )
+    validation: ValidationSummary = field(
+        default_factory=lambda: ValidationSummary(),
+    )
+    exclusions: tuple[tuple[ValidationReason, str], ...] = ()
+    fallback_invalid_ids: tuple[str, ...] = ()
+    stale_ids: tuple[str, ...] = ()
 
 
 @runtime_checkable

@@ -15,7 +15,7 @@ from contextlib import ExitStack
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import ANY, AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, PropertyMock, patch
 
 import httpx
 import pytest
@@ -27,7 +27,10 @@ from homeassistant.helpers import entity_registry as er
 from httpx import Response
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.guesty.actions import guard_reservation_write
+from custom_components.guesty.actions import (
+    ReservationIdentityMissError,
+    guard_reservation_write,
+)
 from custom_components.guesty.api.const import (
     BASE_URL,
     LEGACY_FALLBACK_RECHECK_SECONDS,
@@ -58,16 +61,29 @@ from custom_components.guesty.api.models import (
     GuestyCustomFieldResult,
     GuestyListing,
     GuestyReservation,
+    RejectedCode,
 )
 from custom_components.guesty.const import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
     CONF_RESERVATIONS_API,
+    CONF_SELECTED_LISTINGS,
     DOMAIN,
     RESERVATIONS_API_V3,
     SERVICE_SET_CUSTOM_FIELD,
 )
-from custom_components.guesty.identity import REFUSAL_NO_CODE
+from custom_components.guesty.identity import (
+    EVIDENCE_COMPROMISED,
+    EVIDENCE_REVALIDATING,
+    EVIDENCE_SATURATED,
+    EVIDENCE_UNLOADED,
+    EVIDENCE_UNSTORED,
+    REFUSAL_EVIDENCE_REPAIR,
+    REFUSAL_EVIDENCE_UNAVAILABLE,
+    REFUSAL_NO_CODE,
+    REFUSAL_REVALIDATING,
+    ConflictOnlyEvidence,
+)
 from tests.conftest import (
     BY_ID_TARGET,
     FakeConflictEvidence,
@@ -84,6 +100,7 @@ from tests.conftest import (
     make_v3_search_page,
     make_v3_segment,
     sample_custom_field_definitions,
+    stub_guesty_network,
 )
 
 # Reservation identifiers these tests set custom fields on; the
@@ -5154,3 +5171,244 @@ class TestByIdWriteFallback223CustomField(_ByIdCustomFieldBase):
         assert "API error during custom field update" not in text
         assert routes.read.call_count == 1
         assert routes.fields.call_count == 1
+
+
+# ── Feature 013: evidence-state custom-field refusals (T021) ────────
+
+_CF_REJECTED = "res-rej"
+
+
+def _cf_rejected_refresh(kind: str = "partial") -> Any:
+    """Build a refresh whose rejected target is partial or dropped.
+
+    Args:
+        kind: ``partial`` keeps the record as partial; ``dropped``
+            leaves it only in ``rejected_ids``.
+
+    Returns:
+        The refresh result.
+    """
+    extra = (
+        [replace(make_identity_reservation(_CF_REJECTED, "CONF-REJ"), partial=True)]
+        if kind == "partial"
+        else []
+    )
+    return make_fetch_result(
+        [*make_identity_reservations(*_WRITE_TARGETS), *extra],
+        rejected_ids=(_CF_REJECTED,),
+        rejected_codes=(RejectedCode(_CF_REJECTED, "CONF-REJ"),),
+    )
+
+
+class TestEvidenceStateCustomFieldRefusals:
+    """Evidence state and validation decide custom-field writes (T021)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions.
+
+        Yields:
+            None, while the definitions client is patched.
+        """
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=sample_custom_field_definitions(),
+        ):
+            yield
+
+    @staticmethod
+    async def _write(
+        hass: HomeAssistant,
+        target_id: str,
+        refresh: Any,
+        evidence: FakeConflictEvidence | None = None,
+    ) -> tuple[Any, Any, AsyncMock]:
+        """Set the door code, capturing the network routes and write mock.
+
+        Args:
+            hass: Home Assistant instance.
+            target_id: The reservation targeted.
+            refresh: What a recovery refresh returns.
+            evidence: The by-ID evidence double to install, or None
+                to keep the production adapter.
+
+        Returns:
+            The response or raised error, the mocked routes (the
+            recovery refresh and the by-ID read) and the write mock.
+        """
+        with (
+            by_id_network(
+                refresh=refresh, evidence=evidence, reservation_id=target_id
+            ) as routes,
+            patch.object(
+                GuestyCustomFieldsClient,
+                "set_field",
+                new_callable=AsyncMock,
+                return_value=GuestyCustomFieldResult(
+                    success=True,
+                    target_type="reservation",
+                    target_id=target_id,
+                    field_id="cf-door-code",
+                ),
+            ) as set_field,
+        ):
+            try:
+                outcome: Any = await hass.services.async_call(
+                    DOMAIN,
+                    SERVICE_SET_CUSTOM_FIELD,
+                    {
+                        "target_type": "reservation",
+                        "target_id": target_id,
+                        "field_id": "cf-door-code",
+                        "value": "1234",
+                    },
+                    blocking=True,
+                    return_response=True,
+                )
+            except HomeAssistantError as err:
+                outcome = err
+        return outcome, routes, set_field
+
+    @pytest.mark.parametrize(
+        ("state", "match"),
+        [
+            (EVIDENCE_UNLOADED, REFUSAL_EVIDENCE_UNAVAILABLE),
+            (EVIDENCE_REVALIDATING, REFUSAL_REVALIDATING),
+            (EVIDENCE_UNSTORED, REFUSAL_EVIDENCE_UNAVAILABLE),
+            (
+                EVIDENCE_SATURATED,
+                f"{REFUSAL_EVIDENCE_UNAVAILABLE} {REFUSAL_EVIDENCE_REPAIR}",
+            ),
+            (
+                EVIDENCE_COMPROMISED,
+                f"{REFUSAL_EVIDENCE_UNAVAILABLE} {REFUSAL_EVIDENCE_REPAIR}",
+            ),
+        ],
+    )
+    async def test_unavailable_evidence_refuses_plainly(
+        self, hass: HomeAssistant, state: str, match: str
+    ) -> None:
+        """A non-ready store refuses before membership and refresh."""
+        await TestSetCustomFieldIdentityGuard._setup(
+            hass, make_identity_reservations(*_WRITE_TARGETS)
+        )
+        with patch.object(
+            ConflictOnlyEvidence, "state", new_callable=PropertyMock
+        ) as current:
+            current.return_value = state
+            outcome, routes, set_field = await self._write(
+                hass,
+                "res-001",
+                make_fetch_result(make_identity_reservations(*_WRITE_TARGETS)),
+                evidence=FakeConflictEvidence(),
+            )
+
+        assert isinstance(outcome, HomeAssistantError)
+        assert str(outcome) == match
+        assert isinstance(outcome.__cause__, GuestyActionError)
+        assert not isinstance(outcome.__cause__, ReservationIdentityMissError)
+        routes.fetch.assert_not_awaited()
+        assert routes.read.call_count == 0
+        set_field.assert_not_awaited()
+
+    @pytest.mark.parametrize("hidden_by", ["listing_selection", "out_of_window"])
+    async def test_filtered_valid_target_is_written(
+        self, hass: HomeAssistant, hidden_by: str
+    ) -> None:
+        """A valid record hidden from publication is still written (R11).
+
+        Listing selection and the configured window decide what is
+        displayed, never what is valid. The only status-based drop,
+        an alteration hold, is refused for writes by design, so it is
+        not a filtered-but-valid case.
+        """
+        target = "res-hidden"
+        record = make_identity_reservation(target, f"CONF-{target}")
+        options: dict[str, Any] = {}
+        if hidden_by == "listing_selection":
+            options[CONF_SELECTED_LISTINGS] = ["another-listing"]
+        else:
+            assert record.check_in is not None
+            assert record.check_out is not None
+            record = replace(
+                record,
+                check_in=record.check_in + timedelta(days=400),
+                check_out=record.check_out + timedelta(days=400),
+            )
+        listing = GuestyListing.from_api_dict(
+            {"_id": "listing-001", "title": "Hidden", "timezone": "UTC"}
+        )
+        assert listing is not None
+        records = [*make_identity_reservations(*_WRITE_TARGETS), record]
+        entry = _make_entry(options=options)
+        entry.add_to_hass(hass)
+        with (
+            stub_guesty_network(listings=[listing], reservations=records),
+            patch(
+                "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+                new_callable=AsyncMock,
+                return_value=sample_custom_field_definitions(),
+            ),
+        ):
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        assert coordinator.last_update_success
+        published = {r.id for items in coordinator.data.values() for r in items}
+        assert bool(published) is (hidden_by == "out_of_window")
+        assert target not in published
+        assert coordinator.identity.write_refusal(target) is None
+
+        outcome, routes, set_field = await self._write(
+            hass, target, make_fetch_result(records)
+        )
+
+        assert not isinstance(outcome, HomeAssistantError)
+        routes.fetch.assert_not_awaited()
+        set_field.assert_awaited_once()
+        assert set_field.await_args is not None
+        assert target in set_field.await_args.args + tuple(
+            set_field.await_args.kwargs.values()
+        )
+
+    @pytest.mark.parametrize("kind", ["partial", "dropped"])
+    async def test_rejected_target_is_refused_then_written_once_fixed(
+        self, hass: HomeAssistant, kind: str
+    ) -> None:
+        """A rejected target misses membership until a refresh fixes it.
+
+        The refusal is the plain membership refusal: one recovery
+        refresh, no by-ID read and no custom-field write.
+        """
+        entry = await TestSetCustomFieldIdentityGuard._setup(
+            hass, make_identity_reservations(*_WRITE_TARGETS)
+        )
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        with patch(
+            "custom_components.guesty.GuestyApiClient.get_reservations",
+            new_callable=AsyncMock,
+            return_value=_cf_rejected_refresh(kind),
+        ):
+            await coordinator.async_refresh()
+        assert coordinator.identity.conflict_evidence.available()
+
+        refused, routes, set_field = await self._write(
+            hass, _CF_REJECTED, _cf_rejected_refresh(kind)
+        )
+        assert isinstance(refused, HomeAssistantError)
+        assert str(refused) == REFUSAL_NO_CODE.format(reservation_id=_CF_REJECTED)
+        routes.fetch.assert_awaited_once()
+        assert routes.read.call_count == 0
+        set_field.assert_not_awaited()
+
+        fixed = make_fetch_result(
+            [
+                *make_identity_reservations(*_WRITE_TARGETS),
+                make_identity_reservation(_CF_REJECTED, "CONF-REJ"),
+            ]
+        )
+        written, routes, set_field = await self._write(hass, _CF_REJECTED, fixed)
+        assert not isinstance(written, HomeAssistantError)
+        routes.fetch.assert_awaited_once()
+        set_field.assert_awaited_once()

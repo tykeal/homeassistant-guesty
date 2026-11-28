@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
 from homeassistant.config_entries import ConfigEntryState
@@ -21,6 +21,7 @@ from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.guesty.api.const import RESERVATIONS_API_V3
+from custom_components.guesty.api.exceptions import GuestyConnectionError
 from custom_components.guesty.api.guest_cache import GuestLookupResult
 from custom_components.guesty.api.models import (
     FallbackCounters,
@@ -28,7 +29,10 @@ from custom_components.guesty.api.models import (
     GuestyListing,
     GuestyReservation,
     GuestyStaySegment,
+    RejectedCode,
+    ValidationSummary,
 )
+from custom_components.guesty.api.validation import ValidationReason
 from custom_components.guesty.const import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
@@ -40,6 +44,7 @@ from custom_components.guesty.diagnostics import (
     async_get_config_entry_diagnostics,
 )
 from custom_components.guesty.identity import (
+    MAX_CONFLICT_ONLY_EVIDENCE,
     IdentityComparison,
     IdentityConflict,
 )
@@ -148,7 +153,12 @@ class TestReservationDiagnostics:
         self,
         hass: HomeAssistant,
     ) -> None:
-        """The accepted-refresh snapshot never reaches the download."""
+        """The accepted-refresh snapshot never reaches the download.
+
+        ``validation.stale.snapshot_stale`` (feature 013) names the
+        verified display snapshot, not this one, and carries a bool;
+        it is the only permitted occurrence of "snapshot".
+        """
         entry = await _setup_entry(hass)
         coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
         coordinator._accepted_snapshot = AcceptedRefreshSnapshot(
@@ -165,8 +175,9 @@ class TestReservationDiagnostics:
 
         rendered = repr(await async_get_config_entry_diagnostics(hass, entry))
 
-        for forbidden in ("SNAPCODE", "res-snapshot", "snapshot"):
+        for forbidden in ("SNAPCODE", "res-snapshot", "accepted"):
             assert forbidden not in rendered
+        assert "snapshot" not in rendered.replace("snapshot_stale", "")
 
     async def test_unloaded_entry_reports_nothing(
         self,
@@ -427,3 +438,355 @@ class TestRefreshDiagnostics:
 
         for forbidden in ("CONF-", "@", "phone", "email", "full_name"):
             assert forbidden not in rendered
+
+
+class TestValidationDiagnostics:
+    """The ``reservations.validation`` block (T036)."""
+
+    @staticmethod
+    async def _entry(
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> MockConfigEntry:
+        """Load a v3 entry tracking the sample listing.
+
+        Args:
+            hass: Home Assistant instance.
+            sample_listing: The listing the coordinator tracks.
+
+        Returns:
+            The loaded entry.
+        """
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data={
+                CONF_CLIENT_ID: FAKE_CLIENT_ID,
+                CONF_CLIENT_SECRET: FAKE_CLIENT_SECRET,
+            },
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_V3},
+            unique_id=FAKE_CLIENT_ID,
+        )
+        entry.add_to_hass(hass)
+        with stub_guesty_network(listings=[sample_listing]):
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+        assert entry.state is ConfigEntryState.LOADED
+        return entry
+
+    @staticmethod
+    async def _refresh(
+        hass: HomeAssistant,
+        entry: MockConfigEntry,
+        **fields: Any,
+    ) -> dict[str, Any]:
+        """Run one accepted refresh and return the validation block.
+
+        Args:
+            hass: Home Assistant instance.
+            entry: The loaded entry.
+            **fields: Fetch result fields to set.
+
+        Returns:
+            The ``reservations.validation`` diagnostics mapping.
+        """
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        reservation = TestRefreshDiagnostics._reservation(
+            "res-ok", "listing-001", days_out=1
+        )
+        with patch(
+            _PATCH_RESERVATIONS,
+            new_callable=AsyncMock,
+            return_value=make_fetch_result([reservation], **fields),
+        ):
+            await coordinator.async_refresh()
+        assert coordinator.last_update_success
+        diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+        return cast(dict[str, Any], diagnostics["reservations"]["validation"])
+
+    async def test_block_reports_the_refresh_counts(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """Counts, reasons, IDs, evidence and staleness in one block."""
+        entry = await self._entry(hass, sample_listing)
+        validation = await self._refresh(
+            hass,
+            entry,
+            rejected_ids=("res-b", "res-a"),
+            validation=ValidationSummary(
+                rejected_records=1,
+                partial_records=1,
+                rejected_segments=2,
+                reasons=MappingProxyType(
+                    {
+                        ValidationReason.UNRECOGNIZED_STATUS: 1,
+                        ValidationReason.SEGMENT_MISSING_LISTING: 2,
+                    }
+                ),
+            ),
+        )
+
+        assert validation == {
+            "rejected_records": 1,
+            "partial_records": 1,
+            "rejected_segments": 2,
+            "reasons": {
+                "segment_missing_listing": 2,
+                "unrecognized_status": 1,
+            },
+            "rejected_ids": ["res-a", "res-b"],
+            "rejected_ids_truncated": False,
+            "conflict_evidence": {
+                "state": "ready",
+                "available": True,
+                "count": 0,
+                "dated": 0,
+                "undated": 0,
+                "bound": MAX_CONFLICT_ONLY_EVIDENCE,
+                "near_capacity": False,
+            },
+            "stale": {
+                "snapshot_stale": False,
+                "stale_count": 0,
+                "last_verified_at": None,
+            },
+        }
+
+    async def test_rejected_ids_are_capped(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """At most 100 sorted identifiers, with a truncation flag."""
+        entry = await self._entry(hass, sample_listing)
+        ids = tuple(f"res-{n:03d}" for n in range(150))
+        validation = await self._refresh(hass, entry, rejected_ids=ids[::-1])
+
+        assert validation["rejected_ids"] == list(ids[:100])
+        assert validation["rejected_ids_truncated"] is True
+
+    async def test_fallback_invalid_ids_are_listed(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """A fallback-invalid record counted as rejected is listed too."""
+        entry = await self._entry(hass, sample_listing)
+        validation = await self._refresh(
+            hass,
+            entry,
+            rejected_ids=("res-b",),
+            fallback_invalid_ids=("res-c", "res-b"),
+            validation=ValidationSummary(
+                rejected_records=2,
+                reasons=MappingProxyType(
+                    {
+                        ValidationReason.UNRECOGNIZED_STATUS: 1,
+                        ValidationReason.UNVERIFIED_INSTANT: 1,
+                    }
+                ),
+            ),
+        )
+
+        assert validation["rejected_records"] == 2
+        assert validation["rejected_ids"] == ["res-b", "res-c"]
+        assert validation["rejected_ids_truncated"] is False
+
+    async def test_fallback_invalid_ids_share_the_cap(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """The combined identifiers are capped at 100 with the flag."""
+        entry = await self._entry(hass, sample_listing)
+        ids = tuple(f"res-{n:03d}" for n in range(101))
+        validation = await self._refresh(
+            hass, entry, rejected_ids=ids[:100], fallback_invalid_ids=ids[100:]
+        )
+
+        assert validation["rejected_ids"] == list(ids[:100])
+        assert validation["rejected_ids_truncated"] is True
+
+    async def test_next_refresh_clears_fallback_invalid_ids(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """An accepted refresh with nothing invalid lists no IDs."""
+        entry = await self._entry(hass, sample_listing)
+        first = await self._refresh(hass, entry, fallback_invalid_ids=("res-c",))
+        assert first["rejected_ids"] == ["res-c"]
+
+        validation = await self._refresh(hass, entry)
+
+        assert validation["rejected_ids"] == []
+        assert validation["rejected_ids_truncated"] is False
+
+    async def test_unfetched_failure_keeps_the_last_batch(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """A refresh that fetched no batch leaves the block unchanged."""
+        entry = await self._entry(hass, sample_listing)
+        before = await self._refresh(
+            hass,
+            entry,
+            rejected_ids=("res-b",),
+            fallback_invalid_ids=("res-c",),
+            validation=ValidationSummary(
+                rejected_records=2,
+                reasons=MappingProxyType({ValidationReason.UNRECOGNIZED_STATUS: 2}),
+            ),
+        )
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        with patch(
+            _PATCH_RESERVATIONS,
+            new_callable=AsyncMock,
+            side_effect=GuestyConnectionError("down"),
+        ):
+            await coordinator.async_refresh()
+        assert not coordinator.last_update_success
+
+        after = (await async_get_config_entry_diagnostics(hass, entry))["reservations"][
+            "validation"
+        ]
+        for key in ("rejected_records", "reasons", "rejected_ids"):
+            assert after[key] == before[key]
+        assert after["rejected_ids"] == ["res-b", "res-c"]
+
+    async def test_failed_refresh_reports_its_fetched_batch(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """A batch fetched before a later failure is what gets reported.
+
+        The stale display drops what that batch disproved, so the
+        block names the same batch rather than an earlier one.
+        """
+        entry = await self._entry(hass, sample_listing)
+        await self._refresh(
+            hass,
+            entry,
+            rejected_ids=("res-old",),
+            validation=ValidationSummary(
+                rejected_records=1,
+                reasons=MappingProxyType({ValidationReason.UNRECOGNIZED_STATUS: 1}),
+            ),
+        )
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        reservation = TestRefreshDiagnostics._reservation(
+            "res-ok", "listing-001", days_out=1
+        )
+        with (
+            patch(
+                _PATCH_RESERVATIONS,
+                new_callable=AsyncMock,
+                return_value=make_fetch_result(
+                    [reservation],
+                    rejected_ids=("res-new",),
+                    fallback_invalid_ids=("res-c",),
+                    validation=ValidationSummary(
+                        rejected_records=2,
+                        reasons=MappingProxyType(
+                            {ValidationReason.UNVERIFIED_INSTANT: 2}
+                        ),
+                    ),
+                ),
+            ),
+            patch.object(
+                coordinator,
+                "_resolve_v3_reservations",
+                AsyncMock(side_effect=RuntimeError("boom")),
+            ),
+        ):
+            await coordinator.async_refresh()
+        assert not coordinator.last_update_success
+
+        validation = (await async_get_config_entry_diagnostics(hass, entry))[
+            "reservations"
+        ]["validation"]
+        assert validation["rejected_records"] == 2
+        assert validation["reasons"] == {"unverified_instant": 2}
+        assert validation["rejected_ids"] == ["res-c", "res-new"]
+
+    async def test_failed_refresh_reports_the_stale_snapshot(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """The stale block names when the shown data was verified.
+
+        The connection failure fetches no batch, so nothing is
+        disproven and the snapshot keeps its one stale record.
+        """
+        entry = await self._entry(hass, sample_listing)
+        await self._refresh(hass, entry, stale_ids=("res-ok",))
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        with patch(
+            _PATCH_RESERVATIONS,
+            new_callable=AsyncMock,
+            side_effect=GuestyConnectionError("down"),
+        ):
+            await coordinator.async_refresh()
+        assert not coordinator.last_update_success
+        assert coordinator.last_verified_at is not None
+
+        stale = (await async_get_config_entry_diagnostics(hass, entry))["reservations"][
+            "validation"
+        ]["stale"]
+        assert stale == {
+            "snapshot_stale": True,
+            "stale_count": 1,
+            "last_verified_at": coordinator.last_verified_at.isoformat(),
+        }
+
+    async def test_status_counts_are_sanitized(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """An unrecognized raw status never becomes a diagnostics key."""
+        entry = await self._entry(hass, sample_listing)
+        await self._refresh(
+            hass,
+            entry,
+            status_counts=MappingProxyType(
+                {"confirmed": 1, "SENTINEL-STATUS-VALUE": 2}
+            ),
+        )
+
+        diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+        refresh = diagnostics["reservations"]["refresh"]
+        assert refresh["status_counts"] == {"confirmed": 1, "unrecognized": 2}
+        assert "SENTINEL-STATUS-VALUE" not in repr(diagnostics)
+
+    async def test_evidence_block_reveals_no_codes_or_ids(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+    ) -> None:
+        """Only counts are shown; never which IDs have stored pairs."""
+        entry = await self._entry(hass, sample_listing)
+        validation = await self._refresh(
+            hass,
+            entry,
+            rejected_codes=(RejectedCode("res-hidden-pair", "CODE-SECRET"),),
+        )
+
+        evidence = validation["conflict_evidence"]
+        assert set(evidence) == {
+            "state",
+            "available",
+            "count",
+            "dated",
+            "undated",
+            "bound",
+            "near_capacity",
+        }
+        assert evidence["count"] == 1
+        rendered = repr(await async_get_config_entry_diagnostics(hass, entry))
+        assert "CODE-SECRET" not in rendered
+        assert "res-hidden-pair" not in rendered

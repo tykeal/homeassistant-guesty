@@ -109,6 +109,54 @@ reservation reads fail and reservation writes refuse with an error
 naming the retirement. Treat `legacy` as a way to buy time to report
 a problem, not as a long-term setting.
 
+### Reservation data is published only when verified
+
+Both reservation APIs are checked record by record, and only data that
+can be verified is published or used:
+
+- A reservation with a missing or unrecognized status is left out.
+  A v3 reservation is also left out when it has no stay segment with a
+  listing and valid local check-in and check-out dates. A legacy
+  reservation is left out unless it has a listing and check-in and
+  check-out times with an explicit UTC offset, check-in before
+  check-out; a time without an offset is rejected as unverified
+  (`unverified_instant`). The rest of the refresh is still published. A
+  warning names the reason and the reservation ID once per Home
+  Assistant start or entry reload, and again if the problem goes away
+  and later returns; beyond 256 exclusions the rest are summarized in
+  one warning. A malformed reservation ID or page still fails the whole
+  refresh.
+- A v3 multi-unit reservation with some invalid stay segments publishes
+  only its verified segments, and is never a target for reservation
+  writes until every segment verifies.
+- For v3 reservations, local dates come only from Guesty's local
+  check-in and check-out dates. A UTC timestamp's calendar date is no
+  longer used as a local date; a single-segment reservation with only
+  timestamps is left out.
+- **Unverified listing timezones**: a listing without a timezone that
+  Home Assistant can load is shown by date only. No exact time is
+  derived, a stay on its checkout day has an uncertain (`unknown`)
+  status, and a stay is shown only when it is within the configured
+  date window for every possible local date. A repair notice per
+  listing clears once the timezone is set in Guesty.
+- Stays that have ended are marked `checked_out` before the ten-item
+  `upcoming` limit is applied, so they no longer crowd out future
+  stays. A date-only stay on its checkout day is `unknown` rather than
+  claimed occupied.
+
+**Stale display after a failed refresh**: if a refresh fails, the
+reservation sensors stay available and show the last verified data,
+re-evaluated at the current time, with the attribute `stale: true` and
+`last_verified_at` (when that data was last verified). Each `upcoming`
+item also carries `stale`. Stale data is never treated as reverified
+and never authorizes a write. A reservation whose fallback lookup
+failed is marked `stale` individually. With no verified data the
+sensors are unavailable.
+
+The diagnostics download has a `validation` block with counts by
+reason and up to 100 rejected or partially valid reservation IDs, never
+codes, guest data or other payload values.
+
 ### Reservation writes are fail-closed
 
 Writing to a reservation — adding a note, changing a status, setting
@@ -133,6 +181,27 @@ insufficient evidence refuses it without sending a write. A refresh
 cannot guarantee that a newly created booking is already indexed by
 Guesty. A recovered write is sent at most once and is not automatically
 retried. Listing custom-field writes do not trigger this refresh.
+
+Two further refusals protect writes while the integration cannot prove
+which booking a confirmation code belongs to:
+
+- **Revalidating**: after an upgrade, after every Home Assistant
+  restart or entry reload, and after the reservation history window
+  (`past_days`) is increased, every reservation write is refused until
+  the next successful reservation refresh has been verified and
+  stored. Wait for one refresh, then try again.
+- **Identity evidence unavailable**: the integration keeps a bounded
+  record of the confirmation codes of reservations it could not
+  verify, so a rejected reservation can never be mistaken for another.
+  If that record cannot be saved, every write is refused until a later
+  save succeeds. If it fills up or cannot be trusted, every write is
+  refused and a repair notice asks you to correct the rejected
+  reservations in Guesty and then remove and re-add the integration
+  entry. A separate warning notice appears when the record is nearly
+  full.
+
+Neither refusal starts the one-time refresh described above, and
+neither sends any request to Guesty.
 
 If you need writes back immediately, roll back to `legacy`.
 

@@ -44,7 +44,8 @@ def resolve_local_datetime(
 
     Returns:
         The unique aware UTC instant, or None when inputs are invalid,
-        missing, ambiguous, or nonexistent.
+        missing, ambiguous, nonexistent, or outside the representable
+        UTC range.
     """
     if not isinstance(local_date, str) or not isinstance(wall_time, str):
         return None
@@ -63,8 +64,11 @@ def resolve_local_datetime(
     candidates: set[datetime] = set()
     for fold in (0, 1):
         local_candidate = naive_local.replace(tzinfo=timezone, fold=fold)
-        utc_candidate = local_candidate.astimezone(UTC)
-        round_trip = utc_candidate.astimezone(timezone)
+        try:
+            utc_candidate = local_candidate.astimezone(UTC)
+            round_trip = utc_candidate.astimezone(timezone)
+        except OverflowError:
+            return None
         if round_trip.replace(tzinfo=None) == naive_local:
             candidates.add(utc_candidate)
 

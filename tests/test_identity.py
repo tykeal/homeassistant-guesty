@@ -15,12 +15,14 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
+import httpx
 import pytest
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -39,6 +41,7 @@ from custom_components.guesty.api.models import (
     GuestyListing,
     GuestyReservation,
     GuestyStaySegment,
+    RejectedCode,
 )
 from custom_components.guesty.const import (
     CONF_CLIENT_ID,
@@ -57,25 +60,43 @@ from custom_components.guesty.identity import (
     BOOTSTRAP_LEGACY_PATH,
     BOOTSTRAP_SWEPT,
     BOOTSTRAP_UNAVAILABLE,
+    CONFLICT_EVIDENCE_STORAGE_VERSION,
     CONTINUITY_NOT_APPLICABLE,
     CONTINUITY_UNCONFIRMED,
     CONTINUITY_VERIFIED,
+    EVIDENCE_COMPROMISED,
+    EVIDENCE_READY,
+    EVIDENCE_REVALIDATING,
+    EVIDENCE_SATURATED,
+    EVIDENCE_UNLOADED,
+    EVIDENCE_UNSTORED,
+    IDENTITY_STORAGE_MINOR_VERSION,
     MAX_BASELINE_CODES,
+    MAX_CONFLICT_ONLY_EVIDENCE,
+    REFUSAL_AMBIGUOUS,
+    REFUSAL_EVIDENCE_REPAIR,
+    REFUSAL_EVIDENCE_UNAVAILABLE,
+    REFUSAL_NO_BASELINE,
+    REFUSAL_REVALIDATING,
     REFUSAL_UNCONFIRMED,
     REFUSAL_UNSTORED,
     SOURCE_BOOTSTRAP,
+    SOURCE_CONFLICT_ONLY,
     STORAGE_VERSION,
     CandidateHint,
+    ConflictOnlyEvidence,
     IdentityBaseline,
     IdentityComparison,
     ReservationIdentityGuard,
     _bounded,
     _bounded_candidates,
+    _IdentityStore,
     _next_continuity,
     _retained_legacy,
     _retrieved_hints,
     _verified_candidate_interval,
     async_bootstrap_identity,
+    conflict_evidence_storage_key,
     observe_codes,
     storage_key,
 )
@@ -244,6 +265,7 @@ def _legacy_sweep(
     *,
     error: Exception | None = None,
     pages: int = 2,
+    **fields: Any,
 ) -> Iterator[AsyncMock]:
     """Stand in for the legacy reservation source of the sweep.
 
@@ -251,12 +273,13 @@ def _legacy_sweep(
         reservations: Reservations the sweep should return.
         error: Exception the sweep should raise instead.
         pages: Page count the stubbed retrieval reports.
+        **fields: Further fetch result fields to set.
 
     Yields:
         The mocked ``fetch`` coroutine, for call assertions.
     """
     fetch = AsyncMock(
-        return_value=make_fetch_result(reservations or [], pages=pages),
+        return_value=make_fetch_result(reservations or [], pages=pages, **fields),
         side_effect=error,
     )
     source = AsyncMock()
@@ -1446,7 +1469,15 @@ class TestIdentityReviewHardening:
         self,
         hass: HomeAssistant,
     ) -> None:
-        """FR-033 asks what the target reports now, not before."""
+        """FR-033 asks what the target reports now, not before.
+
+        Updated for feature 013 (research R18): every load revalidates
+        the conflict-only evidence, so writes are refused until an
+        accepted refresh stores the evidence and the baseline (steps 1
+        and 2). The refresh runs before the refusals are compared; it
+        reports ``res-2`` with its code and leaves ``res-1`` known only
+        through history.
+        """
         guard = ReservationIdentityGuard(hass, "entry-codeless")
         await guard.async_load()
         await guard.async_store(
@@ -1456,6 +1487,11 @@ class TestIdentityReviewHardening:
                 codes={CODE_B: "res-2"},
                 legacy_codes={CODE_A: "res-1"},
             ),
+        )
+        assert await _accept(
+            guard,
+            [_reservation("res-2", CODE_B)],
+            path=RESERVATIONS_API_V3,
         )
 
         assert guard.write_refusal("res-2") is None
@@ -2093,6 +2129,116 @@ class TestBootstrapSweep:
 
         assert comparison.is_ambiguous is True
 
+    async def test_rejected_legacy_pair_collision_is_ambiguous(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A rejected legacy record sharing a code spoils the sweep."""
+        entry = _make_entry(entry_id="entry-sweep-rejected")
+        entry.add_to_hass(hass)
+        _register_reservation_entity(hass, entry)
+        guard = ReservationIdentityGuard(hass, entry.entry_id)
+
+        with _legacy_sweep(
+            [_reservation("legacy-1", CODE_A)],
+            rejected_ids=("legacy-2",),
+            rejected_codes=(RejectedCode("legacy-2", CODE_A),),
+        ):
+            result = await async_bootstrap_identity(
+                hass,
+                entry,
+                guard=guard,
+                api_client=_api_client(),
+            )
+
+        assert result.reason == BOOTSTRAP_AMBIGUOUS
+        assert guard.baseline is not None
+        assert guard.baseline.bootstrap_codes is None
+
+    async def test_rejected_legacy_pairs_are_recorded_before_identity(
+        self,
+        hass: HomeAssistant,
+        hass_storage: dict[str, Any],
+    ) -> None:
+        """Rejected sweep pairs are saved first, as legacy evidence."""
+        entry = _make_entry(entry_id="entry-sweep-order")
+        entry.add_to_hass(hass)
+        _register_reservation_entity(hass, entry)
+        guard = ReservationIdentityGuard(hass, entry.entry_id)
+        await guard.async_load()
+        order: list[str] = []
+        evidence_save = guard.conflict_evidence._store.async_save
+        identity_save = guard._store.async_save
+
+        async def _evidence_save(data: Any) -> None:
+            """Record an evidence save."""
+            order.append("evidence")
+            await evidence_save(data)
+
+        async def _identity_save(data: Any) -> None:
+            """Record an identity save."""
+            order.append("identity")
+            await identity_save(data)
+
+        with (
+            _legacy_sweep(
+                [_reservation("legacy-1", CODE_A)],
+                rejected_ids=("legacy-2",),
+                rejected_codes=(RejectedCode("legacy-2", CODE_B),),
+                rejected_check_out_bounds={"legacy-2": "2026-01-10"},
+            ),
+            patch.object(guard.conflict_evidence._store, "async_save", _evidence_save),
+            patch.object(guard._store, "async_save", _identity_save),
+        ):
+            result = await async_bootstrap_identity(
+                hass,
+                entry,
+                guard=guard,
+                api_client=_api_client(),
+            )
+
+        assert result.reason == BOOTSTRAP_SWEPT
+        assert order == ["evidence", "identity"]
+        baseline = guard.baseline
+        assert baseline is not None
+        assert baseline.bootstrap_codes == {CODE_A: "legacy-1"}
+        assert "legacy-2" not in baseline.known_ids()
+        stored = hass_storage[conflict_evidence_storage_key(entry.entry_id)]["data"]
+        assert [
+            (e["reservation_id"], e["code"], e["path"], e["fallback"])
+            for e in stored["entries"]
+        ] == [("legacy-2", CODE_B, RESERVATIONS_API_LEGACY, False)]
+        assert stored["generation"] == baseline.conflict_evidence_generation == 1
+        maps = guard.conflict_evidence.compare_maps(RESERVATIONS_API_V3)
+        assert all(not stored_map.confirms for stored_map in maps)
+
+    async def test_missing_id_gives_unavailable(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """A sweep record with no ``_id`` fails the sweep closed."""
+        entry = _make_entry(entry_id="entry-sweep-noid")
+        entry.add_to_hass(hass)
+        _register_reservation_entity(hass, entry)
+        guard = ReservationIdentityGuard(hass, entry.entry_id)
+        client = _api_client()
+        client._request = AsyncMock(
+            return_value=httpx.Response(
+                200, json={"results": [{"status": "confirmed"}]}
+            ),
+        )
+
+        result = await async_bootstrap_identity(
+            hass,
+            entry,
+            guard=guard,
+            api_client=client,
+        )
+
+        assert result.reason == BOOTSTRAP_UNAVAILABLE
+        assert client._request.await_count == 1
+        assert guard.write_refusal("legacy-1") is not None
+
 
 class TestContinuityNotice:
     """The unconfirmed-continuity notice (T075, FR-031c)."""
@@ -2614,3 +2760,1849 @@ class TestIdentityConflictQuery:
         assert guard.baseline is baseline
         assert baseline.to_dict() == before
         assert (guard._unstored, guard._ambiguous, guard._loaded) == flags
+
+
+# ── Feature 013: conflict-only identity evidence (T015-T018) ────────
+
+_EVIDENCE_NOW = datetime(2026, 3, 1, 12, tzinfo=UTC)
+_IDENTITY_LOGGER = "custom_components.guesty.identity"
+
+
+def _pair(reservation_id: str, code: str) -> RejectedCode:
+    """Build one rejected ``(reservation_id, code)`` pair.
+
+    Args:
+        reservation_id: The rejected record's identifier.
+        code: Its confirmation code.
+
+    Returns:
+        The rejected pair.
+    """
+    return RejectedCode(reservation_id, code)
+
+
+def _evidence(
+    hass: HomeAssistant,
+    entry_id: str = "entry-evidence",
+    past_days: int = 30,
+) -> ConflictOnlyEvidence:
+    """Build an unloaded conflict-only evidence store.
+
+    Args:
+        hass: Home Assistant instance.
+        entry_id: The owning config entry.
+        past_days: The configured past-day window.
+
+    Returns:
+        The evidence store.
+    """
+    return ConflictOnlyEvidence(hass, entry_id, past_days=lambda: past_days)
+
+
+async def _ready_evidence(
+    evidence: ConflictOnlyEvidence,
+    past_days: int = 30,
+) -> None:
+    """Load an evidence store if needed and adopt one saved generation.
+
+    A store already loaded keeps its unsaved pairs, which this save
+    then persists.
+
+    Args:
+        evidence: The evidence store.
+        past_days: The window the save covers.
+    """
+    if evidence.state == EVIDENCE_UNLOADED:
+        await evidence.async_load(0)
+    evidence.advance(past_days)
+    assert await evidence.async_save()
+    evidence.adopt()
+
+
+def _entry_payload(**overrides: Any) -> dict[str, Any]:
+    """Build one well-formed persisted evidence entry.
+
+    Args:
+        **overrides: Fields to replace.
+
+    Returns:
+        The entry payload.
+    """
+    entry: dict[str, Any] = {
+        "code": CODE_A,
+        "reservation_id": "res-1",
+        "path": RESERVATIONS_API_V3,
+        "fallback": False,
+        "observed_at": "2026-01-01T00:00:00+00:00",
+        "check_out_bound": "2026-01-10",
+    }
+    entry.update(overrides)
+    return entry
+
+
+def _evidence_payload(
+    entries: Any = None,
+    **overrides: Any,
+) -> dict[str, Any]:
+    """Build a persisted evidence payload.
+
+    Args:
+        entries: The entries, possibly malformed; one well-formed
+            entry when None.
+        **overrides: Top-level fields to replace.
+
+    Returns:
+        The payload.
+    """
+    payload: dict[str, Any] = {
+        "entries": [_entry_payload()] if entries is None else entries,
+        "saturated": False,
+        "generation": 1,
+        "covered_past_days": 30,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _preset(
+    hass_storage: dict[str, Any],
+    key: str,
+    data: Any,
+    *,
+    minor_version: int = 1,
+) -> None:
+    """Place a payload in Home Assistant storage before a load.
+
+    Args:
+        hass_storage: The storage fixture.
+        key: The storage key.
+        data: The stored payload.
+        minor_version: The stored minor version.
+    """
+    hass_storage[key] = {
+        "version": 1,
+        "minor_version": minor_version,
+        "key": key,
+        "data": data,
+    }
+
+
+_REAL_WRITE_DATA = Store._async_write_data
+
+
+@contextmanager
+def _disk_full(store: Store[Any]) -> Iterator[None]:
+    """Make one store's real write fail as a full disk does.
+
+    The test harness replaces ``Store._async_write_data`` with an
+    in-memory writer for every store. Only the target store is sent
+    down Home Assistant's real write path, where the file layer under
+    ``write_utf8_file`` raises ``OSError``. Home Assistant turns that
+    into a ``WriteError`` and only logs it, so ``Store.async_save``
+    itself returns normally. Nothing reaches the disk.
+
+    Args:
+        store: The store whose writes fail.
+
+    Yields:
+        None, while the store's writes fail.
+    """
+    harness_write = Store._async_write_data
+
+    async def _write(self: Store[Any], data: dict[str, Any]) -> None:
+        """Route the target store to the real writer, others to the mock."""
+        if self is store:
+            await _REAL_WRITE_DATA(self, data)
+            return
+        await harness_write(self, data)
+
+    with (
+        patch.object(Store, "_async_write_data", _write),
+        patch.dict(store.__dict__, {"path": __file__ + ".unwritable"}),
+        patch(
+            "homeassistant.util.file.tempfile.NamedTemporaryFile",
+            side_effect=OSError(28, "No space left on device"),
+        ),
+    ):
+        yield
+
+
+async def _accept(
+    guard: ReservationIdentityGuard,
+    reservations: list[GuestyReservation],
+    *,
+    path: str = RESERVATIONS_API_LEGACY,
+    past_days: int = 30,
+    rejected_codes: tuple[RejectedCode, ...] = (),
+    **fields: Any,
+) -> bool:
+    """Run one accepted refresh through the guard.
+
+    Args:
+        guard: A loaded guard.
+        reservations: The fully verified records of the refresh.
+        path: The reservation path of the refresh.
+        past_days: The configured past-day window.
+        rejected_codes: The refresh's rejected pairs.
+        **fields: Further ``async_record_refresh`` arguments.
+
+    Returns:
+        Whether the identity baseline was stored.
+    """
+    comparison = guard.compare(
+        reservations,
+        path,
+        fields.get("fallback_ids", ()),
+        conflict_only=rejected_codes,
+    )
+    assert not comparison.is_ambiguous
+    return await guard.async_record_refresh(
+        path=path,
+        reservations=reservations,
+        published={},
+        comparison=comparison,
+        updated=datetime.now(UTC).isoformat(),
+        past_days=past_days,
+        rejected_codes=rejected_codes,
+        **fields,
+    )
+
+
+async def _ready_guard(
+    hass: HomeAssistant,
+    entry_id: str = "entry-ready",
+    *,
+    past_days: int = 30,
+) -> ReservationIdentityGuard:
+    """Build a guard whose evidence is ready after one refresh.
+
+    Args:
+        hass: Home Assistant instance.
+        entry_id: The owning config entry.
+        past_days: The configured past-day window.
+
+    Returns:
+        A guard that permits writes to ``res-1``.
+    """
+    guard = ReservationIdentityGuard(hass, entry_id, past_days=lambda: past_days)
+    await guard.async_load()
+    assert await _accept(guard, [_reservation("res-1", CODE_A)], past_days=past_days)
+    return guard
+
+
+class TestConflictOnlyObservation:
+    """Rejected pairs feed conflict detection only (T015, FR-008b)."""
+
+    def test_rejected_pairs_sharing_a_code_collide(self) -> None:
+        """Two rejected records naming one code are ambiguous."""
+        observed = observe_codes(
+            [],
+            conflict_only=[_pair("res-1", CODE_A), _pair("res-2", CODE_A)],
+        )
+
+        assert observed.collisions == (("res-1", "res-2"),)
+
+    def test_rejected_and_accepted_sharing_a_code_collide(self) -> None:
+        """A rejected record cannot share an accepted record's code."""
+        observed = observe_codes(
+            [_reservation("res-1", CODE_A)],
+            conflict_only=[_pair("res-2", CODE_A)],
+        )
+
+        assert observed.collisions == (("res-1", "res-2"),)
+        assert observed.mapping == {CODE_A: "res-1"}
+
+    def test_conflict_only_map_is_returned_apart(self) -> None:
+        """Rejected pairs never enter the accepted mapping."""
+        observed = observe_codes(
+            [_reservation("res-1", CODE_A)],
+            conflict_only=[_pair("res-2", CODE_B), _pair("res-1", CODE_A)],
+        )
+
+        assert observed.collisions == ()
+        assert observed.mapping == {CODE_A: "res-1"}
+        assert observed.conflict_only == {CODE_B: "res-2", CODE_A: "res-1"}
+
+    def test_same_path_stored_conflict_aborts(self) -> None:
+        """A rejected record re-keying a stored code aborts."""
+        baseline = IdentityBaseline(path=RESERVATIONS_API_V3, codes={CODE_A: "res-1"})
+
+        comparison = baseline.compare(
+            {}, RESERVATIONS_API_V3, conflict_only={CODE_A: "res-2"}
+        )
+
+        assert comparison.is_ambiguous is True
+        assert comparison.conflicts[0].observed_id == "res-2"
+
+    def test_cross_path_conflict_stays_soft(self) -> None:
+        """Carried-over evidence disagreeing is only divergence."""
+        baseline = IdentityBaseline(
+            path=RESERVATIONS_API_LEGACY,
+            codes={CODE_A: "res-1"},
+        )
+
+        comparison = baseline.compare(
+            {}, RESERVATIONS_API_V3, conflict_only={CODE_A: "res-2"}
+        )
+
+        assert comparison.is_ambiguous is False
+        assert len(comparison.cross_path_conflicts) == 1
+
+    def test_conflict_only_pairs_never_match(self) -> None:
+        """Agreement from a rejected record proves nothing."""
+        baseline = IdentityBaseline(
+            path=RESERVATIONS_API_V3,
+            codes={CODE_A: "res-1"},
+            legacy_codes={CODE_A: "res-1"},
+        )
+
+        comparison = baseline.compare(
+            {}, RESERVATIONS_API_V3, conflict_only={CODE_A: "res-1"}
+        )
+
+        assert comparison.matched == 0
+        assert comparison.cross_path_matched == 0
+        assert comparison.conflicts == ()
+
+    def test_fallback_observation_stays_hard(self) -> None:
+        """A fallback-invalid ID cannot soften a disagreement."""
+        baseline = IdentityBaseline(
+            path=RESERVATIONS_API_LEGACY,
+            codes={CODE_A: "res-1"},
+        )
+
+        comparison = baseline.compare(
+            {},
+            RESERVATIONS_API_V3,
+            fallback_ids={"res-2"},
+            conflict_only={CODE_A: "res-2"},
+        )
+
+        assert comparison.is_ambiguous is True
+
+    async def test_rejected_pairs_never_enter_the_baseline(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A rejected pair is never current or known identity."""
+        guard = ReservationIdentityGuard(hass, "entry-co-baseline")
+        await guard.async_load()
+
+        await _accept(
+            guard,
+            [_reservation("res-1", CODE_A)],
+            rejected_codes=(_pair("res-9", CODE_B),),
+        )
+
+        baseline = guard.baseline
+        assert baseline is not None
+        assert CODE_B not in baseline.codes
+        assert "res-9" not in baseline.current_ids()
+        assert "res-9" not in baseline.known_ids()
+
+    async def test_stored_fallback_pair_is_hard_and_never_confirms(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A stored fallback pair is neither soft nor confirming."""
+        evidence = _evidence(hass)
+        await evidence.async_load(0)
+        evidence.record(
+            [_pair("res-1", CODE_A), _pair("res-2", CODE_B)],
+            {},
+            RESERVATIONS_API_LEGACY,
+            _EVIDENCE_NOW,
+            {"res-1"},
+        )
+
+        maps = {
+            (pair, stored.soft, stored.confirms)
+            for stored in evidence.compare_maps(RESERVATIONS_API_V3)
+            for pair in stored.pairs
+        }
+
+        assert maps == {
+            ((CODE_A, "res-1"), False, False),
+            ((CODE_B, "res-2"), True, False),
+        }
+        assert all(
+            stored.source == SOURCE_CONFLICT_ONLY
+            for stored in evidence.compare_maps(RESERVATIONS_API_V3)
+        )
+
+    async def test_stored_code_with_several_ids_checks_each(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Every stored ID of a shared code is compared."""
+        guard = ReservationIdentityGuard(hass, "entry-co-shared")
+        await guard.async_load()
+        guard.conflict_evidence.record(
+            [_pair("res-1", CODE_A), _pair("res-2", CODE_A)],
+            {},
+            RESERVATIONS_API_V3,
+            _EVIDENCE_NOW,
+            (),
+        )
+
+        comparison = guard.compare([_reservation("res-1", CODE_A)], RESERVATIONS_API_V3)
+
+        assert comparison.is_ambiguous is True
+        assert [
+            (c.known_id, c.observed_id, c.source) for c in comparison.conflicts
+        ] == [("res-2", "res-1", SOURCE_CONFLICT_ONLY)]
+        assert comparison.matched == 0
+
+    async def test_stored_pair_checks_rejected_observations(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A stored pair conflicts with a later rejected record too."""
+        guard = ReservationIdentityGuard(hass, "entry-co-rejected")
+        await guard.async_load()
+        guard.conflict_evidence.record(
+            [_pair("res-1", CODE_A)], {}, RESERVATIONS_API_V3, _EVIDENCE_NOW, ()
+        )
+
+        comparison = guard.compare(
+            [], RESERVATIONS_API_V3, conflict_only=[_pair("res-2", CODE_A)]
+        )
+
+        assert comparison.is_ambiguous is True
+
+    async def test_pair_seen_on_both_paths_is_hard_on_each(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """A pair re-observed on v3 is same-path evidence for v3 (R7)."""
+        guard = ReservationIdentityGuard(hass, "entry-co-paths")
+        await guard.async_load()
+        rejected = (_pair("res-9", CODE_B),)
+        assert await _accept(
+            guard,
+            [_reservation("res-1", CODE_A)],
+            path=RESERVATIONS_API_LEGACY,
+            rejected_codes=rejected,
+        )
+        assert await _accept(
+            guard,
+            [_reservation("res-1", CODE_A)],
+            path=RESERVATIONS_API_V3,
+            rejected_codes=rejected,
+        )
+        later = [_reservation("res-2", CODE_B)]
+
+        assert guard.compare(later, RESERVATIONS_API_V3).is_ambiguous is True
+        assert guard.compare(later, RESERVATIONS_API_LEGACY).is_ambiguous is True
+        stored = hass_storage[conflict_evidence_storage_key("entry-co-paths")]
+        (entry,) = stored["data"]["entries"]
+        assert entry["path"] == RESERVATIONS_API_LEGACY
+        assert entry["paths"] == sorted([RESERVATIONS_API_LEGACY, RESERVATIONS_API_V3])
+
+        restarted = ReservationIdentityGuard(hass, "entry-co-paths")
+        await restarted.async_load()
+        assert restarted.compare(later, RESERVATIONS_API_V3).is_ambiguous is True
+
+    async def test_pair_seen_on_one_path_stays_soft_on_the_other(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A pair only ever recorded on legacy is still cross-path for v3."""
+        guard = ReservationIdentityGuard(hass, "entry-co-one-path")
+        await guard.async_load()
+        assert await _accept(
+            guard,
+            [_reservation("res-1", CODE_A)],
+            path=RESERVATIONS_API_LEGACY,
+            rejected_codes=(_pair("res-9", CODE_B),),
+        )
+
+        comparison = guard.compare([_reservation("res-2", CODE_B)], RESERVATIONS_API_V3)
+
+        assert comparison.is_ambiguous is False
+        assert len(comparison.cross_path_conflicts) == 1
+
+
+class TestConflictOnlyEvidenceStore:
+    """The persisted conflict-only evidence store (T016, FR-008a/c)."""
+
+    async def test_store_key_and_payload_shape(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """The separate version-1 store holds the documented payload."""
+        evidence = _evidence(hass, "entry-shape")
+        await evidence.async_load(0)
+        evidence.record(
+            [_pair("res-1", CODE_A)],
+            {"res-1": "2026-01-10"},
+            RESERVATIONS_API_V3,
+            _EVIDENCE_NOW,
+            (),
+        )
+        evidence.advance(30)
+        assert await evidence.async_save()
+
+        key = conflict_evidence_storage_key("entry-shape")
+        assert key == "guesty.entry-shape.reservations_conflict_evidence"
+        assert hass_storage[key]["version"] == CONFLICT_EVIDENCE_STORAGE_VERSION == 1
+        assert hass_storage[key]["data"] == {
+            "entries": [
+                {
+                    "code": CODE_A,
+                    "reservation_id": "res-1",
+                    "path": RESERVATIONS_API_V3,
+                    "paths": [RESERVATIONS_API_V3],
+                    "fallback": False,
+                    "observed_at": _EVIDENCE_NOW.isoformat(),
+                    "check_out_bound": "2026-01-10",
+                }
+            ],
+            "saturated": False,
+            "generation": 1,
+            "covered_past_days": 30,
+        }
+
+    async def test_record_keeps_shared_codes_and_several_codes(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Every pair is kept, by code and by ID."""
+        evidence = _evidence(hass)
+        await evidence.async_load(0)
+        evidence.record(
+            [_pair("res-1", CODE_A), _pair("res-2", CODE_A), _pair("res-1", CODE_B)],
+            {},
+            RESERVATIONS_API_V3,
+            _EVIDENCE_NOW,
+            (),
+        )
+        evidence.advance(30)
+        assert await evidence.async_save()
+        evidence.adopt()
+
+        assert evidence.count == 3
+        assert evidence.ids_for(CODE_A) == frozenset({"res-1", "res-2"})
+        assert evidence.codes_for("res-1") == frozenset({CODE_A, CODE_B})
+
+    async def test_fallback_only_ever_becomes_true(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """A pair once seen through the fallback stays fallback."""
+        evidence = _evidence(hass, "entry-fallback-flag")
+        await evidence.async_load(0)
+        for fallback_ids in ({"res-1"}, set()):
+            evidence.record(
+                [_pair("res-1", CODE_A)],
+                {},
+                RESERVATIONS_API_V3,
+                _EVIDENCE_NOW,
+                fallback_ids,
+            )
+        evidence.advance(30)
+        await evidence.async_save()
+
+        key = conflict_evidence_storage_key("entry-fallback-flag")
+        assert hass_storage[key]["data"]["entries"][0]["fallback"] is True
+
+    async def test_bound_moves_only_later_or_to_null(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """A re-observed pair's bound never moves earlier."""
+        evidence = _evidence(hass, "entry-bounds")
+        await evidence.async_load(0)
+        key = conflict_evidence_storage_key("entry-bounds")
+        expected = (
+            ("2026-01-10", "2026-01-10"),
+            ("2026-01-05", "2026-01-10"),
+            ("2026-01-20", "2026-01-20"),
+            (None, None),
+            ("2026-02-01", None),
+        )
+        for bound, kept in expected:
+            evidence.record(
+                [_pair("res-1", CODE_A)],
+                {} if bound is None else {"res-1": bound},
+                RESERVATIONS_API_V3,
+                _EVIDENCE_NOW,
+                (),
+            )
+            evidence.advance(30)
+            await evidence.async_save()
+            assert hass_storage[key]["data"]["entries"][0]["check_out_bound"] == kept
+
+    async def test_retire_by_supersession_and_absence(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Verified or confirmed-absent IDs drop every pair."""
+        evidence = _evidence(hass)
+        await evidence.async_load(0)
+        evidence.record(
+            [_pair("res-1", CODE_A), _pair("res-1", CODE_B), _pair("res-2", CODE_B)],
+            {},
+            RESERVATIONS_API_V3,
+            _EVIDENCE_NOW,
+            (),
+        )
+        evidence.retire(
+            superseded={"res-1"},
+            absent=(),
+            returned=(),
+            past_days=30,
+            now=_EVIDENCE_NOW,
+        )
+        assert evidence.count == 1
+        evidence.retire(
+            superseded=(),
+            absent={"res-2"},
+            returned=(),
+            past_days=30,
+            now=_EVIDENCE_NOW,
+        )
+        assert evidence.count == 0
+
+    async def test_retire_by_horizon(self, hass: HomeAssistant) -> None:
+        """Only a dated, unreturned pair beyond the horizon retires."""
+        evidence = _evidence(hass)
+        await evidence.async_load(0)
+        # now - 30 days is 2026-01-30, so the horizon date is 2026-01-29.
+        evidence.record(
+            [
+                _pair("old", CODE_A),
+                _pair("edge", CODE_B),
+                _pair("returned", "CONF-RET"),
+                _pair("undated", "CONF-UND"),
+            ],
+            {
+                "old": "2026-01-28",
+                "edge": "2026-01-29",
+                "returned": "2025-01-01",
+            },
+            RESERVATIONS_API_V3,
+            _EVIDENCE_NOW,
+            (),
+        )
+
+        evidence.retire(
+            superseded=(),
+            absent=(),
+            returned={"returned"},
+            past_days=30,
+            now=_EVIDENCE_NOW,
+        )
+        await _ready_evidence(evidence)
+
+        assert evidence.ids_for(CODE_A) == frozenset()
+        assert evidence.ids_for(CODE_B) == frozenset({"edge"})
+        assert evidence.ids_for("CONF-RET") == frozenset({"returned"})
+        assert evidence.ids_for("CONF-UND") == frozenset({"undated"})
+        assert (evidence.dated, evidence.undated) == (2, 1)
+
+    async def test_saturation_is_sticky_and_persisted(
+        self,
+        hass: HomeAssistant,
+        hass_storage: dict[str, Any],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A full store never evicts, and stays saturated."""
+        evidence = _evidence(hass, "entry-saturated")
+        await evidence.async_load(0)
+        full = [
+            _pair(f"res-{i}", f"CODE-{i}") for i in range(MAX_CONFLICT_ONLY_EVIDENCE)
+        ]
+        assert evidence.record(full, {}, RESERVATIONS_API_V3, _EVIDENCE_NOW, ())
+
+        with caplog.at_level(logging.WARNING, logger=_IDENTITY_LOGGER):
+            added = evidence.record(
+                [_pair("res-new", "CODE-NEW"), _pair("res-0", "CODE-0")],
+                {},
+                RESERVATIONS_API_V3,
+                _EVIDENCE_NOW,
+                (),
+            )
+        evidence.retire(
+            superseded={"res-1"},
+            absent=(),
+            returned=(),
+            past_days=30,
+            now=_EVIDENCE_NOW,
+        )
+        evidence.advance(30)
+        await evidence.async_save()
+
+        assert added is False
+        assert evidence.count == MAX_CONFLICT_ONLY_EVIDENCE - 1
+        assert evidence.state == EVIDENCE_SATURATED
+        assert (
+            hass_storage[conflict_evidence_storage_key("entry-saturated")]["data"][
+                "saturated"
+            ]
+            is True
+        )
+        reloaded = _evidence(hass, "entry-saturated")
+        await reloaded.async_load(1)
+        assert reloaded.state == EVIDENCE_SATURATED
+        assert "CODE-NEW" not in caplog.text
+
+    async def test_near_capacity_thresholds(
+        self, hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The near-capacity flag sets at 80% and clears below 70%."""
+        evidence = _evidence(hass)
+        await evidence.async_load(0)
+        high = MAX_CONFLICT_ONLY_EVIDENCE * 4 // 5
+        low = MAX_CONFLICT_ONLY_EVIDENCE * 7 // 10
+        evidence.record(
+            [_pair(f"res-{i}", f"C-{i}") for i in range(high - 1)],
+            {},
+            RESERVATIONS_API_V3,
+            _EVIDENCE_NOW,
+            (),
+        )
+        assert evidence.near_capacity is False
+
+        with caplog.at_level(logging.WARNING, logger=_IDENTITY_LOGGER):
+            evidence.record(
+                [_pair("res-x", "C-x"), _pair("res-y", "C-y")],
+                {},
+                RESERVATIONS_API_V3,
+                _EVIDENCE_NOW,
+                (),
+            )
+        assert evidence.near_capacity is True
+        assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
+
+        def _retire_to(count: int) -> None:
+            """Retire the oldest pairs until ``count`` remain."""
+            excess = high + 1 - count
+            evidence.retire(
+                superseded={f"res-{i}" for i in range(excess)},
+                absent=(),
+                returned=(),
+                past_days=30,
+                now=_EVIDENCE_NOW,
+            )
+
+        _retire_to(low)
+        assert evidence.near_capacity is True
+        _retire_to(low - 1)
+        assert evidence.near_capacity is False
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            pytest.param([], id="not-a-dict"),
+            pytest.param(_evidence_payload(entries={}), id="entries-not-list"),
+            pytest.param(_evidence_payload(entries=["x"]), id="entry-not-dict"),
+            pytest.param(_evidence_payload([_entry_payload(code="")]), id="empty-code"),
+            pytest.param(_evidence_payload([_entry_payload(code=5)]), id="int-code"),
+            pytest.param(
+                _evidence_payload([_entry_payload(reservation_id="")]), id="empty-id"
+            ),
+            pytest.param(
+                _evidence_payload([_entry_payload(path="other")]), id="unknown-path"
+            ),
+            pytest.param(
+                _evidence_payload([_entry_payload(paths=RESERVATIONS_API_V3)]),
+                id="paths-not-list",
+            ),
+            pytest.param(
+                _evidence_payload([_entry_payload(paths=[])]), id="paths-empty"
+            ),
+            pytest.param(
+                _evidence_payload([_entry_payload(paths=[RESERVATIONS_API_LEGACY])]),
+                id="path-not-in-paths",
+            ),
+            pytest.param(
+                _evidence_payload(
+                    [_entry_payload(paths=[RESERVATIONS_API_V3, "other"])]
+                ),
+                id="paths-unknown",
+            ),
+            pytest.param(
+                _evidence_payload(
+                    [_entry_payload(paths=[RESERVATIONS_API_V3, RESERVATIONS_API_V3])]
+                ),
+                id="paths-duplicate",
+            ),
+            pytest.param(
+                _evidence_payload([_entry_payload(fallback="no")]), id="fallback-type"
+            ),
+            pytest.param(
+                _evidence_payload([_entry_payload(observed_at="nope")]),
+                id="observed-unparsable",
+            ),
+            pytest.param(
+                _evidence_payload([_entry_payload(observed_at="2026-01-01T00:00:00")]),
+                id="observed-naive",
+            ),
+            pytest.param(
+                _evidence_payload(
+                    [_entry_payload(observed_at="9999-12-31T23:00:00-05:00")]
+                ),
+                id="observed-beyond-utc",
+            ),
+            pytest.param(
+                _evidence_payload([_entry_payload(check_out_bound="2026-1-10")]),
+                id="bound-not-canonical",
+            ),
+            pytest.param(
+                _evidence_payload(
+                    [_entry_payload(check_out_bound="2026-01-10T00:00:00+00:00")]
+                ),
+                id="bound-not-date",
+            ),
+            pytest.param(
+                _evidence_payload([_entry_payload(), _entry_payload()]),
+                id="duplicate-pair",
+            ),
+            pytest.param(_evidence_payload(covered_past_days="x"), id="covered-str"),
+            pytest.param(_evidence_payload(covered_past_days=-1), id="covered-neg"),
+            pytest.param(_evidence_payload(covered_past_days=True), id="covered-bool"),
+            pytest.param(_evidence_payload(generation="1"), id="generation-str"),
+            pytest.param(_evidence_payload(saturated="no"), id="saturated-type"),
+        ],
+    )
+    async def test_malformed_store_is_compromised(
+        self,
+        hass: HomeAssistant,
+        hass_storage: dict[str, Any],
+        payload: Any,
+    ) -> None:
+        """A malformed store is never repaired by dropping entries."""
+        _preset(hass_storage, conflict_evidence_storage_key("entry-bad"), payload)
+        evidence = _evidence(hass, "entry-bad")
+
+        await evidence.async_load(0)
+
+        assert evidence.state == EVIDENCE_COMPROMISED
+        assert evidence.available() is False
+
+    @pytest.mark.parametrize("error", [OSError, ValueError])
+    async def test_unreadable_store_is_compromised(
+        self, hass: HomeAssistant, error: type[Exception]
+    ) -> None:
+        """A store that cannot be read is compromised."""
+        evidence = _evidence(hass, "entry-unreadable")
+        with patch.object(evidence._store, "async_load", AsyncMock(side_effect=error)):
+            await evidence.async_load(0)
+
+        assert evidence.state == EVIDENCE_COMPROMISED
+
+    async def test_generation_below_expected_is_compromised(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """A lagging store is compromised but still compared."""
+        _preset(
+            hass_storage,
+            conflict_evidence_storage_key("entry-lag"),
+            _evidence_payload(generation=1),
+        )
+        evidence = _evidence(hass, "entry-lag")
+
+        await evidence.async_load(2)
+
+        assert evidence.state == EVIDENCE_COMPROMISED
+        pairs = {p for m in evidence.compare_maps(RESERVATIONS_API_V3) for p in m.pairs}
+        assert pairs == {(CODE_A, "res-1")}
+
+    async def test_lagging_store_reports_its_capacity(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """A lagging store still compared also reports its occupancy."""
+        _preset(
+            hass_storage,
+            conflict_evidence_storage_key("entry-lag-full"),
+            _evidence_payload(
+                [
+                    _entry_payload(code=f"C-{i}", reservation_id=f"res-{i}")
+                    for i in range(MAX_CONFLICT_ONLY_EVIDENCE * 4 // 5)
+                ],
+                generation=1,
+            ),
+        )
+        evidence = _evidence(hass, "entry-lag-full")
+
+        await evidence.async_load(2)
+
+        assert evidence.state == EVIDENCE_COMPROMISED
+        assert evidence.near_capacity is True
+
+    async def test_missing_store_counts_as_generation_zero(
+        self, hass: HomeAssistant
+    ) -> None:
+        """No store is fine only when none was expected."""
+        fresh = _evidence(hass, "entry-missing-0")
+        await fresh.async_load(0)
+        lost = _evidence(hass, "entry-missing-1")
+        await lost.async_load(1)
+
+        assert fresh.state == EVIDENCE_REVALIDATING
+        assert lost.state == EVIDENCE_COMPROMISED
+
+    async def test_higher_generation_is_accepted(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """A store ahead of the baseline holds a superset."""
+        _preset(
+            hass_storage,
+            conflict_evidence_storage_key("entry-ahead"),
+            _evidence_payload(generation=5),
+        )
+        evidence = _evidence(hass, "entry-ahead")
+
+        await evidence.async_load(2)
+
+        assert evidence.state == EVIDENCE_REVALIDATING
+        assert evidence.count == 1
+
+    async def test_state_precedence(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """Compromised, saturated, unstored, revalidating, ready."""
+        unloaded = _evidence(hass, "entry-unloaded")
+        assert unloaded.state == EVIDENCE_UNLOADED
+
+        _preset(
+            hass_storage,
+            conflict_evidence_storage_key("entry-both"),
+            _evidence_payload(saturated=True, generation=1),
+        )
+        both = _evidence(hass, "entry-both")
+        await both.async_load(3)
+        assert both.state == EVIDENCE_COMPROMISED
+
+        saturated = _evidence(hass, "entry-sat-unstored")
+        await saturated.async_load(0)
+        saturated.record(
+            [_pair(f"r-{i}", f"C-{i}") for i in range(MAX_CONFLICT_ONLY_EVIDENCE + 1)],
+            {},
+            RESERVATIONS_API_V3,
+            _EVIDENCE_NOW,
+            (),
+        )
+        saturated.advance(30)
+        with patch.object(
+            saturated._store, "async_save", AsyncMock(side_effect=OSError)
+        ):
+            assert await saturated.async_save() is False
+        assert saturated.state == EVIDENCE_SATURATED
+
+        unstored = _evidence(hass, "entry-unstored")
+        await unstored.async_load(0)
+        unstored.advance(30)
+        with patch.object(
+            unstored._store, "async_save", AsyncMock(side_effect=OSError)
+        ):
+            assert await unstored.async_save() is False
+        assert unstored.state == EVIDENCE_UNSTORED
+        assert await unstored.async_save() is True
+        assert unstored.state == EVIDENCE_REVALIDATING
+        unstored.adopt()
+        assert unstored.state == EVIDENCE_READY
+
+    async def test_lookups_answer_only_when_ready(self, hass: HomeAssistant) -> None:
+        """Lookups raise unless the evidence is available."""
+        evidence = _evidence(hass)
+        for _ in range(2):
+            assert evidence.available() is False
+            with pytest.raises(RuntimeError):
+                evidence.codes_for("res-1")
+            with pytest.raises(RuntimeError):
+                evidence.ids_for(CODE_A)
+            await evidence.async_load(0)
+
+        await _ready_evidence(evidence)
+        assert evidence.available() is True
+        assert evidence.codes_for("res-1") == frozenset()
+
+    async def test_lookups_never_read_accepted_maps(self, hass: HomeAssistant) -> None:
+        """Only persisted conflict-only pairs answer a lookup."""
+        guard = await _ready_guard(hass, "entry-lookup-maps")
+        evidence = guard.conflict_evidence
+
+        assert evidence.available() is True
+        assert evidence.codes_for("res-1") == frozenset()
+        assert evidence.ids_for(CODE_A) == frozenset()
+
+    async def test_async_remove_deletes_the_store(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """Removing the entry deletes the evidence store."""
+        evidence = _evidence(hass, "entry-remove")
+        await _ready_evidence(evidence)
+        key = conflict_evidence_storage_key("entry-remove")
+        assert key in hass_storage
+
+        await evidence.async_remove()
+
+        assert key not in hass_storage
+
+    async def test_listener_hears_state_changes(self, hass: HomeAssistant) -> None:
+        """A listener is told when the state changes, until removed."""
+        evidence = _evidence(hass)
+        calls: list[str] = []
+        remove = evidence.add_listener(lambda: calls.append(evidence.state))
+
+        await _ready_evidence(evidence)
+        remove()
+        evidence.advance(30)
+
+        assert calls == [EVIDENCE_REVALIDATING, EVIDENCE_READY]
+
+
+class TestIdentityStoreMigration:
+    """The identity store's minor-version 2 revalidation (T017)."""
+
+    async def test_store_is_version_one_minor_two(self, hass: HomeAssistant) -> None:
+        """The identity store migrates through ``_IdentityStore``."""
+        guard = ReservationIdentityGuard(hass, "entry-minor")
+
+        assert isinstance(guard._store, _IdentityStore)
+        assert guard._store.version == STORAGE_VERSION == 1
+        assert guard._store.minor_version == IDENTITY_STORAGE_MINOR_VERSION == 2
+
+    async def test_migrate_func_sets_revalidation_pending(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A minor-version 1 payload is marked for revalidation."""
+        guard = ReservationIdentityGuard(hass, "entry-migrate")
+
+        migrated = await guard._store._async_migrate_func(
+            1, 1, {"path": RESERVATIONS_API_V3}
+        )
+
+        assert migrated == {"path": RESERVATIONS_API_V3, "revalidation_pending": True}
+
+    async def test_minor_one_payload_downgrades_every_known_hint(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """Upgrade stops trusting stored timing until revalidated."""
+        _preset(
+            hass_storage,
+            storage_key("entry-upgrade-hints"),
+            {
+                "path": RESERVATIONS_API_V3,
+                "continuity": CONTINUITY_VERIFIED,
+                "codes": {CODE_A: "res-1"},
+                "candidates": {
+                    "res-1": {
+                        "timing_status": "known",
+                        "check_in": "2026-01-01T00:00:00+00:00",
+                        "check_out": "2026-01-04T00:00:00+00:00",
+                        "observed_at": "2026-01-01T00:00:00+00:00",
+                    },
+                },
+            },
+        )
+        guard = ReservationIdentityGuard(hass, "entry-upgrade-hints")
+
+        await guard.async_load()
+
+        baseline = guard.baseline
+        assert baseline is not None
+        assert baseline.revalidation_pending is True
+        hint = baseline.candidates["res-1"]
+        assert hint.timing_status == "unknown"
+        assert hint.check_out is None
+        assert hint.observed_at == "2026-01-01T00:00:00+00:00"
+        assert hass_storage[storage_key("entry-upgrade-hints")]["minor_version"] == 2
+        assert guard.write_refusal("res-1") == REFUSAL_REVALIDATING
+
+    async def test_out_of_range_hint_instants_fail_closed(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """Instants beyond the UTC range drop or downgrade their hint."""
+        beyond = "9999-12-31T23:00:00-05:00"
+        _preset(
+            hass_storage,
+            storage_key("entry-beyond-utc"),
+            {
+                "path": RESERVATIONS_API_V3,
+                "continuity": CONTINUITY_VERIFIED,
+                "codes": {CODE_A: "res-1"},
+                "candidates": {
+                    "res-1": {
+                        "timing_status": "known",
+                        "check_in": "2026-01-01T00:00:00+00:00",
+                        "check_out": beyond,
+                        "observed_at": "2026-01-01T00:00:00+00:00",
+                    },
+                    "res-2": {"timing_status": "unknown", "observed_at": beyond},
+                },
+            },
+            minor_version=2,
+        )
+        guard = ReservationIdentityGuard(hass, "entry-beyond-utc")
+
+        await guard.async_load()
+
+        baseline = guard.baseline
+        assert baseline is not None
+        assert set(baseline.candidates) == {"res-1"}
+        hint = baseline.candidates["res-1"]
+        assert hint.timing_status == "unknown"
+        assert hint.check_out is None
+
+    async def test_migrated_bootstrap_pair_is_retained(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """Downgraded timing can no longer retire bootstrap evidence."""
+        old = (datetime.now(UTC) - timedelta(days=400)).isoformat()
+        older = (datetime.now(UTC) - timedelta(days=403)).isoformat()
+        _preset(
+            hass_storage,
+            storage_key("entry-upgrade-boot"),
+            {
+                "path": RESERVATIONS_API_V3,
+                "continuity": CONTINUITY_UNCONFIRMED,
+                "codes": {CODE_A: "res-1"},
+                "bootstrap_codes": {CODE_B: "boot-1"},
+                "candidates": {
+                    "boot-1": {
+                        "timing_status": "known",
+                        "check_in": older,
+                        "check_out": old,
+                        "observed_at": old,
+                    },
+                },
+            },
+        )
+        guard = ReservationIdentityGuard(hass, "entry-upgrade-boot")
+        await guard.async_load()
+
+        await _accept(guard, [_reservation("res-1", CODE_A)], path=RESERVATIONS_API_V3)
+
+        baseline = guard.baseline
+        assert baseline is not None
+        assert baseline.bootstrap_codes == {CODE_B: "boot-1"}
+
+    def test_minor_two_payload_keeps_valid_timing(self) -> None:
+        """A revalidated payload keeps only provably valid hints."""
+        baseline = IdentityBaseline.from_dict(
+            {
+                "path": RESERVATIONS_API_V3,
+                "updated": "2026-02-01T00:00:00+00:00",
+                "revalidation_pending": False,
+                "candidates": {
+                    "valid": {
+                        "timing_status": "known",
+                        "check_in": "2026-01-01T00:00:00+00:00",
+                        "check_out": "2026-01-04T00:00:00+00:00",
+                        "observed_at": "2026-01-01T00:00:00+00:00",
+                    },
+                    "inverted": {
+                        "timing_status": "known",
+                        "check_in": "2026-01-04T00:00:00+00:00",
+                        "check_out": "2026-01-01T00:00:00+00:00",
+                        "observed_at": "2026-01-01T00:00:00+00:00",
+                    },
+                    "garbled": {
+                        "timing_status": "unknown",
+                        "observed_at": "not-a-time",
+                    },
+                    "not-a-dict": "x",
+                },
+            },
+        )
+
+        assert baseline.candidates["valid"].timing_status == "known"
+        assert baseline.candidates["inverted"].timing_status == "unknown"
+        assert "garbled" not in baseline.candidates
+        assert "not-a-dict" not in baseline.candidates
+
+    def test_code_maps_keep_only_string_pairs(self) -> None:
+        """Only non-empty string code to ID entries survive."""
+        baseline = IdentityBaseline.from_dict(
+            {
+                "path": RESERVATIONS_API_V3,
+                "codes": {CODE_A: "res-1", CODE_B: 5, "CONF-C": "", "": "res-4"},
+                "legacy_codes": {CODE_A: "res-1", CODE_B: ["x"]},
+                "fallback_codes": "not-a-map",
+            },
+        )
+
+        assert baseline.codes == {CODE_A: "res-1"}
+        assert baseline.legacy_codes == {CODE_A: "res-1"}
+        assert baseline.fallback_codes == {}
+
+    def test_structural_fields_are_kept(self) -> None:
+        """Validation keeps the continuity evidence intact."""
+        baseline = IdentityBaseline.from_dict(
+            {
+                "path": RESERVATIONS_API_V3,
+                "continuity": CONTINUITY_UNCONFIRMED,
+                "divergent": True,
+                "revalidation_pending": True,
+                "legacy_codes": {CODE_A: "res-1"},
+                "bootstrap_codes": {CODE_B: "res-2"},
+            },
+        )
+
+        assert baseline.continuity == CONTINUITY_UNCONFIRMED
+        assert baseline.divergent is True
+        assert baseline.legacy_codes == {CODE_A: "res-1"}
+        assert baseline.bootstrap_codes == {CODE_B: "res-2"}
+
+    def test_new_fields_round_trip_with_unknown_keys(self) -> None:
+        """The new fields persist and unknown keys are tolerated."""
+        original = IdentityBaseline(
+            path=RESERVATIONS_API_V3,
+            codes={CODE_A: "res-1"},
+            revalidation_pending=True,
+            conflict_evidence_generation=4,
+        )
+        payload = {**original.to_dict(), "future_key": {"x": 1}}
+
+        restored = IdentityBaseline.from_dict(payload)
+
+        assert payload["revalidation_pending"] is True
+        assert payload["conflict_evidence_generation"] == 4
+        assert restored.revalidation_pending is True
+        assert restored.conflict_evidence_generation == 4
+
+    @pytest.mark.parametrize("generation", ["1", -1, True, 1.5])
+    async def test_malformed_generation_fails_closed(
+        self,
+        hass: HomeAssistant,
+        hass_storage: dict[str, Any],
+        generation: Any,
+    ) -> None:
+        """An unreadable generation leaves no usable baseline."""
+        with pytest.raises(ValueError):
+            IdentityBaseline.from_dict(
+                {
+                    "path": RESERVATIONS_API_V3,
+                    "conflict_evidence_generation": generation,
+                }
+            )
+        _preset(
+            hass_storage,
+            storage_key("entry-bad-gen"),
+            {
+                "path": RESERVATIONS_API_V3,
+                "codes": {CODE_A: "res-1"},
+                "conflict_evidence_generation": generation,
+            },
+            minor_version=2,
+        )
+        guard = ReservationIdentityGuard(hass, "entry-bad-gen")
+        await guard.async_load()
+
+        assert guard.baseline is None
+        # Without the baseline's generation a missing or lagging
+        # evidence store cannot be told apart from a current one.
+        assert guard.conflict_evidence.state == EVIDENCE_COMPROMISED
+
+    async def test_unparsable_identity_payload_compromises_evidence(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """An unreadable baseline never lets current-looking evidence load."""
+        _preset(
+            hass_storage,
+            conflict_evidence_storage_key("entry-bad-identity"),
+            _evidence_payload(generation=3),
+        )
+        _preset(
+            hass_storage,
+            storage_key("entry-bad-identity"),
+            ["not", "a", "baseline"],
+            minor_version=2,
+        )
+        guard = ReservationIdentityGuard(hass, "entry-bad-identity")
+
+        await guard.async_load()
+
+        assert guard.baseline is None
+        assert guard.conflict_evidence.state == EVIDENCE_COMPROMISED
+        assert guard.conflict_evidence.count == 1
+
+    @pytest.mark.parametrize(
+        "payload",
+        [["not", "a", "baseline"], "corrupt", 7],
+        ids=["list", "string", "number"],
+    )
+    async def test_unparsable_minor_one_payload_fails_closed(
+        self,
+        hass: HomeAssistant,
+        hass_storage: dict[str, Any],
+        payload: Any,
+    ) -> None:
+        """A non-mapping pre-013 payload loads as no baseline."""
+        _preset(hass_storage, storage_key("entry-bad-minor-one"), payload)
+        guard = ReservationIdentityGuard(hass, "entry-bad-minor-one")
+
+        await guard.async_load()
+
+        assert guard.baseline is None
+        assert guard.conflict_evidence.state == EVIDENCE_COMPROMISED
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("path", "reservations_v4"),
+            ("path", 3),
+            ("continuity", "trusted"),
+            ("continuity", None),
+        ],
+        ids=["unknown-path", "non-string-path", "unknown-continuity", "null"],
+    )
+    async def test_unknown_path_or_continuity_fails_closed(
+        self,
+        hass: HomeAssistant,
+        hass_storage: dict[str, Any],
+        field: str,
+        value: Any,
+    ) -> None:
+        """Only a known path and continuity value load a baseline."""
+        data = {
+            "path": RESERVATIONS_API_V3,
+            "continuity": CONTINUITY_VERIFIED,
+            "codes": {CODE_A: "res-1"},
+            field: value,
+        }
+        with pytest.raises(ValueError):
+            IdentityBaseline.from_dict(data)
+        _preset(hass_storage, storage_key("entry-bad-path"), data, minor_version=2)
+        guard = ReservationIdentityGuard(hass, "entry-bad-path")
+
+        await guard.async_load()
+
+        assert guard.baseline is None
+        assert guard.conflict_evidence.state == EVIDENCE_COMPROMISED
+
+    async def test_payload_stays_loadable_by_a_minor_one_store(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A rollback to a minor-version 1 release still loads it."""
+        guard = await _ready_guard(hass, "entry-rollback")
+
+        older = Store[dict[str, Any]](hass, 1, storage_key("entry-rollback"))
+        data = await older.async_load()
+
+        assert data is not None
+        assert data["codes"] == {CODE_A: "res-1"}
+        assert IdentityBaseline.from_dict(data).codes == {CODE_A: "res-1"}
+        assert guard.baseline is not None
+
+
+class TestEvidenceSaveOrder:
+    """The crash-consistent three-step save order (T018, R7 d8)."""
+
+    async def test_step_one_runs_on_every_refresh(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """Generations advance together even with no pairs."""
+        guard = await _ready_guard(hass, "entry-step-one")
+        await _accept(guard, [_reservation("res-1", CODE_A)])
+
+        evidence_data = hass_storage[conflict_evidence_storage_key("entry-step-one")]
+        identity_data = hass_storage[storage_key("entry-step-one")]
+        assert evidence_data["data"]["generation"] == 2
+        assert identity_data["data"]["conflict_evidence_generation"] == 2
+
+    async def test_additions_are_saved_before_identity(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Evidence additions reach storage before the baseline."""
+        guard = ReservationIdentityGuard(hass, "entry-order")
+        await guard.async_load()
+        order: list[str] = []
+        evidence_save = guard.conflict_evidence._store.async_save
+        identity_save = guard._store.async_save
+
+        async def _evidence_save(data: Any) -> None:
+            """Record an evidence save."""
+            order.append("evidence")
+            await evidence_save(data)
+
+        async def _identity_save(data: Any) -> None:
+            """Record an identity save."""
+            order.append("identity")
+            await identity_save(data)
+
+        with (
+            patch.object(guard.conflict_evidence._store, "async_save", _evidence_save),
+            patch.object(guard._store, "async_save", _identity_save),
+        ):
+            await _accept(
+                guard,
+                [_reservation("res-1", CODE_A), _reservation("res-2", CODE_B)],
+                rejected_codes=(_pair("res-9", "CONF-9"),),
+            )
+            await _accept(
+                guard,
+                [_reservation("res-1", CODE_A), _reservation("res-9", "CONF-9")],
+            )
+
+        assert order == ["evidence", "identity", "evidence", "identity", "evidence"]
+
+    async def test_failed_evidence_save_loads_compromised(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Evidence the baseline expects but never stored fails closed."""
+        guard = await _ready_guard(hass, "entry-step1-fail")
+        with patch.object(
+            guard.conflict_evidence._store,
+            "async_save",
+            AsyncMock(side_effect=OSError),
+        ):
+            await _accept(
+                guard,
+                [_reservation("res-1", CODE_A)],
+                rejected_codes=(_pair("res-9", CODE_B),),
+            )
+        assert guard.conflict_evidence.state == EVIDENCE_UNSTORED
+
+        restarted = ReservationIdentityGuard(hass, "entry-step1-fail")
+        await restarted.async_load()
+
+        assert restarted.conflict_evidence.state == EVIDENCE_COMPROMISED
+        assert restarted.write_refusal("res-1") == (
+            f"{REFUSAL_EVIDENCE_UNAVAILABLE} {REFUSAL_EVIDENCE_REPAIR}"
+        )
+
+    async def test_logged_disk_failure_in_step_one_is_unstored(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """A write failure Home Assistant only logs still fails step 1."""
+        _preset(
+            hass_storage,
+            storage_key("entry-disk-1"),
+            {
+                "path": RESERVATIONS_API_LEGACY,
+                "continuity": CONTINUITY_NOT_APPLICABLE,
+                "codes": {CODE_A: "res-1"},
+            },
+        )
+        guard = ReservationIdentityGuard(hass, "entry-disk-1")
+        await guard.async_load()
+        evidence = guard.conflict_evidence
+        key = conflict_evidence_storage_key("entry-disk-1")
+
+        with _disk_full(evidence._store):
+            assert await _accept(
+                guard,
+                [_reservation("res-1", CODE_A)],
+                rejected_codes=(_pair("res-9", CODE_B),),
+            )
+            assert await evidence.async_save() is False
+
+        assert key not in hass_storage
+        assert evidence.state == EVIDENCE_UNSTORED
+        assert guard.baseline is not None
+        assert guard.baseline.revalidation_pending is True
+        assert guard.write_refusal("res-1") == REFUSAL_EVIDENCE_UNAVAILABLE
+        assert guard.compare(
+            [_reservation("res-2", CODE_B)], RESERVATIONS_API_LEGACY
+        ).is_ambiguous
+
+        restarted = ReservationIdentityGuard(hass, "entry-disk-1")
+        await restarted.async_load()
+        assert restarted.conflict_evidence.state == EVIDENCE_COMPROMISED
+
+    async def test_logged_disk_failure_in_step_two_is_unstored(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """A write failure Home Assistant only logs leaves the guard unstored."""
+        guard = await _ready_guard(hass, "entry-disk-2")
+
+        with _disk_full(guard._store):
+            stored = await _accept(guard, [_reservation("res-1", CODE_A)])
+
+        assert stored is False
+        assert guard.write_refusal("res-1") == REFUSAL_UNSTORED
+        identity_data = hass_storage[storage_key("entry-disk-2")]["data"]
+        assert identity_data["conflict_evidence_generation"] == 1
+
+    async def test_save_deferred_while_stopping_is_unstored(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """A save Home Assistant defers to its final write is not stored."""
+        guard = await _ready_guard(hass, "entry-stopping")
+        before = hass_storage[storage_key("entry-stopping")]["data"]
+        hass.set_state(CoreState.stopping)
+        try:
+            with pytest.raises(OSError):
+                await guard._store.async_save_checked({"path": RESERVATIONS_API_V3})
+            stored = await _accept(guard, [_reservation("res-1", CODE_A)])
+        finally:
+            hass.set_state(CoreState.running)
+
+        assert stored is False
+        assert guard.write_refusal("res-1") == REFUSAL_UNSTORED
+        assert guard.conflict_evidence.state == EVIDENCE_UNSTORED
+        assert hass_storage[storage_key("entry-stopping")]["data"] == before
+
+    async def test_save_deferred_while_stopping_logs_no_warning(
+        self, hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A deferred save is not reported as a storage failure.
+
+        Home Assistant's final write persists the deferred data, so a
+        warning that storage failed would be untrue. The guard still
+        fails closed exactly as for a failed write.
+        """
+        guard = await _ready_guard(hass, "entry-stopping-log")
+        baseline = guard.baseline
+        assert baseline is not None
+        caplog.clear()
+        hass.set_state(CoreState.stopping)
+        try:
+            with caplog.at_level(logging.DEBUG):
+                stored = await _accept(
+                    guard,
+                    [_reservation("res-1", CODE_A)],
+                    rejected_codes=(_pair("res-9", CODE_B),),
+                )
+                await guard._store_bootstrap(baseline)
+        finally:
+            hass.set_state(CoreState.running)
+
+        assert stored is False
+        assert guard.write_refusal("res-1") == REFUSAL_UNSTORED
+        assert guard.conflict_evidence.state == EVIDENCE_UNSTORED
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        deferred = [
+            r.getMessage()
+            for r in caplog.records
+            if "deferred to Home Assistant's final write" in r.getMessage()
+        ]
+        assert len(deferred) == 3
+
+    async def test_unsaved_pairs_stay_pending_until_saved(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """Pairs a failed save missed still compare and are saved later."""
+        guard = await _ready_guard(hass, "entry-pending")
+        with patch.object(
+            guard.conflict_evidence._store,
+            "async_save",
+            AsyncMock(side_effect=OSError),
+        ):
+            await _accept(
+                guard,
+                [_reservation("res-1", CODE_A)],
+                rejected_codes=(_pair("res-9", CODE_B),),
+            )
+
+        assert guard.compare(
+            [_reservation("res-2", CODE_B)], RESERVATIONS_API_LEGACY
+        ).is_ambiguous
+        await _accept(guard, [_reservation("res-1", CODE_A)])
+
+        stored = hass_storage[conflict_evidence_storage_key("entry-pending")]["data"]
+        assert [e["reservation_id"] for e in stored["entries"]] == ["res-9"]
+        assert guard.conflict_evidence.state == EVIDENCE_READY
+
+    async def test_failed_identity_save_keeps_stored_pairs(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A failed step 2 leaves step 1's pairs stored and compared."""
+        guard = await _ready_guard(hass, "entry-step2-fail")
+        with patch.object(guard._store, "async_save", AsyncMock(side_effect=OSError)):
+            stored = await _accept(
+                guard,
+                [_reservation("res-1", CODE_A)],
+                rejected_codes=(_pair("res-9", CODE_B),),
+            )
+        assert stored is False
+
+        restarted = ReservationIdentityGuard(hass, "entry-step2-fail")
+        await restarted.async_load()
+
+        assert restarted.conflict_evidence.state == EVIDENCE_REVALIDATING
+        assert restarted.compare(
+            [_reservation("res-2", CODE_B)], RESERVATIONS_API_LEGACY
+        ).is_ambiguous
+
+    async def test_both_saves_failing_loads_revalidating(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Nothing changed on disk, so a restart revalidates."""
+        guard = await _ready_guard(hass, "entry-both-fail")
+        with (
+            patch.object(
+                guard.conflict_evidence._store,
+                "async_save",
+                AsyncMock(side_effect=OSError),
+            ),
+            patch.object(guard._store, "async_save", AsyncMock(side_effect=OSError)),
+        ):
+            await _accept(guard, [_reservation("res-1", CODE_A)])
+
+        restarted = ReservationIdentityGuard(hass, "entry-both-fail")
+        await restarted.async_load()
+
+        assert restarted.conflict_evidence.state == EVIDENCE_REVALIDATING
+        assert restarted.write_refusal("res-1") == REFUSAL_REVALIDATING
+
+    async def test_restart_revalidates_until_steps_one_and_two(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A clean restart refuses until a refresh is fully stored."""
+        await _ready_guard(hass, "entry-restart")
+
+        restarted = ReservationIdentityGuard(hass, "entry-restart")
+        await restarted.async_load()
+        assert restarted.conflict_evidence.state == EVIDENCE_REVALIDATING
+        assert restarted.write_refusal("res-1") == REFUSAL_REVALIDATING
+
+        await _accept(restarted, [_reservation("res-1", CODE_A)])
+
+        assert restarted.conflict_evidence.state == EVIDENCE_READY
+        assert restarted.write_refusal("res-1") is None
+
+    async def test_compromised_store_is_never_written(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """A compromised store survives refreshes and restarts."""
+        key = conflict_evidence_storage_key("entry-never-write")
+        _preset(hass_storage, key, _evidence_payload(generation="bad"))
+        guard = ReservationIdentityGuard(hass, "entry-never-write")
+        await guard.async_load()
+        before = dict(hass_storage[key])
+
+        await _accept(
+            guard,
+            [_reservation("res-1", CODE_A)],
+            rejected_codes=(_pair("res-9", CODE_B),),
+        )
+
+        assert hass_storage[key] == before
+        assert guard.conflict_evidence.state == EVIDENCE_COMPROMISED
+        restarted = ReservationIdentityGuard(hass, "entry-never-write")
+        await restarted.async_load()
+        assert restarted.conflict_evidence.state == EVIDENCE_COMPROMISED
+
+    async def test_identity_is_frozen_while_compromised(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """No continuity, retirement or revalidation is concluded."""
+        _preset(
+            hass_storage,
+            storage_key("entry-frozen"),
+            {
+                "path": RESERVATIONS_API_V3,
+                "continuity": CONTINUITY_UNCONFIRMED,
+                "bootstrap_attempted": True,
+                "codes": {"CONF-V3": "res-v3"},
+                "bootstrap_codes": {CODE_A: "res-1", CODE_B: "res-2"},
+            },
+        )
+        _preset(
+            hass_storage,
+            conflict_evidence_storage_key("entry-frozen"),
+            _evidence_payload(entries="bad"),
+        )
+        guard = ReservationIdentityGuard(hass, "entry-frozen")
+        await guard.async_load()
+
+        await _accept(
+            guard,
+            [_reservation("res-1", CODE_A), _reservation("res-v3", "CONF-V3")],
+            path=RESERVATIONS_API_V3,
+        )
+
+        baseline = guard.baseline
+        assert baseline is not None
+        assert baseline.continuity == CONTINUITY_UNCONFIRMED
+        assert baseline.bootstrap_codes == {CODE_A: "res-1", CODE_B: "res-2"}
+        assert baseline.revalidation_pending is True
+
+    async def test_identity_is_frozen_while_saturated(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A saturated store cannot confirm continuity either."""
+        guard = ReservationIdentityGuard(hass, "entry-frozen-sat")
+        await guard.async_load()
+        await guard.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_V3,
+                continuity=CONTINUITY_UNCONFIRMED,
+                bootstrap_attempted=True,
+                codes={"CONF-V3": "res-v3"},
+                bootstrap_codes={CODE_A: "res-1"},
+            )
+        )
+        guard.conflict_evidence.record(
+            [_pair(f"r-{i}", f"C-{i}") for i in range(MAX_CONFLICT_ONLY_EVIDENCE + 1)],
+            {},
+            RESERVATIONS_API_V3,
+            _EVIDENCE_NOW,
+            (),
+        )
+
+        await _accept(
+            guard,
+            [_reservation("res-1", CODE_A), _reservation("res-v3", "CONF-V3")],
+            path=RESERVATIONS_API_V3,
+        )
+
+        baseline = guard.baseline
+        assert baseline is not None
+        assert guard.conflict_evidence.state == EVIDENCE_SATURATED
+        assert baseline.continuity == CONTINUITY_UNCONFIRMED
+        assert baseline.bootstrap_codes == {CODE_A: "res-1"}
+
+
+class TestEvidenceWriteRefusals:
+    """The two pre-membership refusals (T018, C15, C16, FR-008)."""
+
+    @pytest.mark.parametrize(
+        ("state", "expected"),
+        [
+            (EVIDENCE_UNLOADED, "unavailable"),
+            (EVIDENCE_UNSTORED, "unavailable"),
+            (EVIDENCE_SATURATED, "repair"),
+            (EVIDENCE_COMPROMISED, "repair"),
+            (EVIDENCE_REVALIDATING, "revalidating"),
+        ],
+    )
+    async def test_non_ready_state_refuses_before_membership(
+        self, hass: HomeAssistant, state: str, expected: str
+    ) -> None:
+        """Each non-ready state refuses known and unknown targets."""
+        guard = await _ready_guard(hass, f"entry-state-{state}")
+        messages = {
+            "unavailable": REFUSAL_EVIDENCE_UNAVAILABLE,
+            "repair": f"{REFUSAL_EVIDENCE_UNAVAILABLE} {REFUSAL_EVIDENCE_REPAIR}",
+            "revalidating": REFUSAL_REVALIDATING,
+        }
+
+        with patch.object(
+            ConflictOnlyEvidence, "state", new_callable=PropertyMock
+        ) as mocked:
+            mocked.return_value = state
+            known = guard.classify_write_refusal("res-1")
+            unknown = guard.classify_write_refusal("res-unknown")
+
+        for refusal in (known, unknown):
+            assert refusal is not None
+            assert refusal.message == messages[expected]
+            assert refusal.missing_current_code is False
+
+    async def test_existing_refusals_keep_their_order(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Baseline, storage, continuity and ambiguity refuse first."""
+        empty = ReservationIdentityGuard(hass, "entry-order-empty")
+        await empty.async_load()
+        assert empty.write_refusal("res-1") == REFUSAL_NO_BASELINE
+
+        unstored = await _ready_guard(hass, "entry-order-unstored")
+        unstored._unstored = True
+        assert unstored.write_refusal("res-1") == REFUSAL_UNSTORED
+
+        ambiguous = await _ready_guard(hass, "entry-order-ambiguous")
+        ambiguous.mark_ambiguous()
+        assert ambiguous.write_refusal("res-1") == REFUSAL_AMBIGUOUS
+
+    async def test_ready_evidence_keeps_the_membership_refusal(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Ready evidence leaves the membership path unchanged."""
+        guard = await _ready_guard(hass, "entry-ready-membership")
+
+        assert guard.write_refusal("res-1") is None
+        refusal = guard.classify_write_refusal("res-unknown")
+        assert refusal is not None
+        assert refusal.missing_current_code is True
+
+    async def test_compromised_during_pending_revalidation(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """Compromise outranks a pending revalidation."""
+        _preset(
+            hass_storage,
+            storage_key("entry-compromised-pending"),
+            {
+                "path": RESERVATIONS_API_LEGACY,
+                "continuity": CONTINUITY_VERIFIED,
+                "codes": {CODE_A: "res-1"},
+            },
+        )
+        _preset(
+            hass_storage,
+            conflict_evidence_storage_key("entry-compromised-pending"),
+            [],
+        )
+        guard = ReservationIdentityGuard(hass, "entry-compromised-pending")
+        await guard.async_load()
+
+        assert guard.write_refusal("res-1") == (
+            f"{REFUSAL_EVIDENCE_UNAVAILABLE} {REFUSAL_EVIDENCE_REPAIR}"
+        )
+
+    async def test_unloaded_guard_refuses_as_unavailable(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Evidence that was never loaded authorizes nothing."""
+        guard = await _ready_guard(hass, "entry-unloaded-evidence")
+        guard._evidence = ConflictOnlyEvidence(hass, "entry-unloaded-evidence")
+
+        assert guard.write_refusal("res-1") == REFUSAL_EVIDENCE_UNAVAILABLE
+
+    async def test_write_during_identity_save_is_revalidating(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A newly rejected current ID cannot slip through step 2."""
+        guard = await _ready_guard(hass, "entry-mid-save")
+        seen: list[str | None] = []
+        save = guard._store.async_save
+
+        async def _save(data: Any) -> None:
+            """Observe the refusal while step 2 awaits storage."""
+            seen.append(guard.write_refusal("res-1"))
+            await save(data)
+
+        with patch.object(guard._store, "async_save", _save):
+            await _accept(
+                guard,
+                [_reservation("res-2", CODE_B)],
+                rejected_codes=(_pair("res-1", CODE_A),),
+            )
+
+        assert seen == [REFUSAL_REVALIDATING]
+        refusal = guard.classify_write_refusal("res-1")
+        assert refusal is not None
+        assert refusal.missing_current_code is True
+
+    async def test_growing_window_revalidates(self, hass: HomeAssistant) -> None:
+        """A wider window refuses until it has been covered."""
+        window = {"past_days": 30}
+        guard = ReservationIdentityGuard(
+            hass, "entry-window", past_days=lambda: window["past_days"]
+        )
+        await guard.async_load()
+        old_stay = {
+            "res-old": (datetime.now(UTC) - timedelta(days=45)).date().isoformat()
+        }
+        await _accept(
+            guard,
+            [_reservation("res-1", CODE_A)],
+            past_days=30,
+            rejected_codes=(_pair("res-old", CODE_B),),
+            rejected_check_out_bounds=old_stay,
+        )
+        assert guard.write_refusal("res-1") is None
+        assert guard.conflict_evidence.ids_for(CODE_B) == frozenset()
+
+        window["past_days"] = 60
+        assert guard.write_refusal("res-1") == REFUSAL_REVALIDATING
+
+        await _accept(
+            guard,
+            [_reservation("res-1", CODE_A)],
+            past_days=60,
+            rejected_codes=(_pair("res-old", CODE_B),),
+            rejected_check_out_bounds=old_stay,
+        )
+        assert guard.write_refusal("res-1") is None
+        assert guard.conflict_evidence.ids_for(CODE_B) == frozenset({"res-old"})
+
+        window["past_days"] = 10
+        assert guard.write_refusal("res-1") is None
+
+    def test_messages_are_fixed_and_carry_no_code(self) -> None:
+        """The refusals are constants with no placeholder."""
+        for message in (
+            REFUSAL_EVIDENCE_UNAVAILABLE,
+            REFUSAL_EVIDENCE_REPAIR,
+            REFUSAL_REVALIDATING,
+        ):
+            assert message
+            assert "{" not in message
+            assert "STUB" not in message

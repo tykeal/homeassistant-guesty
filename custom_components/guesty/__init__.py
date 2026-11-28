@@ -82,6 +82,8 @@ from custom_components.guesty.coordinator import (
     CustomFieldsDefinitionCoordinator,
     ListingsCoordinator,
     ReservationsCoordinator,
+    conflict_evidence_issue_ids,
+    listing_timezone_issue_prefix,
 )
 from custom_components.guesty.identity import (
     CONTINUITY_UNCONFIRMED,
@@ -1204,7 +1206,9 @@ async def async_remove_entry(
     The entry's continuity notice goes with it. The repair names a
     single entry and is cleared by that entry's coordinator, so one
     left behind by a removed entry could never be withdrawn while
-    another Guesty entry kept the domain alive.
+    another Guesty entry kept the domain alive. The same holds for
+    the entry's listing-timezone and conflict-evidence repairs; the
+    guard removal deletes the conflict-only evidence store too.
 
     Args:
         hass: Home Assistant instance.
@@ -1220,6 +1224,16 @@ async def async_remove_entry(
         DOMAIN,
         f"{ISSUE_FINANCIAL_DEPRECATED}_{entry.entry_id}",
     )
+    for issue_id in conflict_evidence_issue_ids(entry.entry_id):
+        ir.async_delete_issue(hass, DOMAIN, issue_id)
+    prefix = listing_timezone_issue_prefix(entry.entry_id)
+    timezone_issues = [
+        issue_id
+        for domain, issue_id in ir.async_get(hass).issues
+        if domain == DOMAIN and issue_id.startswith(prefix)
+    ]
+    for issue_id in timezone_issues:
+        ir.async_delete_issue(hass, DOMAIN, issue_id)
     warned: set[str] | None = hass.data.get(DATA_FINANCIAL_WARNED)
     if warned is not None:
         warned.discard(entry.entry_id)

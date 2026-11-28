@@ -15,7 +15,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from typing import Any
-from unittest.mock import ANY, AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, PropertyMock, patch
 
 import httpx
 import pytest
@@ -77,6 +77,7 @@ from custom_components.guesty.api.models import (
     ActionResult,
     GuestyListing,
     GuestyReservation,
+    RejectedCode,
     ReservationFetchResult,
 )
 from custom_components.guesty.const import (
@@ -97,11 +98,21 @@ from custom_components.guesty.coordinator import (
 from custom_components.guesty.identity import (
     CONTINUITY_UNCONFIRMED,
     CONTINUITY_VERIFIED,
+    EVIDENCE_COMPROMISED,
+    EVIDENCE_READY,
+    EVIDENCE_REVALIDATING,
+    EVIDENCE_SATURATED,
+    EVIDENCE_UNLOADED,
+    EVIDENCE_UNSTORED,
     REFUSAL_AMBIGUOUS,
+    REFUSAL_EVIDENCE_REPAIR,
+    REFUSAL_EVIDENCE_UNAVAILABLE,
     REFUSAL_NO_BASELINE,
     REFUSAL_NO_CODE,
+    REFUSAL_REVALIDATING,
     REFUSAL_UNCONFIRMED,
     REFUSAL_UNSTORED,
+    ConflictOnlyEvidence,
 )
 from tests.conftest import (
     BY_ID_TARGET,
@@ -6324,7 +6335,12 @@ class TestByIdAuthorizationRefusals:
         caplog: pytest.LogCaptureFixture,
         status: object,
     ) -> None:
-        """Only an allowed raw status may authorize a write."""
+        """Only an allowed raw status may authorize a write.
+
+        Feature 013 routes parsing through ``validate_record`` and the
+        validation assessment, so the refusal must also happen before
+        the evidence validator or ``from_v3_api_dict`` sees the record.
+        """
         await self._setup(hass)
         record = make_by_id_record()
         if status is None:
@@ -6332,11 +6348,21 @@ class TestByIdAuthorizationRefusals:
         else:
             record["status"] = status
         caplog.set_level(logging.DEBUG)
-        with patch("custom_components.guesty.api.models.map_v3_status") as mapped:
-            text = await self._refused(hass, record=record)
+        evidence = FakeConflictEvidence()
+        with (
+            patch("custom_components.guesty.api.models.map_v3_status") as mapped,
+            patch.object(
+                GuestyReservation,
+                "from_v3_api_dict",
+                wraps=GuestyReservation.from_v3_api_dict,
+            ) as parsed,
+        ):
+            text = await self._refused(hass, record=record, evidence=evidence)
 
         assert "disallowed_status" in text
         mapped.assert_not_called()
+        parsed.assert_not_called()
+        assert not [c for c in evidence.calls if c[0] == "validate_record"]
         assert "SENTINEL-STATUS-9F" not in caplog.text
         assert "SENTINEL-STATUS-9F" not in text
 
@@ -6539,23 +6565,34 @@ class TestByIdAuthorizationRefusals:
         assert "identity_conflict" in text
 
     @pytest.mark.parametrize(
-        "segment",
+        ("segment", "category"),
         [
-            {"listingId": "listing-001", "parentListingId": "parent-x"},
-            {"listingId": "listing-other"},
-            {"listingId": "listing-001", "parentListingId": 7},
+            (
+                {"listingId": "listing-001", "parentListingId": "parent-x"},
+                "identity_conflict",
+            ),
+            ({"listingId": "listing-other"}, "identity_conflict"),
+            ({"listingId": "listing-001", "parentListingId": 7}, "malformed"),
         ],
         ids=["parent", "unit", "non-string-parent"],
     )
     async def test_codeless_listing_disagreement_is_identity_conflict(
-        self, hass: HomeAssistant, segment: dict[str, Any]
+        self, hass: HomeAssistant, segment: dict[str, Any], category: str
     ) -> None:
-        """A code-less target's by-ID listings must match the search."""
+        """A code-less target's by-ID listings must match the search.
+
+        Feature 013 (research R3) supersedes 014 T029/T033 for the
+        ``non-string-parent`` case: a non-string ``parentListingId`` is
+        ``segment_malformed_parent``, so the single-segment record is
+        rejected, ``from_v3_api_dict`` returns None and
+        ``_authorize_by_id_record`` refuses it as ``malformed``.
+        """
         await self._setup(hass)
         record = make_by_id_record(stay=[make_v3_segment(**segment)])
         text = await self._refused(hass, record=record, refresh=_codeless_refresh())
-        assert "identity_conflict" in text
-        assert "present without a confirmation code" in text
+        assert category in text
+        if category == "identity_conflict":
+            assert "present without a confirmation code" in text
 
     async def test_unverifiable_snapshot_listing_pairs_refuse(
         self, hass: HomeAssistant
@@ -7236,3 +7273,173 @@ class TestByIdOverlap:
 
         assert fetches_at_write == [1]
         assert routes.fetch.await_count == 2
+
+
+# ── Feature 013: evidence-state write refusals (T021) ───────────────
+
+_EVIDENCE_STATE_REFUSALS = pytest.mark.parametrize(
+    ("state", "match"),
+    [
+        (EVIDENCE_UNLOADED, REFUSAL_EVIDENCE_UNAVAILABLE),
+        (EVIDENCE_REVALIDATING, REFUSAL_REVALIDATING),
+        (EVIDENCE_UNSTORED, REFUSAL_EVIDENCE_UNAVAILABLE),
+        (
+            EVIDENCE_SATURATED,
+            f"{REFUSAL_EVIDENCE_UNAVAILABLE} {REFUSAL_EVIDENCE_REPAIR}",
+        ),
+        (
+            EVIDENCE_COMPROMISED,
+            f"{REFUSAL_EVIDENCE_UNAVAILABLE} {REFUSAL_EVIDENCE_REPAIR}",
+        ),
+    ],
+)
+_REJECTED = "res-rej"
+
+
+def _rejected_refresh(kind: str, **fields: Any) -> ReservationFetchResult:
+    """Build a refresh whose rejected target is partial or dropped.
+
+    Args:
+        kind: ``partial`` keeps the record as partial; ``dropped``
+            leaves it only in ``rejected_ids``.
+        **fields: Further fetch result fields to set.
+
+    Returns:
+        The refresh result.
+    """
+    extra = (
+        [replace(make_identity_reservation(_REJECTED, "CONF-REJ"), partial=True)]
+        if kind == "partial"
+        else []
+    )
+    return _refresh(
+        *extra,
+        rejected_ids=(_REJECTED,),
+        rejected_codes=(RejectedCode(_REJECTED, "CONF-REJ"),),
+        **fields,
+    )
+
+
+class TestEvidenceStateWriteRefusals:
+    """Evidence state and validation decide writes (T021, FR-008c)."""
+
+    @_BY_ID_SERVICES
+    @_EVIDENCE_STATE_REFUSALS
+    async def test_unavailable_evidence_refuses_plainly(
+        self,
+        hass: HomeAssistant,
+        service: str,
+        payload: dict[str, str],
+        state: str,
+        match: str,
+    ) -> None:
+        """A non-ready store refuses before membership, reading nothing."""
+        await _setup_entry(hass)
+        with (
+            patch.object(
+                ConflictOnlyEvidence, "state", new_callable=PropertyMock
+            ) as current,
+            by_id_network(
+                refresh=_refresh(),
+                evidence=FakeConflictEvidence(),
+                reservation_id="res-001",
+            ) as routes,
+            pytest.raises(HomeAssistantError) as error,
+        ):
+            current.return_value = state
+            await _call_by_id(hass, service, payload, "res-001")
+
+        assert str(error.value) == match
+        assert "{" not in match
+        assert not isinstance(error.value.__cause__, ReservationIdentityMissError)
+        routes.fetch.assert_not_awaited()
+        assert routes.read.call_count == 0
+        assert routes.writes == 0
+
+    @_BY_ID_SERVICES
+    @pytest.mark.parametrize("kind", ["partial", "dropped"])
+    async def test_rejected_target_is_refused_via_membership(
+        self,
+        hass: HomeAssistant,
+        service: str,
+        payload: dict[str, str],
+        kind: str,
+    ) -> None:
+        """A rejected target misses membership and is never written."""
+        entry = await _setup_entry(hass)
+        coordinator = _by_id_coordinator(hass, entry)
+        with by_id_network(
+            refresh=_rejected_refresh(kind), reservation_id=_REJECTED
+        ) as routes:
+            await coordinator.async_refresh()
+            assert coordinator.identity.conflict_evidence.available()
+            text = await _by_id_refusal(hass, service, payload, _REJECTED)
+
+        assert text == REFUSAL_NO_CODE.format(reservation_id=_REJECTED)
+        routes.fetch.assert_awaited()
+        assert routes.writes == 0
+
+    @_BY_ID_SERVICES
+    async def test_corrected_target_is_written_after_recovery(
+        self, hass: HomeAssistant, service: str, payload: dict[str, str]
+    ) -> None:
+        """A target fixed upstream is written once the refresh accepts it."""
+        entry = await _setup_entry(hass)
+        coordinator = _by_id_coordinator(hass, entry)
+        with by_id_network(refresh=_rejected_refresh("partial")):
+            await coordinator.async_refresh()
+        fixed = _refresh(make_identity_reservation(_REJECTED, "CONF-REJ"))
+        with by_id_network(refresh=fixed, reservation_id=_REJECTED) as routes:
+            result = await _call_by_id(hass, service, payload, _REJECTED)
+
+        assert result == {"success": True, "target_id": _REJECTED}
+        routes.fetch.assert_awaited_once()
+        assert routes.writes == 1
+
+    @_BY_ID_SERVICES
+    @pytest.mark.parametrize("hidden_by", ["listing_selection", "out_of_window"])
+    async def test_filtered_valid_target_stays_writable(
+        self,
+        hass: HomeAssistant,
+        service: str,
+        payload: dict[str, str],
+        hidden_by: str,
+    ) -> None:
+        """A valid record hidden from publication is still written (R11).
+
+        Publication filters (listing selection and the configured
+        window) decide what is displayed, never what is valid, so the
+        hidden target stays writable and the write is actually sent.
+        The only status-based publication drop, an alteration hold,
+        is not a display filter: holds are refused for writes too.
+        """
+        target = "res-hidden"
+        record = make_identity_reservation(target, f"CONF-{target}")
+        options: dict[str, Any] = {}
+        if hidden_by == "listing_selection":
+            options[CONF_SELECTED_LISTINGS] = ["another-listing"]
+        else:
+            assert record.check_in is not None
+            assert record.check_out is not None
+            record = replace(
+                record,
+                check_in=record.check_in + timedelta(days=400),
+                check_out=record.check_out + timedelta(days=400),
+            )
+        entry = await _setup_entry(
+            hass,
+            [*make_identity_reservations(*_WRITE_TARGETS), record],
+            options=options,
+        )
+        coordinator = _by_id_coordinator(hass, entry)
+        assert coordinator.last_update_success
+        published = {r.id for items in coordinator.data.values() for r in items}
+        assert target not in published
+        assert coordinator.identity.conflict_evidence.state == EVIDENCE_READY
+        assert coordinator.identity.write_refusal(target) is None
+        with by_id_network(refresh=_refresh(record), reservation_id=target) as routes:
+            result = await _call_by_id(hass, service, payload, target)
+
+        assert result == {"success": True, "target_id": target}
+        routes.fetch.assert_not_awaited()
+        assert routes.writes == 1

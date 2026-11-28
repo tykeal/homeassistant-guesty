@@ -5,8 +5,9 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from homeassistant.components.sensor import (
@@ -367,8 +368,17 @@ def _build_attributes(
     all_reservations: list[GuestyReservation],
     listing_id: str,
     cf_field_lookup: Callable[[str], str] | None = None,
+    *,
+    stale: bool = False,
+    last_verified_at: datetime | None = None,
+    stale_ids: Collection[str] = frozenset(),
 ) -> dict[str, Any]:
     """Build extra_state_attributes for the reservation sensor.
+
+    ``stale`` is true while the whole display is the last verified
+    snapshot of a failed refresh, or when the selected record itself
+    could only be served stale; ``last_verified_at`` is set only in
+    the first case (FR-012, FR-012g).
 
     Args:
         reservation: The selected reservation, or None.
@@ -376,10 +386,14 @@ def _build_attributes(
         listing_id: The Guesty listing ID.
         cf_field_lookup: Optional callable that maps a fieldId to
             a human-readable display name.
+        stale: Whether the display is a stale snapshot.
+        last_verified_at: When that snapshot was accepted.
+        stale_ids: Records served stale by the last accepted refresh.
 
     Returns:
         Dictionary of extra state attributes.
     """
+    verified_at = last_verified_at.isoformat() if last_verified_at else None
     if reservation is None:
         return {
             "reservation_id": None,
@@ -401,10 +415,12 @@ def _build_attributes(
             "listing_id": listing_id,
             "upcoming_reservations": [],
             "custom_fields": {},
+            "stale": stale,
+            "last_verified_at": verified_at,
         }
 
     guest = reservation.guest
-    upcoming = _build_upcoming(all_reservations)
+    upcoming = _build_upcoming(all_reservations, stale=stale, stale_ids=stale_ids)
 
     return {
         "reservation_id": reservation.id,
@@ -437,6 +453,8 @@ def _build_attributes(
             dict(reservation.custom_fields),
             cf_field_lookup,
         ),
+        "stale": stale or reservation.id in stale_ids,
+        "last_verified_at": verified_at,
     }
 
 
@@ -477,15 +495,22 @@ def _resolve_custom_fields(
 
 def _build_upcoming(
     reservations: list[GuestyReservation],
+    *,
+    stale: bool = False,
+    stale_ids: Collection[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """Build upcoming reservations list, limited to 10 (FR-009).
 
     Includes all reservations with ``confirmed`` or ``checked_in``
     status (i.e., actually upcoming or active, not past), including
-    the currently selected reservation.
+    the currently selected reservation. Expired stays were already
+    published as ``checked_out`` without a source lifecycle, so they
+    can never use up the limit (FR-004c, SC-003).
 
     Args:
         reservations: All reservations for this listing.
+        stale: Whether the display is a stale snapshot.
+        stale_ids: Records served stale by the last accepted refresh.
 
     Returns:
         List of upcoming reservation summary dicts.
@@ -511,11 +536,44 @@ def _build_upcoming(
                 "timing_status": res.timing_status,
                 "status": res.status,
                 "reservation_status": res.reservation_status,
+                "stale": stale or res.id in stale_ids,
             }
         )
         if len(upcoming) >= 10:
             break
     return upcoming
+
+
+def _coordinator_available(coordinator: ReservationsCoordinator) -> bool:
+    """Return whether reservation entities may show coordinator data.
+
+    A healthy coordinator qualifies, and so does a failed one that is
+    displaying its re-projected verified snapshot; with nothing
+    verified to show the entity is unavailable (R13).
+
+    Args:
+        coordinator: The reservations coordinator.
+
+    Returns:
+        True when the coordinator's data may be displayed.
+    """
+    return bool(coordinator.last_update_success or coordinator.stale_display_available)
+
+
+def _stale_display(
+    coordinator: ReservationsCoordinator,
+) -> tuple[bool, datetime | None]:
+    """Return whether the display is stale, and since when verified.
+
+    Args:
+        coordinator: The reservations coordinator.
+
+    Returns:
+        The stale flag and the snapshot's acceptance time, if stale.
+    """
+    if coordinator.stale_display_available is not True:
+        return False, None
+    return True, coordinator.last_verified_at
 
 
 def _build_listing_device_info(
@@ -635,11 +693,15 @@ class GuestyReservationSensor(
         """
         reservations = self._reservations
         selected = _select_reservation(reservations)
+        stale, last_verified_at = _stale_display(self.coordinator)
         return _build_attributes(
             selected,
             reservations,
             self._listing_id,
             self._cf_field_lookup,
+            stale=stale,
+            last_verified_at=last_verified_at,
+            stale_ids=self.coordinator.stale_reservation_ids,
         )
 
     @property
@@ -692,16 +754,17 @@ class GuestyReservationSensor(
 
     @property
     def available(self) -> bool:
-        """Return True when coordinator is healthy and listing exists.
+        """Return True when coordinator data is displayable and listing exists.
 
-        Checks both reservation coordinator health and whether the
+        Checks reservation coordinator health, or a displayed stale
+        snapshot after a failed refresh (R13), and whether the
         listing is still tracked by the listings coordinator, to
         avoid false state-change events on disappeared listings.
 
         Returns:
             True when the sensor should be available.
         """
-        if not super().available:
+        if not _coordinator_available(self.coordinator):
             return False
         if self.coordinator.data is None:
             return False
@@ -782,26 +845,39 @@ class GuestyFinancialSensor(
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Return extra state attributes including the listing ID.
+        """Return the listing ID and the value's staleness.
 
         Returns:
-            Dictionary with listing_id attribute.
+            Dictionary with listing_id, stale and last_verified_at.
         """
-        return {"listing_id": self._listing_id}
+        stale, last_verified_at = _stale_display(self.coordinator)
+        selected = _select_reservation(self._reservations)
+        return {
+            "listing_id": self._listing_id,
+            "stale": stale
+            or (
+                selected is not None
+                and selected.id in self.coordinator.stale_reservation_ids
+            ),
+            "last_verified_at": (
+                last_verified_at.isoformat() if last_verified_at else None
+            ),
+        }
 
     @property
     def available(self) -> bool:
         """Return True only when the specific financial field exists.
 
-        Checks coordinator health, data presence, listing
-        existence, reservation presence, money data, and the
-        specific field value so partial payloads show
-        unavailable rather than unknown (FR-019).
+        Checks coordinator health or a displayed stale snapshot
+        (R13), data presence, listing existence, reservation
+        presence, money data, and the specific field value so
+        partial payloads show unavailable rather than unknown
+        (FR-019).
 
         Returns:
             True when the financial field value is available.
         """
-        if not super().available:
+        if not _coordinator_available(self.coordinator):
             return False
         if self.coordinator.data is None:
             return False
@@ -828,19 +904,24 @@ class GuestyFinancialSensor(
         )
 
     @property
+    def _reservations(self) -> list[GuestyReservation]:
+        """Return the reservations for this listing.
+
+        Returns:
+            List of reservations, or empty list.
+        """
+        if self.coordinator.data is None:
+            return []
+        return self.coordinator.data.get(self._listing_id, [])
+
+    @property
     def _money(self) -> GuestyMoney | None:
         """Return the money data from the selected reservation.
 
         Returns:
             GuestyMoney from the selected reservation, or None.
         """
-        if self.coordinator.data is None:
-            return None
-        reservations = self.coordinator.data.get(
-            self._listing_id,
-            [],
-        )
-        selected = _select_reservation(reservations)
+        selected = _select_reservation(self._reservations)
         if selected is None:
             return None
         return selected.money

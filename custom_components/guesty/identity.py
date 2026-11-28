@@ -20,11 +20,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, Literal
 
+from homeassistant.core import CoreState
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
+from homeassistant.util.file import WriteError
+from homeassistant.util.json import SerializationError
 
 from custom_components.guesty.api.const import (
     DEFAULT_FUTURE_DAYS,
@@ -39,18 +42,39 @@ from custom_components.guesty.api.reservations_legacy import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Iterable, Mapping
+    from collections.abc import Callable, Collection, Iterable, Mapping
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
 
     from custom_components.guesty.api.client import GuestyApiClient
-    from custom_components.guesty.api.models import GuestyReservation
+    from custom_components.guesty.api.models import GuestyReservation, RejectedCode
 
 _LOGGER = logging.getLogger(__name__)
 
 # Schema version of the persisted identity baseline.
 STORAGE_VERSION: Final[int] = 1
+
+# Minor version 2 marks a payload revalidated by feature 013 (R9).
+IDENTITY_STORAGE_MINOR_VERSION: Final[int] = 2
+
+# Schema version of the persisted conflict-only evidence (R7).
+CONFLICT_EVIDENCE_STORAGE_VERSION: Final[int] = 1
+
+# Hard bound on persisted conflict-only pairs; never evicted (R7).
+MAX_CONFLICT_ONLY_EVIDENCE: Final[int] = 5000
+
+# Near-capacity hysteresis: set at 80% and cleared below 70%.
+_NEAR_CAPACITY_SET: Final[int] = MAX_CONFLICT_ONLY_EVIDENCE * 4 // 5
+_NEAR_CAPACITY_CLEAR: Final[int] = MAX_CONFLICT_ONLY_EVIDENCE * 7 // 10
+
+# Conflict-only evidence states (data-model.md, ConflictOnlyEvidence).
+EVIDENCE_UNLOADED: Final[str] = "unloaded"
+EVIDENCE_REVALIDATING: Final[str] = "revalidating"
+EVIDENCE_READY: Final[str] = "ready"
+EVIDENCE_UNSTORED: Final[str] = "unstored"
+EVIDENCE_SATURATED: Final[str] = "saturated"
+EVIDENCE_COMPROMISED: Final[str] = "compromised"
 
 # Upper bound on each persisted code map (data-model.md section 4).
 MAX_BASELINE_CODES: Final[int] = 5000
@@ -86,6 +110,7 @@ SOURCE_BOOTSTRAP: Final[str] = "bootstrap_codes"
 SOURCE_FALLBACK: Final[str] = "fallback_codes"
 SOURCE_LEGACY: Final[str] = "legacy_codes"
 SOURCE_OBSERVED: Final[str] = "observed"
+SOURCE_CONFLICT_ONLY: Final[str] = "conflict_only"
 
 # Refusal texts for each conjunct of the write predicate
 # (FR-031c, FR-032, FR-033).
@@ -112,6 +137,19 @@ REFUSAL_UNSTORED: Final[str] = (
     "to storage, so it cannot be trusted and this write is refused. "
     "Check the Home Assistant storage directory, then reload the "
     "entry."
+)
+REFUSAL_EVIDENCE_UNAVAILABLE: Final[str] = (
+    "Guesty reservation identity evidence is unavailable, so this "
+    "write is refused rather than risk acting on the wrong "
+    "reservation."
+)
+REFUSAL_EVIDENCE_REPAIR: Final[str] = (
+    "Remove and re-add the Guesty integration entry to rebuild it."
+)
+REFUSAL_REVALIDATING: Final[str] = (
+    "Guesty reservation identity evidence is being revalidated, so "
+    "this write is refused. Wait for a successful reservation "
+    "refresh, then try again."
 )
 REFUSAL_NO_CODE: Final[str] = (
     "Reservation '{reservation_id}' has no known confirmation code, "
@@ -148,14 +186,19 @@ class ObservedCodes:
         mapping: Confirmation code to reservation identifier.
         collisions: Identifier pairs that reported the same
             confirmation code within this one refresh.
+        conflict_only: Confirmation code to reservation identifier of
+            the refresh's rejected or partial records. It feeds
+            conflict detection only (FR-008b).
     """
 
     mapping: dict[str, str] = field(default_factory=dict)
     collisions: tuple[tuple[str, str], ...] = ()
+    conflict_only: dict[str, str] = field(default_factory=dict)
 
 
 def observe_codes(
     reservations: Iterable[GuestyReservation],
+    conflict_only: Iterable[RejectedCode] = (),
 ) -> ObservedCodes:
     """Read this refresh's confirmation code evidence.
 
@@ -178,11 +221,19 @@ def observe_codes(
     reservations at once is itself an identity the guard cannot
     trust.
 
+    Rejected pairs join the same collision scan after the accepted
+    records, so a code shared by a rejected and an accepted record,
+    or by two rejected records, is ambiguous too. They are returned
+    apart and never enter ``mapping``.
+
     Args:
         reservations: Reservations the refresh retrieved.
+        conflict_only: The refresh's rejected ``(reservation_id,
+            code)`` pairs.
 
     Returns:
-        The mapping and any within-refresh collisions.
+        The mapping, the conflict-only mapping and any
+        within-refresh collisions.
     """
     mapping: dict[str, str] = {}
     collisions: list[tuple[str, str]] = []
@@ -197,7 +248,22 @@ def observe_codes(
             collisions.append((previous, reservation.id))
             continue
         mapping[code] = reservation.id
-    return ObservedCodes(mapping=mapping, collisions=tuple(collisions))
+    seen = dict(mapping)
+    rejected: dict[str, str] = {}
+    for reservation_id, code in conflict_only:
+        if not isinstance(code, str) or not code:
+            continue
+        previous = seen.get(code)
+        if previous is not None and previous != reservation_id:
+            collisions.append((previous, reservation_id))
+            continue
+        seen[code] = reservation_id
+        rejected[code] = reservation_id
+    return ObservedCodes(
+        mapping=mapping,
+        collisions=tuple(collisions),
+        conflict_only=rejected,
+    )
 
 
 @dataclass(frozen=True)
@@ -288,7 +354,8 @@ def _aware_instant(value: str | None) -> datetime | None:
         value: Candidate timestamp.
 
     Returns:
-        The UTC-normalized instant, or None when invalid or naive.
+        The UTC-normalized instant, or None when invalid, naive or
+        outside the representable UTC range.
     """
     if not isinstance(value, str):
         return None
@@ -298,7 +365,10 @@ def _aware_instant(value: str | None) -> datetime | None:
         return None
     if parsed.tzinfo is None:
         return None
-    return parsed.astimezone(UTC)
+    try:
+        return parsed.astimezone(UTC)
+    except OverflowError:
+        return None
 
 
 def _utc_iso(value: Any) -> str | None:
@@ -393,6 +463,10 @@ class IdentityBaseline:
         bootstrap_codes: Retained legacy bootstrap evidence.
         fallback_codes: Evidence learned through the fallback.
         candidates: Reservation identifier to stay dates.
+        revalidation_pending: Whether a migrated payload still awaits
+            its first fully stored accepted refresh (R9).
+        conflict_evidence_generation: The conflict-only evidence
+            generation this baseline was saved with (R7 decision 8).
     """
 
     path: str
@@ -405,6 +479,8 @@ class IdentityBaseline:
     bootstrap_codes: dict[str, str] | None = None
     fallback_codes: dict[str, str] | None = None
     candidates: dict[str, CandidateHint] = field(default_factory=dict)
+    revalidation_pending: bool = False
+    conflict_evidence_generation: int = 0
 
     @property
     def is_usable(self) -> bool:
@@ -509,6 +585,8 @@ class IdentityBaseline:
         observed: Mapping[str, str],
         path: str,
         fallback_ids: Collection[str] = (),
+        conflict_only: Mapping[str, str] | None = None,
+        extra_maps: Iterable[_StoredMap] = (),
     ) -> IdentityComparison:
         """Compare an observed code map against every stored map.
 
@@ -534,6 +612,11 @@ class IdentityBaseline:
                 merely cross-path: both sides came from legacy, so
                 it can only be a re-key and it aborts the refresh
                 (FR-032).
+            conflict_only: Code to identifier of this refresh's
+                rejected records. They take part in conflict checks
+                only: agreement is never a match (FR-008b).
+            extra_maps: Stored conflict-only pairs, checked pair by
+                pair against both observations.
 
         Returns:
             The comparison outcome.
@@ -544,11 +627,27 @@ class IdentityBaseline:
         cross_path_conflicts: list[IdentityConflict] = []
         compared = 0
         from_fallback = frozenset(fallback_ids)
+        rejected = conflict_only or {}
+
+        def _disagree(known_id: str, observed_id: str, source: str, soft: bool) -> None:
+            """Record one disagreement by provenance."""
+            conflict = IdentityConflict(
+                known_id=known_id,
+                observed_id=observed_id,
+                source=source,
+            )
+            if soft and observed_id not in from_fallback:
+                cross_path_conflicts.append(conflict)
+            else:
+                conflicts.append(conflict)
 
         for source, mapping, confirms, soft in self._maps(path):
             for code, known_id in mapping.items():
                 observed_id = observed.get(code)
                 if observed_id is None:
+                    rejected_id = rejected.get(code)
+                    if rejected_id is not None and rejected_id != known_id:
+                        _disagree(known_id, rejected_id, source, soft)
                     continue
                 compared += 1
                 if observed_id == known_id:
@@ -556,15 +655,14 @@ class IdentityBaseline:
                     if confirms and observed_id not in from_fallback:
                         cross_path_ids.add(known_id)
                     continue
-                conflict = IdentityConflict(
-                    known_id=known_id,
-                    observed_id=observed_id,
-                    source=source,
-                )
-                if soft and observed_id not in from_fallback:
-                    cross_path_conflicts.append(conflict)
-                else:
-                    conflicts.append(conflict)
+                _disagree(known_id, observed_id, source, soft)
+
+        for stored in extra_maps:
+            for code, known_id in stored.pairs:
+                seen_ids = (observed.get(code), rejected.get(code))
+                for observed_id in dict.fromkeys(seen_ids):
+                    if observed_id is not None and observed_id != known_id:
+                        _disagree(known_id, observed_id, stored.source, stored.soft)
 
         return IdentityComparison(
             matched=len(matched_ids),
@@ -601,37 +699,74 @@ class IdentityBaseline:
                 reservation_id: hint.to_dict()
                 for reservation_id, hint in self.candidates.items()
             },
+            "revalidation_pending": self.revalidation_pending,
+            "conflict_evidence_generation": self.conflict_evidence_generation,
         }
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> IdentityBaseline:
         """Deserialize a baseline from storage.
 
+        Every code map keeps only non-empty string pairs, and a hint
+        that is not a mapping or carries an unreadable observation
+        time is dropped (R9). A payload still pending revalidation
+        trusts no stored stay interval, so every known hint is
+        downgraded to unknown timing.
+
         Args:
             data: The stored mapping.
 
         Returns:
             The reconstructed baseline.
+
+        Raises:
+            ValueError: When the evidence generation is unreadable or
+                the path or continuity is not a known value, so the
+                caller loads no baseline at all.
         """
+        generation = data.get("conflict_evidence_generation", 0)
+        if not _non_negative_int(generation):
+            raise ValueError("conflict_evidence_generation")
+        path = data.get("path", RESERVATIONS_API_LEGACY)
+        if path not in (RESERVATIONS_API_LEGACY, RESERVATIONS_API_V3):
+            raise ValueError("path")
+        continuity = data.get("continuity", CONTINUITY_UNCONFIRMED)
+        if continuity not in (
+            CONTINUITY_VERIFIED,
+            CONTINUITY_UNCONFIRMED,
+            CONTINUITY_NOT_APPLICABLE,
+        ):
+            raise ValueError("continuity")
+        pending = bool(data.get("revalidation_pending", False))
+        updated = str(data.get("updated", ""))
+        raw_hints = data.get("candidates")
+        candidates: dict[str, CandidateHint] = {}
+        for reservation_id, raw in (
+            raw_hints.items() if isinstance(raw_hints, dict) else ()
+        ):
+            if not isinstance(reservation_id, str) or not isinstance(raw, dict):
+                continue
+            if "observed_at" in raw and _utc_iso(raw["observed_at"]) is None:
+                continue
+            hint = CandidateHint.from_dict(raw, baseline_updated=updated)
+            if pending and hint.timing_status == "known":
+                hint = CandidateHint(observed_at=hint.observed_at)
+            candidates[reservation_id] = hint
         return cls(
-            path=str(data.get("path", RESERVATIONS_API_LEGACY)),
-            continuity=str(data.get("continuity", CONTINUITY_UNCONFIRMED)),
+            path=path,
+            continuity=continuity,
             updated=str(data.get("updated", "")),
             divergent=bool(data.get("divergent", False)),
             bootstrap_attempted=bool(
                 data.get("bootstrap_attempted", False),
             ),
-            codes=dict(data.get("codes") or {}),
+            codes=_optional_map(data.get("codes")) or {},
             legacy_codes=_optional_map(data.get("legacy_codes")),
             bootstrap_codes=_optional_map(data.get("bootstrap_codes")),
             fallback_codes=_optional_map(data.get("fallback_codes")),
-            candidates={
-                reservation_id: CandidateHint.from_dict(
-                    hint,
-                    baseline_updated=str(data.get("updated", "")),
-                )
-                for reservation_id, hint in (data.get("candidates") or {}).items()
-            },
+            candidates=candidates,
+            revalidation_pending=pending,
+            conflict_evidence_generation=generation,
         )
 
 
@@ -642,11 +777,868 @@ def _optional_map(value: Any) -> dict[str, str] | None:
         value: The stored value, which may be absent or null.
 
     Returns:
-        The mapping, or None when it was never written.
+        The mapping keeping only non-empty string pairs, an empty
+        mapping when the stored value is not a mapping, or None when
+        it was never written.
     """
     if value is None:
         return None
-    return dict(value)
+    if not isinstance(value, dict):
+        return {}
+    return {
+        code: reservation_id
+        for code, reservation_id in value.items()
+        if isinstance(code, str)
+        and code
+        and isinstance(reservation_id, str)
+        and reservation_id
+    }
+
+
+def conflict_evidence_storage_key(entry_id: str) -> str:
+    """Build the ``Store`` key for one entry's conflict-only evidence.
+
+    Args:
+        entry_id: The config entry identifier.
+
+    Returns:
+        The documented storage key for that entry.
+    """
+    return f"guesty.{entry_id}.reservations_conflict_evidence"
+
+
+class _DeferredWrite(OSError):
+    """A save Home Assistant deferred to its final write while stopping.
+
+    The data is not yet stored, so callers fail closed exactly as for
+    a failed write, but Home Assistant's final write persists it, so
+    it is not reported as a storage failure.
+    """
+
+
+class _ReportingStore(Store[dict[str, Any]]):
+    """A ``Store`` whose failed writes reach the caller.
+
+    ``Store.async_save`` never raises on a failed write: Home
+    Assistant's ``_async_handle_write_data`` catches the
+    ``WriteError`` that ``write_utf8_file`` and
+    ``write_utf8_file_atomic`` raise for any ``OSError``, and the
+    ``SerializationError`` of a payload that cannot be encoded, and
+    only logs them. A save that silently failed would count as
+    stored, so the evidence would look current and writes would be
+    allowed against it (R7 decision 8).
+
+    ``_async_write_data`` is the coroutine Home Assistant awaits
+    inside that handler for every write, immediate, delayed or
+    final; its name and signature are identical in Home Assistant
+    2026.4.0 and 2026.10.x. Overriding it records each write's
+    outcome without changing what Home Assistant logs, and
+    ``async_save_checked`` raises ``OSError`` when the write that
+    carried its data failed, and the ``_DeferredWrite`` subclass when
+    the save was deferred to Home Assistant's final write. Plain
+    ``async_save`` keeps Home Assistant's semantics, so the migration
+    save inside ``async_load`` behaves as before.
+    """
+
+    _writes: int = 0
+    _write_failed: bool = False
+
+    async def _async_write_data(self, data: dict[str, Any]) -> None:
+        """Write the data, recording whether the write failed.
+
+        Args:
+            data: The prepared storage envelope.
+
+        Raises:
+            SerializationError: When the payload cannot be encoded.
+            WriteError: When the file layer failed.
+        """
+        self._writes += 1
+        try:
+            await super()._async_write_data(data)
+        except SerializationError, WriteError:
+            self._write_failed = True
+            raise
+        self._write_failed = False
+
+    async def async_save_checked(self, data: dict[str, Any]) -> None:
+        """Save data, raising when the write did not reach storage.
+
+        Writes are serialized by the store's lock, and a write always
+        carries the newest data saved, so the last write completed
+        since this call started is the one that carried this data.
+        While Home Assistant is stopping, ``Store.async_save`` only
+        schedules the data for the final write and returns without
+        writing, so that save is reported as failed: the data is not
+        yet stored and must not be adopted as if it were.
+
+        Args:
+            data: The payload to save.
+
+        Raises:
+            OSError: When the write failed.
+            _DeferredWrite: When the write was deferred to Home
+                Assistant's final write.
+        """
+        writes = self._writes
+        deferred = self.hass.state is CoreState.stopping
+        await self.async_save(data)
+        if deferred:
+            raise _DeferredWrite("Storage write deferred")
+        if self._writes != writes and self._write_failed:
+            raise OSError("Storage write failed")
+
+
+class _IdentityStore(_ReportingStore):
+    """The identity ``Store``, migrating minor version 1 to 2 (R9)."""
+
+    async def _async_migrate_func(  # type: ignore[override]
+        self,
+        old_major_version: int,
+        old_minor_version: int,
+        old_data: Any,
+    ) -> Any:
+        """Mark a pre-013 payload for revalidation.
+
+        The payload keeps every field, so a rollback to a release
+        that only knows minor version 1 still loads it. The flag
+        makes the load downgrade every known stay interval and keeps
+        writes refused until an accepted refresh revalidates it.
+
+        Args:
+            old_major_version: The stored major version.
+            old_minor_version: The stored minor version.
+            old_data: The stored payload.
+
+        Returns:
+            The migrated payload, or an unreadable non-mapping payload
+            unchanged so the load fails closed with no baseline.
+
+        Raises:
+            NotImplementedError: For any other version, so Home
+                Assistant keeps a newer minor payload as is.
+        """
+        if old_major_version == STORAGE_VERSION and old_minor_version == 1:
+            if not isinstance(old_data, dict):
+                # Left for ``async_load`` to treat as no baseline.
+                return old_data
+            return {**old_data, "revalidation_pending": True}
+        raise NotImplementedError
+
+
+def _default_past_days() -> int:
+    """Supply the default past-day window.
+
+    Returns:
+        ``DEFAULT_PAST_DAYS``.
+    """
+    return DEFAULT_PAST_DAYS
+
+
+def _never() -> bool:
+    """Report that no identity revalidation is pending.
+
+    Returns:
+        False.
+    """
+    return False
+
+
+def _canonical_date(value: Any) -> bool:
+    """Report whether a value is a canonical ``YYYY-MM-DD`` date.
+
+    Args:
+        value: The candidate value.
+
+    Returns:
+        True for a string that round-trips through ``date``.
+    """
+    if not isinstance(value, str):
+        return False
+    try:
+        return date.fromisoformat(value).isoformat() == value
+    except ValueError:
+        return False
+
+
+def _non_negative_int(value: Any) -> bool:
+    """Report whether a value is a non-negative, non-boolean integer.
+
+    Args:
+        value: The candidate value.
+
+    Returns:
+        True when the value is a usable counter.
+    """
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+@dataclass(frozen=True)
+class _StoredMap:
+    """One group of stored pairs taking part in the comparison.
+
+    Attributes:
+        source: The map name reported on a conflict.
+        pairs: ``(code, reservation_id)`` pairs, several IDs per code
+            allowed.
+        confirms: Whether a match may confirm continuity; never for
+            conflict-only evidence.
+        soft: Whether a conflict only demotes continuity.
+    """
+
+    source: str
+    pairs: tuple[tuple[str, str], ...]
+    confirms: bool = False
+    soft: bool = False
+
+
+@dataclass
+class _EvidenceEntry:
+    """The stored facts about one conflict-only pair.
+
+    ``path`` keeps the data-model meaning, the first path that
+    observed the pair. ``paths`` extends it: every path that ever
+    observed the pair, ``path`` included. A pair re-observed on a
+    second path is then same-path evidence for both, so a later
+    conflict on either path aborts instead of only demoting (R7
+    decision 4, "soft" means "recorded on another path"). A payload
+    without ``paths`` loads as ``[path]``.
+
+    Attributes:
+        path: The reservation path that first observed the pair.
+        fallback: Whether the pair was ever seen through the legacy
+            not-found fallback.
+        observed_at: Offset-aware ISO time of the first observation.
+        check_out_bound: Retirement-only date bound, or None.
+        paths: Every reservation path that observed the pair.
+    """
+
+    path: str
+    fallback: bool
+    observed_at: str
+    check_out_bound: str | None
+    paths: set[str] = field(default_factory=set)
+
+    def __post_init__(self) -> None:
+        """Include the first path in the observing paths."""
+        self.paths.add(self.path)
+
+
+def _later_bound(stored: str | None, current: str | None) -> str | None:
+    """Merge a re-observed pair's retirement bound.
+
+    The bound only ever moves later, and an observation without one
+    makes it unbounded for good (research R7 decision 4).
+
+    Args:
+        stored: The stored bound.
+        current: This observation's bound.
+
+    Returns:
+        The merged bound.
+    """
+    if stored is None or current is None:
+        return None
+    return max(stored, current)
+
+
+def _parse_evidence_entry(raw: Any) -> tuple[tuple[str, str], _EvidenceEntry]:
+    """Validate one persisted evidence entry.
+
+    Args:
+        raw: The stored entry.
+
+    Returns:
+        The ``(code, reservation_id)`` key and the entry.
+
+    Raises:
+        ValueError: When the entry is malformed in any way.
+    """
+    if not isinstance(raw, dict):
+        raise ValueError("entry")
+    code = raw.get("code")
+    reservation_id = raw.get("reservation_id")
+    path = raw.get("path")
+    fallback = raw.get("fallback")
+    observed_at = raw.get("observed_at")
+    bound = raw.get("check_out_bound")
+    if not isinstance(code, str) or not code:
+        raise ValueError("code")
+    if not isinstance(reservation_id, str) or not reservation_id:
+        raise ValueError("reservation_id")
+    known_paths = (RESERVATIONS_API_V3, RESERVATIONS_API_LEGACY)
+    if path not in known_paths:
+        raise ValueError("path")
+    paths = raw.get("paths", [path])
+    if (
+        not isinstance(paths, list)
+        or path not in paths
+        or len(set(paths)) != len(paths)
+        or any(item not in known_paths for item in paths)
+    ):
+        raise ValueError("paths")
+    if not isinstance(fallback, bool):
+        raise ValueError("fallback")
+    if not isinstance(observed_at, str) or _aware_instant(observed_at) is None:
+        raise ValueError("observed_at")
+    if bound is not None and not _canonical_date(bound):
+        raise ValueError("check_out_bound")
+    return (code, reservation_id), _EvidenceEntry(
+        path=path,
+        fallback=fallback,
+        observed_at=observed_at,
+        check_out_bound=bound,
+        paths=set(paths),
+    )
+
+
+class ConflictOnlyEvidence:
+    """Persisted conflict-only identity evidence (FR-008a to FR-008c).
+
+    Holds the ``(code, reservation_id)`` pairs of rejected or partial
+    records. They take part in conflict detection only: they never
+    confirm continuity, never match, never enter the current IDs and
+    never authorize a write. Codes are never logged.
+
+    Feature 014 reads it as ``coordinator.identity.conflict_evidence``
+    through ``available``, ``codes_for`` and ``ids_for``.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        *,
+        past_days: Callable[[], int] = _default_past_days,
+        revalidation_pending: Callable[[], bool] = _never,
+    ) -> None:
+        """Initialize the unloaded evidence of one config entry.
+
+        Args:
+            hass: Home Assistant instance.
+            entry_id: The config entry identifier.
+            past_days: Supplier of the configured past-day window.
+            revalidation_pending: Supplier of the identity store's
+                pending revalidation flag.
+        """
+        self._store = _ReportingStore(
+            hass,
+            CONFLICT_EVIDENCE_STORAGE_VERSION,
+            conflict_evidence_storage_key(entry_id),
+        )
+        self._past_days = past_days
+        self._revalidation_pending = revalidation_pending
+        self._listeners: list[Callable[[], None]] = []
+        self._notified: tuple[str, int, bool] = (EVIDENCE_UNLOADED, 0, False)
+        self._reset()
+        self._loaded = False
+
+    def _reset(self) -> None:
+        """Forget everything held in memory."""
+        self._entries: dict[tuple[str, str], _EvidenceEntry] = {}
+        self._compromised = False
+        self._saturated = False
+        self._unstored = False
+        self._revalidated = False
+        self._near_capacity = False
+        self._generation = 0
+        self._covered: int | None = None
+        self._covered_pending: int | None = None
+
+    @property
+    def state(self) -> str:
+        """Return the evidence state, highest precedence first.
+
+        Returns:
+            One of the ``EVIDENCE_*`` states.
+        """
+        if not self._loaded:
+            return EVIDENCE_UNLOADED
+        if self._compromised:
+            return EVIDENCE_COMPROMISED
+        if self._saturated:
+            return EVIDENCE_SATURATED
+        if self._unstored:
+            return EVIDENCE_UNSTORED
+        if (
+            self._revalidation_pending()
+            or not self._revalidated
+            or self._covered is None
+            or self._past_days() > self._covered
+        ):
+            return EVIDENCE_REVALIDATING
+        return EVIDENCE_READY
+
+    @property
+    def frozen(self) -> bool:
+        """Report whether a refresh may conclude nothing new.
+
+        Returns:
+            True while compromised or saturated (R7 decision 7).
+        """
+        return self._compromised or self._saturated
+
+    @property
+    def count(self) -> int:
+        """Return the number of pairs held.
+
+        Returns:
+            The pair count.
+        """
+        return len(self._entries)
+
+    @property
+    def dated(self) -> int:
+        """Return the number of pairs with a retirement bound.
+
+        Returns:
+            The dated pair count.
+        """
+        return sum(1 for e in self._entries.values() if e.check_out_bound)
+
+    @property
+    def undated(self) -> int:
+        """Return the number of pairs without a retirement bound.
+
+        Returns:
+            The undated pair count.
+        """
+        return self.count - self.dated
+
+    @property
+    def near_capacity(self) -> bool:
+        """Report whether the store is close to its bound.
+
+        Returns:
+            True from 80% until it falls below 70%.
+        """
+        return self._near_capacity
+
+    @property
+    def generation(self) -> int:
+        """Return the save generation held in memory.
+
+        Returns:
+            The generation.
+        """
+        return self._generation
+
+    def available(self) -> bool:
+        """Report whether the evidence may answer lookups.
+
+        Returns:
+            True only in the ``ready`` state.
+        """
+        return self.state == EVIDENCE_READY
+
+    def codes_for(self, reservation_id: str) -> frozenset[str]:
+        """Return every stored code a reservation was rejected with.
+
+        Args:
+            reservation_id: The reservation identifier.
+
+        Returns:
+            The codes.
+
+        Raises:
+            RuntimeError: When the evidence is not available.
+        """
+        self._require_available()
+        return frozenset(
+            code for code, stored_id in self._entries if stored_id == reservation_id
+        )
+
+    def ids_for(self, code: str) -> frozenset[str]:
+        """Return every stored reservation a code was rejected on.
+
+        Args:
+            code: The confirmation code.
+
+        Returns:
+            The reservation identifiers.
+
+        Raises:
+            RuntimeError: When the evidence is not available.
+        """
+        self._require_available()
+        return frozenset(
+            stored_id for stored_code, stored_id in self._entries if stored_code == code
+        )
+
+    def _require_available(self) -> None:
+        """Refuse a lookup unless the evidence is ready.
+
+        Raises:
+            RuntimeError: When the evidence is not available.
+        """
+        if not self.available():
+            raise RuntimeError("Conflict-only evidence is not available")
+
+    def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
+        """Call a listener whenever the state, count or capacity flag changes.
+
+        Args:
+            listener: The callback.
+
+        Returns:
+            A callable that removes the listener.
+        """
+        self._listeners.append(listener)
+
+        def _remove() -> None:
+            """Remove the listener."""
+            if listener in self._listeners:
+                self._listeners.remove(listener)
+
+        return _remove
+
+    def _notify(self) -> None:
+        """Tell listeners about a state, count or capacity change."""
+        notified = (self.state, self.count, self._near_capacity)
+        if notified == self._notified:
+            return
+        self._notified = notified
+        for listener in tuple(self._listeners):
+            listener()
+
+    def compare_maps(self, path: str) -> tuple[_StoredMap, ...]:
+        """Return every held pair, grouped for the comparison.
+
+        Pairs persisted and pairs still pending a save are both
+        compared (R7 decision 8). A pair no observation on this path
+        produced is soft unless the fallback ever produced it.
+
+        Args:
+            path: Reservation path of the compared refresh.
+
+        Returns:
+            One map per soft and hard group.
+        """
+        groups: dict[bool, list[tuple[str, str]]] = {}
+        for pair, entry in self._entries.items():
+            soft = path not in entry.paths and not entry.fallback
+            groups.setdefault(soft, []).append(pair)
+        return tuple(
+            _StoredMap(
+                source=SOURCE_CONFLICT_ONLY,
+                pairs=tuple(pairs),
+                confirms=False,
+                soft=soft,
+            )
+            for soft, pairs in groups.items()
+        )
+
+    def record(
+        self,
+        pairs: Iterable[RejectedCode],
+        bounds: Mapping[str, str],
+        path: str,
+        now: datetime,
+        fallback_ids: Collection[str] = (),
+    ) -> bool:
+        """Hold this refresh's rejected pairs in memory.
+
+        A new pair beyond ``MAX_CONFLICT_ONLY_EVIDENCE`` is not kept
+        and makes the store saturated for good; nothing is evicted.
+
+        Args:
+            pairs: The rejected ``(reservation_id, code)`` pairs.
+            bounds: Retirement bound per reservation identifier.
+            path: Reservation path that observed them.
+            now: The observation time.
+            fallback_ids: Identifiers observed through the fallback.
+
+        Returns:
+            False when a new pair was dropped on saturation.
+        """
+        from_fallback = frozenset(fallback_ids)
+        observed_at = now.astimezone(UTC).isoformat()
+        kept = True
+        for reservation_id, code in pairs:
+            if not isinstance(code, str) or not code:
+                continue
+            bound = bounds.get(reservation_id)
+            if not _canonical_date(bound):
+                bound = None
+            fallback = reservation_id in from_fallback
+            entry = self._entries.get((code, reservation_id))
+            if entry is not None:
+                entry.paths.add(path)
+                entry.fallback = entry.fallback or fallback
+                entry.check_out_bound = _later_bound(entry.check_out_bound, bound)
+                continue
+            if len(self._entries) >= MAX_CONFLICT_ONLY_EVIDENCE:
+                kept = False
+                if not self._saturated:
+                    self._saturated = True
+                    _LOGGER.warning(
+                        "Conflict-only reservation identity evidence reached "
+                        "its limit of %d pairs; reservation writes are "
+                        "refused until the entry is removed and re-added",
+                        MAX_CONFLICT_ONLY_EVIDENCE,
+                    )
+                continue
+            self._entries[(code, reservation_id)] = _EvidenceEntry(
+                path=path,
+                fallback=fallback,
+                observed_at=observed_at,
+                check_out_bound=bound,
+            )
+        self._update_capacity()
+        self._notify()
+        return kept
+
+    def retire(
+        self,
+        *,
+        superseded: Collection[str],
+        absent: Collection[str],
+        returned: Collection[str],
+        past_days: int,
+        now: datetime,
+    ) -> bool:
+        """Retire pairs no longer needed (research R7 decision 5).
+
+        Every pair of an identifier now fully verified or confirmed
+        absent goes. A dated pair the source did not return goes once
+        its bound falls a day before the oldest local date the window
+        could still cover.
+
+        Args:
+            superseded: Identifiers this refresh fully verified.
+            absent: Identifiers confirmed to no longer exist.
+            returned: Every identifier this refresh returned.
+            past_days: The configured past-day window.
+            now: The refresh time.
+
+        Returns:
+            True when anything was retired.
+        """
+        gone = frozenset(superseded) | frozenset(absent)
+        seen = frozenset(returned)
+        horizon = (
+            (now.astimezone(UTC) - timedelta(days=past_days)).date() - timedelta(days=1)
+        ).isoformat()
+        retired = [
+            pair
+            for pair, entry in self._entries.items()
+            if pair[1] in gone
+            or (
+                entry.check_out_bound is not None
+                and pair[1] not in seen
+                and entry.check_out_bound < horizon
+            )
+        ]
+        for pair in retired:
+            del self._entries[pair]
+        self._update_capacity()
+        self._notify()
+        return bool(retired)
+
+    def _update_capacity(self) -> None:
+        """Apply the near-capacity hysteresis, warning once on entry."""
+        count = len(self._entries)
+        if count >= _NEAR_CAPACITY_SET:
+            if not self._near_capacity:
+                self._near_capacity = True
+                _LOGGER.warning(
+                    "Conflict-only reservation identity evidence holds %d "
+                    "of at most %d pairs",
+                    count,
+                    MAX_CONFLICT_ONLY_EVIDENCE,
+                )
+        elif count < _NEAR_CAPACITY_CLEAR:
+            self._near_capacity = False
+
+    def resume_near_capacity(self) -> None:
+        """Resume the hysteresis an earlier run had already entered.
+
+        The flag lives in memory, but the repair issue it raised is
+        persisted by Home Assistant. When that issue survived a
+        restart, the store stays near capacity until it falls below
+        70%, so a restart inside the 70% to 80% band neither clears
+        it nor warns again (R7 decision 6).
+        """
+        if (
+            self._loaded
+            and not self._near_capacity
+            and len(self._entries) >= _NEAR_CAPACITY_CLEAR
+        ):
+            self._near_capacity = True
+            self._notify()
+
+    def advance(self, past_days: int | None) -> None:
+        """Start a new save generation for an accepted refresh.
+
+        Until ``adopt`` the evidence revalidates, so a write during
+        the saves never sees ``ready`` (R7 decision 8).
+
+        Args:
+            past_days: The window this refresh covers, or None to
+                keep the covered window unchanged.
+        """
+        self._generation += 1
+        self._covered_pending = self._covered if past_days is None else past_days
+        self._revalidated = False
+        self._notify()
+
+    def adopt(self) -> None:
+        """Adopt the saved generation once the baseline is stored."""
+        self._revalidated = True
+        self._covered = self._covered_pending
+        self._notify()
+
+    def _payload(self) -> dict[str, Any]:
+        """Serialize the held evidence.
+
+        Returns:
+            The persisted payload.
+        """
+        return {
+            "entries": [
+                {
+                    "code": code,
+                    "reservation_id": reservation_id,
+                    "path": entry.path,
+                    "paths": sorted(entry.paths),
+                    "fallback": entry.fallback,
+                    "observed_at": entry.observed_at,
+                    "check_out_bound": entry.check_out_bound,
+                }
+                for (code, reservation_id), entry in self._entries.items()
+            ],
+            "saturated": self._saturated,
+            "generation": self._generation,
+            "covered_past_days": self._covered_pending,
+        }
+
+    async def async_save(self) -> bool:
+        """Persist every held pair.
+
+        A compromised store is never written, so a restart loads it
+        compromised again.
+
+        Returns:
+            True when the evidence reached storage.
+        """
+        if self._compromised:
+            return False
+        try:
+            await self._store.async_save_checked(self._payload())
+        except OSError as exc:
+            if isinstance(exc, _DeferredWrite):
+                _LOGGER.debug(
+                    "Conflict-only reservation identity evidence save "
+                    "deferred to Home Assistant's final write"
+                )
+            elif not self._unstored:
+                _LOGGER.warning(
+                    "Could not persist conflict-only reservation identity "
+                    "evidence (%s); reservation writes stay refused until "
+                    "it is stored",
+                    type(exc).__name__,
+                )
+            self._unstored = True
+            self._notify()
+            return False
+        self._unstored = False
+        self._notify()
+        return True
+
+    async def async_load(self, expected_generation: int | None = 0) -> None:
+        """Read and validate the stored evidence.
+
+        A malformed store is compromised as a whole and is never
+        repaired by dropping entries. A well-formed store behind the
+        baseline's generation is compromised too, but its pairs are
+        still compared and its occupancy is reported.
+
+        Args:
+            expected_generation: The baseline's recorded generation;
+                a missing store counts as generation 0. None means
+                the identity payload exists but could not be read,
+                so no store can be shown current and it loads
+                compromised.
+        """
+        self._reset()
+        try:
+            raw = await self._store.async_load()
+        except Exception as exc:
+            # Any read failure fails closed.
+            self._fail_load(type(exc).__name__)
+            return
+        if raw is not None:
+            try:
+                self._parse(raw)
+            except ValueError:
+                self._reset()
+                self._fail_load("malformed")
+                return
+        if expected_generation is None or self._generation < expected_generation:
+            self._update_capacity()
+            self._fail_load(
+                "stale" if expected_generation is not None else "baseline unreadable"
+            )
+            return
+        self._loaded = True
+        self._update_capacity()
+        self._notify()
+
+    def _fail_load(self, reason: str) -> None:
+        """Mark the loaded evidence compromised.
+
+        Args:
+            reason: A code-free description for the log.
+        """
+        self._compromised = True
+        self._loaded = True
+        _LOGGER.warning(
+            "Conflict-only reservation identity evidence is unusable "
+            "(%s); reservation writes are refused until the entry is "
+            "removed and re-added",
+            reason,
+        )
+        self._notify()
+
+    def _parse(self, raw: Any) -> None:
+        """Adopt a stored payload after validating all of it.
+
+        Args:
+            raw: The stored payload.
+
+        Raises:
+            ValueError: When anything is malformed.
+        """
+        if not isinstance(raw, dict):
+            raise ValueError("payload")
+        entries = raw.get("entries")
+        saturated = raw.get("saturated", False)
+        generation = raw.get("generation", 0)
+        covered = raw.get("covered_past_days")
+        if not isinstance(entries, list) or len(entries) > MAX_CONFLICT_ONLY_EVIDENCE:
+            raise ValueError("entries")
+        if not isinstance(saturated, bool) or not _non_negative_int(generation):
+            raise ValueError("header")
+        if covered is not None and not _non_negative_int(covered):
+            raise ValueError("covered_past_days")
+        parsed: dict[tuple[str, str], _EvidenceEntry] = {}
+        for item in entries:
+            pair, entry = _parse_evidence_entry(item)
+            if pair in parsed:
+                raise ValueError("duplicate")
+            parsed[pair] = entry
+        self._entries = parsed
+        self._saturated = saturated
+        self._generation = generation
+        self._covered = covered
+        self._covered_pending = covered
+
+    async def async_remove(self) -> None:
+        """Delete the stored evidence with its config entry."""
+        self._reset()
+        self._loaded = False
+        await self._store.async_remove()
+        self._notify()
 
 
 class ReservationIdentityGuard:
@@ -657,22 +1649,54 @@ class ReservationIdentityGuard:
         last_refresh_ambiguous: Whether the last refresh aborted.
     """
 
-    def __init__(self, hass: HomeAssistant, entry_id: str) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        *,
+        past_days: Callable[[], int] = _default_past_days,
+    ) -> None:
         """Initialize the guard for one config entry.
 
         Args:
             hass: Home Assistant instance.
             entry_id: The config entry identifier.
+            past_days: Supplier of the configured past-day window,
+                read live so an options change is honored at once.
         """
-        self._store: Store[dict[str, Any]] = Store(
+        self._store = _IdentityStore(
             hass,
             STORAGE_VERSION,
             storage_key(entry_id),
+            minor_version=IDENTITY_STORAGE_MINOR_VERSION,
         )
         self._baseline: IdentityBaseline | None = None
         self._loaded = False
         self._ambiguous = False
         self._unstored = False
+        self._evidence = ConflictOnlyEvidence(
+            hass,
+            entry_id,
+            past_days=past_days,
+            revalidation_pending=self._revalidation_pending,
+        )
+
+    def _revalidation_pending(self) -> bool:
+        """Report whether the baseline still awaits revalidation.
+
+        Returns:
+            True while a migrated payload is not yet revalidated.
+        """
+        return bool(self._baseline and self._baseline.revalidation_pending)
+
+    @property
+    def conflict_evidence(self) -> ConflictOnlyEvidence:
+        """Return the conflict-only evidence feature 014 consults.
+
+        Returns:
+            The evidence store of this entry.
+        """
+        return self._evidence
 
     @property
     def loaded(self) -> bool:
@@ -705,14 +1729,27 @@ class ReservationIdentityGuard:
         """Read the baseline from storage once per setup.
 
         A corrupt or unreadable payload is treated as no baseline,
-        which fails writes closed rather than opening them.
+        which fails writes closed rather than opening them. The
+        conflict-only evidence loads after it, checked against the
+        generation the baseline was saved with; when a payload is
+        present but unreadable that generation is unknown, so the
+        evidence loads compromised.
         """
         raw = await self._store.async_load()
+        self._baseline = None
         if raw:
             try:
                 self._baseline = IdentityBaseline.from_dict(raw)
             except AttributeError, TypeError, ValueError:
                 self._baseline = None
+        expected: int | None = 0
+        if self._baseline is not None:
+            expected = self._baseline.conflict_evidence_generation
+        elif raw is not None:
+            # The baseline's generation is unknown, so no evidence
+            # store can be shown to hold what it expects.
+            expected = None
+        await self._evidence.async_load(expected)
         self._loaded = True
 
     async def async_store(self, baseline: IdentityBaseline) -> None:
@@ -729,26 +1766,30 @@ class ReservationIdentityGuard:
         Raises:
             OSError: If the baseline could not be written.
         """
-        await self._store.async_save(baseline.to_dict())
+        await self._store.async_save_checked(baseline.to_dict())
         self._baseline = baseline
 
     async def async_remove(self) -> None:
-        """Delete the persisted baseline with its config entry."""
+        """Delete the persisted baseline and evidence with the entry."""
         self._baseline = None
         self._loaded = False
         await self._store.async_remove()
+        await self._evidence.async_remove()
 
     def compare(
         self,
         reservations: Iterable[GuestyReservation],
         path: str,
         fallback_ids: Collection[str] = (),
+        conflict_only: Iterable[RejectedCode] = (),
     ) -> IdentityComparison:
         """Compare a refresh against the baseline, free of requests.
 
         A within-refresh collision is reported even when there is no
         baseline yet, so a confirmation code naming two reservations
         at once cannot establish the very first baseline either.
+        Rejected pairs and the held conflict-only evidence take part
+        in conflict detection only (FR-008b).
 
         Args:
             reservations: Reservations the refresh retrieved.
@@ -756,11 +1797,13 @@ class ReservationIdentityGuard:
             fallback_ids: Identifiers this refresh published from
                 the legacy not-found fallback, which may not confirm
                 continuity (FR-055).
+            conflict_only: This refresh's rejected ``(reservation_id,
+                code)`` pairs.
 
         Returns:
             The comparison outcome.
         """
-        observed = observe_codes(reservations)
+        observed = observe_codes(reservations, conflict_only)
         collisions = tuple(
             IdentityConflict(
                 known_id=first,
@@ -769,12 +1812,12 @@ class ReservationIdentityGuard:
             )
             for first, second in observed.collisions
         )
-        if self._baseline is None:
-            return IdentityComparison(conflicts=collisions)
-        comparison = self._baseline.compare(
+        comparison = (self._baseline or IdentityBaseline(path=path)).compare(
             observed.mapping,
             path,
             fallback_ids,
+            conflict_only=observed.conflict_only,
+            extra_maps=self._evidence.compare_maps(path),
         )
         if not collisions:
             return comparison
@@ -800,6 +1843,11 @@ class ReservationIdentityGuard:
         past_days: int = DEFAULT_PAST_DAYS,
         fallback_ids: Collection[str] = (),
         absent_ids: Collection[str] = (),
+        rejected_ids: Collection[str] = (),
+        fallback_invalid_ids: Collection[str] = (),
+        rejected_codes: Iterable[RejectedCode] = (),
+        rejected_check_out_bounds: Mapping[str, str] | None = None,
+        on_baseline_stored: Callable[[], None] | None = None,
     ) -> bool:
         """Persist the baseline produced by a successful refresh.
 
@@ -814,6 +1862,17 @@ class ReservationIdentityGuard:
         A storage failure never costs a refresh — the published data
         is already correct — but it does leave writes refused until
         the baseline is written.
+
+        Saving follows the crash-consistent order of research R7
+        decision 8: (1) the conflict-only evidence with every new
+        pair and a new generation, (2) the identity baseline naming
+        that generation, then ``on_baseline_stored``, and only after
+        both (3) retirement of pairs no longer needed. The evidence
+        revalidates for the whole window, so no write is judged
+        against a half-saved state. While the evidence is
+        compromised or saturated the refresh concludes nothing new:
+        no continuity is confirmed, no bootstrap evidence retires
+        and a pending revalidation stays pending.
 
         Args:
             path: Reservation path that produced this refresh.
@@ -840,6 +1899,18 @@ class ReservationIdentityGuard:
                 longer exist. Their candidacy is retired for good,
                 which is what stops the fallback resurrecting a
                 genuinely cancelled reservation (FR-052).
+            rejected_ids: Identifiers the refresh rejected or kept
+                only partially. Their stay hints are dropped, never
+                retired (FR-008c).
+            fallback_invalid_ids: Fallback-sourced identifiers that
+                failed validation; their hints are dropped too.
+            rejected_codes: The refresh's rejected ``(reservation_id,
+                code)`` pairs, recorded as conflict-only evidence.
+            rejected_check_out_bounds: Retirement-only check-out
+                bound per rejected identifier.
+            on_baseline_stored: Called synchronously once the
+                baseline reaches storage, before retirement; the
+                coordinator assigns its routing sets there.
 
         Returns:
             True when the baseline reached storage. A False answer
@@ -873,8 +1944,19 @@ class ReservationIdentityGuard:
         hints.update(published)
         merged_hints = dict(previous.candidates) if previous else {}
         merged_hints.update(hints)
-        for reservation_id in absent:
+        invalid = frozenset(rejected_ids) | frozenset(fallback_invalid_ids)
+        for reservation_id in absent | invalid:
             merged_hints.pop(reservation_id, None)
+        now = datetime.now(UTC)
+        evidence = self._evidence
+        evidence.record(
+            rejected_codes,
+            rejected_check_out_bounds or {},
+            path,
+            now,
+            from_fallback | frozenset(fallback_invalid_ids),
+        )
+        frozen = evidence.frozen
         check_outs = {
             reservation_id: hint.check_out
             for reservation_id, hint in merged_hints.items()
@@ -883,36 +1965,70 @@ class ReservationIdentityGuard:
         divergent = bool(comparison.cross_path_conflicts) or bool(
             previous and previous.divergent,
         )
+        continuity = _next_continuity(previous, path, comparison, divergent)
+        bootstrap_codes = _retired_bootstrap(
+            previous,
+            observed,
+            check_outs,
+            past_days,
+        )
+        if frozen:
+            held = previous.continuity if previous else CONTINUITY_UNCONFIRMED
+            if continuity == CONTINUITY_VERIFIED and held != CONTINUITY_VERIFIED:
+                continuity = held
+            bootstrap_codes = previous.bootstrap_codes if previous else None
+        evidence.advance(past_days)
+        evidence_stored = await evidence.async_save()
         baseline = IdentityBaseline(
             path=path,
-            continuity=_next_continuity(previous, path, comparison, divergent),
+            continuity=continuity,
             updated=updated,
             divergent=divergent,
             bootstrap_attempted=bool(previous and previous.bootstrap_attempted),
             codes=_bounded(observed, check_outs),
             legacy_codes=_retained_legacy(previous, path, check_outs),
-            bootstrap_codes=_retired_bootstrap(
-                previous,
-                observed,
-                check_outs,
-                past_days,
-            ),
+            bootstrap_codes=bootstrap_codes,
             fallback_codes=_bounded(fallback_observed, check_outs),
             candidates=_bounded_candidates(merged_hints),
+            revalidation_pending=bool(previous and previous.revalidation_pending)
+            and not (evidence_stored and not frozen),
+            conflict_evidence_generation=evidence.generation,
         )
         try:
             await self.async_store(baseline)
         except OSError as exc:
             self._unstored = True
-            _LOGGER.warning(
-                "Could not persist the reservation identity "
-                "baseline (%s); writes stay refused until it is "
-                "stored",
-                type(exc).__name__,
-            )
+            if isinstance(exc, _DeferredWrite):
+                _LOGGER.debug(
+                    "Reservation identity baseline save deferred to "
+                    "Home Assistant's final write"
+                )
+            else:
+                _LOGGER.warning(
+                    "Could not persist the reservation identity "
+                    "baseline (%s); writes stay refused until it is "
+                    "stored",
+                    type(exc).__name__,
+                )
             return False
         self._unstored = False
         self._ambiguous = False
+        if evidence_stored and not frozen:
+            evidence.adopt()
+        if on_baseline_stored is not None:
+            on_baseline_stored()
+        if evidence_stored and evidence.retire(
+            superseded=frozenset(r.id for r in retrieved) - from_fallback,
+            absent=absent,
+            returned=(
+                frozenset(r.id for r in retrieved)
+                | frozenset(observed_ids or ())
+                | invalid
+            ),
+            past_days=past_days,
+            now=now,
+        ):
+            await evidence.async_save()
         return True
 
     async def async_record_fresh_install(self, path: str) -> None:
@@ -942,6 +2058,8 @@ class ReservationIdentityGuard:
         *,
         reservations: Iterable[GuestyReservation],
         failed: bool,
+        rejected_codes: Iterable[RejectedCode] = (),
+        rejected_check_out_bounds: Mapping[str, str] | None = None,
     ) -> None:
         """Persist the outcome of the one-time sweep (FR-031d).
 
@@ -954,9 +2072,18 @@ class ReservationIdentityGuard:
         retirement policy needs to know when a swept reservation
         checked out; they carry identifiers and dates only (FR-049a).
 
+        The sweep's rejected pairs are saved first as legacy
+        conflict-only evidence, then the baseline names the new
+        evidence generation (research R7 decision 8).
+
         Args:
-            reservations: Reservations the sweep retrieved.
+            reservations: Fully verified reservations the sweep
+                retrieved.
             failed: Whether the sweep could not be completed.
+            rejected_codes: The sweep's rejected ``(reservation_id,
+                code)`` pairs.
+            rejected_check_out_bounds: Retirement-only check-out
+                bound per rejected identifier.
         """
         if failed:
             current = self._baseline or IdentityBaseline(
@@ -971,6 +2098,15 @@ class ReservationIdentityGuard:
         current = self._baseline or IdentityBaseline(
             path=RESERVATIONS_API_LEGACY,
         )
+        evidence = self._evidence
+        evidence.record(
+            rejected_codes,
+            rejected_check_out_bounds or {},
+            RESERVATIONS_API_LEGACY,
+            datetime.now(UTC),
+        )
+        evidence.advance(None)
+        await evidence.async_save()
         merged = dict(current.candidates)
         merged.update(
             _retrieved_hints(
@@ -991,6 +2127,7 @@ class ReservationIdentityGuard:
                     },
                 ),
                 candidates=_bounded_candidates(merged),
+                conflict_evidence_generation=evidence.generation,
             ),
         )
 
@@ -998,7 +2135,10 @@ class ReservationIdentityGuard:
         """Persist a bootstrap verdict, tolerating a storage failure.
 
         A failure leaves ``bootstrap_attempted`` unwritten, so the
-        sweep is reattempted at the next start. That is the only
+        sweep is reattempted at the next start. A save deferred while
+        Home Assistant stops is persisted by its final write instead,
+        so it is logged at debug level only; writes stay refused
+        either way. That is the only
         honest outcome when nothing can be persisted: the alternative
         is an in-memory flag that silently forgets itself anyway.
         Writes stay refused throughout, because an unstored baseline
@@ -1020,12 +2160,19 @@ class ReservationIdentityGuard:
         except OSError as exc:
             self._baseline = baseline
             self._unstored = True
-            _LOGGER.warning(
-                "Could not persist the reservation identity "
-                "bootstrap (%s); its evidence is still compared, but "
-                "writes stay refused until a baseline reaches storage",
-                type(exc).__name__,
-            )
+            if isinstance(exc, _DeferredWrite):
+                _LOGGER.debug(
+                    "Reservation identity bootstrap save deferred to "
+                    "Home Assistant's final write"
+                )
+            else:
+                _LOGGER.warning(
+                    "Could not persist the reservation identity "
+                    "bootstrap (%s); its evidence is still compared, "
+                    "but writes stay refused until a baseline reaches "
+                    "storage",
+                    type(exc).__name__,
+                )
 
     def write_refusal(self, reservation_id: str) -> str | None:
         """Evaluate the four-conjunct write predicate (FR-031c).
@@ -1050,7 +2197,19 @@ class ReservationIdentityGuard:
     def classify_write_refusal(
         self, reservation_id: str
     ) -> IdentityWriteRefusal | None:
-        """Return the existing write refusal with a typed missing-code marker."""
+        """Return the write refusal with a typed missing-code marker.
+
+        The evidence-state refusals come after the four baseline
+        conjuncts and before membership, so while the conflict-only
+        evidence is not ready no write proceeds and no recovery
+        refresh is attempted (C15, C16).
+
+        Args:
+            reservation_id: The reservation a write would target.
+
+        Returns:
+            The refusal, or None when the write may go ahead.
+        """
         baseline = self._baseline
         if baseline is None or not baseline.is_usable:
             return IdentityWriteRefusal(REFUSAL_NO_BASELINE)
@@ -1060,6 +2219,19 @@ class ReservationIdentityGuard:
             return IdentityWriteRefusal(REFUSAL_UNCONFIRMED)
         if self._ambiguous:
             return IdentityWriteRefusal(REFUSAL_AMBIGUOUS)
+        state = self._evidence.state
+        if state != EVIDENCE_READY:
+            _LOGGER.debug(
+                "Refusing a reservation write: identity evidence is %s",
+                state,
+            )
+            if state == EVIDENCE_REVALIDATING:
+                return IdentityWriteRefusal(REFUSAL_REVALIDATING)
+            if state in (EVIDENCE_SATURATED, EVIDENCE_COMPROMISED):
+                return IdentityWriteRefusal(
+                    f"{REFUSAL_EVIDENCE_UNAVAILABLE} {REFUSAL_EVIDENCE_REPAIR}"
+                )
+            return IdentityWriteRefusal(REFUSAL_EVIDENCE_UNAVAILABLE)
         if reservation_id not in baseline.current_ids():
             return IdentityWriteRefusal(
                 REFUSAL_NO_CODE.format(reservation_id=reservation_id),
@@ -1588,7 +2760,13 @@ async def async_bootstrap_identity(
             error=exc.message,
         )
 
-    collisions = observe_codes(fetched.reservations).collisions
+    rejected = frozenset(fetched.rejected_ids)
+    verified = tuple(
+        reservation
+        for reservation in fetched.reservations
+        if not reservation.partial and reservation.id not in rejected
+    )
+    collisions = observe_codes(verified, fetched.rejected_codes).collisions
     if collisions:
         await guard.async_record_bootstrap(reservations=(), failed=True)
         _LOGGER.warning(
@@ -1605,8 +2783,10 @@ async def async_bootstrap_identity(
         )
 
     await guard.async_record_bootstrap(
-        reservations=fetched.reservations,
+        reservations=verified,
         failed=False,
+        rejected_codes=fetched.rejected_codes,
+        rejected_check_out_bounds=fetched.rejected_check_out_bounds,
     )
     recorded = len((guard.baseline.bootstrap_codes or {}) if guard.baseline else {})
     _LOGGER.info(

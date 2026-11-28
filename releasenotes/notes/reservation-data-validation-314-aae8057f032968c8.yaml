@@ -1,0 +1,67 @@
+---
+# SPDX-FileCopyrightText: 2026 Andrew Grimberg <tykeal@bardicgrove.org>
+# SPDX-License-Identifier: Apache-2.0
+
+upgrade:
+  - |
+    After upgrading, and after every restart, entry reload or increase
+    of the reservation history window (`past_days`), every reservation
+    write (note, status, reservation custom field) is refused as
+    revalidating until the next successful reservation refresh has been
+    verified and stored. Stored reservation identity data is
+    revalidated on upgrade and anything that cannot be proven valid is
+    dropped. Wait for one refresh, then retry the write.
+  - |
+    The feature 010 fallback that used a UTC timestamp's calendar date
+    as a reservation's local date is removed. A single-segment v3
+    reservation that has only timestamp check-in and check-out values
+    and no local date is now left out instead of published with a
+    possibly wrong date.
+features:
+  - |
+    Reservation sensors and reservation financial sensors stay
+    available after a failed refresh and show the last verified data,
+    re-evaluated at the current time, with `stale: true` and
+    `last_verified_at`. Each `upcoming` item carries `stale`, and a
+    record whose fallback lookup failed is marked stale individually.
+    Stale data never authorizes a reservation write. With no verified
+    data the sensors are unavailable.
+  - |
+    New repair notices: one per listing whose timezone cannot be
+    verified, one when the bounded record of rejected reservation
+    confirmation codes is nearly full, and one when that record is
+    full or cannot be trusted, in which case every reservation write
+    is refused until the entry is removed and re-added. Diagnostics
+    gain a `validation` block with counts and up to 100 rejected or
+    partially valid reservation IDs, never codes, guest data or
+    payload values.
+fixes:
+  - |
+    Reservation records from the v3, legacy and legacy by-ID sources
+    are validated before they are published or used (#314). A record
+    with a missing, malformed or unrecognized status is skipped while
+    the rest of the refresh is published. A v3 record also needs at
+    least one stay segment with a listing and valid local check-in and
+    check-out dates. A legacy record needs a listing and check-in and
+    check-out instants with an explicit UTC offset, in order; an
+    instant without an offset is rejected as unverified; a malformed identifier or
+    page still fails the refresh. Unrecognized status strings are no
+    longer published, logged or used as diagnostics keys. A multi-unit
+    reservation publishes only its verified segments and is never a
+    write target until every segment verifies. Each new exclusion is
+    logged as a warning naming only the reason and reservation ID once
+    per Home Assistant start or entry reload, and again if the problem
+    goes away and later returns; beyond 256 exclusions the rest are
+    summarized in one warning.
+  - |
+    Stays that have ended are marked `checked_out` before the ten-item
+    `upcoming` limit is applied, so they no longer crowd out future
+    stays (#297). A date-only stay on its checkout day has an uncertain
+    `unknown` status. Without a verified listing timezone, a stay is
+    published only when it is within the configured window for every
+    possible local date, and no exact time is derived.
+  - |
+    Confirmation codes of rejected reservations are kept as
+    conflict-only identity evidence in a separate bounded store, so a
+    rejected record can never let a write act on a different booking.
+    The evidence never authorizes a write.

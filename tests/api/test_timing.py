@@ -111,3 +111,19 @@ def test_invalid_or_missing_local_inputs_are_unknown(
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    ("local_date", "wall_time", "zone"),
+    [
+        pytest.param("9999-12-31", "23:00", "America/New_York", id="max-negative"),
+        pytest.param("0001-01-01", "00:00", "Asia/Kolkata", id="min-positive"),
+    ],
+)
+def test_unrepresentable_instant_is_unknown(
+    local_date: str,
+    wall_time: str,
+    zone: str,
+) -> None:
+    """A canonical date whose UTC instant overflows stays unknown."""
+    assert resolve_local_datetime(local_date, wall_time, ZoneInfo(zone)) is None

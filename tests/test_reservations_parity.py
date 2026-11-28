@@ -19,7 +19,9 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import httpx
+import pytest
 import respx
+from freezegun.api import FrozenDateTimeFactory
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
@@ -128,8 +130,13 @@ _BOOKINGS: tuple[_Booking, ...] = (
 )
 
 
-def _legacy_results() -> list[dict[str, Any]]:
+def _legacy_results(
+    bookings: tuple[_Booking, ...] = _BOOKINGS,
+) -> list[dict[str, Any]]:
     """Express the shared account in the legacy payload shape.
+
+    Args:
+        bookings: The bookings of the account.
 
     Returns:
         The ``results`` entries of a legacy reservations page.
@@ -146,12 +153,17 @@ def _legacy_results() -> list[dict[str, Any]]:
             confirmationCode=booking.code,
             guest=make_guest_dict(_id=_GUEST_ID),
         )
-        for booking in _BOOKINGS
+        for booking in bookings
     ]
 
 
-def _v3_results() -> list[dict[str, Any]]:
+def _v3_results(
+    bookings: tuple[_Booking, ...] = _BOOKINGS,
+) -> list[dict[str, Any]]:
     """Express the same account in the v3 payload shape.
+
+    Args:
+        bookings: The bookings of the account.
 
     Returns:
         The ``results`` entries of a v3 search page.
@@ -172,7 +184,7 @@ def _v3_results() -> list[dict[str, Any]]:
                 ),
             ],
         )
-        for booking in _BOOKINGS
+        for booking in bookings
     ]
 
 
@@ -201,7 +213,12 @@ def _snapshot(hass: HomeAssistant, entry: MockConfigEntry) -> dict[str, Any]:
     return captured
 
 
-async def _publish_on(hass: HomeAssistant, path: str, listing: Any) -> dict[str, Any]:
+async def _publish_on(
+    hass: HomeAssistant,
+    path: str,
+    listing: Any,
+    bookings: tuple[_Booking, ...] = _BOOKINGS,
+) -> dict[str, Any]:
     """Load the shared account on one path and snapshot it.
 
     The entry is removed afterwards so that the other path starts
@@ -211,6 +228,7 @@ async def _publish_on(hass: HomeAssistant, path: str, listing: Any) -> dict[str,
         hass: Home Assistant instance.
         path: The reservation path to publish through.
         listing: The listing the listings coordinator reports.
+        bookings: The bookings of the account.
 
     Returns:
         The snapshot of every entity the path published.
@@ -227,8 +245,8 @@ async def _publish_on(hass: HomeAssistant, path: str, listing: Any) -> dict[str,
     )
     entry.add_to_hass(hass)
     legacy_page = {
-        "results": _legacy_results(),
-        "count": len(_BOOKINGS),
+        "results": _legacy_results(bookings),
+        "count": len(bookings),
         "limit": 100,
         "skip": 0,
     }
@@ -277,7 +295,7 @@ async def _publish_on(hass: HomeAssistant, path: str, listing: Any) -> dict[str,
         router.get(f"{BASE_URL}{RESERVATIONS_V3_SEARCH_ENDPOINT}").mock(
             return_value=httpx.Response(
                 200,
-                json=make_v3_search_page(_v3_results()),
+                json=make_v3_search_page(_v3_results(bookings)),
             ),
         )
         router.get(
@@ -374,7 +392,15 @@ class TestLegacyV3Parity:
         self,
         hass: HomeAssistant,
     ) -> None:
-        """A missing interval cannot remap or unconfirm the verified target."""
+        """A missing interval cannot remap or unconfirm the verified target.
+
+        Updated for feature 013 (research R18): every load revalidates
+        the conflict-only evidence, so writes are refused until an
+        accepted refresh stores the evidence and the baseline (steps 1
+        and 2). One accepted refresh with known timing completes
+        before ``refusal_before`` is taken, so the comparison measures
+        only the effect of the unknown-timing refresh.
+        """
         guard = ReservationIdentityGuard(hass, "entry-parity-identity")
         await guard.async_load()
         await guard.async_store(
@@ -392,7 +418,24 @@ class TestLegacyV3Parity:
                 },
             ),
         )
+        known = GuestyReservation(
+            id="res-identity",
+            listing_id=_LISTING_ID,
+            status="confirmed",
+            check_in=datetime(2026, 1, 2, 16, tzinfo=UTC),
+            check_out=datetime(2026, 1, 4, 11, tzinfo=UTC),
+            confirmation_code="CONF-IDENTITY",
+        )
+        assert await guard.async_record_refresh(
+            path=RESERVATIONS_API_V3,
+            reservations=[known],
+            published={},
+            comparison=guard.compare([known], RESERVATIONS_API_V3),
+            updated=datetime.now(UTC).isoformat(),
+            observed_ids={"res-identity"},
+        )
         refusal_before = guard.write_refusal("res-identity")
+        assert refusal_before is None
         unknown = GuestyReservation(
             id="res-identity",
             listing_id=_LISTING_ID,
@@ -448,3 +491,60 @@ class TestLegacyV3Parity:
         for entity_id in FINANCIAL_ENTITY_IDS:
             assert entity_id in on_legacy
             assert entity_id not in on_v3
+
+    @pytest.mark.parametrize(
+        ("start", "end"),
+        [
+            pytest.param((-5, 15), (-2, 11), id="expired"),
+            pytest.param((-3, 15), (0, 11), id="checkout_day_after_time"),
+        ],
+    )
+    async def test_ended_stay_is_history_on_both_paths(
+        self,
+        hass: HomeAssistant,
+        sample_listing: Any,
+        freezer: FrozenDateTimeFactory,
+        start: tuple[int, int],
+        end: tuple[int, int],
+    ) -> None:
+        """Both paths expire a past confirmed stay alike (FR-004, SC-002)."""
+        freezer.move_to(datetime(2026, 6, 15, 12, tzinfo=UTC))
+        bookings = (
+            _Booking(
+                id="res-ended",
+                status="confirmed",
+                code="CONF-ENDED",
+                check_in=_moment(*start),
+                check_out=_moment(*end),
+            ),
+        )
+        on_legacy = await _publish_on(
+            hass,
+            RESERVATIONS_API_LEGACY,
+            sample_listing,
+            bookings,
+        )
+        on_v3 = await _publish_on(
+            hass,
+            RESERVATIONS_API_V3,
+            sample_listing,
+            bookings,
+        )
+
+        entity_id = "sensor.beach_house_reservation_status"
+        assert on_legacy[entity_id]["state"] == "checked_out"
+        assert on_v3[entity_id]["state"] == on_legacy[entity_id]["state"]
+        legacy_attrs = on_legacy[entity_id]["attributes"]
+        v3_attrs = on_v3[entity_id]["attributes"]
+        for key in (
+            "reservation_id",
+            "check_in",
+            "check_out",
+            "check_in_local",
+            "check_out_local",
+            "timing_status",
+            "reservation_status",
+            "upcoming_reservations",
+        ):
+            assert v3_attrs[key] == legacy_attrs[key], key
+        assert legacy_attrs["upcoming_reservations"] == []
