@@ -2489,3 +2489,128 @@ class TestFallbackCodeIsolation:
 
         assert guard.baseline is not None
         assert "res-2" not in guard.baseline.candidates
+
+
+# ── Feature 014: read-only identity conflict query (T014) ───────────
+
+_MAP_NAMES = ("codes", "legacy_codes", "bootstrap_codes", "fallback_codes")
+
+
+async def _stored_guard(
+    hass: HomeAssistant,
+    **maps: dict[str, str] | None,
+) -> ReservationIdentityGuard:
+    """Build a loaded guard holding a stored baseline.
+
+    Args:
+        hass: Home Assistant instance.
+        **maps: Baseline code maps to set.
+
+    Returns:
+        The loaded guard.
+    """
+    guard = ReservationIdentityGuard(hass, "entry-conflict-query")
+    await guard.async_load()
+    await guard.async_store(
+        IdentityBaseline(
+            path=RESERVATIONS_API_V3,
+            continuity=CONTINUITY_VERIFIED,
+            **maps,  # type: ignore[arg-type]
+        ),
+    )
+    return guard
+
+
+class TestIdentityConflictQuery:
+    """The read-only identity conflict query (FR-006, FR-009)."""
+
+    @pytest.mark.parametrize("map_name", _MAP_NAMES)
+    async def test_code_mapped_to_other_id_conflicts(
+        self, hass: HomeAssistant, map_name: str
+    ) -> None:
+        """A by-ID code already naming another ID is a conflict."""
+        guard = await _stored_guard(hass, **{map_name: {CODE_A: "res-other"}})
+
+        assert guard.check_identity_conflict("res-1", CODE_A) == "conflict"
+
+    @pytest.mark.parametrize("map_name", _MAP_NAMES)
+    async def test_target_mapped_to_other_code_conflicts(
+        self, hass: HomeAssistant, map_name: str
+    ) -> None:
+        """A different code already naming the target is a conflict."""
+        guard = await _stored_guard(hass, **{map_name: {CODE_B: "res-1"}})
+
+        assert guard.check_identity_conflict("res-1", CODE_A) == "conflict"
+
+    async def test_same_id_same_code_is_consistent(self, hass: HomeAssistant) -> None:
+        """The same pairing in every map is consistent."""
+        guard = await _stored_guard(
+            hass,
+            **{name: {CODE_A: "res-1"} for name in _MAP_NAMES},
+        )
+
+        assert guard.check_identity_conflict("res-1", CODE_A) == "none"
+
+    async def test_unmapped_code_is_acceptable(self, hass: HomeAssistant) -> None:
+        """A code no map knows, on an unmapped target, is acceptable."""
+        guard = await _stored_guard(hass, codes={CODE_B: "res-2"})
+
+        assert guard.check_identity_conflict("res-1", CODE_A) == "none"
+
+    async def test_none_sub_maps_count_as_empty(self, hass: HomeAssistant) -> None:
+        """A None legacy, bootstrap or fallback map is no evidence."""
+        guard = await _stored_guard(
+            hass,
+            codes={CODE_B: "res-2"},
+            legacy_codes=None,
+            bootstrap_codes=None,
+            fallback_codes=None,
+        )
+
+        assert guard.check_identity_conflict("res-1", CODE_A) == "none"
+
+    async def test_unloaded_unusable_or_unstored_baseline_is_unavailable(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A baseline that cannot answer gives unavailable, not none."""
+        unloaded = ReservationIdentityGuard(hass, "entry-unloaded")
+        assert unloaded.check_identity_conflict("res-1", CODE_A) == "unavailable"
+
+        empty = ReservationIdentityGuard(hass, "entry-empty")
+        await empty.async_load()
+        assert empty.check_identity_conflict("res-1", CODE_A) == "unavailable"
+
+        unusable = await _stored_guard(hass)
+        assert unusable.check_identity_conflict("res-1", CODE_A) == "unavailable"
+
+        unstored = await _stored_guard(hass, codes={CODE_B: "res-2"})
+        unstored._unstored = True
+        assert unstored.check_identity_conflict("res-1", CODE_A) == "unavailable"
+
+        ambiguous = await _stored_guard(hass, codes={CODE_B: "res-2"})
+        ambiguous.mark_ambiguous()
+        assert ambiguous.check_identity_conflict("res-1", CODE_A) == "unavailable"
+
+    async def test_query_mutates_nothing(self, hass: HomeAssistant) -> None:
+        """The query changes no baseline state and saves nothing."""
+        guard = await _stored_guard(
+            hass,
+            codes={CODE_A: "res-other"},
+            legacy_codes={CODE_B: "res-1"},
+            bootstrap_codes={},
+            fallback_codes=None,
+        )
+        baseline = guard.baseline
+        assert baseline is not None
+        baseline.candidates["res-1"] = CandidateHint(timing_status="unknown")
+        before = baseline.to_dict()
+        flags = (guard._unstored, guard._ambiguous, guard._loaded)
+
+        with patch.object(guard._store, "async_save") as save:
+            for target, code in (("res-1", CODE_A), ("res-9", "CONF-ZZZ")):
+                guard.check_identity_conflict(target, code)
+
+        assert save.call_count == 0
+        assert guard.baseline is baseline
+        assert baseline.to_dict() == before
+        assert (guard._unstored, guard._ambiguous, guard._loaded) == flags

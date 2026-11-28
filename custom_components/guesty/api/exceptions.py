@@ -307,3 +307,64 @@ class GuestyPrerequisiteReadError(GuestyActionError):
             target_id=target_id,
             action_type="add_reservation_note",
         )
+
+
+BY_ID_READ_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "http",
+        "rate_limit",
+        "authentication",
+        "transport",
+        "malformed",
+        "not_found",
+        "mismatched",
+    }
+)
+
+_BY_ID_READ_MESSAGES: dict[str, str] = {
+    "http": "Guesty rejected the by-ID read of reservation {target_id}.",
+    "rate_limit": "Guesty rate-limited the by-ID read of reservation {target_id}.",
+    "authentication": (
+        "Guesty credentials were rejected or lack permission for the by-ID "
+        "read of reservation {target_id}."
+    ),
+    "transport": (
+        "The connection to Guesty failed during the by-ID read of "
+        "reservation {target_id}."
+    ),
+    "malformed": (
+        "The by-ID response for reservation {target_id} could not be verified."
+    ),
+    "not_found": "Guesty returned no reservation {target_id} by ID.",
+    "mismatched": ("Guesty returned a different reservation than {target_id} by ID."),
+}
+
+
+class GuestyByIdReadError(GuestyApiError):
+    """A strict by-ID reservation read failed or proved nothing.
+
+    The message is built only from fixed text and the requested
+    identifier, so no response body, status text or exception
+    detail can reach it.
+
+    Attributes:
+        category: One of ``BY_ID_READ_CATEGORIES``.
+        target_id: The reservation that was requested.
+    """
+
+    def __init__(self, category: str, target_id: str) -> None:
+        """Initialize GuestyByIdReadError.
+
+        Args:
+            category: One of ``BY_ID_READ_CATEGORIES``.
+            target_id: The reservation that was requested.
+
+        Raises:
+            ValueError: If the category is not a known one.
+        """
+        if category not in BY_ID_READ_CATEGORIES:
+            msg = "Unknown by-ID read category"
+            raise ValueError(msg)
+        self.category = category
+        self.target_id = target_id
+        super().__init__(_BY_ID_READ_MESSAGES[category].format(target_id=target_id))

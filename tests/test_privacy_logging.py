@@ -58,16 +58,22 @@ from custom_components.guesty.coordinator import (
 )
 from custom_components.guesty.diagnostics import async_get_config_entry_diagnostics
 from tests.conftest import (
+    BY_ID_TARGET,
     FAKE_CLIENT_ID,
     FAKE_CLIENT_SECRET,
+    FakeConflictEvidence,
     FakeTokenStorage,
+    by_id_network,
+    make_by_id_record,
     make_fetch_result,
     make_identity_reservations,
     make_listing_dict,
     make_token_response,
     make_v3_reservation,
     make_v3_search_page,
+    sample_custom_field_definitions,
 )
+from tests.test_actions import _WRITE_TARGETS as _BY_ID_WRITE_TARGETS
 from tests.test_actions import _setup_entry
 
 SEARCH_URL = f"{BASE_URL}{RESERVATIONS_V3_SEARCH_ENDPOINT}"
@@ -776,3 +782,188 @@ class TestWriteMissPrivacy:
         evidence = logs + json.dumps(diagnostics)
         for secret in (*PII, pin, FAKE_CLIENT_SECRET):
             assert secret not in evidence
+
+
+_BY_ID_PIN = "sample-door-pin-8361"
+_BY_ID_TOKEN = "sentinel-access-token-5150"
+_BY_ID_RAW = "RAW-BODY-MARKER-77"
+_BY_ID_STATUS = "unknown-status-sentinel"
+_BY_ID_SECRETS = (*PII, _BY_ID_PIN, _BY_ID_TOKEN, _BY_ID_RAW, _BY_ID_STATUS)
+_BY_ID_SECRET_BODY = " ".join(_BY_ID_SECRETS)
+
+
+def _secret_by_id_record(**overrides: Any) -> dict[str, Any]:
+    """Build a by-ID record carrying every sentinel.
+
+    Args:
+        **overrides: Fields to override on the record.
+
+    Returns:
+        A raw v3 record for the by-ID target.
+    """
+    fields: dict[str, Any] = {
+        "confirmationCode": CONFIRMATION_CODE,
+        "guest": {
+            "_id": "guest-001",
+            "fullName": GUEST_NAME,
+            "email": GUEST_EMAIL,
+            "phone": GUEST_PHONE,
+        },
+        "customFields": [{"fieldId": "cf-door-code", "value": _BY_ID_PIN}],
+        "rawMarker": _BY_ID_RAW,
+    }
+    fields.update(overrides)
+    return make_by_id_record(**fields)
+
+
+def _by_id_cases() -> dict[str, dict[str, Any]]:
+    """Describe one by-ID flow per outcome.
+
+    Returns:
+        The read answer, write answer, evidence tweak and expected
+        stem per case.
+    """
+    record = _secret_by_id_record()
+    secret_error = Response(429, text=_BY_ID_SECRET_BODY)
+    return {
+        "written": {"read": {"results": [record]}, "stem": None},
+        "not-found": {
+            "read": {"results": [_secret_by_id_record(reservationId="res-zzz")]},
+            "stem": "not found by ID",
+        },
+        "unknown-status": {
+            "read": {"results": [_secret_by_id_record(status=_BY_ID_STATUS)]},
+            "stem": "found but refused",
+        },
+        "malformed": {
+            "read": {"results": [record, record], "note": _BY_ID_SECRET_BODY},
+            "stem": "found but refused",
+        },
+        "conflict": {
+            "read": {"results": [record]},
+            "conflict": True,
+            "stem": "found but refused",
+        },
+        "read-failed": {"read": secret_error, "stem": "by-ID read failed"},
+        "read-server-error": {
+            "read": Response(500, text=_BY_ID_SECRET_BODY),
+            "stem": "by-ID read failed",
+        },
+        "write-rejected": {
+            "read": {"results": [record]},
+            "write": Response(400, text=_BY_ID_SECRET_BODY),
+            "stem": "found by ID, write failed",
+        },
+        "write-timeout": {
+            "read": {"results": [record]},
+            "write": httpx.ReadTimeout(_BY_ID_SECRET_BODY),
+            "stem": "found by ID, write failed",
+        },
+    }
+
+
+_BY_ID_CALLS = {
+    "note": (
+        "add_reservation_note",
+        {"reservation_id": BY_ID_TARGET, "note_text": f"door {_BY_ID_PIN}"},
+    ),
+    "status": (
+        "set_reservation_status",
+        {"reservation_id": BY_ID_TARGET, "status": "checked_in"},
+    ),
+    "custom_field": (
+        "set_custom_field",
+        {
+            "target_type": "reservation",
+            "target_id": BY_ID_TARGET,
+            "field_id": "cf-door-code",
+            "value": _BY_ID_PIN,
+        },
+    ),
+}
+
+
+class TestByIdFallbackPrivacy:
+    """By-ID outcomes never expose guest data, codes, PINs or tokens (T045)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Any:
+        """Auto-mock custom field definitions.
+
+        Yields:
+            None, while the definitions client is patched.
+        """
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=sample_custom_field_definitions(),
+        ):
+            yield
+
+    @pytest.mark.parametrize("action", list(_BY_ID_CALLS))
+    @pytest.mark.parametrize("case", list(_by_id_cases()))
+    async def test_outcome_reveals_nothing(
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+        case: str,
+        action: str,
+    ) -> None:
+        """Logs, the error text and diagnostics carry no sentinel."""
+        entry = await _setup_entry(hass)
+        spec = _by_id_cases()[case]
+        evidence = FakeConflictEvidence()
+        if spec.get("conflict"):
+            evidence.ids[CONFIRMATION_CODE] = frozenset({"res-other"})
+        read = spec["read"]
+        if isinstance(read, dict):
+            read = Response(200, json=read)
+        service, data = _BY_ID_CALLS[action]
+        error_text = ""
+        with (
+            caplog.at_level(logging.DEBUG),
+            by_id_network(
+                refresh=make_fetch_result(
+                    make_identity_reservations(*_BY_ID_WRITE_TARGETS)
+                ),
+                read=read,
+                write=spec.get("write"),
+                evidence=evidence,
+            ) as routes,
+            patch("asyncio.sleep", new_callable=AsyncMock),
+        ):
+            routes.token.mock(
+                return_value=Response(
+                    200, json=make_token_response(access_token=_BY_ID_TOKEN)
+                )
+            )
+            if spec["stem"] is None:
+                await hass.services.async_call(
+                    DOMAIN, service, data, blocking=True, return_response=True
+                )
+                assert routes.writes == 1
+            else:
+                with pytest.raises(HomeAssistantError) as error:
+                    await hass.services.async_call(
+                        DOMAIN, service, data, blocking=True, return_response=True
+                    )
+                error_text = str(error.value)
+                assert error_text.startswith(spec["stem"])
+            diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+
+        assert routes.read.call_count == 1
+        logs = "\n".join(
+            f"{record.getMessage()}\n"
+            + (
+                "".join(traceback.format_exception(*record.exc_info))
+                if record.exc_info
+                else ""
+            )
+            for record in caplog.records
+            if record.name.startswith("custom_components.guesty")
+        )
+        rendered = json.dumps(diagnostics, default=str)
+        for secret in _BY_ID_SECRETS:
+            assert secret not in logs
+            assert secret not in error_text
+            assert secret not in rendered

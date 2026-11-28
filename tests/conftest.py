@@ -4,15 +4,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
-from contextlib import contextmanager
+from collections.abc import Generator, Mapping
+from contextlib import ExitStack, contextmanager
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
+import respx
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceEntry, DeviceRegistry
@@ -241,6 +244,250 @@ def make_token_response(**overrides: Any) -> dict[str, Any]:
     }
     defaults.update(overrides)
     return defaults
+
+
+class FakeConflictEvidence:
+    """Configurable test double for the feature 013 evidence port.
+
+    Production keeps ``UnavailableConflictEvidence``; this double
+    is the only way the by-ID write fallback is exercised until
+    feature 013 supplies the real adapter.
+
+    Attributes:
+        is_available: What ``available()`` reports.
+        codes: Conflict-only reservation ID to codes evidence.
+        ids: Conflict-only code to reservation IDs evidence.
+        verdict: What ``validate_record`` returns.
+        calls: Every call made, as ``(method, argument)`` pairs.
+    """
+
+    def __init__(
+        self,
+        *,
+        available: bool = True,
+        codes: dict[str, frozenset[str]] | None = None,
+        ids: dict[str, frozenset[str]] | None = None,
+        verdict: str = "valid",
+    ) -> None:
+        """Configure the double.
+
+        Args:
+            available: What ``available()`` reports.
+            codes: Conflict-only ID to codes evidence.
+            ids: Conflict-only code to IDs evidence.
+            verdict: What ``validate_record`` returns.
+        """
+        self.is_available = available
+        self.codes = codes or {}
+        self.ids = ids or {}
+        self.verdict = verdict
+        self.calls: list[tuple[str, object]] = []
+
+    def available(self) -> bool:
+        """Report whether the evidence can be consulted.
+
+        Returns:
+            The configured availability.
+        """
+        self.calls.append(("available", None))
+        return self.is_available
+
+    def codes_for(self, reservation_id: str) -> frozenset[str]:
+        """Return conflict-only codes recorded for an identifier.
+
+        Args:
+            reservation_id: The identifier to look up.
+
+        Returns:
+            The recorded codes, possibly empty.
+        """
+        self.calls.append(("codes_for", reservation_id))
+        return self.codes.get(reservation_id, frozenset())
+
+    def ids_for(self, code: str) -> frozenset[str]:
+        """Return conflict-only identifiers recorded for a code.
+
+        Args:
+            code: The code to look up.
+
+        Returns:
+            The recorded identifiers, possibly empty.
+        """
+        self.calls.append(("ids_for", code))
+        return self.ids.get(code, frozenset())
+
+    def validate_record(self, raw: Mapping[str, Any], action_type: str) -> str:
+        """Return the configured single-record verdict.
+
+        Args:
+            raw: The raw by-ID record.
+            action_type: The action the record would authorize.
+
+        Returns:
+            The configured verdict.
+        """
+        self.calls.append(("validate_record", action_type))
+        return self.verdict
+
+
+# The reservation the by-ID write fallback tests target.
+BY_ID_TARGET = "res-new"
+
+_PATCH_EVIDENCE = "custom_components.guesty.actions._conflict_evidence"
+_PATCH_FETCH = "custom_components.guesty.GuestyApiClient.get_reservations"
+
+
+def make_by_id_record(
+    reservation_id: str = BY_ID_TARGET,
+    **overrides: Any,
+) -> dict[str, Any]:
+    """Create one valid coded raw v3 record for a by-ID read.
+
+    Args:
+        reservation_id: The ``reservationId`` value.
+        **overrides: Fields to override on the v3 defaults.
+
+    Returns:
+        A raw v3 reservation dict carrying a fresh code.
+    """
+    fields: dict[str, Any] = {"confirmationCode": f"CONF-{reservation_id}"}
+    fields.update(overrides)
+    return make_v3_reservation(reservation_id, **fields)
+
+
+@dataclass
+class ByIdRoutes:
+    """The mocked endpoints of one by-ID write fallback flow.
+
+    Attributes:
+        fetch: The patched qualifying refresh search.
+        token: The token endpoint.
+        read: The by-ID ``GET /reservations-v3`` endpoint.
+        notes: The v3 note write endpoint.
+        status: The v3 status write endpoint.
+        fields: The v3 custom-field write endpoint.
+    """
+
+    fetch: AsyncMock
+    token: respx.Route
+    read: respx.Route
+    notes: respx.Route
+    status: respx.Route
+    fields: respx.Route
+
+    @property
+    def writes(self) -> int:
+        """Count every write request sent.
+
+        Returns:
+            The number of PUT requests across all write endpoints.
+        """
+        return self.notes.call_count + self.status.call_count + self.fields.call_count
+
+
+@contextmanager
+def by_id_network(
+    *,
+    refresh: ReservationFetchResult,
+    read: Any = None,
+    evidence: FakeConflictEvidence | None = None,
+    reservation_id: str = BY_ID_TARGET,
+    write: Any = None,
+) -> Generator[ByIdRoutes]:
+    """Mock the refresh, token, by-ID read and v3 write endpoints.
+
+    Args:
+        refresh: What the qualifying refresh returns.
+        read: The by-ID response, an exception or a side effect;
+            one valid coded record when None.
+        evidence: The 013 evidence double to install, or None to
+            keep the unpatched production adapter.
+        reservation_id: The reservation the writes target.
+        write: The write response, exception or side effect for
+            every write endpoint; HTTP 200 when None.
+
+    Yields:
+        The mocked routes.
+    """
+    with ExitStack() as stack:
+        router = stack.enter_context(respx.mock(assert_all_called=False))
+        fetch = stack.enter_context(
+            patch(_PATCH_FETCH, new_callable=AsyncMock, return_value=refresh)
+        )
+        if evidence is not None:
+            stack.enter_context(patch(_PATCH_EVIDENCE, return_value=evidence))
+        token = router.post(FAKE_TOKEN_URL).mock(
+            return_value=httpx.Response(200, json=make_token_response())
+        )
+        read_route = router.get(f"{FAKE_BASE_URL}/reservations-v3")
+        if read is None:
+            read = httpx.Response(
+                200, json={"results": [make_by_id_record(reservation_id)]}
+            )
+        _mock_route(read_route, read)
+        routes = []
+        for suffix in ("notes", "status", "custom-fields"):
+            route = router.put(
+                f"{FAKE_BASE_URL}/reservations-v3/{reservation_id}/{suffix}"
+            )
+            _mock_route(route, httpx.Response(200, json={}) if write is None else write)
+            routes.append(route)
+        yield ByIdRoutes(fetch, token, read_route, *routes)
+
+
+def capture_by_id_retention(
+    coordinator: Any, evidence: FakeConflictEvidence
+) -> dict[str, Any]:
+    """Capture every piece of state a by-ID write must leave alone.
+
+    Args:
+        coordinator: The entry's coordinator.
+        evidence: The 013 double in use.
+
+    Returns:
+        A comparable copy of the retained state.
+    """
+    identity = coordinator.identity
+    baseline = identity.baseline
+    client = coordinator.api_client
+    return {
+        "data": deepcopy(coordinator.data),
+        "current": baseline.current_ids(),
+        "maps": deepcopy(
+            (
+                baseline.codes,
+                baseline.legacy_codes,
+                baseline.bootstrap_codes,
+                baseline.fallback_codes,
+                baseline.candidates,
+            )
+        ),
+        "continuity": baseline.continuity,
+        "ambiguous": identity._ambiguous,
+        "unstored": identity._unstored,
+        "session": (
+            client.legacy_observed_reservations,
+            client.legacy_retired_reservations,
+        ),
+        "fallback": (coordinator.fallback_served_ids, coordinator.fallback_sourced_ids),
+        "absent": client.confirmed_absent_reservations,
+        "snapshot": id(coordinator._accepted_snapshot),
+        "evidence": deepcopy((evidence.codes, evidence.ids, evidence.is_available)),
+    }
+
+
+def _mock_route(route: respx.Route, outcome: Any) -> None:
+    """Attach a response, exception or side effect to a route.
+
+    Args:
+        route: The route to configure.
+        outcome: An ``httpx.Response``, or anything respx accepts as
+            a side effect.
+    """
+    if isinstance(outcome, httpx.Response):
+        route.mock(return_value=outcome)
+    else:
+        route.mock(side_effect=outcome)
 
 
 class FakeTokenStorage:

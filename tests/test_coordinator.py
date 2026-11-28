@@ -13,7 +13,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from typing import cast
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -77,6 +77,11 @@ from custom_components.guesty.coordinator import (
     _within_window,
 )
 from custom_components.guesty.diagnostics import async_get_config_entry_diagnostics
+from custom_components.guesty.identity import (
+    CONTINUITY_VERIFIED,
+    MAX_BASELINE_CODES,
+    IdentityBaseline,
+)
 from tests.conftest import (
     FakeTokenStorage,
     make_fetch_result,
@@ -5348,3 +5353,422 @@ class TestNoFolioOrPaymentsRequests:
         for url in urls:
             assert "guest-folio" not in url
             assert "payments" not in url
+
+
+# ── Feature 014: accepted-refresh snapshot (T016) ───────────────────
+
+
+def _snapshot_coordinator(
+    hass: HomeAssistant,
+    reservations: list[GuestyReservation],
+    *,
+    known_listing_ids: tuple[str, ...] = ("listing-001",),
+    **fetch_counters: object,
+) -> ReservationsCoordinator:
+    """Build a coordinator whose fetch carries explicit returned IDs.
+
+    Args:
+        hass: Home Assistant instance.
+        reservations: Reservations the API returns.
+        known_listing_ids: Listing IDs the listings coordinator knows.
+        **fetch_counters: Further fetch-result fields; by default
+            ``returned_ids`` lists every reservation.
+
+    Returns:
+        The coordinator, with synchronous client helpers stubbed.
+    """
+    fetch_counters.setdefault("returned_ids", tuple(sorted(r.id for r in reservations)))
+    coordinator = _build_coordinator(
+        hass,
+        reservations,
+        list(known_listing_ids),
+        fetch_counters=fetch_counters,
+    )
+    client = cast(AsyncMock, coordinator.api_client)
+    client.acknowledge_absent_reservations = MagicMock()
+    client.legacy_write_routing_available = True
+    return coordinator
+
+
+class TestAcceptedRefreshSnapshot:
+    """The in-memory evidence of the last accepted refresh (T016)."""
+
+    @pytest.mark.parametrize(
+        "failure",
+        ["update_failed", "identity_abort", "ambiguous", "search_rejected", "unstored"],
+    )
+    async def test_snapshot_recorded_only_on_accepted_refresh(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+        failure: str,
+    ) -> None:
+        """Nothing is recorded when the refresh is not accepted."""
+        freezer.move_to(_NOW)
+        reservations = [_legacy_res("res-1", "listing-001", 1, 2)]
+        reservations = [replace(reservations[0], confirmation_code="CONF-1")]
+        coordinator = _snapshot_coordinator(hass, reservations)
+        client = cast(AsyncMock, coordinator.api_client)
+        await coordinator.identity.async_load()
+        if failure == "update_failed":
+            client.get_reservations.side_effect = GuestyConnectionError("down")
+        elif failure == "search_rejected":
+            client.get_reservations.side_effect = GuestyFilterRejectedError("no")
+        elif failure == "ambiguous":
+            twin = replace(reservations[0], id="res-2")
+            client.get_reservations.return_value = make_fetch_result(
+                [reservations[0], twin], returned_ids=("res-1", "res-2")
+            )
+        elif failure == "identity_abort":
+            await coordinator.identity.async_store(
+                IdentityBaseline(
+                    path=coordinator.reservations_path,
+                    continuity=CONTINUITY_VERIFIED,
+                    codes={"CONF-1": "res-other"},
+                ),
+            )
+
+        if failure == "unstored":
+            with patch.object(
+                coordinator.identity._store,
+                "async_save",
+                side_effect=OSError("disk full"),
+            ):
+                await coordinator.async_refresh()
+            assert coordinator.last_update_success
+        else:
+            await coordinator.async_refresh()
+            assert not coordinator.last_update_success
+
+        assert coordinator._accepted_snapshot is None
+        assert coordinator.accepted_refresh_snapshot() is None
+
+    async def test_snapshot_bound_to_outcome_attempt(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """Only the latest successful, matching attempt is valid."""
+        freezer.move_to(_NOW)
+        coordinator = _snapshot_coordinator(
+            hass, [_legacy_res("res-1", "listing-001", 1, 2)]
+        )
+
+        await coordinator.async_refresh()
+        snapshot = coordinator.accepted_refresh_snapshot()
+        assert snapshot is not None
+        assert snapshot.attempt == coordinator.write_miss_attempt_generation
+        assert snapshot.path == coordinator.reservations_path
+
+        coordinator._accepted_snapshot = replace(snapshot, attempt=snapshot.attempt - 1)
+        assert coordinator.accepted_refresh_snapshot() is None
+        coordinator._accepted_snapshot = snapshot
+
+        hass.config_entries.async_update_entry(
+            coordinator.config_entry,
+            options={**coordinator.config_entry.options, CONF_PAST_DAYS: 7},
+        )
+        assert coordinator.accepted_refresh_snapshot() is None
+
+    async def test_snapshot_invalid_after_failed_refresh(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """A later failed attempt invalidates the earlier snapshot."""
+        freezer.move_to(_NOW)
+        coordinator = _snapshot_coordinator(
+            hass, [_legacy_res("res-1", "listing-001", 1, 2)]
+        )
+        await coordinator.async_refresh()
+        assert coordinator.accepted_refresh_snapshot() is not None
+
+        cast(
+            AsyncMock, coordinator.api_client
+        ).get_reservations.side_effect = GuestyConnectionError("down")
+        await coordinator.async_refresh()
+
+        assert coordinator.accepted_refresh_snapshot() is None
+
+    async def test_snapshot_invalid_for_other_client(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """A replaced client invalidates the snapshot."""
+        freezer.move_to(_NOW)
+        coordinator = _snapshot_coordinator(
+            hass, [_legacy_res("res-1", "listing-001", 1, 2)]
+        )
+        await coordinator.async_refresh()
+
+        coordinator.api_client = AsyncMock()
+
+        assert coordinator.accepted_refresh_snapshot() is None
+
+    async def test_snapshot_replaced_wholesale_on_next_accepted_refresh(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """A later accepted refresh replaces every field."""
+        freezer.move_to(_NOW)
+        first = replace(
+            _legacy_res("res-1", "listing-001", 1, 2), confirmation_code="CONF-1"
+        )
+        second = replace(
+            _legacy_res("res-2", "listing-001", 1, 2), confirmation_code="CONF-2"
+        )
+        coordinator = _snapshot_coordinator(hass, [first])
+        await coordinator.async_refresh()
+        before = coordinator.accepted_refresh_snapshot()
+        assert before is not None
+
+        cast(
+            AsyncMock, coordinator.api_client
+        ).get_reservations.return_value = make_fetch_result(
+            [second], returned_ids=("res-2",)
+        )
+        await coordinator.async_refresh()
+        after = coordinator.accepted_refresh_snapshot()
+
+        assert after is not None
+        assert after.attempt > before.attempt
+        assert set(after.records) == {"res-2"}
+        assert dict(after.observed_codes) == {"CONF-2": "res-2"}
+        assert after.returned_ids == frozenset({"res-2"})
+
+    async def test_snapshot_cleared_on_shutdown(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """Shutdown drops the snapshot."""
+        freezer.move_to(_NOW)
+        coordinator = _snapshot_coordinator(
+            hass, [_legacy_res("res-1", "listing-001", 1, 2)]
+        )
+        await coordinator.async_refresh()
+        assert coordinator._accepted_snapshot is not None
+
+        await coordinator.async_shutdown()
+
+        assert coordinator._accepted_snapshot is None
+        assert coordinator.accepted_refresh_snapshot() is None
+
+    async def test_record_facts(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """Each record carries its code kind, hold and listing pairs."""
+        freezer.move_to(_NOW)
+        reservations = [
+            _legacy_res("res-none", "listing-001", 1, 2),
+            replace(
+                _legacy_res("res-empty", "listing-001", 1, 2),
+                confirmation_code="",
+            ),
+            _v3_res(
+                "res-string",
+                [
+                    _seg("unit-1", 1, 2, parent="listing-001"),
+                    _seg("listing-002", 2, 3),
+                ],
+            ),
+            replace(
+                _legacy_res("res-invalid", "listing-001", 1, 2),
+                confirmation_code=123,  # type: ignore[arg-type]
+            ),
+            replace(
+                _legacy_res("res-hold", "listing-001", 1, 2),
+                status="alteration",
+                confirmation_code="CONF-HOLD",
+            ),
+        ]
+        coordinator = _snapshot_coordinator(
+            hass, reservations, known_listing_ids=("listing-001", "listing-002")
+        )
+
+        await coordinator.async_refresh()
+        snapshot = coordinator.accepted_refresh_snapshot()
+
+        assert snapshot is not None
+        records = snapshot.records
+        assert {i: r.code_kind for i, r in records.items()} == {
+            "res-none": "none",
+            "res-empty": "empty",
+            "res-string": "string",
+            "res-invalid": "invalid",
+            "res-hold": "string",
+        }
+        assert {i for i, r in records.items() if r.hold} == {"res-hold"}
+        assert records["res-string"].listing_ids == frozenset(
+            {("unit-1", "listing-001"), ("listing-002", None)}
+        )
+        assert records["res-none"].listing_ids == frozenset({("listing-001", None)})
+        assert dict(snapshot.observed_codes) == {"CONF-res-string": "res-string"}
+
+    @pytest.mark.parametrize(
+        ("where", "value"),
+        [
+            ("segment", ["listing-x"]),
+            ("segment", {"id": "listing-x"}),
+            ("top", ["listing-x"]),
+            ("top", {"id": "listing-x"}),
+        ],
+    )
+    async def test_malformed_listing_ids_mark_record_unverifiable(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+        where: str,
+        value: object,
+    ) -> None:
+        """A non-string listing reference makes the pairs unverifiable."""
+        freezer.move_to(_NOW)
+        if where == "segment":
+            segment = GuestyStaySegment.from_api_dict(
+                make_v3_segment(listingId="unit-1", parentListingId=value)
+            )
+            assert segment is not None
+            assert segment.parent_listing_id == value
+            bad = _v3_res("res-bad", [segment])
+            known: tuple[str, ...] = ("listing-001",)
+        else:
+            bad = replace(
+                _legacy_res("res-bad", "listing-001", 1, 2),
+                listing_id=value,  # type: ignore[arg-type]
+            )
+            known = ()
+        good = _legacy_res("res-good", "listing-001", 1, 2)
+        coordinator = _snapshot_coordinator(hass, [bad, good], known_listing_ids=known)
+
+        await coordinator.async_refresh()
+
+        assert coordinator.last_update_success
+        snapshot = coordinator.accepted_refresh_snapshot()
+        assert snapshot is not None
+        assert snapshot.records["res-bad"].listing_ids is None
+        assert snapshot.records["res-good"].listing_ids == frozenset(
+            {("listing-001", None)}
+        )
+
+    async def test_v3_flag_comes_from_returned_ids_not_is_v3(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """A republished retained v3 record is not a v3 record."""
+        freezer.move_to(_NOW)
+        returned = _v3_res("res-v3", [_seg("listing-001", 1, 2)], is_v3=True)
+        retained = _v3_res("res-retained", [_seg("listing-001", 1, 2)], is_v3=True)
+        coordinator = _snapshot_coordinator(
+            hass,
+            [returned, retained],
+            returned_ids=("res-v3",),
+            fallback_sourced=("res-retained",),
+        )
+
+        await coordinator.async_refresh()
+        snapshot = coordinator.accepted_refresh_snapshot()
+
+        assert snapshot is not None
+        assert snapshot.records["res-v3"].v3
+        assert not snapshot.records["res-retained"].v3
+
+    async def test_observed_codes_exceed_baseline_bound(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """The snapshot holds every code, not the bounded baseline."""
+        freezer.move_to(_NOW)
+        base = _legacy_res("res-0", "listing-001", 1, 2)
+        reservations = [
+            replace(base, id=f"res-{index}", confirmation_code=f"CONF-{index}")
+            for index in range(MAX_BASELINE_CODES + 1)
+        ]
+        coordinator = _snapshot_coordinator(hass, reservations, known_listing_ids=())
+
+        await coordinator.async_refresh()
+        snapshot = coordinator.accepted_refresh_snapshot()
+
+        assert snapshot is not None
+        assert len(snapshot.observed_codes) == MAX_BASELINE_CODES + 1
+
+    async def test_fallback_observed_codes_ignore_status_filter_but_skip_holds_and_empty(  # noqa: E501
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """Out-of-selection legacy codes count; holds and blanks do not."""
+        freezer.move_to(_NOW)
+        base = _legacy_res("res-0", "listing-001", 1, 2)
+        observed = (
+            replace(base, id="res-cancel", status="canceled", confirmation_code="C1"),
+            replace(base, id="res-hold", status="alteration", confirmation_code="C2"),
+            replace(base, id="res-blank", confirmation_code=""),
+        )
+        coordinator = _snapshot_coordinator(
+            hass, [base], observed_reservations=observed
+        )
+
+        await coordinator.async_refresh()
+        snapshot = coordinator.accepted_refresh_snapshot()
+
+        assert snapshot is not None
+        assert dict(snapshot.fallback_observed_codes) == {"C1": "res-cancel"}
+
+    async def test_fallback_sets_copied(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """Fallback provenance and the rejected IDs are copied."""
+        freezer.move_to(_NOW)
+        served = _legacy_res("res-served", "listing-001", 1, 2)
+        coordinator = _snapshot_coordinator(
+            hass,
+            [served],
+            returned_ids=("res-rejected",),
+            rejected_ids=("res-rejected",),
+            fallback_served=("res-served",),
+            fallback_sourced=("res-served",),
+            fallback_absent=("res-gone",),
+            fallback_observed=("res-served", "res-out"),
+        )
+
+        await coordinator.async_refresh()
+        snapshot = coordinator.accepted_refresh_snapshot()
+
+        assert snapshot is not None
+        assert snapshot.rejected_ids == frozenset({"res-rejected"})
+        assert snapshot.fallback_served == frozenset({"res-served"})
+        assert snapshot.fallback_sourced == frozenset({"res-served"})
+        assert snapshot.fallback_absent == frozenset({"res-gone"})
+        assert snapshot.fallback_observed == frozenset({"res-served", "res-out"})
+
+    async def test_repr_contains_no_codes(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """No confirmation code appears in the snapshot's repr."""
+        freezer.move_to(_NOW)
+        base = _legacy_res("res-1", "listing-001", 1, 2)
+        coordinator = _snapshot_coordinator(
+            hass,
+            [replace(base, confirmation_code="SECRET-A")],
+            observed_reservations=(
+                replace(base, id="res-2", confirmation_code="SECRET-B"),
+            ),
+        )
+
+        await coordinator.async_refresh()
+        snapshot = coordinator.accepted_refresh_snapshot()
+
+        assert snapshot is not None
+        rendered = repr(snapshot)
+        assert "SECRET" not in rendered
+        assert "res-1" in rendered

@@ -46,7 +46,9 @@ from custom_components.guesty.api.exceptions import (
     GuestyActionError,
     GuestyApiError,
     GuestyAuthError,
+    GuestyByIdReadError,
     GuestyConnectionError,
+    GuestyPermissionError,
     GuestyPrerequisiteReadError,
     GuestyRateLimitError,
     GuestyResponseError,
@@ -3330,3 +3332,538 @@ class TestRoutingRetiredMidWrite:
         assert "No request was sent" not in message
         assert "410" in message
         assert "2027-03-01" in message
+
+
+# ── Feature 014: strict by-ID read (T004, T005) ─────────────────────
+
+_BY_ID_URL = f"{BASE_URL}{RESERVATIONS_V3_ENDPOINT}"
+
+
+async def _read_by_id(reservation_id: str = "res-001") -> dict[str, object]:
+    """Run one strict by-ID read against a fresh v3 actions client.
+
+    Args:
+        reservation_id: The reservation to read.
+
+    Returns:
+        The single matching raw record.
+    """
+    http = httpx.AsyncClient()
+    try:
+        return await _v3_client(http).read_reservation_by_id(reservation_id)
+    finally:
+        await http.aclose()
+
+
+async def _read_by_id_error(reservation_id: str = "res-001") -> GuestyByIdReadError:
+    """Run one strict by-ID read that must fail.
+
+    Args:
+        reservation_id: The reservation to read.
+
+    Returns:
+        The raised by-ID read error.
+    """
+    with pytest.raises(GuestyByIdReadError) as exc_info:
+        await _read_by_id(reservation_id)
+    return exc_info.value
+
+
+class TestReadReservationById:
+    """The by-ID read proves exactly one record or fails (FR-004, FR-005)."""
+
+    @respx.mock
+    async def test_sends_one_get_with_only_reservation_ids_param(self) -> None:
+        """Exactly one GET carries reservationIds and nothing else."""
+        _mock_token()
+        route = respx.get(_BY_ID_URL).mock(
+            return_value=Response(
+                200, json={"results": [{"reservationId": "res-001"}]}
+            ),
+        )
+
+        await _read_by_id()
+
+        assert route.call_count == 1
+        assert dict(route.calls[0].request.url.params) == {"reservationIds": "res-001"}
+
+    @respx.mock
+    async def test_returns_the_single_matching_raw_record(self) -> None:
+        """The raw record comes back untouched."""
+        _mock_token()
+        record = {"reservationId": "res-001", "status": "confirmed", "x": [1]}
+        respx.get(_BY_ID_URL).mock(
+            return_value=Response(200, json={"results": [record]}),
+        )
+
+        assert await _read_by_id() == record
+
+    @respx.mock
+    async def test_empty_results_is_not_found(self) -> None:
+        """An empty result list is not found."""
+        _mock_token()
+        respx.get(_BY_ID_URL).mock(return_value=Response(200, json={"results": []}))
+
+        assert (await _read_by_id_error()).category == "not_found"
+
+    @respx.mock
+    async def test_single_other_id_is_mismatched(self) -> None:
+        """One record for another reservation is mismatched."""
+        _mock_token()
+        respx.get(_BY_ID_URL).mock(
+            return_value=Response(
+                200, json={"results": [{"reservationId": "res-999"}]}
+            ),
+        )
+
+        assert (await _read_by_id_error()).category == "mismatched"
+
+    @pytest.mark.parametrize(
+        "item",
+        [
+            {"id": "res-001"},
+            {"_id": "res-001"},
+            {"reservationId": 1},
+            {"reservationId": None, "id": "res-001"},
+        ],
+    )
+    @respx.mock
+    async def test_missing_or_non_string_reservation_id_is_malformed(
+        self, item: dict[str, object]
+    ) -> None:
+        """Only reservationId identifies the record; id and _id never do."""
+        _mock_token()
+        respx.get(_BY_ID_URL).mock(return_value=Response(200, json={"results": [item]}))
+
+        assert (await _read_by_id_error()).category == "malformed"
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"results": [{"reservationId": "res-001"}, {"reservationId": "res-2"}]},
+            {"results": [{"reservationId": "res-001"}, {"reservationId": "res-001"}]},
+            {"reservationId": "res-001"},
+            [{"reservationId": "res-001"}],
+            {"data": [{"reservationId": "res-001"}]},
+            {"results": {"reservationId": "res-001"}},
+            {"results": ["res-001"]},
+            b"not json",
+            {"results": [{"reservationId": "res-001"}], "pagination": None},
+            {"results": [{"reservationId": "res-001"}], "pagination": []},
+            {"results": [{"reservationId": "res-001"}], "pagination": {}},
+            {
+                "results": [{"reservationId": "res-001"}],
+                "pagination": {"hasMore": None},
+            },
+            {
+                "results": [{"reservationId": "res-001"}],
+                "pagination": {"hasMore": "true"},
+            },
+            {
+                "results": [{"reservationId": "res-001"}],
+                "pagination": {"hasMore": True},
+            },
+        ],
+        ids=[
+            "two-records",
+            "duplicate-matches",
+            "bare-dict",
+            "bare-list",
+            "results-missing",
+            "results-not-list",
+            "non-object-item",
+            "non-json",
+            "pagination-null",
+            "pagination-list",
+            "pagination-empty",
+            "has-more-null",
+            "has-more-string",
+            "has-more-true",
+        ],
+    )
+    @respx.mock
+    async def test_unprovable_envelope_is_malformed(self, body: object) -> None:
+        """An envelope that cannot prove one complete record is malformed."""
+        _mock_token()
+        response = (
+            Response(200, content=body)
+            if isinstance(body, bytes)
+            else Response(200, json=body)
+        )
+        respx.get(_BY_ID_URL).mock(return_value=response)
+
+        assert (await _read_by_id_error()).category == "malformed"
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {},
+            {"pagination": {"hasMore": False}},
+            {"pagination": {"hasMore": False, "n": 1}},
+        ],
+    )
+    @respx.mock
+    async def test_absent_pagination_or_has_more_false_is_accepted(
+        self, extra: dict[str, object]
+    ) -> None:
+        """No pagination key, or hasMore exactly false, proves completeness."""
+        _mock_token()
+        respx.get(_BY_ID_URL).mock(
+            return_value=Response(
+                200, json={"results": [{"reservationId": "res-001"}], **extra}
+            ),
+        )
+
+        assert await _read_by_id() == {"reservationId": "res-001"}
+
+    @pytest.mark.parametrize("reservation_id", ["", "   ", None, 7])
+    @respx.mock
+    async def test_blank_reservation_id_sends_nothing(
+        self, reservation_id: Any
+    ) -> None:
+        """A blank or non-string target is refused before any request."""
+        token = respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        route = respx.get(_BY_ID_URL).mock(return_value=Response(200, json={}))
+
+        with pytest.raises(ValueError, match="reservation_id"):
+            await _read_by_id(reservation_id)
+
+        assert not route.called
+        assert not token.called
+
+
+class TestReadReservationByIdFailures:
+    """Every by-ID read failure is one attempt and a fixed category (R5)."""
+
+    @pytest.mark.parametrize(
+        ("status", "category"),
+        [
+            (400, "http"),
+            (404, "http"),
+            (500, "http"),
+            (503, "http"),
+            (401, "authentication"),
+            (403, "authentication"),
+            (429, "rate_limit"),
+        ],
+    )
+    @respx.mock
+    async def test_http_status_maps_to_category(
+        self, status: int, category: str
+    ) -> None:
+        """A non-2xx status maps to its category with no retry."""
+        token = respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        route = respx.get(_BY_ID_URL).mock(return_value=Response(status, json={}))
+
+        with patch("asyncio.sleep", new_callable=AsyncMock) as sleep:
+            error = await _read_by_id_error()
+
+        assert error.category == category
+        assert route.call_count == 1
+        assert token.call_count == 1
+        sleep.assert_not_awaited()
+
+    @respx.mock
+    async def test_401_does_not_renew_token(self) -> None:
+        """A 401 neither invalidates nor re-requests the token."""
+        token = respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        route = respx.get(_BY_ID_URL).mock(return_value=Response(401, json={}))
+
+        error = await _read_by_id_error()
+
+        assert error.category == "authentication"
+        assert token.call_count == 1
+        assert route.call_count == 1
+
+    @pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
+    @respx.mock
+    async def test_429_and_5xx_do_not_sleep_or_retry(self, status: int) -> None:
+        """Rate limits and server errors are never retried or slept on."""
+        _mock_token()
+        route = respx.get(_BY_ID_URL).mock(return_value=Response(status, json={}))
+
+        with patch("asyncio.sleep", new_callable=AsyncMock) as sleep:
+            await _read_by_id_error()
+
+        assert route.call_count == 1
+        sleep.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            httpx.ConnectError("boom"),
+            httpx.ReadTimeout("slow"),
+            httpx.ConnectTimeout("slow"),
+            httpx.ReadError("reset"),
+            httpx.RemoteProtocolError("bad"),
+        ],
+    )
+    @respx.mock
+    async def test_timeout_connect_and_other_transport_errors_are_transport(
+        self, exc: Exception
+    ) -> None:
+        """Every transport failure is one attempt in the transport category."""
+        _mock_token()
+        route = respx.get(_BY_ID_URL).mock(side_effect=exc)
+
+        with patch("asyncio.sleep", new_callable=AsyncMock) as sleep:
+            error = await _read_by_id_error()
+
+        assert error.category == "transport"
+        assert route.call_count == 1
+        sleep.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("token_response", "raised", "category"),
+        [
+            (Response(401, json={}), None, "authentication"),
+            (None, GuestyPermissionError("denied"), "authentication"),
+            (None, GuestyRateLimitError("budget"), "rate_limit"),
+            (Response(429, json={}), None, "http"),
+            (Response(500, json={}), None, "http"),
+            (Response(200, content=b"not json"), None, "http"),
+            (None, httpx.ConnectError("down"), "transport"),
+            (None, GuestyConnectionError("down"), "transport"),
+            (None, httpx.ReadError("reset"), "transport"),
+            (None, RuntimeError("other"), "authentication"),
+        ],
+        ids=[
+            "token-401",
+            "token-permission",
+            "local-budget",
+            "token-429",
+            "token-500",
+            "token-bad-body",
+            "token-connect",
+            "token-connection-error",
+            "token-transport",
+            "token-other",
+        ],
+    )
+    @respx.mock
+    async def test_token_failure_category(
+        self,
+        token_response: Response | None,
+        raised: Exception | None,
+        category: str,
+    ) -> None:
+        """A token failure maps to its category and sends no by-ID GET."""
+        token = respx.post(TOKEN_URL)
+        if token_response is not None:
+            token.mock(return_value=token_response)
+        elif isinstance(raised, httpx.ConnectError):
+            token.mock(side_effect=raised)
+        route = respx.get(_BY_ID_URL).mock(
+            return_value=Response(200, json={"results": []}),
+        )
+        http = httpx.AsyncClient()
+        client = _v3_client(http)
+        try:
+            if raised is not None and not isinstance(raised, httpx.ConnectError):
+                with (
+                    patch.object(
+                        client._api_client._token_manager,
+                        "get_token",
+                        AsyncMock(side_effect=raised),
+                    ),
+                    pytest.raises(GuestyByIdReadError) as exc_info,
+                ):
+                    await client.read_reservation_by_id("res-001")
+            else:
+                with pytest.raises(GuestyByIdReadError) as exc_info:
+                    await client.read_reservation_by_id("res-001")
+        finally:
+            await http.aclose()
+
+        assert exc_info.value.category == category
+        assert route.call_count == 0
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            Response(500, text="SENTINEL-BODY-MARKER"),
+            Response(400, text="SENTINEL-BODY-MARKER"),
+            Response(200, text="SENTINEL-BODY-MARKER"),
+            Response(
+                200,
+                json={
+                    "results": [{"reservationId": "SENTINEL-BODY-MARKER"}],
+                },
+            ),
+        ],
+    )
+    @respx.mock
+    async def test_errors_and_logs_carry_no_body_or_exception_text(
+        self, response: Response, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """No body, status text or exception detail reaches errors or logs."""
+        _mock_token()
+        respx.get(_BY_ID_URL).mock(return_value=response)
+
+        with caplog.at_level(logging.DEBUG):
+            error = await _read_by_id_error()
+
+        assert "SENTINEL-BODY-MARKER" not in str(error)
+        assert "SENTINEL-BODY-MARKER" not in caplog.text
+        assert error.__cause__ is None
+
+    @respx.mock
+    async def test_transport_exception_text_is_not_carried(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A transport exception's text never reaches the error or logs."""
+        _mock_token()
+        respx.get(_BY_ID_URL).mock(side_effect=httpx.ReadError("SENTINEL-EXC-TEXT"))
+
+        with caplog.at_level(logging.DEBUG):
+            error = await _read_by_id_error()
+
+        assert "SENTINEL-EXC-TEXT" not in str(error)
+        assert "SENTINEL-EXC-TEXT" not in caplog.text
+        assert error.__cause__ is None
+
+
+# ── Feature 014: prefetched note write (T007) ───────────────────────
+
+_NOTES_URL = f"{BASE_URL}{RESERVATION_NOTES_PATH.format(reservation_id='res-001')}"
+
+
+class TestPrefetchedNoteWrite:
+    """A verified record's notes are written without a second read (R11)."""
+
+    @respx.mock
+    async def test_prefetched_notes_issue_no_read(self) -> None:
+        """Prefetched notes skip the GET and send one PUT."""
+        _mock_token()
+        read = respx.get(_BY_ID_URL).mock(return_value=Response(200, json={}))
+        write = respx.put(_NOTES_URL).mock(return_value=Response(200, json={}))
+        http = httpx.AsyncClient()
+        try:
+            result = await _v3_client(http).add_reservation_note(
+                "res-001", "New", prefetched_notes={"other": "Old"}
+            )
+        finally:
+            await http.aclose()
+
+        assert result.success is True
+        assert read.call_count == 0
+        assert write.call_count == 1
+
+    @respx.mock
+    async def test_prefetched_notes_echo_every_field_and_append(self) -> None:
+        """Every prefetched field is echoed and the text is appended."""
+        _mock_token()
+        write = respx.put(_NOTES_URL).mock(return_value=Response(200, json={}))
+        http = httpx.AsyncClient()
+        try:
+            await _v3_client(http).add_reservation_note(
+                "res-001",
+                "New",
+                prefetched_notes={"other": "Old", "guest": "G", "cleaning": None},
+            )
+        finally:
+            await http.aclose()
+
+        assert json.loads(write.calls[0].request.content) == {
+            "other": f"Old{NOTE_SEPARATOR}New",
+            "guest": "G",
+            "cleaning": None,
+        }
+
+    @respx.mock
+    async def test_empty_prefetched_notes_write_only_other(self) -> None:
+        """An empty mapping writes the new text alone."""
+        _mock_token()
+        write = respx.put(_NOTES_URL).mock(return_value=Response(200, json={}))
+        http = httpx.AsyncClient()
+        try:
+            await _v3_client(http).add_reservation_note(
+                "res-001", "New", prefetched_notes={}
+            )
+        finally:
+            await http.aclose()
+
+        assert json.loads(write.calls[0].request.content) == {"other": "New"}
+
+    @respx.mock
+    async def test_before_write_runs_once_before_put(self) -> None:
+        """The recheck runs exactly once, before the PUT is sent."""
+        _mock_token()
+        write = respx.put(_NOTES_URL).mock(return_value=Response(200, json={}))
+        seen: list[int] = []
+
+        def check() -> None:
+            """Record how many PUTs were sent when the check ran."""
+            seen.append(write.call_count)
+
+        http = httpx.AsyncClient()
+        try:
+            await _v3_client(http).add_reservation_note(
+                "res-001",
+                "New",
+                prefetched_notes={},
+                single_attempt=True,
+                before_write=check,
+            )
+        finally:
+            await http.aclose()
+
+        assert seen == [0]
+        assert write.call_count == 1
+
+    @pytest.mark.parametrize("legacy_client", [False, True])
+    @respx.mock
+    async def test_prefetched_notes_refuse_legacy_route(
+        self, legacy_client: bool
+    ) -> None:
+        """Prefetched notes with any legacy route send nothing at all."""
+        token = respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        everything = respx.route().mock(return_value=Response(200, json={}))
+        http = httpx.AsyncClient()
+        client = _make_actions_client(
+            http, RESERVATIONS_API_LEGACY if legacy_client else RESERVATIONS_API_V3
+        )
+        kwargs: dict[str, Any] = {} if legacy_client else {"route": WRITE_ROUTE_LEGACY}
+        # A retired legacy generation would otherwise raise a routing
+        # refusal; the prefetched check must come first.
+        client._api_client.disable_legacy_write_routing()
+        try:
+            with pytest.raises(ValueError, match="prefetched"):
+                await client.add_reservation_note(
+                    "res-001", "New", prefetched_notes={}, **kwargs
+                )
+        finally:
+            await http.aclose()
+
+        assert not token.called
+        assert not everything.called
+
+    @respx.mock
+    async def test_none_prefetched_notes_keeps_the_read(self) -> None:
+        """Baseline control: None keeps today's read-modify-write."""
+        _mock_token()
+        read = respx.get(_BY_ID_URL).mock(
+            return_value=Response(
+                200,
+                json={"results": [{"reservationId": "res-001", "notes": {}}]},
+            ),
+        )
+        write = respx.put(_NOTES_URL).mock(return_value=Response(200, json={}))
+        http = httpx.AsyncClient()
+        try:
+            await _v3_client(http).add_reservation_note(
+                "res-001", "New", prefetched_notes=None
+            )
+        finally:
+            await http.aclose()
+
+        assert read.call_count == 1
+        assert write.call_count == 1

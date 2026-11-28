@@ -35,6 +35,7 @@ from custom_components.guesty.const import (
     CONF_RESERVATIONS_API,
     DOMAIN,
 )
+from custom_components.guesty.coordinator import AcceptedRefreshSnapshot
 from custom_components.guesty.diagnostics import (
     async_get_config_entry_diagnostics,
 )
@@ -141,6 +142,30 @@ class TestReservationDiagnostics:
         # Guest lookup *counts* are required by FR-042, so the guard
         # is on guest detail rather than on the word "guest".
         for forbidden in ("CONF-", "@", "full_name", "phone", "email"):
+            assert forbidden not in rendered
+
+    async def test_snapshot_absent_from_diagnostics(
+        self,
+        hass: HomeAssistant,
+    ) -> None:
+        """The accepted-refresh snapshot never reaches the download."""
+        entry = await _setup_entry(hass)
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        coordinator._accepted_snapshot = AcceptedRefreshSnapshot(
+            attempt=1,
+            path=coordinator.reservations_path,
+            returned_ids=frozenset({"res-snapshot-only"}),
+            rejected_ids=frozenset({"res-snapshot-rejected"}),
+            records=MappingProxyType({}),
+            observed_codes=MappingProxyType({"SNAPCODE-1": "res-snapshot-only"}),
+            fallback_observed_codes=MappingProxyType(
+                {"SNAPCODE-2": "res-snapshot-observed"}
+            ),
+        )
+
+        rendered = repr(await async_get_config_entry_diagnostics(hass, entry))
+
+        for forbidden in ("SNAPCODE", "res-snapshot", "snapshot"):
             assert forbidden not in rendered
 
     async def test_unloaded_entry_reports_nothing(

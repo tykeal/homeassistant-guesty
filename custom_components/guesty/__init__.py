@@ -694,7 +694,7 @@ async def async_setup_entry(
                         value=value,
                         route=route,
                     ),
-                    recovery_write=lambda route, single, check: (
+                    recovery_write=lambda route, single, check, notes=None: (
                         local_cf_client.set_field(
                             target_type=target_type,
                             target_id=target_id,
