@@ -1155,7 +1155,13 @@ registers only `Platform.SENSOR`; there is no calendar entity.
   - a known key logs at DEBUG;
   - a key missing from the accepted set is resolved and forgotten, so
     it can warn again (SC-004).
-- Failed refreshes do not resolve keys.
+- The keys come from `ReservationFetchResult.exclusions`, which the
+  v3 and legacy sources and the by-ID fallback fill with fixed reasons
+  and reservation IDs only, so no rejected payload is retained.
+- Failed refreshes do not resolve keys. The conflict-evidence repair
+  issues are not tied to refreshes: they follow the evidence state
+  after load and on every state change, including failed refreshes,
+  so a store whose pairs abort every refresh is still reported.
 - The bound is `MAX_TRACKED_EXCLUSIONS = 256`. Over the bound, new keys
   log at DEBUG and one aggregate WARNING ("N further exclusions") is
   emitted per overflow episode. The episode ends when the tracked set
