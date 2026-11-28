@@ -71,7 +71,10 @@ It adds no Guesty requests, configuration options, entities or actions.
   - the last accepted verified data is re-evaluated at the current
     instant against the current options;
   - it is marked `stale`;
-  - writes stay governed only by identity guards.
+  - writes stay governed only by identity guards;
+  - the fallback routing sets always match the stored identity
+    baseline, and an identity abort leaves the guard ambiguous, refusing every
+    write until an accepted refresh is stored.
 
   The reservation sensor is unavailable. Its computed attributes carry
   `stale: true`, but Home Assistant does not write attributes for
@@ -117,9 +120,11 @@ It adds no Guesty requests, configuration options, entities or actions.
   - unstored;
   - saturated;
   - compromised;
-  - pending upgrade revalidation.
-- **C16**: After an upgrade, writes are refused until the first accepted
-  refresh under these rules is stored. The refusals in C15 and
+  - revalidating.
+- **C16**: Writes are refused as revalidating until an accepted refresh
+  under these rules is stored: after an upgrade, after every restart,
+  and after `past_days` grows beyond the window of the last stored
+  refresh. The refusals in C15 and
   C16 come before the current-identity membership check, so they never
   start a feature 012 recovery refresh or a feature 014 by-ID read.
 - **C17**: A valid target that is filtered from publication by listing, window
@@ -299,8 +304,10 @@ refresh or by-ID read happens.
     freeze while `compromised` or `saturated`; a compromised store is
     never written, so it is still `compromised` after an accepted
     refresh and a restart; a re-observed pair's bound only moves later
-    or to `null`; a refresh with no evidence changes still loads `ready`
-    after a restart; pending pairs reach `compare`; an `_INVALID`
+    or to `null`; a refresh with no evidence changes still loads
+    `revalidating`, not `compromised`, after a restart, and becomes
+    `ready` after the next accepted refresh's step 1 save; pending
+    pairs reach `compare`; an `_INVALID`
     fallback pair reaches `compare` and the store; an `_INVALID` pair
     whose code is in `legacy_codes` or `codes` with another ID aborts
     the refresh as ambiguous, both in the same refresh and after it is
@@ -314,6 +321,11 @@ refresh or by-ID read happens.
   - a migrated minor-version-1 payload downgrades every `known`
     candidate hint to unknown timing: not fallback-eligible, no
     `check_outs`, bootstrap pair retained;
+  - every load is `revalidating` until an accepted refresh completes
+    its step 1 save, including after both saves failed and a restart;
+  - growing `past_days` beyond `covered_past_days` refuses writes as
+    revalidating until a refresh under the wider window is stored,
+    which records a re-entered rejected pair again;
   - rollback-compatible payload.
 - **Coordinator and sensor**:
   - partial-stay projection;
@@ -326,6 +338,12 @@ refresh or by-ID read happens.
   - stale re-projection after a failed refresh, including an expired
     stale stay;
   - stale clearing;
+  - after an identity abort, a failure after `_check_identity`, a
+    failed identity save, and a non-`OSError` failure after the step 2
+    save, the routing sets match the stored baseline; in the abort
+    case every write is refused with no request; a write issued while
+    the step 3 save is suspended uses the new routing; repeated
+    failures add no lookups beyond the feature 008 limits;
   - per-record stale attributes.
 - **Reporting**:
   - warning once, then DEBUG, then a warning on recurrence;

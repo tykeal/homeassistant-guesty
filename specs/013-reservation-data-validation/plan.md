@@ -169,7 +169,11 @@ Artifacts:
    - Counts feed `ValidationSummary`. `status_counts` is sanitized.
 2. `ReservationFallbackSource.resolve(..., rejected=...)`:
    - excludes, purges and never confirms absent the rejected IDs;
-   - tracks per-record `_stale`.
+   - tracks per-record `_stale`;
+   - keeps its live in-place cache updates; the routing sets are
+     assigned in a synchronous `on_baseline_stored` callback right
+     after the step 2 identity save succeeds and before step 3, so they
+     always match the stored baseline (R8).
 3. Identity:
    - `_check_identity` passes only fully verified, non-partial records
      as accepted observations, plus the `rejected_codes` pairs as
@@ -194,7 +198,10 @@ Artifacts:
    - report exclusions;
    - reconcile listing-timezone repairs.
 6. After a failed refresh, re-publish from the snapshot (if any) and set
-   `snapshot_stale`. Identity and write state are untouched.
+   `snapshot_stale`. The routing sets always match the stored
+   baseline: a failure before the step 2 save leaves identity and
+   routing untouched, and an identity abort also leaves the guard
+   ambiguous, refusing every write (R8).
 
 ### Guards (unchanged precedence, two additions)
 

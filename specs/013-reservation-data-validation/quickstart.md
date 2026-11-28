@@ -98,16 +98,19 @@ payload, with valid and malformed code maps and candidate hints:
      `generation`.
 3. Load the saved payload with a minor version 1 `Store` to confirm that
    rollback reads it.
-4. Remove the conflict-evidence store, or roll its generation back
+4. Restart with both stores intact and assert that writes are refused
+   as revalidating until the first accepted refresh is stored.
+5. Remove the conflict-evidence store, or roll its generation back
    below the identity payload's expected generation. Assert that the
    state is `compromised` and that writes are refused.
-5. Fail only the first evidence save in an accepted refresh, restart,
+6. Fail only the first evidence save in an accepted refresh, restart,
    and assert that the store loads as `compromised`.
-6. Fail only the identity save, stop returning the rejected record,
+7. Fail only the identity save, stop returning the rejected record,
    run a successful refresh, and assert that the stored evidence still
    holds the pair.
-7. Run an accepted refresh with no evidence changes, restart, and
-   assert that the store loads `ready`, not `compromised`.
+8. Run an accepted refresh with no evidence changes, restart, and
+   assert that the store loads `revalidating`, not `compromised`, and
+   becomes `ready` after the next accepted refresh.
 
 ## User-visible contract
 

@@ -210,7 +210,8 @@ The payload is a separate `Store`: version 1, key
     }
   ],
   "saturated": false,
-  "generation": 0
+  "generation": 0,
+  "covered_past_days": null
 }
 ```
 
@@ -222,6 +223,7 @@ Validation on load:
   - a boolean `fallback`;
   - a parseable, offset-aware `observed_at`;
   - a `check_out_bound` that is `null` or a canonical date.
+- `covered_past_days` must be `null` or a non-negative integer.
 - Any malformed entry or duplicate `(reservation_id, code)` pair makes
   the store **compromised**. It is never repaired by dropping entries.
 - A code may appear with several IDs, and an ID with several codes.
@@ -245,12 +247,21 @@ Every other state refuses every reservation write.
   - entered at setup; left when the load completes;
   - refusal `REFUSAL_EVIDENCE_UNAVAILABLE`; DEBUG log only.
 - `revalidating`:
-  - entered while the identity migration is pending (R9); left after
-    the first accepted, stored 013 refresh;
+  - held while any of these holds: the identity migration is pending
+    (R9); no accepted refresh has completed its step 1 save since this
+    load; or the current `past_days` (read through a supplier the
+    coordinator passes to the guard) exceeds `covered_past_days`
+    (`null` means no window is covered yet);
+  - the restart and `past_days` causes end when an accepted refresh
+    completes its step 1 save, which also writes `covered_past_days`
+    equal to that refresh's `past_days`; the migration cause ends only
+    at a successful step 2 that follows a successful step 1 (research
+    R7 decisions 5, 7 and 8);
   - refusal `REFUSAL_REVALIDATING`; DEBUG log only.
 - `ready`:
-  - entered after a successful load or save, and only when no other
-    state applies; left for any state below.
+  - entered only when an accepted refresh has completed its step 1
+    save and no other state applies (a load alone gives `revalidating`);
+    left for any state below.
 - `unstored`:
   - entered on a save failure, and held while unsaved pairs are
     pending; left when a save containing every pending pair succeeds;
@@ -353,6 +364,10 @@ A failed refresh changes nothing.
        `revalidation_pending` only when step 1 succeeded;
     3. evidence save of retirements, only when steps 1 and 2
        succeeded.
+  - Takes a synchronous `on_baseline_stored` callback, called right
+    after step 2 succeeds and `_baseline` is adopted, before step 3
+    and with no await in between. The coordinator uses it to assign
+    the fallback routing sets and the accepted snapshot (research R8).
   - Drives the `ConflictOnlyEvidence` transitions.
 - `classify_write_refusal` gains `REFUSAL_EVIDENCE_UNAVAILABLE` and
   `REFUSAL_REVALIDATING`. They are checked after the existing checks
@@ -364,6 +379,12 @@ A failed refresh changes nothing.
   `REFUSAL_EVIDENCE_UNAVAILABLE`, even while revalidation is pending.
 
 ## `ReservationFallbackSource` (changed)
+
+`resolve()` keeps its live in-place cache updates. The coordinator
+passes the candidate sourced set to `_check_identity`, and assigns
+`fallback_served_ids` and `fallback_sourced_ids` in the
+`on_baseline_stored` callback, so the routing sets always match the
+stored baseline (research R8).
 
 - `resolve(..., rejected: Collection[str] = ())`, where `rejected` is
   all of `rejected_ids`, partially valid records included:

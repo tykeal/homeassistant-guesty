@@ -579,10 +579,26 @@ adapter logic.
    - **Horizon (T074 parity)**: the ID was not returned in this refresh
      and its `check_out_bound` is conclusively earlier than the
      `past_days` horizon under every timezone offset:
-     `check_out_bound < utc_date(now − past_days) − 1`. Such a stay can
-     never re-enter any window. This is the same evidence-based policy
+     `check_out_bound < utc_date(now − past_days) − 1`. Such a stay
+     cannot re-enter the window while `past_days` does not grow.
+     `past_days` has no maximum and changes without a reload
+     (`__init__.py`, `_async_options_updated`), so the store
+     persists `covered_past_days`: the window of the last accepted
+     refresh whose step 1 save succeeded (decision 8). While the
+     current `past_days` exceeds it, the evidence is `revalidating`
+     (decision 7). An accepted, stored refresh under the wider window
+     re-observes every stay that window returns and records rejected
+     ones again. This is the same evidence-based policy
      `_retired_bootstrap` applies to bootstrap codes, and the accepted
      `codes` map keeps no out-of-window entries at all.
+
+     **Pre-existing limit, out of scope**: the live
+     `_retired_bootstrap` (feature 010 T074) drops bootstrap pairs for
+     good under the current window. A later `past_days` increase cannot
+     restore an old legacy-era mapping, because re-observing the stay
+     in v3 only adds a fresh `codes` entry. 013 does not change that
+     behavior and does not weaken it; it is reported for a follow-up
+     issue.
 
    A pair with `check_out_bound = null` has no verified horizon. It is
    retired only by supersession or confirmed absence. No arbitrary
@@ -617,7 +633,12 @@ adapter logic.
    - Saturation itself remains fail-closed.
 7. **Fail-closed states**:
    - `unloaded` while not loaded;
-   - `revalidating` while upgrade revalidation is pending (R9);
+   - `revalidating` while any of these holds:
+     - upgrade revalidation is pending (R9);
+     - no accepted refresh has completed its step 1 save since this
+       load (decision 8, restart);
+     - the current `past_days` exceeds the persisted
+       `covered_past_days` (decision 5, window expansion);
    - `unstored` after a failed save;
    - `saturated`;
    - `compromised` when the store is corrupt or unreadable, or when its
@@ -659,8 +680,10 @@ adapter logic.
    a conflict could be missed. The
    refresh still publishes its independently verified records, which
    pre-013 behavior already did without any conflict-only evidence.
-   Identity state, however, is frozen so that missed evidence never
-   becomes confirmation:
+   While `compromised` or `saturated`, identity state is frozen so
+   that missed evidence never becomes confirmation. `unstored` and
+   `revalidating` refresh normally, because an accepted refresh is how
+   they end:
    - continuity is never advanced to confirmed, and the bootstrap is
      never retired;
    - `revalidation_pending` is never cleared;
@@ -709,12 +732,18 @@ adapter logic.
      US2-S18);
    - step 1 succeeded and step 2 failed: the store is ahead of the
      baseline. It is accepted, because it holds a superset;
-   - both failed: nothing changed on disk, and the lost pending pairs
-     have no record anywhere. That is the only case where a restart
-     loses pairs. It needs two simultaneous storage failures followed
-     by a restart before any successful save, and the old baseline
-     never authorized a write during the failure, because the guard
-     was `_unstored`.
+   - both failed: nothing changed on disk, so the generations still
+     match and the pending pairs are gone. A durable marker cannot help,
+     because it would be written to the same failing storage. Instead,
+     after **every** load the evidence is `revalidating` (decision 7)
+     until the first accepted refresh completes its step 1 save. That
+     refresh re-observes and records again every rejected pair Guesty
+     still returns, so no write is permitted on the reloaded evidence
+     alone. A lost pair whose record Guesty no longer returns cannot be
+     rebuilt by any design. That is the same gap as Home Assistant
+     being stopped while the record existed, and the old baseline never
+     authorized a write during the failure, because the guard was
+     `_unstored`.
 
    A store generation **above** the expected one is accepted. Besides
    step 2 failing, it happens after a rollback, when the older release
@@ -779,6 +808,51 @@ adapter logic.
     may not leave fallback evidence or caches behind (FR-005a). If v3
     stops returning it, nothing about it is published until a fully
     verified record arrives. That fails closed.
+- **Fallback state after a failed refresh**: today `resolve()`
+  mutates its caches during the fetch, and the coordinator assigns
+  `fallback_served_ids`, `fallback_sourced_ids` and
+  `last_fallback_counters` before `_check_identity`
+  (`coordinator.py`, `_async_update_data`). A failure after that point
+  leaves routing from a refresh that was never stored. Under 013:
+  - the coordinator computes the candidate served and sourced sets
+    (including the sticky retired-generation branch) where it does
+    today and passes the candidate sourced set to `_check_identity`;
+  - `async_record_refresh` takes a synchronous `on_baseline_stored`
+    callback. It calls it right after the step 2 identity save
+    succeeds and `_baseline` is adopted (R7 decision 8), with no await
+    in between and before the step 3 retirement save. The coordinator's
+    callback assigns `fallback_served_ids`, `fallback_sourced_ids` and
+    the accepted snapshot. The routing sets therefore always match the
+    baseline that authorizes writes, including while step 3 is
+    suspended. Any failure before that save (an
+    identity abort, `_resolve_guests`, projection, cancellation) and a
+    failed save keep the routing sets of the last refresh whose
+    baseline was stored; a failed save also leaves `_unstored`
+    refusing every write. A failure after step 2 (step 3,
+    `acknowledge_absent_reservations`, snapshot build) cannot leave
+    routing behind the stored baseline;
+  - an identity abort additionally calls `mark_ambiguous()` first, so
+    `classify_write_refusal` refuses every write at its ambiguity step
+    until a successful accepted save clears `_ambiguous`;
+  - the fallback caches keep their live in-place updates and are not
+    staged. Rolling them back would be harmful: `_last_attempt` must
+    advance to keep the feature 008 lookup limits (FR-053, SC-017)
+    when failures repeat, and purges, retirement (`_disable()`) and the
+    014 session sets only remove routing or add provenance. Additions
+    reach routing only through the sets above, which the next stored
+    refresh assigns after its own identity check;
+  - a failed refresh publishes from the `VerifiedSnapshot` (R10), never
+    from the fallback caches;
+  - `last_fallback_counters` keeps its live assignment, because the
+    counters of an aborted refresh are published on purpose (the
+    existing comment at the abort handler).
+
+  Tests assert that after an identity abort, and after a non-identity
+  failure following `_check_identity`, the routing sets match the
+  stored baseline, that a write issued while the step 3 save is
+  suspended uses the new routing, every write in the abort case is refused
+  with no request, and repeated failures add no lookups beyond the
+  feature 008 limits.
 - **Per-record staleness (FR-012g, FR-012h)**: the fallback tracks
   `_stale: set[str]`.
   - An ID is added when a due lookup fails (`_FAILED`) and the record is
@@ -1163,7 +1237,8 @@ state is `saturated` or `compromised`.
 **Rationale**: Recovery cannot cure unusable evidence: saturation and
 compromise need operator action, and `unstored` needs the next
 successful save, which the next scheduled refresh attempts.
-Revalidation is the one exception that a refresh *can* clear, but the
-first scheduled refresh after setup does that within seconds.
+Revalidation is the one exception that a refresh *can* clear: the
+first refresh after setup does that within seconds, and after a
+`past_days` increase the next scheduled refresh does.
 Refusing without starting a recovery is the simplest fail-closed
 behavior. It keeps 012's one-refresh budget for true identity misses.
