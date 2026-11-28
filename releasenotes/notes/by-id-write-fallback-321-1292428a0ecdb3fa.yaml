@@ -1,0 +1,23 @@
+---
+# SPDX-FileCopyrightText: 2026 Andrew Grimberg <tykeal@bardicgrove.org>
+# SPDX-License-Identifier: Apache-2.0
+
+features:
+  - |
+    Reservation writes on the v3 path can now recover a reservation the
+    reservation search does not return, or returns without a
+    confirmation code, such as a same-day booking created after its
+    scheduled check-in (#321). After the one-time write-miss refresh,
+    the integration reads that single reservation by ID once and sends
+    the note, status or custom-field write once, only if the answer is
+    exactly one record with the requested ID, an allowed status, a
+    confirmation code that conflicts with no known or rejected
+    reservation, and data that passes the same validation as a
+    refreshed reservation. Nothing from the lookup is published,
+    added to the identity cache or stored, and neither the lookup nor
+    the write is retried. Refusals and failures name the outcome, the
+    reason, a category, the action and the reservation ID, with fixed
+    guidance text; no confirmation code, door code or guest data is
+    logged or reported. This addresses
+    the scenario reported in #223; behavior against live Guesty data
+    has not yet been verified.

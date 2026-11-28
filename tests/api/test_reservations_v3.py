@@ -958,6 +958,39 @@ class TestV3ReturnedAndRejectedIds:
         assert [r.id for r in result.reservations] == ["res-1", "res-4"]
         assert result.rejected_ids == ("res-2", "res-3", "res-4")
 
+    def test_rejected_ids_include_013_raw_segment_rejections(self) -> None:
+        """Raw segment defects reject a record by its identifier (014 T050).
+
+        Feature 014's by-ID fallback must never read a reservation the
+        qualifying search rejected, so 013's raw segment rejections
+        (a non-string parent listing, an empty listing, an unparsable
+        date) all reach ``rejected_ids`` whether the record is dropped
+        or still published from its valid segment.
+        """
+        bad_parent = make_v3_reservation(
+            "res-parent",
+            segments=[make_v3_segment(parentListingId=7)],
+        )
+        bad_date = make_v3_reservation(
+            "res-date",
+            segments=[make_v3_segment(checkOutDateLocalized="not-a-date")],
+        )
+        partial = make_v3_reservation(
+            "res-partial",
+            segments=[make_v3_segment(), make_v3_segment(parentListingId=7)],
+        )
+        result = _map_results(
+            [[make_v3_reservation("res-ok"), bad_parent, bad_date, partial]],
+        )
+
+        assert result.rejected_ids == ("res-date", "res-parent", "res-partial")
+        assert result.returned_ids == (
+            "res-date",
+            "res-ok",
+            "res-parent",
+            "res-partial",
+        )
+
     def test_ids_are_sorted_deduplicated_tuples(self) -> None:
         """Both fields are sorted tuples without duplicates."""
         result = _map_results(

@@ -88,6 +88,7 @@ from tests.conftest import (
     BY_ID_TARGET,
     FakeConflictEvidence,
     by_id_network,
+    by_id_not_found,
     capture_by_id_retention,
     make_by_id_record,
     make_custom_field_definition_dict,
@@ -3053,7 +3054,11 @@ class TestSetCustomFieldIdentityGuard:
         self,
         hass: HomeAssistant,
     ) -> None:
-        """FR-033: a codeless reservation is not a write target."""
+        """FR-033: a codeless reservation is not a write target.
+
+        Feature 014 now gives the codeless target one by-ID read
+        (T052 audit); it finds nothing, so the write is still refused.
+        """
         await self._setup(
             hass,
             [
@@ -3061,22 +3066,26 @@ class TestSetCustomFieldIdentityGuard:
                 make_identity_reservation("res-nocode"),
             ],
         )
-        with patch(
-            "custom_components.guesty.GuestyApiClient.get_reservations",
-            new_callable=AsyncMock,
-            return_value=make_fetch_result(
-                [
-                    *make_identity_reservations(*_WRITE_TARGETS),
-                    make_identity_reservation("res-nocode"),
-                ]
-            ),
-        ) as fetch:
+        with (
+            patch(
+                "custom_components.guesty.GuestyApiClient.get_reservations",
+                new_callable=AsyncMock,
+                return_value=make_fetch_result(
+                    [
+                        *make_identity_reservations(*_WRITE_TARGETS),
+                        make_identity_reservation("res-nocode"),
+                    ]
+                ),
+            ) as fetch,
+            by_id_not_found() as read,
+        ):
             await self._expect_refusal(
                 hass,
                 "res-nocode",
-                "has no known confirmation code",
+                "not found by ID",
             )
         fetch.assert_awaited_once()
+        assert read.call_count == 1
 
     async def test_listing_writes_are_unaffected(
         self,
@@ -3238,7 +3247,11 @@ class TestSetCustomFieldIdentityGuard:
     async def test_published_codeless_custom_field_target(
         self, hass: HomeAssistant, confirm: bool
     ) -> None:
-        """A published code-less target is writable only if refresh confirms it."""
+        """A published code-less target is writable only if refresh confirms it.
+
+        Unconfirmed, feature 014 reads it by ID once (T052 audit); the
+        read finds nothing, so the field is still never written.
+        """
         base = make_identity_reservations(*_WRITE_TARGETS)
         uncoded = make_identity_reservation("res-new")
         entry = await self._setup(hass, [*base, uncoded])
@@ -3282,7 +3295,10 @@ class TestSetCustomFieldIdentityGuard:
                 assert result is not None and result["result"] == "success"
                 write.assert_awaited_once()
             else:
-                with pytest.raises(HomeAssistantError, match="confirmation code"):
+                with (
+                    by_id_not_found() as read,
+                    pytest.raises(HomeAssistantError, match="not found by ID"),
+                ):
                     await hass.services.async_call(
                         DOMAIN,
                         SERVICE_SET_CUSTOM_FIELD,
@@ -3291,6 +3307,7 @@ class TestSetCustomFieldIdentityGuard:
                         return_response=True,
                     )
                 write.assert_not_awaited()
+                assert read.call_count == 1
         fetch.assert_awaited_once()
 
     async def test_refreshed_custom_field_fallback_uses_legacy_route(
@@ -4055,9 +4072,15 @@ class TestSetCustomFieldIdentityGuard:
     async def test_missing_field_target_refreshes_once_without_write(
         self, hass: HomeAssistant
     ) -> None:
-        """A valid field miss performs one refresh and refuses an omitted target."""
+        """A valid field miss performs one refresh and refuses an omitted target.
+
+        Updated for feature 014 (T052): the target is still absent after
+        the refresh, so it now qualifies for the single by-ID read; the
+        read finds nothing, so the write is refused as not found by ID.
+        """
         await self._setup(hass, make_identity_reservations(*_WRITE_TARGETS))
         with (
+            by_id_not_found() as read,
             patch(
                 "custom_components.guesty.GuestyApiClient.get_reservations",
                 new_callable=AsyncMock,
@@ -4068,7 +4091,7 @@ class TestSetCustomFieldIdentityGuard:
             patch.object(
                 GuestyCustomFieldsClient, "set_field", new_callable=AsyncMock
             ) as write,
-            pytest.raises(HomeAssistantError),
+            pytest.raises(HomeAssistantError, match="not found by ID"),
         ):
             await hass.services.async_call(
                 DOMAIN,
@@ -4084,6 +4107,7 @@ class TestSetCustomFieldIdentityGuard:
             )
         fetch.assert_awaited_once()
         write.assert_not_awaited()
+        assert read.call_count == 1
 
     @pytest.mark.parametrize(
         "outcome", ["absent", "codeless", "unconfirmed", "unstored"]
@@ -4091,7 +4115,12 @@ class TestSetCustomFieldIdentityGuard:
     async def test_refreshed_identity_refusal_is_reported(
         self, hass: HomeAssistant, outcome: str
     ) -> None:
-        """A field action reports the actual refreshed identity guard refusal."""
+        """A field action reports the actual refreshed identity guard refusal.
+
+        An absent or codeless target now gets one feature 014 by-ID
+        read (T052 audit), which finds nothing and is reported; the
+        pure identity guard still names the 012 refusal.
+        """
         entry = await self._setup(hass, make_identity_reservations(*_WRITE_TARGETS))
         entry_data = hass.data[DOMAIN][entry.entry_id]
         coordinator = entry_data["reservations_coordinator"]
@@ -4110,7 +4139,9 @@ class TestSetCustomFieldIdentityGuard:
             "unconfirmed": "continuity is unconfirmed",
             "unstored": "could not be written to storage",
         }[outcome]
+        reported = "not found by ID" if outcome in {"absent", "codeless"} else category
         with ExitStack() as stack:
+            read = stack.enter_context(by_id_not_found())
             fetch = stack.enter_context(
                 patch(
                     "custom_components.guesty.GuestyApiClient.get_reservations",
@@ -4144,29 +4175,41 @@ class TestSetCustomFieldIdentityGuard:
                 )
         fetch.assert_awaited_once()
         write.assert_not_awaited()
+        assert read.call_count == (outcome in {"absent", "codeless"})
         assert coordinator.last_update_success
         with pytest.raises(GuestyActionError, match=category):
             guard_reservation_write(entry_data, "res-new", SERVICE_SET_CUSTOM_FIELD)
-        assert category in str(error.value)
+        assert reported in str(error.value)
 
     @pytest.mark.parametrize("failed", [True, False])
     async def test_custom_field_miss_refuses_after_failed_or_empty_refresh(
         self, hass: HomeAssistant, failed: bool
     ) -> None:
-        """A failed or omitted reservation is never written after one refresh."""
+        """A failed or omitted reservation is never written after one refresh.
+
+        An omitted target now gets one feature 014 by-ID read (T052
+        audit); it finds nothing, so the write is still refused. A
+        failed refresh never qualifies, so nothing is read.
+        """
         await self._setup(hass, make_identity_reservations(*_WRITE_TARGETS))
-        with patch(
-            "custom_components.guesty.GuestyApiClient.get_reservations",
-            new_callable=AsyncMock,
-            side_effect=GuestyApiError("unavailable") if failed else None,
-            return_value=make_fetch_result(make_identity_reservations(*_WRITE_TARGETS)),
-        ) as fetch:
+        with (
+            patch(
+                "custom_components.guesty.GuestyApiClient.get_reservations",
+                new_callable=AsyncMock,
+                side_effect=GuestyApiError("unavailable") if failed else None,
+                return_value=make_fetch_result(
+                    make_identity_reservations(*_WRITE_TARGETS)
+                ),
+            ) as fetch,
+            by_id_not_found() as read,
+        ):
             await self._expect_refusal(
                 hass,
                 "res-new",
-                "refresh" if failed else "has no known confirmation code",
+                "refresh" if failed else "not found by ID",
             )
         fetch.assert_awaited_once()
+        assert read.call_count == (not failed)
 
     @pytest.mark.parametrize("previously_served", [False, True])
     async def test_real_fallback_failure_preserves_custom_field_routing(
@@ -4805,6 +4848,11 @@ def _written(caplog: pytest.LogCaptureFixture) -> list[str]:
     ]
 
 
+# Shared by-ID cases run against the 013 double and the real 013
+# adapter (T052); ``real`` installs no double.
+_CF_EVIDENCE_KINDS = pytest.mark.parametrize("evidence_kind", ["double", "real"])
+
+
 class _ByIdCustomFieldBase:
     """Shared setup for the by-ID custom-field classes."""
 
@@ -4876,28 +4924,84 @@ class _ByIdCustomFieldBase:
         return str(error.value)
 
 
-class TestByIdFallbackInertUntil013CustomField(_ByIdCustomFieldBase):
-    """Production keeps the unchanged 012 custom-field refusal (T025)."""
+class TestByIdRefusedWhileEvidenceNotReadyCustomField(_ByIdCustomFieldBase):
+    """Non-ready 013 evidence refuses custom fields first (T025, T052).
 
+    Converted from ``TestByIdFallbackInertUntil013CustomField``: with
+    the real 013 adapter a qualifying target is refused by 013's
+    evidence-state guard before membership, with no 012 recovery
+    refresh, no by-ID read, no write and no 014 DEBUG category.
+    """
+
+    @pytest.mark.parametrize(
+        ("state", "match"),
+        [
+            (EVIDENCE_UNLOADED, REFUSAL_EVIDENCE_UNAVAILABLE),
+            (EVIDENCE_REVALIDATING, REFUSAL_REVALIDATING),
+            (EVIDENCE_UNSTORED, REFUSAL_EVIDENCE_UNAVAILABLE),
+            (
+                EVIDENCE_SATURATED,
+                f"{REFUSAL_EVIDENCE_UNAVAILABLE} {REFUSAL_EVIDENCE_REPAIR}",
+            ),
+            (
+                EVIDENCE_COMPROMISED,
+                f"{REFUSAL_EVIDENCE_UNAVAILABLE} {REFUSAL_EVIDENCE_REPAIR}",
+            ),
+        ],
+    )
     @pytest.mark.parametrize("target", ["absent", "codeless"])
-    async def test_unpatched_adapter_keeps_012_refusal(
-        self, hass: HomeAssistant, caplog: pytest.LogCaptureFixture, target: str
+    async def test_not_ready_evidence_refuses_before_any_read(
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+        state: str,
+        match: str,
+        target: str,
     ) -> None:
-        """No by-ID read happens and one DEBUG line names the reason."""
-        await self._setup(hass)
-        refresh = _cf_refresh() if target == "absent" else _cf_codeless_refresh()
+        """013's refusal stands; nothing is refreshed, read or written."""
+        coordinator = await self._setup(hass)
+        if target == "codeless":
+            with by_id_network(refresh=_cf_codeless_refresh()):
+                await coordinator.async_refresh()
         caplog.set_level(logging.DEBUG, logger=_CF_ACTIONS_LOGGER)
-        with by_id_network(refresh=refresh) as routes:
-            text = await self._refusal(hass)
+        with (
+            patch.object(
+                ConflictOnlyEvidence, "state", new_callable=PropertyMock
+            ) as current,
+            by_id_network(refresh=_cf_refresh()) as routes,
+            pytest.raises(HomeAssistantError) as error,
+        ):
+            current.return_value = state
+            await self._call(hass)
 
-        assert text == REFUSAL_NO_CODE.format(reservation_id=_BY_ID)
+        assert str(error.value) == match
+        assert isinstance(error.value.__cause__, GuestyActionError)
+        assert not isinstance(error.value.__cause__, ReservationIdentityMissError)
+        routes.fetch.assert_not_awaited()
         assert routes.read.call_count == 0
         assert routes.writes == 0
+        assert _DOOR_CODE not in caplog.text
         assert [
             tuple(record.args or ())
             for record in caplog.records
             if record.name == _CF_ACTIONS_LOGGER and "not eligible" in str(record.msg)
-        ] == [("evidence_unavailable", _BY_ID)]
+        ] == []
+
+    async def test_ready_evidence_reaches_the_by_id_read(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Control: the same unpatched flow writes once evidence is ready."""
+        coordinator = await self._setup(hass)
+        assert coordinator.identity.conflict_evidence.available()
+        with by_id_network(refresh=_cf_refresh()) as routes:
+            result = await self._call(hass)
+
+        assert result is not None
+        assert result["result"] == "success"
+        routes.fetch.assert_awaited_once()
+        assert routes.read.call_count == 1
+        assert routes.fields.call_count == 1
+        assert routes.writes == 1
 
     async def test_listing_write_never_reads_by_id(self, hass: HomeAssistant) -> None:
         """A listing custom-field write is untouched by the fallback."""
@@ -4950,21 +5054,35 @@ class TestByIdCustomFieldRefusals(_ByIdCustomFieldBase):
             ("rate_limit", "by-ID read failed", "rate_limit"),
         ],
     )
+    @_CF_EVIDENCE_KINDS
     async def test_by_id_refusal_text(
-        self, hass: HomeAssistant, case: str, stem: str, category: str
+        self,
+        hass: HomeAssistant,
+        case: str,
+        stem: str,
+        category: str,
+        evidence_kind: str,
     ) -> None:
         """Each refusal names its outcome and sends no custom-field PUT."""
-        await self._setup(hass)
+        coordinator = await self._setup(hass)
         read: Any = None
-        evidence = FakeConflictEvidence()
+        evidence = FakeConflictEvidence() if evidence_kind == "double" else None
         if case == "not_found":
             read = Response(200, json={"results": []})
         elif case == "status":
             read = Response(
                 200, json={"results": [make_by_id_record(status="alteration")]}
             )
-        elif case == "conflict":
+        elif case == "conflict" and evidence is not None:
             evidence.ids["CONF-res-new"] = frozenset({"res-other"})
+        elif case == "conflict":
+            coordinator.identity.conflict_evidence.record(
+                [RejectedCode("res-other", "CONF-res-new")],
+                {},
+                "v3",
+                datetime.now(UTC),
+            )
+            assert coordinator.identity.conflict_evidence.available()
         else:
             read = Response(429)
         with by_id_network(
@@ -4983,16 +5101,18 @@ class TestByIdCustomFieldRefusals(_ByIdCustomFieldBase):
 class TestByIdWriteFallback223CustomField(_ByIdCustomFieldBase):
     """The #223 door code is written by ID (T037)."""
 
+    @_CF_EVIDENCE_KINDS
     async def test_223_same_day_absent_reservation_door_code_written_by_id(
         self,
         hass: HomeAssistant,
         freezer: FrozenDateTimeFactory,
         caplog: pytest.LogCaptureFixture,
+        evidence_kind: str,
     ) -> None:
         """One search, one by-ID read and one PUT, retaining nothing."""
         freezer.move_to("2026-11-23 18:00:00+00:00")
         coordinator = await self._setup(hass)
-        evidence = FakeConflictEvidence()
+        evidence = FakeConflictEvidence() if evidence_kind == "double" else None
         segment = make_v3_segment(
             checkIn="2026-11-23T15:00:00+00:00",
             checkOut="2026-11-25T11:00:00+00:00",
@@ -5036,14 +5156,19 @@ class TestByIdWriteFallback223CustomField(_ByIdCustomFieldBase):
         assert "absent" in lines[0]
         assert after == captured
 
+    @_CF_EVIDENCE_KINDS
     async def test_codeless_custom_field_target_written_by_id(
-        self, hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+        evidence_kind: str,
     ) -> None:
         """A returned code-less target is written with its qualifier."""
         await self._setup(hass)
         caplog.set_level(logging.INFO, logger=_CF_ACTIONS_LOGGER)
         with by_id_network(
-            refresh=_cf_codeless_refresh(), evidence=FakeConflictEvidence()
+            refresh=_cf_codeless_refresh(),
+            evidence=FakeConflictEvidence() if evidence_kind == "double" else None,
         ) as routes:
             result = await self._call(hass)
 

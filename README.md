@@ -208,6 +208,70 @@ neither sends any request to Guesty.
 
 If you need writes back immediately, roll back to `legacy`.
 
+#### Reservation write recovery by ID
+
+On the v3 path, a reservation can be missing from the reservation
+search even though Guesty already knows it — for example a same-day
+booking created after its scheduled check-in. If the refresh above
+still leaves the target **absent from search**, or **present without a
+confirmation code**, the integration may look that one reservation up
+by its ID with a single request, and write to it only if the answer
+proves it is actionable:
+
+- exactly one record with the requested ID;
+- an allowed (non-hold) status;
+- a confirmation code that no other known reservation uses, and no
+  conflicting evidence for that reservation from rejected records;
+- a record that passes the same validation as a refreshed one;
+- for a reservation the search returned without a code, the same
+  listings as the record the search returned.
+
+The lookup is never attempted for a reservation the last refresh
+rejected, a reservation the legacy API has confirmed no longer exists,
+a reservation whose data came from the legacy lookup fallback, writes
+made on the `legacy` path, listing custom-field writes, or while
+either refusal described above is in effect. The lookup and the write
+are each sent at most once and are never retried.
+
+Nothing learned from the lookup is kept: the reservation is not
+published as an entity, its code is not added to the identity cache,
+and nothing is stored. Only that one write uses it.
+
+When recovery does not write, the error names the outcome, the
+reason (`absent from search` or `present without a confirmation
+code`), a category, the action and the reservation ID — never a code
+or any guest data:
+
+- `not found by ID` (`not_found`, `mismatched`): retry after the next
+  refresh.
+- `found but refused` (`malformed`, `no_code`, `disallowed_status`):
+  check the reservation in Guesty, then retry after the next refresh.
+- `found but refused` (`guard_witness`): the integration's state
+  changed before the write; retry after the next refresh.
+- `found but refused` (`identity_conflict`): review the reservation in
+  Guesty; its identity conflicts with known evidence.
+- `by-ID read failed` (`authentication`): check the integration
+  credentials.
+- `by-ID read failed` (`rate_limit`): Guesty rate-limited the lookup;
+  retry later.
+- `by-ID read failed` (`http`, `transport`): retry after the next
+  refresh.
+- `found by ID, write failed` (`not_sent`): the write was not sent;
+  the error explains why.
+- `found by ID, write failed` (`rejected`): Guesty refused the write
+  (the error gives the HTTP status, or reports an authentication or
+  permission failure); it was not retried. Check Guesty before
+  retrying.
+- `found by ID, write failed` (`unknown_outcome`): the write may have
+  reached Guesty; check Guesty before retrying.
+
+A reservation that does not qualify for the lookup gets the same
+refusal as before, with no request sent.
+
+This recovery addresses the scenario reported in
+[#223](https://github.com/tykeal/homeassistant-guesty/issues/223), but
+its behavior against live Guesty data has not yet been verified.
+
 ## Breaking changes
 
 ### Reservation financial sensors are deprecated

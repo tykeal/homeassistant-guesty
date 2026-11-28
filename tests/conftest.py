@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Generator, Mapping
 from contextlib import ExitStack, contextmanager
 from copy import deepcopy
@@ -249,9 +250,10 @@ def make_token_response(**overrides: Any) -> dict[str, Any]:
 class FakeConflictEvidence:
     """Configurable test double for the feature 013 evidence port.
 
-    Production keeps ``UnavailableConflictEvidence``; this double
-    is the only way the by-ID write fallback is exercised until
-    feature 013 supplies the real adapter.
+    Production uses ``IdentityConflictEvidence`` over feature 013's
+    real interfaces; this double isolates the by-ID write fallback
+    from 013 so states the real evidence reaches only indirectly can
+    be driven directly.
 
     Attributes:
         is_available: What ``available()`` reports.
@@ -435,14 +437,42 @@ def by_id_network(
         yield ByIdRoutes(fetch, token, read_route, *routes)
 
 
+@contextmanager
+def by_id_not_found() -> Generator[respx.Route]:
+    """Mock only the token and an empty by-ID read.
+
+    Used where a feature 012 test's absent or codeless target now
+    qualifies for the feature 014 by-ID read (T052): the read finds
+    nothing, so the write is still refused, with one read and no
+    write. Every write route is mocked so a write would be counted.
+
+    Yields:
+        The by-ID read route.
+    """
+    with respx.mock(assert_all_called=False) as router:
+        router.post(FAKE_TOKEN_URL).mock(
+            return_value=httpx.Response(200, json=make_token_response())
+        )
+        read = router.get(f"{FAKE_BASE_URL}/reservations-v3").mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        writes = router.put(
+            url__regex=rf"^{re.escape(FAKE_BASE_URL)}/reservations-v3/.+"
+        ).mock(return_value=httpx.Response(200, json={}))
+        yield read
+        assert writes.call_count == 0
+
+
 def capture_by_id_retention(
-    coordinator: Any, evidence: FakeConflictEvidence
+    coordinator: Any, evidence: FakeConflictEvidence | None
 ) -> dict[str, Any]:
     """Capture every piece of state a by-ID write must leave alone.
 
     Args:
         coordinator: The entry's coordinator.
-        evidence: The 013 double in use.
+        evidence: The 013 double in use, or None for the real 013
+            conflict-only evidence, whose entries, generation and
+            state are captured instead.
 
     Returns:
         A comparable copy of the retained state.
@@ -472,8 +502,26 @@ def capture_by_id_retention(
         "fallback": (coordinator.fallback_served_ids, coordinator.fallback_sourced_ids),
         "absent": client.confirmed_absent_reservations,
         "snapshot": id(coordinator._accepted_snapshot),
-        "evidence": deepcopy((evidence.codes, evidence.ids, evidence.is_available)),
+        "evidence": _capture_evidence(coordinator, evidence),
     }
+
+
+def _capture_evidence(
+    coordinator: Any, evidence: FakeConflictEvidence | None
+) -> object:
+    """Capture the 013 evidence a by-ID write must leave alone.
+
+    Args:
+        coordinator: The entry's coordinator.
+        evidence: The 013 double in use, or None for the real one.
+
+    Returns:
+        A comparable copy of the evidence.
+    """
+    if evidence is not None:
+        return deepcopy((evidence.codes, evidence.ids, evidence.is_available))
+    real = coordinator.identity.conflict_evidence
+    return (deepcopy(real._entries), real.generation, real.state, real.count)
 
 
 def _mock_route(route: respx.Route, outcome: Any) -> None:
