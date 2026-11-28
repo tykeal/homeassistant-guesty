@@ -54,6 +54,15 @@ be checked") then refuse before any read is issued. Under US2 scenario 7
 the existing 012 refusal applies, so the feature is inert and the
 user-visible behavior is unchanged.
 
+Once 013 is merged, 013 itself refuses every write before the
+membership check while its evidence is `revalidating` or otherwise
+unavailable (including over its bound), with `REFUSAL_REVALIDATING` or
+`REFUSAL_EVIDENCE_UNAVAILABLE`. That refusal starts no 012 recovery
+refresh and no by-ID read, so the adapter's own unavailable state is
+then a defensive check only. 013 also replaces the interim
+raw-minus-parsed `rejected_ids` with its definition (contract § Required
+feature 013 interface).
+
 ### R1 rationale
 
 FR-005(b) and FR-006 reference 013 rules explicitly. Using today's

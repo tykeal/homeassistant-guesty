@@ -76,10 +76,16 @@ It adds no Guesty requests, configuration options, entities or actions.
     baseline, and an identity abort leaves the guard ambiguous, refusing every
     write until an accepted refresh is stored.
 
-  The reservation sensor is unavailable. Its computed attributes carry
-  `stale: true`, but Home Assistant does not write attributes for
-  unavailable entities, so diagnostics `validation.stale` is the
-  observable surface (research R13).
+  The reservation sensor and financial sensors stay available while a
+  verified snapshot exists, even though `last_update_success` is false.
+  Their attributes carry `stale: true` and `last_verified_at` (the last
+  accepted refresh); their state is the re-projection, never described
+  as reverified and never presenting occupancy as live-proven, and
+  date-only or uncertain markings still apply. Their other existing
+  availability checks still apply. With no snapshot they are
+  unavailable and nothing is invented. `last_update_success` stays
+  false, so stale data never satisfies a write guard. Diagnostics
+  `validation.stale` reports the same state (research R13).
 - **C11**: An accepted refresh clears `stale` and removes everything it shows
   invalid.
 - **C12**: A fallback-published record whose latest lookup failed has item and
@@ -343,6 +349,14 @@ refresh or by-ID read happens.
   - stale re-projection after a failed refresh, including an expired
     stale stay;
   - stale clearing;
+  - reservation and financial sensors stay available with `stale: true`
+    and `last_verified_at` after a failed refresh, including a second
+    consecutive failure, and are unavailable with no snapshot;
+  - recorded state-change events show no intermediate `unavailable`
+    state on a first failure;
+  - a re-projection that raises leaves the entities unavailable, never
+    showing an older projection;
+  - stale display never satisfies a write guard;
   - after an identity abort, a failure after `_check_identity`, a
     failed identity save, and a non-`OSError` failure after the step 2
     save, the routing sets match the stored baseline; in the abort

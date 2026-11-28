@@ -9,9 +9,9 @@ SPDX-License-Identifier: Apache-2.0
 
 The specification is settled. This document records how the live code
 behaves today, the decisions the plan takes, and why. No
-`NEEDS CLARIFICATION` item remains. One true contradiction between the
-specification and Home Assistant behavior is recorded in R13, with the
-recommended safe reading.
+`NEEDS CLARIFICATION` item remains. R13 records how reservation
+entities stay available with stale data despite Home Assistant's
+coordinator-entity default.
 
 Governing rule for every decision: publish or act only on data that is
 reliably proven actionable and useful; fail closed; never weaken
@@ -442,8 +442,8 @@ assessment-based set.
 
 **Rationale**: This matches feature 014 data-model "`rejected_ids`
 (extended model)" and the contract "Required feature 013 interface"
-exactly, so 014 T051 removes its interim computation and needs no
-adapter logic.
+exactly. 013 replaces 014's interim computation, so 014 T051 only
+confirms it and needs no adapter logic.
 
 ## R7 — Conflict-only evidence (feature 014 interface 2)
 
@@ -980,7 +980,9 @@ migrates again and revalidates again.
 
 - On `UpdateFailed` Home Assistant keeps `coordinator.data` and sets
   `last_update_success = False`. `GuestyReservationSensor.available`
-  already returns false through `CoordinatorEntity.available`.
+  and `GuestyFinancialSensor.available` already return false through
+  `CoordinatorEntity.available`, which FR-012a no longer permits while
+  eligible last-verified data exists (R13).
 - There is no stale marker, and projections in `data` were computed at
   the last success, so a stay can still read `confirmed` after its
   checkout.
@@ -992,20 +994,42 @@ migrates again and revalidates again.
   records before publication filtering, plus the stale IDs from the
   fallback. It replaces the previous snapshot wholesale, which removes
   anything that refresh showed invalid (FR-012b).
-- On a failed refresh (any failed outcome in `_async_refresh`, including
-  identity ambiguity), if a snapshot exists, the coordinator:
+- On a failed refresh (any exception leaving `_async_update_data`,
+  including identity ambiguity and an `asyncio.CancelledError` that
+  Home Assistant treats as a failure), if a snapshot exists, the
+  coordinator:
   - re-runs the same pure publication pipeline (R4 window, expiry and
     candidacy; current options, listings and statuses) with the current
     instant;
-  - sets `data` to that projection and sets `snapshot_stale = True`.
+  - sets `data` to that projection and sets `snapshot_stale = True`
+    in the `_async_update_data` failure path, **before** re-raising.
+    Every failure Home Assistant's `_async_refresh` handles comes from
+    that await, and on a first failure it notifies listeners
+    immediately because `last_update_success` changed. Setting the
+    stale state afterwards would let entities write an intermediate
+    `unavailable` state;
+  - calls `async_update_listeners()` from its `_async_refresh` override
+    after a failure that followed an already failed refresh, because
+    Home Assistant then returns without notifying listeners, so the
+    re-projection would otherwise never be written.
 
-  With no snapshot, nothing is invented (US2-S8).
+  If the re-projection itself raises, the coordinator sets `data` to
+  `None` and clears `snapshot_stale` before re-raising the original
+  failure, so the entities become unavailable instead of showing an
+  outdated projection. With no snapshot, nothing is invented (US2-S8)
+  and the reservation entities are unavailable.
 - An accepted refresh clears `snapshot_stale` (FR-012c). A refresh
   *attempt* does not.
 - Staleness never feeds a guard: write predicates read only identity
   state, the `_write_miss_outcomes` witnesses and the live fallback
-  sets. A failed refresh already leaves `last_update_success` false and
-  the identity state unchanged.
+  sets. `guard_reservation_write` also reads `coordinator.data`, which
+  may hold the stale re-projection, but only to choose between the
+  Present and Absent error types on a membership miss; both paths still
+  need a new accepted recovery refresh before any write. A failed
+  refresh already leaves `last_update_success` false and the identity
+  state unchanged. The entity `available` override in R13
+  never changes `last_update_success`, which the write guards keep
+  reading.
 
 ## R11 — Writes for unpublished but valid targets
 
@@ -1059,36 +1083,61 @@ accepted-refresh rules ... including FR-008d for each raw segment and
 the facts the action needs". Notes shape and code presence are checked
 by feature 014 itself.
 
-## R13 — Contradiction: stale attributes on an unavailable sensor
+## R13 — Stale reservation entities stay available
 
 **Finding**: Home Assistant 2026.10.4 (the locked environment)
 `Entity.__async_calculate_state` adds `state_attributes` and
-`extra_state_attributes` **only when the entity is available**. FR-012a
-and US2-S6 require the reservation sensor to be unavailable after an
-overall failed refresh **and** to expose stale details in its
-attributes. Both cannot hold through the state machine. Abusing
-`capability_attributes` (written even when unavailable) would put
-reservation data in the entity registry's capabilities. That is
-contrary to their purpose and a privacy regression. The behavior is
-long-standing; the implementation compatibility gate re-checks it on
-the declared minimum 2026.4.0.
+`extra_state_attributes` **only when the entity is available**, and
+`CoordinatorEntity.available` returns `coordinator.last_update_success`.
+Without an override, every reservation entity would turn unavailable
+after an overall failed refresh and hide its stale data. The user chose
+"show last verified data clearly marked stale" and rejected "show it as
+unavailable until reverified", and FR-012a, US2-S6 and SC-010 now say
+so. The behavior is long-standing; the implementation compatibility
+gate re-checks it on the declared minimum 2026.4.0.
 
-**Recommended safe reading (adopted)**: The unavailability half is the
-safety-bearing requirement ("so its state does not imply live
-occupancy"), so it wins.
+The live entities that publish reservation data are
+`GuestyReservationSensor` and `GuestyFinancialSensor` in `sensor.py`,
+both `CoordinatorEntity["ReservationsCoordinator"]`. The integration
+registers only `Platform.SENSOR`; there is no calendar entity.
 
-- The sensor stays unavailable.
-- `extra_state_attributes` still computes the stale projection with
-  `stale: true`, verified at the property level in tests. When it can be
-  rendered, it is correct.
-- The observable stale indication during an overall failure is the
-  sensor's `unavailable` state plus the diagnostics `stale` block
-  (R15).
-- Per-record staleness (FR-012g) after a *successful* refresh is fully
-  visible, because the sensor is available then.
+**Decision**:
 
-A spec follow-up should amend US2-S6, FR-012a and SC-010 to say this.
-This plan does not edit the spec.
+- `ReservationsCoordinator` exposes `stale_display_available: bool`,
+  true only while `last_update_success` is false, `snapshot_stale` is
+  true and the re-projected `data` from a `VerifiedSnapshot` is set.
+  Both are set before Home Assistant notifies listeners of the failure
+  (R10), so an entity never writes an intermediate `unavailable` state.
+- Both entities override `available` so the coordinator-health part
+  reads `coordinator.last_update_success or
+  coordinator.stale_display_available` instead of `super().available`.
+  Their other existing checks are unchanged: `data` present, listing
+  still tracked, and for the financial sensor a selected reservation
+  with the specific money field.
+- `last_update_success` itself is never changed, so every write guard
+  that reads it (`actions.py` recovery witnesses and
+  `accepted_refresh_snapshot`) still refuses on stale data.
+- The reservation sensor's attributes carry top-level `stale: true`
+  and `last_verified_at`, and item-level `stale` in `upcoming`. The
+  financial sensor's attributes carry `stale` and `last_verified_at`
+  beside `listing_id`. These values are written because the entity is
+  available.
+- `last_verified_at` is the time of the last accepted refresh (the
+  snapshot's `accepted_at`, ISO 8601) while `snapshot_stale` is true,
+  and `null` otherwise. It never certifies a record that was already
+  per-record stale (FR-012g) in that snapshot; such a record keeps its
+  own `stale` marker. Per-record staleness after a successful refresh
+  sets `stale` only, with no timestamp.
+- The state is the re-projection at the current instant (R4 expiry,
+  window and checkout-day uncertainty), so an expired stay is not
+  current and a date-only checkout day stays `unknown`. It is never
+  described as reverified, occupancy is never presented as
+  live-proven, and the stale marker is its observable qualifier.
+- With no snapshot (for example, a failed first refresh), the entities
+  stay unavailable; nothing is invented.
+- Diagnostics also report the stale block (R15).
+- Abusing `capability_attributes` or adding an extra entity is
+  unnecessary and is not used.
 
 ## R14 — Privacy-safe, non-repeating reporting (FR-009–011)
 
@@ -1130,7 +1179,8 @@ This plan does not edit the spec.
 - `rejected_ids`: sorted, capped at 100;
 - `conflict_evidence`: `state`, `available`, `count`, `dated`,
   `undated` and `bound` (no codes or IDs), plus the near-capacity flag;
-- `stale`: `snapshot_stale` and `stale_count`.
+- `stale`: `snapshot_stale`, `stale_count` and `last_verified_at`
+  (ISO 8601 while `snapshot_stale` is true, otherwise `null`).
 
 `refresh.status_counts` uses the sanitized keys (R2). Diagnostics never
 contain confirmation codes, and never show which IDs have stored
@@ -1185,17 +1235,15 @@ was written. The live code on `main` now has:
   `AcceptedRefreshSnapshot` and must not be merged into it.
 - After 013 merges, 014 T049–T051 wire the adapter to the interfaces in
   the contract's "Interfaces provided to feature 014" section.
-- One 014 documentation fix is **needed**. 013's
-  `REFUSAL_REVALIDATING` and `REFUSAL_EVIDENCE_UNAVAILABLE` fire
-  before the membership check (R18). So once 013 is merged, unavailable
-  evidence gives a plain `GuestyActionError`: no 012 recovery refresh,
-  no by-ID read, and no Present or Absent error. 014's contract
-  ("unchanged 012 refusal" while evidence is unavailable) and T052's
-  "013 evidence unavailable or over bound" conversion of
-  `TestByIdFallbackInertUntil013*` should expect that pre-membership
-  refusal. 014's own `evidence_unavailable` qualification step then
-  stays as a defensive check only. This plan does not edit 014
-  documents; the fix is reported to the 014 owner.
+- 013's `REFUSAL_REVALIDATING` and `REFUSAL_EVIDENCE_UNAVAILABLE`
+  fire before the membership check (R18). So once 013 is merged,
+  unavailable or revalidating evidence gives a plain
+  `GuestyActionError`: no 012 recovery refresh, no by-ID read, and no
+  Present or Absent error. 014's own `evidence_unavailable`
+  qualification step then stays as a defensive check only. The 014
+  contract, plan, research, data-model, quickstart and tasks (T010,
+  T011, T051, T052) now say so, and describe `rejected_ids` with this
+  feature's definition instead of "raw minus parsed".
 
 ## R17 — Agent context
 

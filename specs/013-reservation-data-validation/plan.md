@@ -42,7 +42,9 @@ Publication:
   timezone, or a zone-independent offset bound, and run before the
   ten-item upcoming limit.
 - After a failed refresh, the last verified snapshot is re-projected at
-  the current instant and marked stale.
+  the current instant and marked stale. Reservation entities stay
+  available showing it with `stale` and `last_verified_at`; with no
+  snapshot they are unavailable.
 
 Reporting is privacy-safe and non-repeating: once-per-key warnings,
 per-listing timezone repairs and a counts-only diagnostics block.
@@ -139,14 +141,15 @@ Pre-research gate: **PASS**.
   or loss refuses every write until the entry is re-added.
 - **The upgrade uses a minor version bump** (R9). Home Assistant rejects
   newer *major* versions on rollback.
-- **True contradiction** (R13): Home Assistant writes no attributes for
-  an unavailable entity, so FR-012a and US2-S6 ("unavailable *and*
-  stale details in attributes") cannot both hold. Adopted safe reading:
-  - unavailability wins;
-  - the stale projection is computed (property-tested) and surfaced in
-    diagnostics.
-
-  A spec amendment is recommended. No capability-attribute or extra
+- **Stale entities stay available** (R13): Home Assistant writes no
+  attributes for an unavailable entity, and `CoordinatorEntity.available`
+  returns `coordinator.last_update_success`. FR-012a requires
+  reservation entities to stay available with eligible last-verified
+  data marked stale, so `GuestyReservationSensor` and
+  `GuestyFinancialSensor` override `available` to accept
+  `coordinator.stale_display_available` in place of
+  `last_update_success`. `last_update_success` is untouched, so stale
+  data never satisfies a write guard. No capability-attribute or extra
   entity workaround is used.
 
 ## Phase 1 — Design
@@ -230,8 +233,8 @@ start no feature 012 recovery refresh and no feature 014 by-ID read
 - It adds no I/O.
 - It keeps every existing guard's order and outcome.
 
-The one spec contradiction (R13) is resolved toward the safety-bearing
-requirement and flagged for amendment.
+Stale reservation entities stay available as FR-012a requires (R13);
+this keeps every write guard unchanged.
 
 ### Project Structure
 
@@ -266,7 +269,8 @@ custom_components/guesty/
 │                                #      refusals (014 interface 2)
 ├── coordinator.py               # snapshot, publication fn, expiry,
 │                                #      tracker, repairs, failure path
-├── sensor.py                    # stale attributes; uncertain status
+├── sensor.py                    # stale availability and attributes;
+│                                #      uncertain status
 ├── diagnostics.py               # validation block, sanitized counts
 ├── __init__.py                  # evidence store removal on entry removal
 ├── strings.json                 # repair issue translations
@@ -341,17 +345,13 @@ follows these rules:
   rejection tests for a non-string `parentListingId` (v3) and
   `listingId` (legacy) in the source test modules instead.
 
-A **needed** 014 documentation fix (research R16): once 013 is
-merged, unavailable or revalidating evidence is refused before the
-membership check, with no 012 recovery refresh and no by-ID read. 014's
-contract line on "unchanged 012 refusal" and T052's conversion of
-`TestByIdFallbackInertUntil013*` should expect that refusal. 014's own
-`evidence_unavailable` step stays defensive only.
-
-A clarification to 014 T010 and T011 is **recommended, not required**:
-their text still calls the merged value "raw minus parsed". After 013
-the set also includes published partial records. This plan does not
-edit feature 014 documents; both items are reported to the 014 owner.
+Once 013 is merged, unavailable or revalidating evidence is refused
+before the membership check, with no 012 recovery refresh and no by-ID
+read, and 014's own `evidence_unavailable` step stays defensive only
+(research R16). The 014 documents now say so: its contract and T052
+expect that refusal, and T010 and T011 note that 013 replaces the
+interim "raw minus parsed" `rejected_ids`, which after 013 also
+includes published partial records.
 
 ### Implementation phase boundaries
 
@@ -369,14 +369,15 @@ edit feature 014 documents; both items are reported to the 014 owner.
 4. **Publication and staleness**: the shared publication function,
    verified timezone, expiry and uncertainty before the limit (expiry
    is new for single-raw-segment v3 and legacy projections, R4),
-   conclusive window, snapshot re-projection and stale attributes
+   conclusive window, snapshot re-projection, stale entity
+   availability and stale attributes
    (US2, FR-001, FR-003, FR-004–FR-004c, FR-005b, FR-012a–FR-012c, SC-003, SC-010).
 5. **Reporting**: the exclusion tracker, timezone and evidence repairs,
    diagnostics and privacy sentinels (US3, FR-009–FR-011).
 6. **Documentation and final gate**: README and operator notes
    (unverified-timezone behavior, conflict-evidence repair remedy and
-   the R13 note), a release note under `releasenotes/notes/`, and the
-   full validation.
+   stale display after a failed refresh), a release note under
+   `releasenotes/notes/`, and the full validation.
 
 Each phase ends with all CI tests passing on its boundary commit before
 the next phase begins. Red–green unit testing is mandatory within
@@ -401,8 +402,7 @@ contract rules that state it. The contract lists the required tests.
 - FR-008a–FR-008c: R7; C13, C14.
 - FR-008d: R3, R6, R12; C3, interfaces 1 and 3.
 - FR-009–FR-011: R14, R15; C18–C20.
-- FR-012, FR-012a–FR-012c: R10, R13 (recommended safe reading); C10,
-  C11.
+- FR-012, FR-012a–FR-012c: R10, R13; C10, C11.
 - FR-012d, FR-012e: R9; C15, C16.
 - FR-012f: R7 (supersession), R9; C11, C14.
 - FR-012g, FR-012h: R8; C12.
@@ -427,8 +427,8 @@ contract rules that state it. The contract lists the required tests.
   `uv run --group releasenotes mypy custom_components/ tests/ scripts/`
   and `pre-commit run --all-files`.
 - **Compatibility**: run the `Store` minor-version migration, rollback
-  payload and unavailable-entity attribute tests in the locked
-  2026.10.4 environment and in an isolated 2026.4.0 environment without
+  payload, and stale-entity availability and attribute tests in the
+  locked 2026.10.4 environment and in an isolated 2026.4.0 environment without
   changing `uv.lock`. Record the installed versions. If 2026.4.0 cannot
   be built, report that gate as blocked.
 - Do not perform live Guesty verification. #223 evidence is a
@@ -438,9 +438,5 @@ contract rules that state it. The contract lists the required tests.
 ## Planning Scope
 
 This plan covers research and design only. Task ordering and
-implementation happen in their separate Speckit stages. Report the
-following for the spec owner:
-
-- the R13 contradiction, which needs a spec amendment to US2-S6, FR-012a
-  and SC-010;
-- the R4 removal of the written-date fallback.
+implementation happen in their separate Speckit stages. Report the R4
+removal of the written-date fallback to the spec owner.

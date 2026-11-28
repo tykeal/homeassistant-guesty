@@ -313,13 +313,24 @@ implemented and tested defensively by injecting an outcome.
 - **FR-002, rejected in the refresh**: needs the rejected-ID set for
   each accepted refresh, including FR-008d raw-segment rejection. Until
   then, the interim rejected set (raw minus parsed) is collected, but the
-  adapter still reports unavailable.
+  adapter still reports unavailable. Feature 013 replaces that interim
+  computation with its own definition (contract § Required feature 013
+  interface): rejected or partially valid records, including rejected
+  or partially valid holds, sorted; never accepted holds, valid
+  unpublished records, batch failures or legacy by-ID invalid outcomes.
 - **FR-002 and FR-006, conflict-only evidence**: needs a query exposing
   availability, a bound-exceeded flag, and code↔ID lookup. Until then,
   the evidence is unavailable, so the action refuses before reading.
 - **FR-005(b), record validation**: needs a single-record validator that
   applies the accepted-refresh rules. Until then, the evidence is
   unavailable, so the action refuses before reading.
+
+Once 013 is merged, its identity guard refuses every write before the
+membership check while its evidence is `revalidating`
+(`REFUSAL_REVALIDATING`) or otherwise unavailable, including over its
+bound (`REFUSAL_EVIDENCE_UNAVAILABLE`). That plain `GuestyActionError`
+starts no 012 recovery refresh and no by-ID read, so 014's
+`evidence_unavailable` adapter check becomes defensive only.
 
 The interface is defined in `contracts/guesty-by-id-write-fallback.md`.
 Phases 1 and 2 can merge before 013. Phase 3 enables dispatch only once
@@ -412,8 +423,9 @@ needed. A private helper set in `actions.py` (for example
    No caller uses these yet.
 2. **Accepted-refresh snapshot** (no 013 dependency):
    - Add `ReservationFetchResult.returned_ids` (every raw string
-     `reservationId` on the v3 search pages) and `rejected_ids` (raw
-     minus parsed), both set in `reservations_v3._map_results`. Today
+     `reservationId` on the v3 search pages) and `rejected_ids`
+     (interim raw minus parsed; feature 013 later replaces it with its
+     own definition), both set in `reservations_v3._map_results`. Today
      `observed_ids` holds parsed IDs only and is later merged with legacy
      lookup IDs, so neither field can be derived from it.
    - Add `ReservationFetchResult.fallback_observed`, set from
@@ -490,7 +502,9 @@ the key ones:
   - each pre-read ineligibility (non-v3 source, fallback provenance,
     rejected, conflict-only evidence, confirmed absent, evidence
     unavailable), asserting zero reads and the unchanged 012 refusal
-    text;
+    text; with real 013 evidence, unavailable or revalidating evidence
+    instead expects 013's pre-membership refusal with no recovery
+    refresh;
   - a non-v3 source;
   - fallback provenance, including a target a legacy lookup returned
     at a status outside the configured set and did not republish
