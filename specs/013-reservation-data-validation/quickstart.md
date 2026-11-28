@@ -12,7 +12,8 @@ Run commands from the repository root:
 ```bash
 uv run pytest tests/api/test_validation.py tests/api/test_models.py
 uv run pytest tests/api/test_reservations_v3.py \
-  tests/api/test_reservations_fallback.py tests/api/test_timing.py
+  tests/api/test_reservations_fallback.py tests/api/test_timing.py \
+  tests/api/test_client.py
 uv run pytest tests/test_identity.py tests/test_coordinator.py \
   tests/test_reservation_sensor.py tests/test_reservations_parity.py
 uv run pytest tests/test_actions.py tests/test_custom_field_service.py
@@ -22,7 +23,8 @@ uv run pytest tests/
 uv run ruff check custom_components/ tests/ scripts/
 uv run ruff format --check custom_components/ tests/ scripts/
 uv run --group releasenotes mypy custom_components/ tests/ scripts/
-pre-commit run --all-files
+uv run pre-commit run --all-files
+uv run --group releasenotes reno lint
 ```
 
 The planning stage does not run these tests. Each implementation phase

@@ -234,7 +234,7 @@ Validation on load:
 Only `ready` has `available()` true and applies the normal guards.
 Every other state refuses every reservation write.
 
-- `IdentityGuard.async_load` loads both stores before the first
+- `ReservationIdentityGuard.async_load` loads both stores before the first
   comparison.
 - Precedence, highest first: `compromised`, `saturated`, `unstored`,
   `revalidating`, `ready`. `compromised` and `saturated` are sticky.

@@ -669,7 +669,7 @@ confirms it and needs no adapter logic.
    successful save. `unloaded` and `revalidating` are expected,
    transient startup states and log at DEBUG.
 
-   **Loading**: `IdentityGuard.async_load` loads the identity baseline
+   **Loading**: `ReservationIdentityGuard.async_load` loads the identity baseline
    and then the evidence store, in the same call the coordinator
    already awaits before its first comparison (`_check_identity`). No
    comparison therefore runs in `unloaded`.
@@ -888,10 +888,10 @@ confirms it and needs no adapter logic.
     `_last_attempt` and `_stale`, and is never confirmed absent. When
     the record has a non-hold string code, the `RejectedCode` and
     its retirement bound go to `FallbackOutcome.rejected_codes` and
-    `rejected_check_out_bounds`. `V3ReservationSource.fetch` and the
-    legacy source merge them into the fetch result's `rejected_codes`
-    and `rejected_check_out_bounds`, the same way they copy the
-    fallback's other outputs, so they reach `compare` and the store
+    `rejected_check_out_bounds`. `V3ReservationSource.fetch`, the only
+    caller of the fallback, merges them into the fetch result's
+    `rejected_codes` and `rejected_check_out_bounds`, the same way it
+    copies the fallback's other outputs, so they reach `compare` and the store
     (R7), marked with fallback origin (R7 decision 4). The ID's
     candidate hint is popped. The IDs travel as
     `FallbackOutcome.invalid` and
