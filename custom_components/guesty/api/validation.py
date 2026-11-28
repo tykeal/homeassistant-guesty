@@ -496,8 +496,8 @@ def assess_legacy_record(raw: Mapping[str, Any]) -> LegacyAssessment:
         if not (explicit_offset_instant(raw_in) and explicit_offset_instant(raw_out)):
             reason = ValidationReason.UNVERIFIED_INSTANT
         else:
-            check_in = _parse_iso_datetime(raw_in)
-            check_out = _parse_iso_datetime(raw_out)
+            check_in = _explicit_offset_datetime(raw_in)
+            check_out = _explicit_offset_datetime(raw_out)
             if check_in is None or check_out is None or check_in >= check_out:
                 reason = ValidationReason.INVALID_INTERVAL
     return LegacyAssessment(
@@ -608,8 +608,8 @@ def build_legacy_reservation(
     Returns:
         The reservation, or None when the record was rejected.
     """
-    check_in = _parse_iso_datetime(raw.get("checkIn"))
-    check_out = _parse_iso_datetime(raw.get("checkOut"))
+    check_in = _explicit_offset_datetime(raw.get("checkIn"))
+    check_out = _explicit_offset_datetime(raw.get("checkOut"))
     listing_id = _non_empty_str(raw.get("listingId"))
     if (
         not assessment.accepted
@@ -643,6 +643,38 @@ def build_legacy_reservation(
     )
 
 
+def _explicit_offset_datetime(value: object) -> datetime | None:
+    """Return a raw explicitly offset instant, keeping its offset.
+
+    The offset (``Z`` or ``±HH:MM``) is required on the raw string,
+    and the parsed result must itself carry it: a bare date followed
+    by an offset-looking suffix (``2025-08-03-05:00``) matches the
+    suffix but parses as a naive time of day, so it is no instant. A
+    naive value is never read as UTC.
+
+    Args:
+        value: The raw instant value.
+
+    Returns:
+        The aware instant, or None when the value has no explicit
+        offset, does not parse to an aware datetime or cannot be
+        expressed in UTC.
+    """
+    if not isinstance(value, str) or _EXPLICIT_OFFSET.search(value) is None:
+        return None
+    try:
+        instant = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if instant.tzinfo is None or instant.utcoffset() is None:
+        return None
+    try:
+        instant.astimezone(UTC)
+    except OverflowError:
+        return None
+    return instant
+
+
 def _utc_instant(value: object) -> datetime | None:
     """Return a raw explicitly offset instant converted to UTC.
 
@@ -653,15 +685,8 @@ def _utc_instant(value: object) -> datetime | None:
         The UTC instant, or None when the value has no explicit
         offset, does not parse or cannot be expressed in UTC.
     """
-    if not isinstance(value, str) or _EXPLICIT_OFFSET.search(value) is None:
-        return None
-    instant = _parse_iso_datetime(value)
-    if instant is None:
-        return None
-    try:
-        return instant.astimezone(UTC)
-    except OverflowError:
-        return None
+    instant = _explicit_offset_datetime(value)
+    return None if instant is None else instant.astimezone(UTC)
 
 
 def explicit_offset_instant(value: object) -> bool:

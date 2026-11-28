@@ -851,6 +851,33 @@ class TestAssessLegacyRecord:
 
         assert assess_legacy_record(raw).reason is ValidationReason.INVALID_LISTING
 
+    @pytest.mark.parametrize(
+        "field",
+        [
+            pytest.param("checkIn", id="check-in"),
+            pytest.param("checkOut", id="check-out"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "value",
+        [
+            pytest.param("2025-08-03-05:00", id="date-minus-offset"),
+            pytest.param("2025-08-03+05:00", id="date-plus-offset"),
+            pytest.param("20250803-05:00", id="basic-date-minus-offset"),
+        ],
+    )
+    def test_offset_looking_date_is_unverified(self, field: str, value: str) -> None:
+        """A bare date followed by an offset-looking suffix is unverified.
+
+        ``datetime.fromisoformat`` reads the suffix as a time of day
+        and returns a naive datetime, so the value carries no offset
+        even though it ends like one; it must never be read as UTC.
+        """
+        raw = make_reservation_dict(**{field: value})
+
+        assert validation.explicit_offset_instant(value) is False
+        assert assess_legacy_record(raw).reason is ValidationReason.UNVERIFIED_INSTANT
+
 
 class TestRetirementCheckOutBound:
     """The retirement-only bound of a rejected record (research R7)."""
@@ -871,6 +898,17 @@ class TestRetirementCheckOutBound:
         """An instant whose bound is unrepresentable gives no candidate."""
         assert validation.retirement_check_out_bound((), check_out) is None
         assert validation.explicit_offset_instant(check_out) is utc_representable
+
+    @pytest.mark.parametrize(
+        "check_out",
+        [
+            pytest.param("2025-08-20-05:00", id="date-minus-offset"),
+            pytest.param("2025-08-20+05:00", id="date-plus-offset"),
+        ],
+    )
+    def test_offset_looking_date_gives_no_candidate(self, check_out: str) -> None:
+        """A bare date with an offset-looking suffix is no instant."""
+        assert validation.retirement_check_out_bound((), check_out) is None
 
     def test_extreme_check_out_keeps_segment_candidate(self) -> None:
         """An unrepresentable top-level bound leaves the segment bound."""
