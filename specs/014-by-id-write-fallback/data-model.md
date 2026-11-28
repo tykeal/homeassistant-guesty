@@ -211,11 +211,14 @@ One action invocation goes through these stages, each at most once:
 ## State transitions
 
 ```text
-012 refresh accepted ── guard passes ──────────────────────▶ 012 write (unchanged)
-        │
-        ├─ guard (after 013 merges): REFUSAL_REVALIDATING /
+preflight guard
+        ├─ (after 013 merges) REFUSAL_REVALIDATING /
         │  REFUSAL_EVIDENCE_UNAVAILABLE, before the membership check
-        │      ──▶ 013 refusal (no recovery refresh, no request)
+        │      ──▶ 013 refusal (no 012 recovery refresh, no request)
+        │
+        └─ ReservationIdentityMissError ──▶ 012 qualifying refresh
+
+012 refresh accepted ── guard passes ──────────────────────▶ 012 write (unchanged)
         │
         └─ guard: ReservationIdentityMissError
               │
