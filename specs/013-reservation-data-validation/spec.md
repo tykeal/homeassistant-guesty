@@ -226,9 +226,10 @@ resolved policy, including refresh and migration boundaries.
    invalid, **When** reservation information is displayed, **Then** the
    last-verified data remains visible and clearly marked stale, not newly
    verified or current. The reservation sensor and every other entity
-   publishing reservation data remain available, show that eligible
-   last-verified data with a stale indication and its last-verified time,
-   and do not present it as reverified or occupancy as live-proven.
+   publishing reservation data whose other existing availability checks
+   pass remain available, show that eligible last-verified data with a
+   stale indication and its last-verified time, and do not present it as
+   reverified or occupancy as live-proven.
 7. **Given** a previously valid reservation or segment that a successful
    refresh shows is invalid, **When** that result is accepted, **Then** the
    bad data is removed rather than presented as a stale fallback, while
@@ -779,7 +780,8 @@ synthetic sensitive values.
   guard, and zero records or segments shown invalid by a later accepted
   refresh are restored from a stale snapshot. During an overall refresh
   failure with last-verified data, 100% of reservation-publishing entities
-  stay available with a stale indication and last-verified time, and zero
+  whose other existing availability checks pass stay available with a
+  stale indication and last-verified time, and zero
   present that data as reverified; with no last-verified data, they are
   unavailable and zero reservation values are invented.
 - **SC-011**: In synthetic complete, safe responses containing one malformed

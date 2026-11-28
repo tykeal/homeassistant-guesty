@@ -354,6 +354,8 @@ refresh or by-ID read happens.
     consecutive failure, and are unavailable with no snapshot;
   - recorded state-change events show no intermediate `unavailable`
     state on a first failure;
+  - a re-projection that raises leaves the entities unavailable, never
+    showing an older projection;
   - stale display never satisfies a write guard;
   - after an identity abort, a failure after `_check_identity`, a
     failed identity save, and a non-`OSError` failure after the step 2

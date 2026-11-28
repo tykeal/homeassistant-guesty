@@ -994,9 +994,10 @@ migrates again and revalidates again.
   records before publication filtering, plus the stale IDs from the
   fallback. It replaces the previous snapshot wholesale, which removes
   anything that refresh showed invalid (FR-012b).
-- On a failed refresh (any exception other than cancellation leaving
-  `_async_update_data`, including identity ambiguity), if a snapshot
-  exists, the coordinator:
+- On a failed refresh (any exception leaving `_async_update_data`,
+  including identity ambiguity and an `asyncio.CancelledError` that
+  Home Assistant treats as a failure), if a snapshot exists, the
+  coordinator:
   - re-runs the same pure publication pipeline (R4 window, expiry and
     candidacy; current options, listings and statuses) with the current
     instant;
@@ -1012,14 +1013,21 @@ migrates again and revalidates again.
     Home Assistant then returns without notifying listeners, so the
     re-projection would otherwise never be written.
 
-  With no snapshot, nothing is invented (US2-S8) and the reservation
-  entities are unavailable.
+  If the re-projection itself raises, the coordinator sets `data` to
+  `None` and clears `snapshot_stale` before re-raising the original
+  failure, so the entities become unavailable instead of showing an
+  outdated projection. With no snapshot, nothing is invented (US2-S8)
+  and the reservation entities are unavailable.
 - An accepted refresh clears `snapshot_stale` (FR-012c). A refresh
   *attempt* does not.
 - Staleness never feeds a guard: write predicates read only identity
   state, the `_write_miss_outcomes` witnesses and the live fallback
-  sets. A failed refresh already leaves `last_update_success` false and
-  the identity state unchanged. The entity `available` override in R13
+  sets. `guard_reservation_write` also reads `coordinator.data`, which
+  may hold the stale re-projection, but only to choose between the
+  Present and Absent error types on a membership miss; both paths still
+  need a new accepted recovery refresh before any write. A failed
+  refresh already leaves `last_update_success` false and the identity
+  state unchanged. The entity `available` override in R13
   never changes `last_update_success`, which the write guards keep
   reading.
 

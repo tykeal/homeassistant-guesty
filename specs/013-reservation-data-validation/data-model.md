@@ -454,7 +454,10 @@ Behavior:
 - A failed refresh re-publishes the snapshot through the pure
   publication function and sets `data` and `snapshot_stale` in the
   `_async_update_data` failure path before re-raising, so Home
-  Assistant's first-failure listener update already sees them. After a
+  Assistant's first-failure listener update already sees them,
+  including for a `CancelledError` Home Assistant treats as a failure.
+  If the re-projection raises, `data` becomes `None` and
+  `snapshot_stale` is cleared, so entities are unavailable. After a
   failure that followed an already failed refresh, the `_async_refresh`
   override calls `async_update_listeners()` itself, because Home
   Assistant does not notify listeners then (R10).
