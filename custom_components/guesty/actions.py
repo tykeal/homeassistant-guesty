@@ -60,6 +60,7 @@ from custom_components.guesty.api.legacy_writes import (
     REFUSAL_LEGACY_RETIRED,
 )
 from custom_components.guesty.api.models import ActionResult, GuestyReservation
+from custom_components.guesty.api.validation import RecordValidation, validate_record
 from custom_components.guesty.const import (
     CONF_RESERVATIONS_API,
     DEFAULT_RESERVATIONS_API,
@@ -70,6 +71,7 @@ from custom_components.guesty.coordinator import (
     RESERVATION_SEARCH_REJECTED_MESSAGE,
     ReservationSearchRejected,
 )
+from custom_components.guesty.identity import ConflictOnlyEvidence
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -133,9 +135,9 @@ class ReservationIdentityPresentError(ReservationIdentityMissError):
 class ConflictEvidence(Protocol):
     """Read-only feature 013 evidence the by-ID write fallback needs.
 
-    Feature 013 supplies the real implementation. Until it does,
-    production uses ``UnavailableConflictEvidence`` and every
-    qualifying write keeps its unchanged feature 012 refusal.
+    Production uses ``IdentityConflictEvidence`` over feature 013's
+    real interfaces; tests may substitute a double. When it is not
+    available every qualifying write keeps its 012 refusal unread.
     """
 
     def available(self) -> bool:
@@ -182,71 +184,133 @@ class ConflictEvidence(Protocol):
         ...
 
 
-class UnavailableConflictEvidence:
-    """The production adapter while feature 013 is not merged.
+class IdentityConflictEvidence:
+    """The production adapter over feature 013's real interfaces.
 
-    It reports unavailable, and consulting it for anything else is a
-    programming error, so every lookup raises.
+    It holds only the coordinator and reads every 013 interface live
+    on each call, so a state change between qualification and the
+    write is always seen. It is available only while all three 013
+    interfaces are genuinely ready: conflict-only evidence that is
+    ``ready`` (never over its bound, revalidating, unstored,
+    unloaded or compromised), an accepted-refresh snapshot carrying
+    that refresh's ``rejected_ids``, and the single-record validator.
+    Anything missing, unexpected or raising reads as unavailable, so
+    the adapter always fails closed. It stores and publishes nothing.
+
+    Attributes:
+        _coordinator: The entry's reservations coordinator.
     """
 
-    def available(self) -> bool:
-        """Report that no 013 evidence exists.
+    def __init__(self, coordinator: ReservationsCoordinator) -> None:
+        """Bind the adapter to one entry's coordinator.
+
+        Args:
+            coordinator: The entry's reservations coordinator.
+        """
+        self._coordinator = coordinator
+
+    def _evidence(self) -> ConflictOnlyEvidence | None:
+        """Return the live conflict-only evidence when it is usable.
 
         Returns:
-            Always False.
+            The evidence when it is a ready ``ConflictOnlyEvidence``,
+            otherwise None.
         """
-        return False
+        try:
+            evidence = self._coordinator.identity.conflict_evidence
+            if not isinstance(evidence, ConflictOnlyEvidence):
+                return None
+            return evidence if evidence.available() is True else None
+        except Exception:
+            return None
+
+    def available(self) -> bool:
+        """Report whether every feature 013 interface is ready.
+
+        Returns:
+            True only when the conflict-only evidence is ready, an
+            accepted-refresh snapshot (with its ``rejected_ids``) is
+            current, and the record validator is present.
+        """
+        if self._evidence() is None or not callable(validate_record):
+            return False
+        try:
+            snapshot = self._coordinator.accepted_refresh_snapshot()
+        except Exception:
+            return False
+        return snapshot is not None
 
     def codes_for(self, reservation_id: str) -> frozenset[str]:
-        """Refuse a lookup on unavailable evidence.
+        """Return conflict-only codes recorded for an identifier.
 
         Args:
-            reservation_id: The identifier that was asked about.
+            reservation_id: The identifier to look up.
+
+        Returns:
+            The recorded codes.
 
         Raises:
-            RuntimeError: Always.
+            RuntimeError: When the evidence is not ready.
         """
-        raise RuntimeError("Feature 013 conflict evidence is unavailable")
+        evidence = self._evidence()
+        if evidence is None:
+            raise RuntimeError("Feature 013 conflict evidence is unavailable")
+        return frozenset(evidence.codes_for(reservation_id))
 
     def ids_for(self, code: str) -> frozenset[str]:
-        """Refuse a lookup on unavailable evidence.
+        """Return conflict-only identifiers recorded for a code.
 
         Args:
-            code: The code that was asked about.
+            code: The code to look up.
+
+        Returns:
+            The recorded identifiers.
 
         Raises:
-            RuntimeError: Always.
+            RuntimeError: When the evidence is not ready.
         """
-        raise RuntimeError("Feature 013 conflict evidence is unavailable")
+        evidence = self._evidence()
+        if evidence is None:
+            raise RuntimeError("Feature 013 conflict evidence is unavailable")
+        return frozenset(evidence.ids_for(code))
 
     def validate_record(self, raw: Mapping[str, Any], action_type: str) -> str:
-        """Refuse validation without the 013 validator.
+        """Apply 013's accepted-refresh rules to one raw v3 record.
+
+        Only an explicit positive ``RecordValidation`` without a
+        reason reads ``valid``; every other answer names a
+        rejection, so an unexpected answer fails closed.
 
         Args:
-            raw: The raw record that was offered.
-            action_type: The action that was asked about.
+            raw: The raw by-ID record.
+            action_type: The action the record would authorize.
+
+        Returns:
+            ``valid``, or the 013 rejection reason.
 
         Raises:
-            RuntimeError: Always.
+            RuntimeError: When the validator is missing.
         """
-        raise RuntimeError("Feature 013 record validation is unavailable")
+        if not callable(validate_record):
+            raise RuntimeError("Feature 013 record validation is unavailable")
+        verdict = validate_record(raw, action_type)
+        if not isinstance(verdict, RecordValidation):
+            return "invalid"
+        if verdict.valid is True and verdict.reason is None:
+            return "valid"
+        return str(verdict.reason) if verdict.reason is not None else "invalid"
 
 
 def _conflict_evidence(coordinator: ReservationsCoordinator) -> ConflictEvidence:
     """Return the feature 013 evidence adapter for an entry.
 
-    Feature 013 supplies the real implementation (its task T051).
-    No 013 logic may be added here: until then this always returns
-    ``UnavailableConflictEvidence``, which keeps the by-ID write
-    fallback inert in production.
-
     Args:
         coordinator: The entry's reservations coordinator.
 
     Returns:
-        The evidence adapter.
+        The live ``IdentityConflictEvidence`` adapter.
     """
-    return UnavailableConflictEvidence()
+    return IdentityConflictEvidence(coordinator)
 
 
 # ── Voluptuous schemas ──────────────────────────────────────────────
@@ -1091,8 +1155,8 @@ async def _attempt_by_id_write[WriteResultT](
 
     Runs with the dispatch lock already held. A target that does
     not qualify re-raises the original miss unchanged, so the 012
-    refusal stands; until feature 013 supplies its evidence adapter
-    no target qualifies.
+    refusal stands. No target qualifies unless the feature 013
+    evidence adapter is ready.
 
     Args:
         witness: The witness captured before the refresh.

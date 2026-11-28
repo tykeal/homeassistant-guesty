@@ -243,6 +243,27 @@ shipped behavior is still the unchanged 012 refusal.
 **Purpose**: Replace the unavailable adapter with feature 013's real
 interfaces. Nothing in this phase may start until 013 is merged on `main`.
 
+**013 interfaces (T049, confirmed on `main` after PR #330)**:
+
+- Rejected-ID set: `ReservationFetchResult.rejected_ids` in
+  `custom_components/guesty/api/models.py`, computed by
+  `_map_results` in `custom_components/guesty/api/reservations_v3.py`
+  from the 013 record assessment (FR-008d raw-segment rejections and
+  partially valid records included; legacy by-ID-invalid records are
+  in `fallback_invalid_ids` instead).
+- Conflict-only evidence: `coordinator.identity.conflict_evidence`, a
+  `ConflictOnlyEvidence` in `custom_components/guesty/identity.py`
+  with `available()`, `codes_for()` and `ids_for()` (lookups raise
+  `RuntimeError` unless ready; the FR-008c bound is its `saturated`
+  state).
+- Single-record validator: `validate_record(raw, action_type)`
+  returning `RecordValidation(valid, reason)` in
+  `custom_components/guesty/api/validation.py`.
+- Adapter: `IdentityConflictEvidence` in
+  `custom_components/guesty/actions.py`, returned by
+  `_conflict_evidence`; it is available only while all three are
+  ready and an accepted-refresh snapshot exists.
+
 - [ ] T049 **BLOCKED on 013**: Confirm 013 has merged its rejected-ID set (including FR-008d raw-segment rejections), conflict-only evidence (with bound state and both lookup directions) and single-record validator; record their real names and modules in `specs/014-by-id-write-fallback/tasks.md` under this phase. If any is missing, stop and report; do not create it. If names differ from the contract, adapt only the thin adapter (plan § Feature 013 dependency).
 - [ ] T050 **BLOCKED on 013**: Add failing tests in `tests/test_actions.py`, new class `TestConflictEvidenceAdapter013` (`_conflict_evidence` maps each port operation to the real 013 interface; `available()` is false in every non-`ready` 013 evidence state, including over the FR-008c bound, or when any interface is unavailable), and in `tests/api/test_reservations_v3.py` `test_rejected_ids_include_013_raw_segment_rejections`.
 - [ ] T051 **BLOCKED on 013**: Implement `_conflict_evidence` in `custom_components/guesty/actions.py` over the real 013 interfaces and source `ReservationFetchResult.rejected_ids` from 013's rejected set; 013 has already replaced the interim raw-minus-parsed computation in `custom_components/guesty/api/reservations_v3.py` with its definition, so confirm that rather than editing it.
