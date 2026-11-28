@@ -149,8 +149,11 @@ reservation sensors stay available and show the last verified data,
 re-evaluated at the current time, with the attribute `stale: true` and
 `last_verified_at` (when that data was last verified). Each `upcoming`
 item also carries `stale`. Stale data is never treated as reverified
-and never authorizes a write. A reservation whose fallback lookup
-failed is marked `stale` individually. With no verified data the
+and grants no write permission of its own: the write guards never read
+the stale display. A write during a failing period is not blocked by
+it either; it still passes or is refused by the identity and routing
+checks from the last accepted refresh. A reservation whose fallback
+lookup failed is marked `stale` individually. With no verified data the
 sensors are unavailable.
 
 The diagnostics download has a `validation` block with counts by

@@ -24,8 +24,10 @@ features:
     re-evaluated at the current time, with `stale: true` and
     `last_verified_at`. Each `upcoming` item carries `stale`, and a
     record whose fallback lookup failed is marked stale individually.
-    Stale data never authorizes a reservation write. With no verified
-    data the sensors are unavailable.
+    Stale data grants no write permission of its own; the write guards
+    never read it, and a write still passes or is refused by the
+    identity and routing checks from the last accepted refresh. With
+    no verified data the sensors are unavailable.
   - |
     New repair notices: one per listing whose timezone cannot be
     verified, one when the bounded record of rejected reservation
