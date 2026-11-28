@@ -173,6 +173,7 @@ class V3ReservationSource:
                 ),
             ),
             observed_reservations=outcome.observed_reservations,
+            fallback_observed=outcome.observed,
         )
 
     async def _fetch_all_pages(
@@ -419,9 +420,13 @@ def _map_results(
     reservations: list[GuestyReservation] = []
     status_counts: Counter[str] = Counter()
     segment_histogram: Counter[int] = Counter()
+    returned: set[str] = set()
 
     for page in pages:
         for item in page:
+            raw_id = item.get("reservationId")
+            if isinstance(raw_id, str):
+                returned.add(raw_id)
             raw_status = item.get("status")
             if isinstance(raw_status, str):
                 status_counts[raw_status] += 1
@@ -439,4 +444,10 @@ def _map_results(
         status_counts=MappingProxyType(dict(status_counts)),
         segment_histogram=MappingProxyType(dict(segment_histogram)),
         observed_ids=tuple(reservation.id for reservation in reservations),
+        returned_ids=tuple(sorted(returned)),
+        # Interim rejected set: raw minus parsed. Feature 013 supplies
+        # the full set, including raw-segment rejections (research R1).
+        rejected_ids=tuple(
+            sorted(returned - {reservation.id for reservation in reservations}),
+        ),
     )

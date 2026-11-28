@@ -265,6 +265,28 @@ class GuestyApiClient:
         fallback = self._fallback
         return fallback.confirmed_absent if fallback is not None else frozenset()
 
+    @property
+    def legacy_observed_reservations(self) -> frozenset[str] | None:
+        """Return the IDs a legacy by-ID lookup returned this session.
+
+        Returns:
+            The session set, empty when no fallback exists, or None
+            when it overflowed and is incomplete.
+        """
+        fallback = self._fallback
+        return fallback.legacy_observed if fallback is not None else frozenset()
+
+    @property
+    def legacy_retired_reservations(self) -> frozenset[str] | None:
+        """Return the IDs legacy retired this session.
+
+        Returns:
+            The session set, empty when no fallback exists, or None
+            when it overflowed and is incomplete.
+        """
+        fallback = self._fallback
+        return fallback.legacy_retired if fallback is not None else frozenset()
+
     def acknowledge_absent_reservations(
         self,
         reservation_ids: Collection[str],

@@ -10,9 +10,11 @@ import pytest
 
 from custom_components.guesty.api.const import MAX_ERROR_BODY_EXCERPT
 from custom_components.guesty.api.exceptions import (
+    BY_ID_READ_CATEGORIES,
     GuestyActionError,
     GuestyApiError,
     GuestyAuthError,
+    GuestyByIdReadError,
     GuestyConnectionError,
     GuestyCustomFieldError,
     GuestyFilterRejectedError,
@@ -325,3 +327,64 @@ class TestGuestyFilterRejectedError:
         """GuestyFilterRejectedError can be caught as GuestyApiError."""
         with pytest.raises(GuestyApiError):
             raise GuestyFilterRejectedError("rejected")
+
+
+class TestGuestyByIdReadError:
+    """The by-ID read error carries only a fixed category (FR-012)."""
+
+    def test_categories_are_the_fixed_set(self) -> None:
+        """Every category constructs, and no other category exists."""
+        assert (
+            frozenset(
+                {
+                    "http",
+                    "rate_limit",
+                    "authentication",
+                    "transport",
+                    "malformed",
+                    "not_found",
+                    "mismatched",
+                }
+            )
+            == BY_ID_READ_CATEGORIES
+        )
+        for category in BY_ID_READ_CATEGORIES:
+            assert GuestyByIdReadError(category, "res-1").category == category
+
+    def test_unknown_category_is_rejected(self) -> None:
+        """A category outside the fixed set is a programming error."""
+        with pytest.raises(ValueError, match="category"):
+            GuestyByIdReadError("teapot", "res-1")
+
+    def test_message_is_fixed_text_per_category(self) -> None:
+        """Each category has its own message naming only the target."""
+        messages = {
+            category: GuestyByIdReadError(category, "res-1").message
+            for category in BY_ID_READ_CATEGORIES
+        }
+        assert len(set(messages.values())) == len(BY_ID_READ_CATEGORIES)
+        for category, message in messages.items():
+            assert "res-1" in message
+            assert message == GuestyByIdReadError(category, "res-1").message
+            assert message.replace("res-1", "res-2") == (
+                GuestyByIdReadError(category, "res-2").message
+            )
+        assert "rejected or lack permission" in messages["authentication"]
+
+    def test_is_api_error_subclass(self) -> None:
+        """It is an API error but never an action error."""
+        error = GuestyByIdReadError("http", "res-1")
+        assert isinstance(error, GuestyApiError)
+        assert not isinstance(error, GuestyActionError)
+        assert error.target_id == "res-1"
+
+    def test_message_never_contains_injected_values(self) -> None:
+        """Only the fixed text and target ID reach the message."""
+        sentinel = "SENTINEL-CODE-9F3"
+        with pytest.raises(ValueError) as exc_info:
+            GuestyByIdReadError(sentinel, "res-1")
+        assert sentinel not in str(exc_info.value)
+        for category in BY_ID_READ_CATEGORIES:
+            error = GuestyByIdReadError(category, "res-1")
+            assert sentinel not in str(error)
+            assert sentinel not in repr(error)

@@ -35,8 +35,11 @@ from custom_components.guesty.api.exceptions import (
     GuestyActionError,
     GuestyApiError,
     GuestyAuthError,
+    GuestyByIdReadError,
+    GuestyConnectionError,
     GuestyPermissionError,
     GuestyPrerequisiteReadError,
+    GuestyRateLimitError,
     GuestyRecoveryWriteError,
     GuestyResponseError,
     GuestyRoutingError,
@@ -64,6 +67,57 @@ def _identifies(record: Mapping[str, object], reservation_id: str) -> bool:
     return any(
         record.get(key) == reservation_id for key in ("reservationId", "id", "_id")
     )
+
+
+def _strict_v3_by_id_record(
+    response: httpx.Response,
+    reservation_id: str,
+) -> dict[str, object]:
+    """Accept a by-ID answer only when it proves one complete record.
+
+    Unlike ``_v3_record``, nothing is inferred: the body must be an
+    object whose ``results`` is a list of exactly one object whose
+    ``reservationId`` is this identifier, and any ``pagination`` must
+    state ``hasMore`` exactly ``false`` (research R6).
+
+    Args:
+        response: The successful by-ID response.
+        reservation_id: The reservation that was requested.
+
+    Returns:
+        The single matching raw record.
+
+    Raises:
+        GuestyByIdReadError: ``not_found`` for an empty result,
+            ``mismatched`` for one other record, otherwise
+            ``malformed``.
+    """
+    try:
+        data = response.json()
+    except Exception:
+        raise GuestyByIdReadError("malformed", reservation_id) from None
+    if not isinstance(data, dict):
+        raise GuestyByIdReadError("malformed", reservation_id)
+    if "pagination" in data:
+        pagination = data["pagination"]
+        if not isinstance(pagination, dict) or pagination.get("hasMore", None) is not (
+            False
+        ):
+            raise GuestyByIdReadError("malformed", reservation_id)
+    results = data.get("results")
+    if not isinstance(results, list):
+        raise GuestyByIdReadError("malformed", reservation_id)
+    if not results:
+        raise GuestyByIdReadError("not_found", reservation_id)
+    if len(results) != 1 or not isinstance(results[0], dict):
+        raise GuestyByIdReadError("malformed", reservation_id)
+    record: dict[str, object] = results[0]
+    found = record.get("reservationId")
+    if not isinstance(found, str):
+        raise GuestyByIdReadError("malformed", reservation_id)
+    if found != reservation_id:
+        raise GuestyByIdReadError("mismatched", reservation_id)
+    return record
 
 
 _MAX_DETAIL_LENGTH = 200
@@ -118,6 +172,7 @@ class GuestyActionsClient:
         route: str = WRITE_ROUTE_V3,
         single_attempt: bool = False,
         before_write: Callable[[], None] | None = None,
+        prefetched_notes: Mapping[str, object] | None = None,
     ) -> ActionResult:
         """Add a note to a reservation via read-modify-write.
 
@@ -133,12 +188,17 @@ class GuestyActionsClient:
                 serving (FR-058).
             single_attempt: Use the recovery-only one-shot write mode.
             before_write: Recheck authorization after awaited work.
+            prefetched_notes: The verified note fields of a record
+                already read by ID. When set, no read is issued;
+                ``None`` keeps the read-modify-write. Only the v3
+                route accepts it.
 
         Returns:
             ActionResult with the reservation identifier.
 
         Raises:
-            ValueError: If inputs fail validation.
+            ValueError: If inputs fail validation, or prefetched
+                notes are combined with a legacy route.
             GuestyActionError: If the API returns a non-success
                 HTTP response.
             GuestyResponseError: If the response is malformed.
@@ -149,6 +209,9 @@ class GuestyActionsClient:
         self._validate_reservation_note(reservation_id, note_text)
 
         routed = route == WRITE_ROUTE_LEGACY
+        if prefetched_notes is not None and (routed or self._writes_legacy()):
+            msg = "prefetched_notes is only valid for a v3 note write"
+            raise ValueError(msg)
         if routed:
             self._refuse_when_retired(
                 reservation_id,
@@ -167,6 +230,7 @@ class GuestyActionsClient:
             note_text,
             single_attempt=single_attempt,
             before_write=before_write,
+            prefetched_notes=prefetched_notes,
         )
 
     async def _add_note_v3(
@@ -176,6 +240,7 @@ class GuestyActionsClient:
         *,
         single_attempt: bool = False,
         before_write: Callable[[], None] | None = None,
+        prefetched_notes: Mapping[str, object] | None = None,
     ) -> ActionResult:
         """Append a note through the dedicated v3 notes resource.
 
@@ -189,6 +254,8 @@ class GuestyActionsClient:
             note_text: Note text to append.
             single_attempt: Use the recovery-only one-shot write mode.
             before_write: Recheck authorization after awaited work.
+            prefetched_notes: Verified note fields already read by
+                ID; when set, the read is skipped (R11).
 
         Returns:
             ActionResult with the reservation identifier.
@@ -197,23 +264,29 @@ class GuestyActionsClient:
             GuestyActionError: On a rejected read or write.
             GuestyResponseError: If the read is malformed.
         """
-        try:
-            with private_http_logging(single_attempt):
-                notes = await self._read_v3_notes(reservation_id)
-        except GuestyApiError as exc:
-            if not single_attempt:
-                raise
-            raise GuestyPrerequisiteReadError(
-                self._read_error_category(exc), target_id=reservation_id
-            ) from None
-        except httpx.TransportError:
-            if not single_attempt:
-                raise
-            raise GuestyPrerequisiteReadError(
-                "connection", target_id=reservation_id
-            ) from None
-        if before_write is not None:
-            before_write()
+        notes: Mapping[str, object]
+        if prefetched_notes is not None:
+            # The caller already verified this record by ID, so the
+            # only remaining check is the before_send one in _request.
+            notes = prefetched_notes
+        else:
+            try:
+                with private_http_logging(single_attempt):
+                    notes = await self._read_v3_notes(reservation_id)
+            except GuestyApiError as exc:
+                if not single_attempt:
+                    raise
+                raise GuestyPrerequisiteReadError(
+                    self._read_error_category(exc), target_id=reservation_id
+                ) from None
+            except httpx.TransportError:
+                if not single_attempt:
+                    raise
+                raise GuestyPrerequisiteReadError(
+                    "connection", target_id=reservation_id
+                ) from None
+            if before_write is not None:
+                before_write()
 
         existing = notes.get("other")
         existing_text = existing if isinstance(existing, str) else ""
@@ -351,6 +424,61 @@ class GuestyActionsClient:
             target_id=reservation_id,
             action_type="add_reservation_note",
         )
+
+    async def read_reservation_by_id(
+        self,
+        reservation_id: str,
+    ) -> dict[str, object]:
+        """Read one reservation from v3 by identifier, strictly, once.
+
+        One ``GET`` with the single query parameter
+        ``reservationIds`` is sent, with no retry, no reactive token
+        renewal and HTTP library logging suppressed. The answer is
+        accepted only when it proves exactly one complete record for
+        this identifier; every other answer is a fixed category
+        carrying no response content (FR-004, FR-005(a)).
+
+        Args:
+            reservation_id: The reservation to read.
+
+        Returns:
+            The single matching raw record.
+
+        Raises:
+            ValueError: If the identifier is blank or not a string;
+                nothing is sent.
+            GuestyByIdReadError: On any failure or unprovable answer.
+        """
+        if not isinstance(reservation_id, str) or not reservation_id.strip():
+            msg = "reservation_id must be a non-empty string"
+            raise ValueError(msg)
+        try:
+            with private_http_logging(True):
+                response = await self._api_client._request(
+                    "GET",
+                    RESERVATIONS_V3_ENDPOINT,
+                    params={"reservationIds": reservation_id},
+                    single_attempt=True,
+                )
+        except GuestyRateLimitError:
+            raise GuestyByIdReadError("rate_limit", reservation_id) from None
+        except GuestyAuthError:
+            raise GuestyByIdReadError("authentication", reservation_id) from None
+        except GuestyConnectionError:
+            raise GuestyByIdReadError("transport", reservation_id) from None
+        except httpx.TransportError:
+            raise GuestyByIdReadError("transport", reservation_id) from None
+        except GuestyResponseError:
+            raise GuestyByIdReadError("http", reservation_id) from None
+        except Exception:
+            raise GuestyByIdReadError("authentication", reservation_id) from None
+        if response.status_code in (401, 403):
+            raise GuestyByIdReadError("authentication", reservation_id)
+        if response.status_code == 429:
+            raise GuestyByIdReadError("rate_limit", reservation_id)
+        if not response.is_success:
+            raise GuestyByIdReadError("http", reservation_id)
+        return _strict_v3_by_id_record(response, reservation_id)
 
     async def _add_note_legacy(
         self,

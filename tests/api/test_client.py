@@ -2791,3 +2791,46 @@ class TestReservationSourceDelegation:
 
         assert len(result.reservations) == 2
         assert dict(result.status_counts) == {"confirmed": 1}
+
+
+class TestSingleAttemptRead:
+    """Baseline control: a plain single-attempt GET is never retried."""
+
+    @pytest.mark.parametrize("status", [401, 429, 500, 503])
+    @respx.mock
+    async def test_status_is_returned_unretried(self, status: int) -> None:
+        """401, 429 and 5xx come back as the response, sent once."""
+        token = respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        route = respx.get(f"{BASE_URL}/read").mock(
+            return_value=Response(status, json={}),
+        )
+        client, _, _ = _make_client()
+
+        with patch("asyncio.sleep", new_callable=AsyncMock) as sleep:
+            response = await client._request("GET", "/read", single_attempt=True)
+
+        assert response.status_code == status
+        assert route.call_count == 1
+        assert token.call_count == 1
+        sleep.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "exc", [httpx.ConnectError("down"), httpx.ReadTimeout("slow")]
+    )
+    @respx.mock
+    async def test_connect_and_timeout_raise_connection_error(
+        self, exc: Exception
+    ) -> None:
+        """Connect and timeout failures are one attempt and a connection error."""
+        respx.post(TOKEN_URL).mock(
+            return_value=Response(200, json=make_token_response()),
+        )
+        route = respx.get(f"{BASE_URL}/read").mock(side_effect=exc)
+        client, _, _ = _make_client()
+
+        with pytest.raises(GuestyConnectionError):
+            await client._request("GET", "/read", single_attempt=True)
+
+        assert route.call_count == 1

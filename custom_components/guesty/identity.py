@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
@@ -1066,6 +1066,48 @@ class ReservationIdentityGuard:
                 missing_current_code=True,
             )
         return None
+
+    def check_identity_conflict(
+        self,
+        reservation_id: str,
+        code: str,
+    ) -> Literal["none", "conflict", "unavailable"]:
+        """Ask whether a by-ID code conflicts with held identity evidence.
+
+        A pure read over the loaded baseline maps: nothing is
+        recorded, marked or stored. A ``None`` legacy, bootstrap or
+        fallback map is no evidence and counts as empty, as it does
+        in the refresh comparison (research R8).
+
+        Args:
+            reservation_id: The reservation a write would target.
+            code: The confirmation code its by-ID record carries.
+
+        Returns:
+            ``conflict`` when the code names another reservation in
+            any map or any map names the target with another code,
+            ``unavailable`` when the baseline is not loaded, not
+            usable, not stored or left ambiguous, else ``none``.
+        """
+        baseline = self._baseline
+        if (
+            not self._loaded
+            or baseline is None
+            or not baseline.is_usable
+            or self._unstored
+            or self._ambiguous
+        ):
+            return "unavailable"
+        for mapping in (
+            baseline.codes,
+            baseline.legacy_codes,
+            baseline.bootstrap_codes,
+            baseline.fallback_codes,
+        ):
+            for known_code, known_id in (mapping or {}).items():
+                if (known_code == code) != (known_id == reservation_id):
+                    return "conflict"
+        return "none"
 
 
 def _retired_bootstrap(

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -34,7 +35,11 @@ from custom_components.guesty.api.exceptions import (
     GuestyFilterRejectedError,
     GuestyResponseError,
 )
-from custom_components.guesty.api.reservations_v3 import V3ReservationSource
+from custom_components.guesty.api.reservations_fallback import FallbackOutcome
+from custom_components.guesty.api.reservations_v3 import (
+    V3ReservationSource,
+    _map_results,
+)
 from tests.conftest import (
     FAKE_CLIENT_ID,
     FAKE_CLIENT_SECRET,
@@ -888,3 +893,93 @@ async def _count_requests(
         for call in list(respx.calls)[before:]
         if not call.request.url.path.endswith("/oauth2/token")
     )
+
+
+# ── Feature 014: returned and rejected identifiers (T010) ───────────
+
+
+class TestV3ReturnedAndRejectedIds:
+    """The raw returned and rejected v3 identifiers reach the result."""
+
+    def test_map_results_records_every_raw_string_id(self) -> None:
+        """Accepted and rejected string IDs are returned; others are not."""
+        result = _map_results(
+            [
+                [
+                    make_v3_reservation("res-1"),
+                    make_v3_reservation("res-2", segments=[]),
+                    {"reservationId": 7, "status": "confirmed"},
+                    {"status": "confirmed"},
+                ],
+            ],
+        )
+
+        assert result.returned_ids == ("res-1", "res-2")
+
+    def test_rejected_ids_are_raw_minus_parsed(self) -> None:
+        """Records the parser cannot use are rejected, by identifier."""
+        no_status = make_v3_reservation("res-2")
+        del no_status["status"]
+        result = _map_results(
+            [
+                [
+                    make_v3_reservation("res-1"),
+                    no_status,
+                    make_v3_reservation("res-3", segments=[]),
+                ],
+            ],
+        )
+
+        assert [r.id for r in result.reservations] == ["res-1"]
+        assert result.rejected_ids == ("res-2", "res-3")
+
+    def test_ids_are_sorted_deduplicated_tuples(self) -> None:
+        """Both fields are sorted tuples without duplicates."""
+        result = _map_results(
+            [
+                [make_v3_reservation("res-3"), make_v3_reservation("res-9", stay=[])],
+                [make_v3_reservation("res-1"), make_v3_reservation("res-9", stay=[])],
+            ],
+        )
+
+        assert result.returned_ids == ("res-1", "res-3", "res-9")
+        assert result.rejected_ids == ("res-9",)
+
+    @respx.mock
+    async def test_fetch_carries_fallback_observed_from_outcome(self) -> None:
+        """fallback_observed equals the fallback outcome's observed IDs."""
+        _mock_token()
+        respx.get(SEARCH_URL).mock(
+            return_value=Response(
+                200, json=make_v3_search_page([make_v3_reservation("res-1")])
+            ),
+        )
+        source = _make_source()
+        outcome = FallbackOutcome(observed=("res-out", "res-served"))
+
+        with patch.object(source.fallback, "resolve", AsyncMock(return_value=outcome)):
+            result = await source.fetch(past_days=30, future_days=365)
+
+        assert result.fallback_observed == ("res-out", "res-served")
+        assert result.returned_ids == ("res-1",)
+        assert result.rejected_ids == ()
+
+    @respx.mock
+    async def test_observed_ids_merge_is_unchanged(self) -> None:
+        """Baseline control: observed_ids merges parsed and legacy IDs."""
+        _mock_token()
+        respx.get(SEARCH_URL).mock(
+            return_value=Response(
+                200, json=make_v3_search_page([make_v3_reservation("res-2")])
+            ),
+        )
+        source = _make_source()
+
+        with patch.object(
+            source.fallback,
+            "resolve",
+            AsyncMock(return_value=FallbackOutcome(observed=("res-1",))),
+        ):
+            result = await source.fetch(past_days=30, future_days=365)
+
+        assert result.observed_ids == ("res-1", "res-2")

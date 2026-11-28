@@ -319,6 +319,13 @@ RESERVATION_BY_ID_LEGACY_PATH: str = "/reservations/{reservation_id}"
 # backfill cannot turn every poll into a burst of legacy requests.
 MAX_LEGACY_FALLBACK_LOOKUPS_PER_REFRESH: int = 20
 
+# Bound on each in-memory session set of legacy by-ID evidence (the
+# IDs a successful lookup observed and the IDs legacy retired). It
+# matches the identity baseline's ``MAX_BASELINE_CODES``. A set that
+# would exceed it is reported incomplete rather than truncated, so a
+# by-ID write fallback fails closed (feature 014, research R4).
+MAX_LEGACY_SESSION_IDS: int = 5000
+
 # Minimum seconds between two lookups of the same candidate. The
 # FR-053 per-candidate bound, measured from the last *attempt* and
 # longer than any supported poll interval, so a permanently missing

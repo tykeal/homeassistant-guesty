@@ -1276,6 +1276,14 @@ class ReservationFetchResult:
             successful by-ID response during this retrieval.
         observed_reservations: Records returned by successful by-ID
             responses, including records filtered from publication.
+        returned_ids: Every string ``reservationId`` on the raw v3
+            search pages, accepted or rejected, sorted and unique.
+            Never merged with legacy lookups.
+        rejected_ids: Raw v3 identifiers the source returned but did
+            not accept (raw minus parsed until feature 013 supplies
+            its rejected set), sorted and unique.
+        fallback_observed: Identifiers a successful legacy by-ID
+            lookup returned this refresh, whatever their status.
     """
 
     reservations: tuple[GuestyReservation, ...] = ()
@@ -1294,6 +1302,9 @@ class ReservationFetchResult:
     fallback_absent: tuple[str, ...] = ()
     observed_ids: tuple[str, ...] | None = None
     observed_reservations: tuple[GuestyReservation, ...] = ()
+    returned_ids: tuple[str, ...] = ()
+    rejected_ids: tuple[str, ...] = ()
+    fallback_observed: tuple[str, ...] = ()
 
 
 @runtime_checkable

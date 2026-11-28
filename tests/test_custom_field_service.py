@@ -12,6 +12,7 @@ import time
 import traceback
 from collections.abc import AsyncGenerator, Generator
 from contextlib import ExitStack
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import ANY, AsyncMock, patch
@@ -66,7 +67,13 @@ from custom_components.guesty.const import (
     RESERVATIONS_API_V3,
     SERVICE_SET_CUSTOM_FIELD,
 )
+from custom_components.guesty.identity import REFUSAL_NO_CODE
 from tests.conftest import (
+    BY_ID_TARGET,
+    FakeConflictEvidence,
+    by_id_network,
+    capture_by_id_retention,
+    make_by_id_record,
     make_custom_field_definition_dict,
     make_fetch_result,
     make_identity_reservation,
@@ -4730,3 +4737,420 @@ class TestReservationCustomFieldRouting:
 
         assert "2027-03-01" in str(exc_info.value)
         assert coordinator.legacy_write_counters.custom_field_failed == 1
+
+
+# ── Feature 014: by-ID write fallback ───────────────────────────────
+
+_BY_ID = BY_ID_TARGET
+_CF_ACTIONS_LOGGER = "custom_components.guesty.actions"
+_DOOR_CODE = "0042"
+
+
+def _cf_refresh(*extra: GuestyReservation, **fields: Any) -> Any:
+    """Build a qualifying refresh that keeps every write target coded.
+
+    Args:
+        *extra: Reservations the refresh also returns.
+        **fields: Fetch result fields to set.
+
+    Returns:
+        The refresh result.
+    """
+    return make_fetch_result(
+        [*make_identity_reservations(*_WRITE_TARGETS), *extra], **fields
+    )
+
+
+def _cf_codeless_refresh() -> Any:
+    """Build a refresh that returns the target without a code.
+
+    Returns:
+        The refresh result.
+    """
+    return _cf_refresh(make_identity_reservation(_BY_ID), returned_ids=(_BY_ID,))
+
+
+def _written(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """Collect the by-ID success INFO lines.
+
+    Args:
+        caplog: The log capture.
+
+    Returns:
+        Every INFO message reporting a by-ID write.
+    """
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == _CF_ACTIONS_LOGGER
+        and record.levelno == logging.INFO
+        and "found by ID, written" in record.getMessage()
+    ]
+
+
+class _ByIdCustomFieldBase:
+    """Shared setup for the by-ID custom-field classes."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions.
+
+        Yields:
+            None, while the definitions client is patched.
+        """
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=sample_custom_field_definitions(),
+        ):
+            yield
+
+    @staticmethod
+    async def _setup(hass: HomeAssistant) -> Any:
+        """Load an entry seeded with every write target.
+
+        Args:
+            hass: Home Assistant instance.
+
+        Returns:
+            The entry's reservations coordinator.
+        """
+        entry = await TestSetCustomFieldIdentityGuard._setup(
+            hass, make_identity_reservations(*_WRITE_TARGETS)
+        )
+        return hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+
+    @staticmethod
+    async def _call(hass: HomeAssistant, target_id: str = _BY_ID) -> Any:
+        """Set the door code on a reservation.
+
+        Args:
+            hass: Home Assistant instance.
+            target_id: The reservation targeted.
+
+        Returns:
+            The service response.
+        """
+        return await hass.services.async_call(
+            DOMAIN,
+            SERVICE_SET_CUSTOM_FIELD,
+            {
+                "target_type": "reservation",
+                "target_id": target_id,
+                "field_id": "cf-door-code",
+                "value": _DOOR_CODE,
+            },
+            blocking=True,
+            return_response=True,
+        )
+
+    @classmethod
+    async def _refusal(cls, hass: HomeAssistant) -> str:
+        """Set the door code expecting a failure.
+
+        Args:
+            hass: Home Assistant instance.
+
+        Returns:
+            The surfaced error text.
+        """
+        with pytest.raises(HomeAssistantError) as error:
+            await cls._call(hass)
+        return str(error.value)
+
+
+class TestByIdFallbackInertUntil013CustomField(_ByIdCustomFieldBase):
+    """Production keeps the unchanged 012 custom-field refusal (T025)."""
+
+    @pytest.mark.parametrize("target", ["absent", "codeless"])
+    async def test_unpatched_adapter_keeps_012_refusal(
+        self, hass: HomeAssistant, caplog: pytest.LogCaptureFixture, target: str
+    ) -> None:
+        """No by-ID read happens and one DEBUG line names the reason."""
+        await self._setup(hass)
+        refresh = _cf_refresh() if target == "absent" else _cf_codeless_refresh()
+        caplog.set_level(logging.DEBUG, logger=_CF_ACTIONS_LOGGER)
+        with by_id_network(refresh=refresh) as routes:
+            text = await self._refusal(hass)
+
+        assert text == REFUSAL_NO_CODE.format(reservation_id=_BY_ID)
+        assert routes.read.call_count == 0
+        assert routes.writes == 0
+        assert [
+            tuple(record.args or ())
+            for record in caplog.records
+            if record.name == _CF_ACTIONS_LOGGER and "not eligible" in str(record.msg)
+        ] == [("evidence_unavailable", _BY_ID)]
+
+    async def test_listing_write_never_reads_by_id(self, hass: HomeAssistant) -> None:
+        """A listing custom-field write is untouched by the fallback."""
+        await self._setup(hass)
+        with (
+            by_id_network(
+                refresh=_cf_refresh(), evidence=FakeConflictEvidence()
+            ) as routes,
+            patch.object(
+                GuestyCustomFieldsClient,
+                "set_field",
+                new_callable=AsyncMock,
+                return_value=GuestyCustomFieldResult(
+                    success=True,
+                    target_type="listing",
+                    target_id="lst-123",
+                    field_id="cf-region",
+                ),
+            ) as set_field,
+        ):
+            result = await hass.services.async_call(
+                DOMAIN,
+                SERVICE_SET_CUSTOM_FIELD,
+                {
+                    "target_type": "listing",
+                    "target_id": "lst-123",
+                    "field_id": "cf-region",
+                    "value": "emea",
+                },
+                blocking=True,
+                return_response=True,
+            )
+
+        assert result is not None
+        assert result["result"] == "success"
+        set_field.assert_awaited_once()
+        routes.fetch.assert_not_awaited()
+        assert routes.read.call_count == 0
+
+
+class TestByIdCustomFieldRefusals(_ByIdCustomFieldBase):
+    """By-ID refusals surface their own text, never the generic one (T030)."""
+
+    @pytest.mark.parametrize(
+        ("case", "stem", "category"),
+        [
+            ("not_found", "not found by ID", "not_found"),
+            ("status", "found but refused", "disallowed_status"),
+            ("conflict", "found but refused", "identity_conflict"),
+            ("rate_limit", "by-ID read failed", "rate_limit"),
+        ],
+    )
+    async def test_by_id_refusal_text(
+        self, hass: HomeAssistant, case: str, stem: str, category: str
+    ) -> None:
+        """Each refusal names its outcome and sends no custom-field PUT."""
+        await self._setup(hass)
+        read: Any = None
+        evidence = FakeConflictEvidence()
+        if case == "not_found":
+            read = Response(200, json={"results": []})
+        elif case == "status":
+            read = Response(
+                200, json={"results": [make_by_id_record(status="alteration")]}
+            )
+        elif case == "conflict":
+            evidence.ids["CONF-res-new"] = frozenset({"res-other"})
+        else:
+            read = Response(429)
+        with by_id_network(
+            refresh=_cf_refresh(), read=read, evidence=evidence
+        ) as routes:
+            text = await self._refusal(hass)
+
+        assert text.startswith(stem)
+        assert category in text
+        assert "API error during custom field update" not in text
+        assert _DOOR_CODE not in text
+        assert routes.read.call_count == 1
+        assert routes.fields.call_count == 0
+
+
+class TestByIdWriteFallback223CustomField(_ByIdCustomFieldBase):
+    """The #223 door code is written by ID (T037)."""
+
+    async def test_223_same_day_absent_reservation_door_code_written_by_id(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """One search, one by-ID read and one PUT, retaining nothing."""
+        freezer.move_to("2026-11-23 18:00:00+00:00")
+        coordinator = await self._setup(hass)
+        evidence = FakeConflictEvidence()
+        segment = make_v3_segment(
+            checkIn="2026-11-23T15:00:00+00:00",
+            checkOut="2026-11-25T11:00:00+00:00",
+            checkInDateLocalized="2026-11-23",
+            checkOutDateLocalized="2026-11-25",
+        )
+        record = make_by_id_record(
+            stay=[segment], createdAt="2026-11-23T17:30:00+00:00"
+        )
+        captured: dict[str, Any] = {}
+
+        def read(request: httpx.Request) -> Response:
+            """Capture retained state just before the read answers."""
+            captured.update(capture_by_id_retention(coordinator, evidence))
+            captured["saves"] = save.await_count
+            return Response(200, json={"results": [record]})
+
+        caplog.set_level(logging.INFO, logger=_CF_ACTIONS_LOGGER)
+        store = coordinator.identity._store
+        with (
+            patch.object(store, "async_save", wraps=store.async_save) as save,
+            by_id_network(
+                refresh=_cf_refresh(), read=read, evidence=evidence
+            ) as routes,
+        ):
+            result = await self._call(hass)
+            after = capture_by_id_retention(coordinator, evidence)
+            after["saves"] = save.await_count
+
+        assert result is not None
+        assert result["result"] == "success"
+        routes.fetch.assert_awaited_once()
+        assert routes.read.call_count == 1
+        assert routes.token.call_count <= 1
+        assert routes.writes == 1
+        assert routes.fields.call_count == 1
+        body = json.loads(routes.fields.calls[0].request.content)
+        assert _DOOR_CODE in json.dumps(body)
+        lines = _written(caplog)
+        assert len(lines) == 1
+        assert "absent" in lines[0]
+        assert after == captured
+
+    async def test_codeless_custom_field_target_written_by_id(
+        self, hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A returned code-less target is written with its qualifier."""
+        await self._setup(hass)
+        caplog.set_level(logging.INFO, logger=_CF_ACTIONS_LOGGER)
+        with by_id_network(
+            refresh=_cf_codeless_refresh(), evidence=FakeConflictEvidence()
+        ) as routes:
+            result = await self._call(hass)
+
+        assert result["result"] == "success"
+        assert routes.read.call_count == 1
+        assert routes.fields.call_count == 1
+        lines = _written(caplog)
+        assert len(lines) == 1
+        assert "codeless" in lines[0]
+
+    @staticmethod
+    def _inject_newer_refresh(
+        hass: HomeAssistant, coordinator: Any, *, fallback: bool
+    ) -> Any:
+        """Inject a newer accepted refresh on the write's token call.
+
+        Args:
+            hass: Home Assistant instance.
+            coordinator: The entry's coordinator.
+            fallback: Give the target fallback provenance instead of
+                a v3 code.
+
+        Returns:
+            The active patcher.
+        """
+        manager = coordinator.api_client._token_manager
+        original = manager.get_token
+        calls = 0
+
+        def inject() -> None:
+            """Accept a newer refresh coding the target."""
+            latest = coordinator._write_miss_outcomes[-1]
+            attempt = latest[1] + 1
+            coordinator._write_miss_outcomes.append(
+                (latest[0] + 1, attempt, True, *latest[3:])
+            )
+            baseline = coordinator.identity.baseline
+            if fallback:
+                coordinator._accepted_snapshot = replace(
+                    coordinator._accepted_snapshot,
+                    attempt=attempt,
+                    fallback_sourced=frozenset({_BY_ID}),
+                )
+                coordinator.fallback_sourced_ids = frozenset({_BY_ID})
+                baseline.fallback_codes = {
+                    **(baseline.fallback_codes or {}),
+                    "CONF-res-new": _BY_ID,
+                }
+            else:
+                coordinator._accepted_snapshot = replace(
+                    coordinator._accepted_snapshot, attempt=attempt
+                )
+                baseline.codes["CONF-res-new"] = _BY_ID
+
+        async def get_token(*args: Any, **kwargs: Any) -> str:
+            """Inject on the write's token acquisition."""
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                inject()
+            token: str = await original(*args, **kwargs)
+            return token
+
+        return patch.object(manager, "get_token", side_effect=get_token)
+
+    async def test_newer_accepted_refresh_v3_provenance_writes(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A newer refresh coding the target on v3 lets the PUT go."""
+        coordinator = await self._setup(hass)
+        with (
+            by_id_network(
+                refresh=_cf_refresh(), evidence=FakeConflictEvidence()
+            ) as routes,
+            self._inject_newer_refresh(hass, coordinator, fallback=False),
+        ):
+            result = await self._call(hass)
+
+        assert result["result"] == "success"
+        assert routes.read.call_count == 1
+        assert routes.fields.call_count == 1
+
+    async def test_newer_accepted_refresh_fallback_provenance_refuses(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A newer refresh giving the target fallback provenance refuses."""
+        coordinator = await self._setup(hass)
+        with (
+            by_id_network(
+                refresh=_cf_refresh(), evidence=FakeConflictEvidence()
+            ) as routes,
+            self._inject_newer_refresh(hass, coordinator, fallback=True),
+        ):
+            text = await self._refusal(hass)
+
+        assert text.startswith("found but refused")
+        assert "guard_witness" in text
+        assert routes.read.call_count == 1
+        assert routes.writes == 0
+
+    @pytest.mark.parametrize(
+        ("write", "hint"),
+        [
+            (Response(400), "rejected"),
+            (httpx.ReadTimeout("timed out"), "may have reached Guesty"),
+        ],
+        ids=["rejected", "timeout"],
+    )
+    async def test_custom_field_by_id_write_failure(
+        self, hass: HomeAssistant, write: Any, hint: str
+    ) -> None:
+        """One PUT, no retry, and the by-ID write-failure text."""
+        await self._setup(hass)
+        with (
+            by_id_network(
+                refresh=_cf_refresh(), write=write, evidence=FakeConflictEvidence()
+            ) as routes,
+            patch("asyncio.sleep", new_callable=AsyncMock),
+        ):
+            text = await self._refusal(hass)
+
+        assert text.startswith("found by ID, write failed")
+        assert hint in text
+        assert "not retried" in text
+        assert "API error during custom field update" not in text
+        assert routes.read.call_count == 1
+        assert routes.fields.call_count == 1

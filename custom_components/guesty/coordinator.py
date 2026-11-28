@@ -11,7 +11,8 @@ from collections.abc import AsyncIterator, Collection, Coroutine, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryError
@@ -78,6 +79,7 @@ from custom_components.guesty.identity import (
     CandidateHint,
     IdentityComparison,
     ReservationIdentityGuard,
+    observe_codes,
 )
 
 if TYPE_CHECKING:
@@ -101,6 +103,160 @@ RESERVATION_SEARCH_REJECTED_MESSAGE = (
     f"Guesty rejected {RESERVATIONS_V3_SEARCH_ENDPOINT} with HTTP 400. "
     "Check your reservation search settings and contact support."
 )
+
+
+@dataclass(frozen=True)
+class SnapshotRecord:
+    """Identity facts of one record an accepted refresh carried.
+
+    No confirmation code is held, only its kind.
+
+    Attributes:
+        code_kind: ``none``, ``empty``, ``string`` or ``invalid``.
+        hold: Whether the status is an alteration hold.
+        listing_ids: Verified ``(listing_id, parent_listing_id)``
+            pairs, one per stay segment or the top-level listing for
+            a record without segments, or None when any listing
+            reference is not a string (unverifiable).
+        v3: Whether the raw v3 search returned this identifier.
+    """
+
+    code_kind: Literal["none", "empty", "string", "invalid"]
+    hold: bool
+    listing_ids: frozenset[tuple[str, str | None]] | None
+    v3: bool
+
+
+@dataclass(frozen=True)
+class AcceptedRefreshSnapshot:
+    """In-memory evidence of the last accepted reservation refresh.
+
+    It is never persisted, logged or added to diagnostics, and its
+    code-bearing fields are excluded from ``repr`` (feature 014,
+    data-model "Accepted-refresh snapshot").
+
+    Attributes:
+        attempt: The refresh attempt generation it was built in.
+        path: The reservation source path of that refresh.
+        returned_ids: Raw v3 identifiers the search returned.
+        rejected_ids: Raw v3 identifiers the source did not accept.
+        records: Identity facts per accepted record identifier.
+        observed_codes: The full, unbounded code to identifier map
+            over the accepted records.
+        fallback_observed_codes: The code to identifier map over
+            every record a legacy by-ID lookup returned, whatever
+            its status.
+        fallback_served: Identifiers the fallback served.
+        fallback_sourced: Identifiers the fallback published.
+        fallback_absent: Identifiers legacy confirmed are gone.
+        fallback_observed: Identifiers a legacy lookup returned.
+    """
+
+    attempt: int
+    path: str
+    returned_ids: frozenset[str]
+    rejected_ids: frozenset[str]
+    records: Mapping[str, SnapshotRecord]
+    observed_codes: Mapping[str, str] = field(repr=False)
+    fallback_observed_codes: Mapping[str, str] = field(repr=False)
+    fallback_served: frozenset[str] = frozenset()
+    fallback_sourced: frozenset[str] = frozenset()
+    fallback_absent: frozenset[str] = frozenset()
+    fallback_observed: frozenset[str] = frozenset()
+
+
+def _code_kind(
+    code: object,
+) -> Literal["none", "empty", "string", "invalid"]:
+    """Classify a record's confirmation code without keeping it.
+
+    Args:
+        code: The parsed confirmation code value.
+
+    Returns:
+        The code kind.
+    """
+    if code is None:
+        return "none"
+    if not isinstance(code, str):
+        return "invalid"
+    return "string" if code else "empty"
+
+
+def _snapshot_listing_ids(
+    reservation: GuestyReservation,
+) -> frozenset[tuple[str, str | None]] | None:
+    """Build a record's verified listing association pairs.
+
+    Building never raises: any listing reference that is not a
+    string (or a parent that is neither a string nor None) makes the
+    record unverifiable instead.
+
+    Args:
+        reservation: The accepted record.
+
+    Returns:
+        The association pairs, or None when unverifiable.
+    """
+    pairs: set[tuple[str, str | None]] = set()
+    if not reservation.stay:
+        listing_id: object = reservation.listing_id
+        if not isinstance(listing_id, str):
+            return None
+        return frozenset({(listing_id, None)})
+    for segment in reservation.stay:
+        unit: object = segment.listing_id
+        parent: object = segment.parent_listing_id
+        if not isinstance(unit, str) or (
+            parent is not None and not isinstance(parent, str)
+        ):
+            return None
+        pairs.add((unit, parent))
+    return frozenset(pairs)
+
+
+def _build_snapshot(
+    attempt: int,
+    path: str,
+    reservations: tuple[GuestyReservation, ...],
+    fetch_result: ReservationFetchResult,
+) -> AcceptedRefreshSnapshot:
+    """Build the accepted-refresh snapshot of one refresh.
+
+    Args:
+        attempt: The in-progress refresh attempt generation.
+        path: The reservation source path.
+        reservations: Reservations the refresh accepted.
+        fetch_result: The retrieval result.
+
+    Returns:
+        The snapshot.
+    """
+    returned = frozenset(fetch_result.returned_ids)
+    records = {
+        reservation.id: SnapshotRecord(
+            code_kind=_code_kind(reservation.confirmation_code),
+            hold=reservation.status in HOLD_STATUSES,
+            listing_ids=_snapshot_listing_ids(reservation),
+            v3=reservation.id in returned,
+        )
+        for reservation in reservations
+    }
+    return AcceptedRefreshSnapshot(
+        attempt=attempt,
+        path=path,
+        returned_ids=returned,
+        rejected_ids=frozenset(fetch_result.rejected_ids),
+        records=MappingProxyType(records),
+        observed_codes=MappingProxyType(observe_codes(reservations).mapping),
+        fallback_observed_codes=MappingProxyType(
+            observe_codes(fetch_result.observed_reservations).mapping,
+        ),
+        fallback_served=frozenset(fetch_result.fallback_served),
+        fallback_sourced=frozenset(fetch_result.fallback_sourced),
+        fallback_absent=frozenset(fetch_result.fallback_absent),
+        fallback_observed=frozenset(fetch_result.fallback_observed),
+    )
 
 
 class ReservationSearchRejected(UpdateFailed):
@@ -323,6 +479,7 @@ class ReservationsCoordinator(
                 GuestyApiClient,
             ]
         ] = deque(maxlen=256)
+        self._accepted_snapshot: AcceptedRefreshSnapshot | None = None
         interval_minutes = entry.options.get(
             CONF_RESERVATION_SCAN_INTERVAL,
             DEFAULT_RESERVATION_SCAN_INTERVAL,
@@ -353,8 +510,44 @@ class ReservationsCoordinator(
         async with self._debounced_refresh.async_recovery_dispatch_lock():
             yield
 
+    def accepted_refresh_snapshot(self) -> AcceptedRefreshSnapshot | None:
+        """Return the last accepted refresh's snapshot while still valid.
+
+        It is valid only when its attempt is the latest completed
+        attempt, that attempt succeeded, and its options, settings,
+        entry and client are still the current ones. Anything else
+        is unavailable evidence.
+
+        Returns:
+            The snapshot, or None when missing or stale.
+        """
+        snapshot = self._accepted_snapshot
+        if snapshot is None or not self._write_miss_outcomes:
+            return None
+        (
+            _completed,
+            attempt,
+            success,
+            options,
+            settings,
+            entry,
+            client,
+        ) = self._write_miss_outcomes[-1]
+        if (
+            attempt != snapshot.attempt
+            or not success
+            or not self.last_update_success
+            or entry is not self.config_entry
+            or client is not self.api_client
+            or options is not self.config_entry.options
+            or settings != self._write_miss_settings()
+        ):
+            return None
+        return snapshot
+
     async def async_shutdown(self) -> None:
         """Stop shared recovery fetches before this entry can be unloaded."""
+        self._accepted_snapshot = None
         await super().async_shutdown()
         current = asyncio.current_task()
         tasks = [task for task in self._write_miss_tasks if task is not current]
@@ -1016,6 +1209,13 @@ class ReservationsCoordinator(
             observed_ids=fetch_result.observed_ids,
             observed_reservations=fetch_result.observed_reservations,
         )
+        if stored:
+            self._accepted_snapshot = _build_snapshot(
+                self._write_miss_attempt_generation,
+                self.reservations_path,
+                reservations,
+                fetch_result,
+            )
         if stored and fetch_result.fallback_absent:
             # Only a persisted retirement may clear the fallback's
             # queue; otherwise the candidate would survive a reload

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -1314,3 +1314,140 @@ class TestWriteConfirmedAbsenceIsReported:
         assert first.absent == ("res-gone",)
         assert second.absent == ("res-gone",)
         assert third.absent == ()
+
+
+# ── Feature 014: session legacy evidence (T012) ─────────────────────
+
+
+class TestSessionLegacyEvidence:
+    """Legacy observations and retirements are held for the session."""
+
+    @respx.mock
+    async def test_out_of_selection_lookup_is_recorded_as_observed(self) -> None:
+        """A record legacy returned out of selection is still observed."""
+        _mock_token()
+        respx.get(by_id_url("res-x")).mock(
+            return_value=Response(
+                200, json=_legacy_document("res-x", status="inquiry")
+            ),
+        )
+        source = ReservationFallbackSource(_make_client())
+
+        await _resolve(source, candidates={"res-x": _candidate()})
+
+        assert source.legacy_observed == frozenset({"res-x"})
+        assert "res-x" not in source._served
+        assert "res-x" not in source._retained
+
+    @respx.mock
+    async def test_in_selection_lookup_is_recorded_as_observed(self) -> None:
+        """A served record is observed too."""
+        _mock_token()
+        respx.get(by_id_url("res-1")).mock(
+            return_value=Response(200, json=_legacy_document("res-1")),
+        )
+        source = ReservationFallbackSource(_make_client())
+
+        await _resolve(source, candidates={"res-1": _candidate()})
+
+        assert source.legacy_observed == frozenset({"res-1"})
+
+    @respx.mock
+    async def test_failed_lookup_is_not_observed(self) -> None:
+        """A failed lookup is no observation."""
+        _mock_token()
+        respx.get(by_id_url("res-1")).mock(return_value=Response(500, json={}))
+        source = ReservationFallbackSource(_make_client())
+
+        await _resolve(source, candidates={"res-1": _candidate()})
+
+        assert source.legacy_observed == frozenset()
+
+    @respx.mock
+    async def test_retire_and_retire_candidate_record_retired(self) -> None:
+        """Both a lookup retirement and a write retirement are recorded."""
+        _mock_token()
+        respx.get(by_id_url("res-1")).mock(
+            return_value=Response(404, json=make_legacy_not_found_body("res-1")),
+        )
+        source = ReservationFallbackSource(_make_client())
+
+        await _resolve(source, candidates={"res-1": _candidate()})
+        source.retire_candidate("res-2")
+
+        assert source.legacy_retired == frozenset({"res-1", "res-2"})
+        assert source.legacy_observed == frozenset()
+
+    @respx.mock
+    async def test_prune_never_shrinks_session_retired_set(self) -> None:
+        """A retirement pruned from confirmed_absent stays retired."""
+        _mock_token()
+        respx.get(by_id_url("res-1")).mock(
+            return_value=Response(404, json=make_legacy_not_found_body("res-1")),
+        )
+        source = ReservationFallbackSource(_make_client())
+        await _resolve(source, candidates={"res-1": _candidate()})
+        assert "res-1" in source.confirmed_absent
+
+        await _resolve(source, candidates={})
+
+        assert "res-1" not in source.confirmed_absent
+        assert source.legacy_retired == frozenset({"res-1"})
+
+    @pytest.mark.parametrize("which", ["observed", "retired"])
+    def test_overflow_marks_set_incomplete(
+        self, which: Literal["observed", "retired"]
+    ) -> None:
+        """Exceeding the bound reports the set incomplete, never truncated."""
+        source = ReservationFallbackSource(_make_client())
+        with patch(
+            "custom_components.guesty.api.reservations_fallback.MAX_LEGACY_SESSION_IDS",
+            2,
+        ):
+            for reservation_id in ("res-1", "res-2", "res-1"):
+                source._note_session(which, reservation_id)
+            assert getattr(source, f"legacy_{which}") == frozenset({"res-1", "res-2"})
+            source._note_session(which, "res-3")
+            assert getattr(source, f"legacy_{which}") is None
+            source._note_session(which, "res-1")
+            assert getattr(source, f"legacy_{which}") is None
+        other = "retired" if which == "observed" else "observed"
+        assert getattr(source, f"legacy_{other}") == frozenset()
+
+    @pytest.mark.parametrize("reservations_api", [RESERVATIONS_API_V3, "legacy"])
+    def test_client_properties_are_read_only_frozensets(
+        self, reservations_api: str
+    ) -> None:
+        """The client exposes both sets read-only, empty and complete."""
+        client = _make_client()
+        if reservations_api != RESERVATIONS_API_V3:
+            client = GuestyApiClient(
+                token_manager=client._token_manager,
+                http_client=client._http,
+                reservations_api=reservations_api,
+            )
+
+        assert client.legacy_observed_reservations == frozenset()
+        assert client.legacy_retired_reservations == frozenset()
+        assert isinstance(client.legacy_observed_reservations, frozenset)
+        with pytest.raises(AttributeError):
+            client.legacy_observed_reservations = frozenset()  # type: ignore[misc]
+        with pytest.raises(AttributeError):
+            client.legacy_retired_reservations = frozenset()  # type: ignore[misc]
+
+    def test_client_properties_reflect_the_fallback(self) -> None:
+        """The client reports the fallback's sets, including incomplete."""
+        client = _make_client()
+        fallback = client._fallback
+        assert fallback is not None
+        fallback._note_session("observed", "res-1")
+        fallback._note_session("retired", "res-2")
+
+        assert client.legacy_observed_reservations == frozenset({"res-1"})
+        assert client.legacy_retired_reservations == frozenset({"res-2"})
+        with patch(
+            "custom_components.guesty.api.reservations_fallback.MAX_LEGACY_SESSION_IDS",
+            1,
+        ):
+            fallback._note_session("observed", "res-3")
+        assert client.legacy_observed_reservations is None

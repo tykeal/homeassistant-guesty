@@ -52,7 +52,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
 
@@ -60,6 +60,7 @@ from custom_components.guesty.api.const import (
     LEGACY_FALLBACK_RECHECK_SECONDS,
     LEGACY_RESERVATIONS_RETIREMENT_DATE,
     MAX_LEGACY_FALLBACK_LOOKUPS_PER_REFRESH,
+    MAX_LEGACY_SESSION_IDS,
     RESERVATION_BY_ID_LEGACY_PATH,
 )
 from custom_components.guesty.api.exceptions import GuestyApiError
@@ -217,6 +218,13 @@ class ReservationFallbackSource:
             baseline retires them durably (FR-052).
         _disabled: Whether retirement self-disabled the fallback.
         _retirement_logged: Whether the one warning has been made.
+        _session_observed: Every identifier a successful by-ID
+            lookup returned this session, whatever its status, or
+            None once the set overflowed and is incomplete. Never
+            pruned and never persisted.
+        _session_retired: Every identifier legacy retired this
+            session, or None once incomplete. Never pruned and never
+            persisted.
     """
 
     def __init__(self, client: GuestyApiClient) -> None:
@@ -233,6 +241,8 @@ class ReservationFallbackSource:
         self._unreported_absent: set[str] = set()
         self._disabled = False
         self._retirement_logged = False
+        self._session_observed: set[str] | None = set()
+        self._session_retired: set[str] | None = set()
 
     @property
     def served_ids(self) -> frozenset[str]:
@@ -260,6 +270,52 @@ class ReservationFallbackSource:
             The retired candidates of this session.
         """
         return frozenset(self._confirmed_absent)
+
+    @property
+    def legacy_observed(self) -> frozenset[str] | None:
+        """Return the identifiers legacy by-ID lookups returned.
+
+        Returns:
+            The session set, or None when it overflowed and is
+            therefore incomplete.
+        """
+        observed = self._session_observed
+        return frozenset(observed) if observed is not None else None
+
+    @property
+    def legacy_retired(self) -> frozenset[str] | None:
+        """Return the identifiers legacy retired this session.
+
+        Returns:
+            The session set, or None when it overflowed and is
+            therefore incomplete.
+        """
+        retired = self._session_retired
+        return frozenset(retired) if retired is not None else None
+
+    def _note_session(
+        self,
+        which: Literal["observed", "retired"],
+        reservation_id: str,
+    ) -> None:
+        """Record one identifier in a bounded session evidence set.
+
+        A set that would exceed ``MAX_LEGACY_SESSION_IDS`` becomes
+        incomplete for the rest of the session rather than silently
+        dropping an identifier.
+
+        Args:
+            which: ``observed`` or ``retired``.
+            reservation_id: The identifier to record.
+        """
+        attribute = f"_session_{which}"
+        current: set[str] | None = getattr(self, attribute)
+        if current is None or reservation_id in current:
+            return
+        if len(current) >= MAX_LEGACY_SESSION_IDS:
+            setattr(self, attribute, None)
+            return
+        current.add(reservation_id)
 
     def note_retirement(self) -> None:
         """Self-disable after a retirement-shaped write answer.
@@ -542,6 +598,7 @@ class ReservationFallbackSource:
                 reservation_id,
             )
             return _FAILED, None
+        self._note_session("observed", reservation_id)
 
         if reservation.status not in statuses:
             # The reservation left the configured status set, which
@@ -594,6 +651,7 @@ class ReservationFallbackSource:
             reservation_id: The reservation legacy denied.
         """
         self._confirmed_absent.add(reservation_id)
+        self._note_session("retired", reservation_id)
         self._served.pop(reservation_id, None)
         self._retained.pop(reservation_id, None)
         _LOGGER.debug(
