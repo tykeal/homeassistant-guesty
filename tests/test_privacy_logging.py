@@ -23,6 +23,7 @@ import pytest
 import respx
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import issue_registry as ir
 from httpx import Response
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -30,7 +31,9 @@ from custom_components.guesty.api.auth import GuestyTokenManager
 from custom_components.guesty.api.client import GuestyApiClient
 from custom_components.guesty.api.const import (
     BASE_URL,
+    RESERVATIONS_API_LEGACY,
     RESERVATIONS_API_V3,
+    RESERVATIONS_ENDPOINT,
     RESERVATIONS_V3_SEARCH_ENDPOINT,
     TOKEN_URL,
 )
@@ -57,6 +60,7 @@ from custom_components.guesty.coordinator import (
     ReservationsCoordinator,
 )
 from custom_components.guesty.diagnostics import async_get_config_entry_diagnostics
+from tests.api.test_reservations_fallback import _candidate, _legacy_document, by_id_url
 from tests.conftest import (
     BY_ID_TARGET,
     FAKE_CLIENT_ID,
@@ -71,7 +75,9 @@ from tests.conftest import (
     make_token_response,
     make_v3_reservation,
     make_v3_search_page,
+    make_v3_segment,
     sample_custom_field_definitions,
+    stub_guesty_network,
 )
 from tests.test_actions import _WRITE_TARGETS as _BY_ID_WRITE_TARGETS
 from tests.test_actions import _setup_entry
@@ -967,3 +973,312 @@ class TestByIdFallbackPrivacy:
             assert secret not in logs
             assert secret not in error_text
             assert secret not in rendered
+
+
+# ── Feature 013: validation reporting privacy (T037) ────────────────
+
+_VAL_STATUS = "status-sentinel-6620"
+_VAL_NOTE = "note-sentinel-1193"
+_VAL_FIELD = "custom-field-sentinel-4471"
+_VAL_RAW = "raw-payload-sentinel-3057"
+_VAL_CODE = "CODE-SENTINEL-8842"
+_VAL_SECRETS = (*PII, _VAL_STATUS, _VAL_NOTE, _VAL_FIELD, _VAL_RAW, _VAL_CODE)
+
+
+def _sentinel_fields(suffix: str = "") -> dict[str, Any]:
+    """Return the private raw fields every rejected record carries.
+
+    Args:
+        suffix: Appended to the code so records keep distinct codes.
+
+    Returns:
+        Raw reservation fields holding one sentinel each.
+    """
+    return {
+        "confirmationCode": f"{_VAL_CODE}{suffix}",
+        "guest": {
+            "_id": "guest-001",
+            "fullName": GUEST_NAME,
+            "email": GUEST_EMAIL,
+            "phone": GUEST_PHONE,
+        },
+        "customFields": [{"fieldId": "cf-door-code", "value": _VAL_FIELD}],
+        "rawMarker": _VAL_RAW,
+    }
+
+
+def _v3_window_segment(**overrides: Any) -> dict[str, Any]:
+    """Build an in-window v3 stay segment.
+
+    Args:
+        **overrides: Fields to override on the segment.
+
+    Returns:
+        A raw v3 stay segment starting tomorrow.
+    """
+    check_in = datetime.now(UTC) + timedelta(days=1)
+    check_out = check_in + timedelta(days=2)
+    fields: dict[str, Any] = {
+        "checkIn": check_in.isoformat(),
+        "checkOut": check_out.isoformat(),
+        "checkInDateLocalized": check_in.date().isoformat(),
+        "checkOutDateLocalized": check_out.date().isoformat(),
+    }
+    fields.update(overrides)
+    return make_v3_segment(**fields)
+
+
+def _client(reservations_api: str) -> GuestyApiClient:
+    """Create an API client on the given reservation path.
+
+    Args:
+        reservations_api: The reservation API to select.
+
+    Returns:
+        A client whose network calls respx intercepts.
+    """
+    http = httpx.AsyncClient()
+    return GuestyApiClient(
+        token_manager=GuestyTokenManager(
+            client_id=FAKE_CLIENT_ID,
+            client_secret=FAKE_CLIENT_SECRET,
+            http_client=http,
+            storage=FakeTokenStorage(),
+            refresh_buffer=0,
+        ),
+        http_client=http,
+        reservations_api=reservations_api,
+    )
+
+
+async def _v3_search_result(router: respx.MockRouter) -> Any:
+    """Fetch a v3 search page with a rejected and a partial record.
+
+    Args:
+        router: The respx router serving the requests.
+
+    Returns:
+        The real fetch result of the v3 source.
+    """
+    router.post(TOKEN_URL).mock(
+        return_value=Response(200, json=make_token_response()),
+    )
+    good = _v3_window_segment()
+    router.get(SEARCH_URL).mock(
+        return_value=Response(
+            200,
+            json=make_v3_search_page(
+                [
+                    make_v3_reservation(
+                        "res-a-ok",
+                        segments=[good],
+                        confirmationCode="CONF-OK",
+                    ),
+                    make_v3_reservation(
+                        "res-b-rejected",
+                        status=_VAL_STATUS,
+                        segments=[good],
+                        notes={"other": _VAL_NOTE},
+                        **_sentinel_fields(),
+                    ),
+                    make_v3_reservation(
+                        "res-c-partial",
+                        segments=[good, _v3_window_segment(listingId="")],
+                        notes={"other": _VAL_NOTE},
+                        **_sentinel_fields("-2"),
+                    ),
+                ]
+            ),
+        ),
+    )
+    return await _client(RESERVATIONS_API_V3).get_reservations()
+
+
+async def _legacy_result(router: respx.MockRouter) -> Any:
+    """Fetch a legacy page with one rejected record.
+
+    Args:
+        router: The respx router serving the requests.
+
+    Returns:
+        The real fetch result of the legacy source.
+    """
+    router.post(TOKEN_URL).mock(
+        return_value=Response(200, json=make_token_response()),
+    )
+    record = _legacy_document(
+        "res-legacy-rejected",
+        status=_VAL_STATUS,
+        note=_VAL_NOTE,
+        **_sentinel_fields(),
+    )
+    router.get(f"{BASE_URL}{RESERVATIONS_ENDPOINT}").mock(
+        return_value=Response(200, json={"results": [record], "count": 1}),
+    )
+    return await _client(RESERVATIONS_API_LEGACY).get_reservations()
+
+
+async def _by_id_invalid_result(router: respx.MockRouter) -> Any:
+    """Fetch an ``_INVALID`` legacy by-ID document through v3.
+
+    Args:
+        router: The respx router serving the requests.
+
+    Returns:
+        The real fetch result of the v3 source with its fallback.
+    """
+    router.post(TOKEN_URL).mock(
+        return_value=Response(200, json=make_token_response()),
+    )
+    router.get(SEARCH_URL).mock(
+        return_value=Response(200, json=make_v3_search_page([])),
+    )
+    router.get(by_id_url("res-invalid")).mock(
+        return_value=Response(
+            200,
+            json=_legacy_document(
+                "res-invalid",
+                status=_VAL_STATUS,
+                note=_VAL_NOTE,
+                **_sentinel_fields(),
+            ),
+        ),
+    )
+    return await _client(RESERVATIONS_API_V3).get_reservations(
+        candidates={"res-invalid": _candidate()},
+    )
+
+
+_VALIDATION_SOURCES = {
+    "v3-search": _v3_search_result,
+    "legacy": _legacy_result,
+    "by-id-invalid": _by_id_invalid_result,
+}
+
+
+class TestValidationPrivacy:
+    """Exclusion logs, diagnostics and repairs carry no private data (T037)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Any:
+        """Auto-mock custom field definitions and retry sleeps.
+
+        Yields:
+            None, while the definitions client is patched.
+        """
+        with (
+            patch(
+                "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("asyncio.sleep", new_callable=AsyncMock),
+        ):
+            yield
+
+    @pytest.mark.parametrize("source", sorted(_VALIDATION_SOURCES))
+    async def test_no_sentinel_reaches_any_surface(
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+        source: str,
+    ) -> None:
+        """Logs, diagnostics and repair placeholders hold no sentinel.
+
+        Records are captured at DEBUG from every logger, from the
+        source fetch through the refresh, and never cleared. The only
+        records excluded are the test harness's own mock-storage
+        DEBUG lines (logger ``pytest_homeassistant_custom_component``
+        and its children, "Writing data to ..."), which dump whatever a
+        ``Store`` saves; they are test infrastructure, not an
+        integration surface, and production code never logs codes.
+        """
+        with (
+            caplog.at_level(logging.DEBUG),
+            respx.mock(assert_all_called=False) as router,
+        ):
+            result = await _VALIDATION_SOURCES[source](router)
+        assert result.exclusions
+        if source == "legacy":
+            keys_lines = [
+                record
+                for record in caplog.records
+                if record.msg == "Sample reservation keys: %s, guest keys: %s"
+            ]
+            assert keys_lines
+            for record in keys_lines:
+                assert isinstance(record.args, tuple)
+                assert all(isinstance(arg, list) for arg in record.args)
+                text = record.getMessage()
+                for secret in _VAL_SECRETS:
+                    assert secret not in text, secret
+        assert result.rejected_ids or result.fallback_invalid_ids
+
+        listing = GuestyListing.from_api_dict(
+            make_listing_dict(_id="listing-001", timezone="")
+        )
+        assert listing is not None
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data={
+                CONF_CLIENT_ID: FAKE_CLIENT_ID,
+                CONF_CLIENT_SECRET: FAKE_CLIENT_SECRET,
+            },
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_V3},
+            unique_id=FAKE_CLIENT_ID,
+        )
+        entry.add_to_hass(hass)
+        with stub_guesty_network(listings=[listing]):
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+
+        with (
+            caplog.at_level(logging.DEBUG),
+            patch(
+                "custom_components.guesty.GuestyApiClient.get_reservations",
+                new_callable=AsyncMock,
+                return_value=result,
+            ),
+            patch(
+                "custom_components.guesty.GuestyApiClient.resolve_guests",
+                new_callable=AsyncMock,
+                return_value=GuestLookupResult(),
+            ),
+        ):
+            await coordinator.async_refresh()
+        assert coordinator.last_update_success
+
+        reported = {
+            (record.levelno, *record.args)
+            for record in caplog.records
+            if isinstance(record.args, tuple)
+            and len(record.args) == 2
+            and isinstance(record.args[1], str)
+            and record.args[1] in {*result.rejected_ids, "res-invalid"}
+        }
+        assert any(level == logging.WARNING for level, *_ in reported)
+
+        issues = [
+            issue
+            for (domain, _), issue in ir.async_get(hass).issues.items()
+            if domain == DOMAIN
+        ]
+        if source == "v3-search":
+            assert any(
+                issue.translation_key == "listing_timezone_unverified"
+                for issue in issues
+            )
+        diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+        surfaces = {
+            "logs": "\n".join(
+                f"{record.getMessage()} {record.args!r} {record.exc_text or ''}"
+                for record in caplog.records
+                if not record.name.startswith("pytest_homeassistant_custom_component")
+            ),
+            "diagnostics": json.dumps(diagnostics, default=str),
+            "repairs": repr([issue.translation_placeholders for issue in issues]),
+        }
+        for surface, text in surfaces.items():
+            for secret in _VAL_SECRETS:
+                assert secret not in text, (surface, secret)

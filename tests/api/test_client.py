@@ -42,11 +42,13 @@ from custom_components.guesty.api.exceptions import (
 from custom_components.guesty.api.models import (
     CachedToken,
     GuestyReservation,
+    RejectedCode,
     ReservationFetchResult,
 )
 from custom_components.guesty.api.reservations_legacy import (
     LegacyReservationSource,
 )
+from custom_components.guesty.api.validation import ValidationReason
 from tests.conftest import (
     FAKE_CLIENT_ID,
     FAKE_CLIENT_SECRET,
@@ -1938,7 +1940,13 @@ class TestGetReservations:
 
     @respx.mock
     async def test_invalid_reservations_skipped(self) -> None:
-        """Reservations with missing fields are skipped."""
+        """A reservation missing ``_id`` fails the refresh closed.
+
+        Updated for feature 013 (research R5): an item without a
+        verified identifier cannot be isolated, so it is no longer
+        skipped; the refresh fails instead. The name is kept for
+        history.
+        """
         _mock_token_endpoint()
         valid = _make_reservation_dict(_id="valid-1")
         invalid = {"status": "confirmed"}  # missing _id
@@ -1957,9 +1965,8 @@ class TestGetReservations:
             ),
         ]
         client, _, _ = _make_client()
-        result = (await client.get_reservations()).reservations
-        assert len(result) == 1
-        assert result[0].id == "valid-1"
+        with pytest.raises(GuestyResponseError):
+            await client.get_reservations()
 
     @respx.mock
     async def test_default_actionable_statuses(self) -> None:
@@ -2023,6 +2030,463 @@ class TestGetReservations:
         )
         assert f"Sample reservation keys: {expected_keys}" in caplog.text
         assert f"guest keys: {expected_guest_keys}" in caplog.text
+
+
+async def _legacy_fetch(
+    primary: list[Any],
+    secondary: list[Any] | None = None,
+) -> ReservationFetchResult:
+    """Run the legacy source against mocked primary and secondary pages.
+
+    Args:
+        primary: Raw items of the primary date-range query.
+        secondary: Raw items of the ``checked_in`` query.
+
+    Returns:
+        The legacy fetch result.
+    """
+    _mock_token_endpoint()
+    route = respx.get(f"{BASE_URL}/reservations")
+    route.side_effect = [
+        Response(200, json=_make_reservations_page(primary)),
+        Response(200, json=_make_reservations_page(secondary or [])),
+    ]
+    client, _, _ = _make_client(reservations_api=RESERVATIONS_API_LEGACY)
+    return await LegacyReservationSource(client).fetch(statuses=None)
+
+
+class TestLegacyRecordValidation:
+    """Feature 013: legacy records are assessed and isolated (R5)."""
+
+    @pytest.mark.parametrize(
+        "item",
+        [
+            pytest.param("not-a-dict", id="non-dict"),
+            pytest.param({"status": "confirmed"}, id="missing"),
+            pytest.param(_make_reservation_dict(_id=""), id="empty"),
+            pytest.param(_make_reservation_dict(_id=123), id="non-string"),
+            pytest.param(_make_reservation_dict(_id=None), id="none"),
+        ],
+    )
+    @respx.mock
+    async def test_missing_or_non_string_id_fails_the_refresh(
+        self,
+        item: Any,
+    ) -> None:
+        """An item without a non-empty string ``_id`` fails closed."""
+        with pytest.raises(GuestyResponseError) as excinfo:
+            await _legacy_fetch([_make_reservation_dict(_id="res-0"), item])
+
+        assert "GY-h5SdcsBL" not in str(excinfo.value)
+
+    @respx.mock
+    async def test_duplicates_are_first_wins_before_assessment(self) -> None:
+        """A rejected first copy is never replaced by a valid duplicate."""
+        result = await _legacy_fetch(
+            [
+                _make_reservation_dict(_id="res-1", status="inquiry"),
+                _make_reservation_dict(_id="res-2"),
+            ],
+            [
+                _make_reservation_dict(_id="res-1", status="checked_in"),
+                _make_reservation_dict(_id="res-2", status="inquiry"),
+            ],
+        )
+
+        assert [r.id for r in result.reservations] == ["res-2"]
+        assert result.reservations[0].status == "confirmed"
+        assert result.rejected_ids == ("res-1",)
+        assert result.exclusions == ((ValidationReason.UNRECOGNIZED_STATUS, "res-1"),)
+
+    @pytest.mark.parametrize(
+        ("overrides", "reason"),
+        [
+            pytest.param(
+                {"status": {"value": "confirmed"}},
+                ValidationReason.MALFORMED_STATUS,
+                id="structured-status",
+            ),
+            pytest.param(
+                {"status": ""}, ValidationReason.MALFORMED_STATUS, id="empty-status"
+            ),
+            pytest.param(
+                {"status": None}, ValidationReason.MALFORMED_STATUS, id="no-status"
+            ),
+            pytest.param(
+                {"status": "inquiry"},
+                ValidationReason.UNRECOGNIZED_STATUS,
+                id="unrecognized-status",
+            ),
+            pytest.param(
+                {"listingId": 123}, ValidationReason.INVALID_LISTING, id="int-listing"
+            ),
+            pytest.param(
+                {"listingId": ["listing-001"]},
+                ValidationReason.INVALID_LISTING,
+                id="list-listing",
+            ),
+            pytest.param(
+                {"listingId": {"_id": "listing-001"}},
+                ValidationReason.INVALID_LISTING,
+                id="object-listing",
+            ),
+            pytest.param(
+                {"listingId": ""}, ValidationReason.INVALID_LISTING, id="empty-listing"
+            ),
+            pytest.param(
+                {"checkIn": None},
+                ValidationReason.UNVERIFIED_INSTANT,
+                id="missing-check-in",
+            ),
+            pytest.param(
+                {"checkOut": "not-a-date"},
+                ValidationReason.UNVERIFIED_INSTANT,
+                id="unparsable-check-out",
+            ),
+            pytest.param(
+                {"checkIn": "2025-08-17T15:00:00"},
+                ValidationReason.UNVERIFIED_INSTANT,
+                id="naive-check-in",
+            ),
+            pytest.param(
+                {"checkOut": "2025-08-22T11:00:00.000"},
+                ValidationReason.UNVERIFIED_INSTANT,
+                id="naive-check-out",
+            ),
+            pytest.param(
+                {"checkOut": "2025-08-17T15:00:00.000Z"},
+                ValidationReason.INVALID_INTERVAL,
+                id="equal-interval",
+            ),
+            pytest.param(
+                {"checkIn": "2025-08-23T15:00:00+00:00"},
+                ValidationReason.INVALID_INTERVAL,
+                id="reversed-interval",
+            ),
+        ],
+    )
+    @respx.mock
+    async def test_rejected_record_reasons(
+        self,
+        overrides: dict[str, Any],
+        reason: ValidationReason,
+    ) -> None:
+        """Each legacy rule rejects with its fixed reason."""
+        result = await _legacy_fetch(
+            [
+                _make_reservation_dict(_id="res-0"),
+                _make_reservation_dict(_id="res-1", **overrides),
+            ],
+        )
+
+        assert [r.id for r in result.reservations] == ["res-0"]
+        assert result.rejected_ids == ("res-1",)
+        assert result.exclusions == ((reason, "res-1"),)
+        assert result.validation.rejected_records == 1
+        assert dict(result.validation.reasons) == {reason: 1}
+
+    @respx.mock
+    async def test_naive_instant_is_not_utc(self) -> None:
+        """A naive instant is rejected and gives no retirement bound."""
+        result = await _legacy_fetch(
+            [
+                _make_reservation_dict(
+                    _id="res-1",
+                    checkIn="2025-08-17T15:00:00",
+                    checkOut="2025-08-22T11:00:00",
+                ),
+            ],
+        )
+
+        assert result.reservations == ()
+        assert result.rejected_codes == (RejectedCode("res-1", "GY-h5SdcsBL"),)
+        assert dict(result.rejected_check_out_bounds) == {}
+
+    @respx.mock
+    async def test_rejected_records_fill_rejected_ids_and_codes(self) -> None:
+        """Rejections follow the v3 reporting rules."""
+        result = await _legacy_fetch(
+            [
+                _make_reservation_dict(_id="res-1"),
+                _make_reservation_dict(
+                    _id="res-2",
+                    status="inquiry",
+                    confirmationCode="CODE-SHARED",
+                    checkOut="2025-08-09T23:00:00-05:00",
+                ),
+                _make_reservation_dict(
+                    _id="res-3",
+                    status="alteration",
+                    listingId=5,
+                    confirmationCode="CODE-HOLD",
+                ),
+                _make_reservation_dict(
+                    _id="res-4",
+                    listingId=None,
+                    confirmationCode=123,
+                ),
+                _make_reservation_dict(
+                    _id="res-5",
+                    checkIn="2025-08-17T15:00:00",
+                    confirmationCode="CODE-SHARED",
+                ),
+                _make_reservation_dict(
+                    _id="res-6",
+                    status="alteration",
+                    confirmationCode="CODE-ACCEPTED-HOLD",
+                ),
+            ],
+        )
+
+        assert [r.id for r in result.reservations] == ["res-1", "res-6"]
+        assert result.rejected_ids == ("res-2", "res-3", "res-4", "res-5")
+        assert result.rejected_codes == (
+            RejectedCode("res-2", "CODE-SHARED"),
+            RejectedCode("res-5", "CODE-SHARED"),
+        )
+        assert dict(result.rejected_check_out_bounds) == {
+            "res-2": "2025-08-11",
+            "res-5": "2025-08-23",
+        }
+        assert result.exclusions == (
+            (ValidationReason.INVALID_LISTING, "res-3"),
+            (ValidationReason.INVALID_LISTING, "res-4"),
+            (ValidationReason.UNRECOGNIZED_STATUS, "res-2"),
+            (ValidationReason.UNVERIFIED_INSTANT, "res-5"),
+        )
+        assert result.validation.rejected_records == 4
+        assert result.validation.partial_records == 0
+        assert result.validation.rejected_segments == 0
+
+    @respx.mock
+    async def test_previously_skipped_records_are_rejected(self) -> None:
+        """Records the old parser skipped now feed the rejection report."""
+        no_listing = _make_reservation_dict(_id="res-1", confirmationCode="C-1")
+        del no_listing["listingId"]
+        no_status = _make_reservation_dict(_id="res-2", confirmationCode="C-2")
+        del no_status["status"]
+        result = await _legacy_fetch(
+            [
+                no_listing,
+                no_status,
+                _make_reservation_dict(
+                    _id="res-3",
+                    checkIn="garbage",
+                    confirmationCode="C-3",
+                ),
+            ],
+        )
+
+        assert result.reservations == ()
+        assert result.rejected_ids == ("res-1", "res-2", "res-3")
+        assert result.rejected_codes == (
+            RejectedCode("res-1", "C-1"),
+            RejectedCode("res-2", "C-2"),
+            RejectedCode("res-3", "C-3"),
+        )
+
+    @respx.mock
+    async def test_recognized_status_is_published_mapped(self) -> None:
+        """A recognized legacy status publishes its mapped value."""
+        result = await _legacy_fetch(
+            [_make_reservation_dict(_id="res-1", status=" Cancelled ")],
+        )
+
+        assert [r.status for r in result.reservations] == ["canceled"]
+        assert dict(result.status_counts) == {"canceled": 1}
+        assert result.rejected_ids == ()
+
+    @respx.mock
+    async def test_extreme_check_out_never_fails_the_refresh(self) -> None:
+        """An unrepresentable instant is rejected and bounds nothing.
+
+        A rejected record's ``checkOut`` whose UTC date or next day
+        cannot be represented gives no retirement bound, and an
+        instant that cannot be expressed in UTC is not verified.
+        """
+        result = await _legacy_fetch(
+            [
+                _make_reservation_dict(_id="res-0"),
+                _make_reservation_dict(
+                    _id="res-1",
+                    status="inquiry",
+                    checkOut="9999-12-31T23:00:00Z",
+                ),
+                _make_reservation_dict(
+                    _id="res-2",
+                    status="inquiry",
+                    checkOut="9999-12-31T20:00:00-05:00",
+                ),
+                _make_reservation_dict(
+                    _id="res-3",
+                    checkIn="0001-01-01T00:00:00+05:00",
+                ),
+                _make_reservation_dict(
+                    _id="res-4",
+                    checkIn="9999-12-30T00:00:00Z",
+                    checkOut="9999-12-31T20:00:00-05:00",
+                ),
+            ],
+        )
+
+        assert [r.id for r in result.reservations] == ["res-0"]
+        assert result.rejected_ids == ("res-1", "res-2", "res-3", "res-4")
+        assert dict(result.rejected_check_out_bounds) == {
+            "res-3": "2025-08-23",
+        }
+        assert (ValidationReason.UNVERIFIED_INSTANT, "res-3") in result.exclusions
+        assert (ValidationReason.UNVERIFIED_INSTANT, "res-4") in result.exclusions
+
+    @pytest.mark.parametrize(
+        ("overrides", "attribute", "expected"),
+        [
+            pytest.param(
+                {"checkInDateLocalized": "2025-8-17"},
+                "check_in_local",
+                None,
+                id="check-in-local-noncanonical",
+            ),
+            pytest.param(
+                {"checkOutDateLocalized": 20250822},
+                "check_out_local",
+                None,
+                id="check-out-local-int",
+            ),
+            pytest.param(
+                {"checkInDateLocalized": {"date": "2025-08-17"}},
+                "check_in_local",
+                None,
+                id="check-in-local-dict",
+            ),
+            pytest.param(
+                {"checkInDateLocalized": "2025-08-23"},
+                "check_out_local",
+                None,
+                id="local-dates-reversed",
+            ),
+            pytest.param(
+                {"checkOutDateLocalized": "2025-08-17"},
+                "check_in_local",
+                None,
+                id="local-dates-zero-night",
+            ),
+            pytest.param({"nightsCount": "5"}, "nights_count", None, id="nights-str"),
+            pytest.param({"nightsCount": True}, "nights_count", None, id="nights-bool"),
+            pytest.param({"nightsCount": -5}, "nights_count", None, id="nights-neg"),
+            pytest.param({}, "nights_count", 5, id="nights-valid"),
+            pytest.param({"guestsCount": -1}, "guests_count", None, id="guests-neg"),
+            pytest.param({"guestsCount": "3"}, "guests_count", None, id="guests-str"),
+            pytest.param(
+                {"guestsCount": False}, "guests_count", None, id="guests-bool"
+            ),
+            pytest.param({"plannedArrival": 1600}, "planned_arrival", None, id="arr"),
+            pytest.param(
+                {"plannedDeparture": ["10:00"]}, "planned_departure", None, id="dep"
+            ),
+            pytest.param({"source": {"x": 1}}, "source", None, id="source"),
+            pytest.param({"note": 5}, "note", None, id="note"),
+            pytest.param({"guest": "Jane"}, "guest", None, id="guest-str"),
+            pytest.param({"money": ["1"]}, "money", None, id="money-list"),
+            pytest.param(
+                {"money": {"totalPaid": "1", "currency": 1}},
+                "money",
+                None,
+                id="money-no-valid-field",
+            ),
+            pytest.param(
+                {"guest": {"fullName": 1, "_id": 2}},
+                "guest",
+                None,
+                id="guest-no-valid-field",
+            ),
+        ],
+    )
+    @respx.mock
+    async def test_accepted_record_optional_fields_are_sanitized(
+        self,
+        overrides: dict[str, Any],
+        attribute: str,
+        expected: object,
+    ) -> None:
+        """An invalid optional field never rejects and is never kept."""
+        result = await _legacy_fetch(
+            [_make_reservation_dict(_id="res-1", **overrides)],
+        )
+
+        assert result.rejected_ids == ()
+        assert [r.id for r in result.reservations] == ["res-1"]
+        assert getattr(result.reservations[0], attribute) == expected
+
+    @respx.mock
+    async def test_accepted_record_nested_fields_are_sanitized(self) -> None:
+        """Guest, money and custom field values keep only valid types."""
+        result = await _legacy_fetch(
+            [
+                _make_reservation_dict(
+                    _id="res-1",
+                    guest={
+                        "fullName": ["Jane"],
+                        "phone": 5550123,
+                        "email": "jane@example.com",
+                        "_id": {"$oid": "g"},
+                    },
+                    money={
+                        "totalPaid": "1250",
+                        "balanceDue": True,
+                        "currency": "USD",
+                    },
+                    customFields=[
+                        {"fieldId": "f-1", "value": "v"},
+                        {"fieldId": 3, "value": "x"},
+                        "junk",
+                    ],
+                ),
+            ],
+        )
+
+        reservation = result.reservations[0]
+        assert reservation.guest is not None
+        assert reservation.guest.full_name is None
+        assert reservation.guest.phone is None
+        assert reservation.guest.email == "jane@example.com"
+        assert reservation.guest.guest_id is None
+        assert reservation.money is not None
+        assert reservation.money.total_paid is None
+        assert reservation.money.balance_due is None
+        assert reservation.money.currency == "USD"
+        assert dict(reservation.custom_fields) == {"f-1": "v"}
+
+    @respx.mock
+    async def test_huge_money_integer_is_dropped(self) -> None:
+        """An amount too large for a float drops only that field."""
+        result = await _legacy_fetch(
+            [
+                _make_reservation_dict(
+                    _id="res-1",
+                    money={
+                        "totalPaid": 10**400,
+                        "balanceDue": 5,
+                        "currency": "USD",
+                    },
+                ),
+            ],
+        )
+
+        assert result.rejected_ids == ()
+        (reservation,) = result.reservations
+        assert reservation.money is not None
+        assert reservation.money.total_paid is None
+        assert reservation.money.balance_due == 5
+        assert reservation.money.currency == "USD"
+
+    @respx.mock
+    async def test_accepted_record_valid_fields_are_unchanged(self) -> None:
+        """Baseline control: a valid legacy record builds as before."""
+        raw = _make_reservation_dict(_id="res-1")
+
+        result = await _legacy_fetch([raw])
+
+        assert result.reservations == (GuestyReservation.from_api_dict(raw),)
 
 
 # ── Phase 4: Transient Failure Retry Tests (T025) ───────────────────
@@ -2763,7 +3227,13 @@ class TestReservationSourceDelegation:
 
     @respx.mock
     async def test_legacy_source_counters_are_best_effort(self) -> None:
-        """A structured status is served but left uncounted."""
+        """A structured status is rejected and counted as unrecognized.
+
+        Updated for feature 013 (research R2, R5): a non-string status
+        is ``malformed_status``, so the record is rejected and only one
+        reservation is returned; the sanitized ``status_counts`` holds
+        it under ``unrecognized``, never the raw value.
+        """
         _mock_token_endpoint()
         route = respx.get(f"{BASE_URL}/reservations")
         route.side_effect = [
@@ -2789,8 +3259,12 @@ class TestReservationSourceDelegation:
             statuses=None,
         )
 
-        assert len(result.reservations) == 2
-        assert dict(result.status_counts) == {"confirmed": 1}
+        assert [r.id for r in result.reservations] == ["res-0"]
+        assert dict(result.status_counts) == {
+            "confirmed": 1,
+            "unrecognized": 1,
+        }
+        assert result.rejected_ids == ("res-1",)
 
 
 class TestSingleAttemptRead:

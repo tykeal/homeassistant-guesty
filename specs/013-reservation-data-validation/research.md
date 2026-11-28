@@ -888,8 +888,10 @@ confirms it and needs no adapter logic.
   - `_INVALID` (new): a dict whose `_id` is the requested ID, but which
     is rejected. The source answered and proved the record not
     verifiable, so stale display would retain data shown bad (FR-012b,
-    FR-012g). The ID is purged from `_served`, `_retained`,
-    `_last_attempt` and `_stale`, and is never confirmed absent. When
+    FR-012g). The ID is purged from `_served`, `_retained` and
+    `_stale`, but `_last_attempt` keeps the attempt time so the
+    re-check interval holds (FR-053), and it is never confirmed
+    absent. When
     the record has a non-hold string code, the `RejectedCode` and
     its retirement bound go to `FallbackOutcome.rejected_codes` and
     `rejected_check_out_bounds`. `V3ReservationSource.fetch`, the only
@@ -1191,7 +1193,8 @@ registers only `Platform.SENSOR`; there is no calendar entity.
 
 - `rejected_records`, `partial_records` and `rejected_segments` counts;
 - `reasons`: counts by `ValidationReason`;
-- `rejected_ids`: sorted, capped at 100;
+- `rejected_ids`: sorted, capped at 100, the union of rejected,
+  partially valid and fallback-invalid records;
 - `conflict_evidence`: `state`, `available`, `count`, `dated`,
   `undated` and `bound` (no codes or IDs), plus the near-capacity flag;
 - `stale`: `snapshot_stale`, `stale_count` and `last_verified_at`
@@ -1199,8 +1202,8 @@ registers only `Platform.SENSOR`; there is no calendar entity.
 
 `refresh.status_counts` uses the sanitized keys (R2). Diagnostics never
 contain confirmation codes, and never show which IDs have stored
-conflict-only pairs. `rejected_ids` reports only this refresh's
-rejections.
+conflict-only pairs. `rejected_ids` reports only the last fetched
+batch's rejections, including a batch whose refresh then failed.
 
 ## R16 — Merge order with feature 014
 

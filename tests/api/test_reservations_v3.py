@@ -10,6 +10,7 @@ builders in ``tests/conftest.py``; no live Guesty payload exists
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from types import MappingProxyType
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -35,11 +36,13 @@ from custom_components.guesty.api.exceptions import (
     GuestyFilterRejectedError,
     GuestyResponseError,
 )
+from custom_components.guesty.api.models import RejectedCode, ValidationSummary
 from custom_components.guesty.api.reservations_fallback import FallbackOutcome
 from custom_components.guesty.api.reservations_v3 import (
     V3ReservationSource,
     _map_results,
 )
+from custom_components.guesty.api.validation import ValidationReason
 from tests.conftest import (
     FAKE_CLIENT_ID,
     FAKE_CLIENT_SECRET,
@@ -604,7 +607,12 @@ class TestV3Diagnostics:
     async def test_counters_report_pages_statuses_and_segments(
         self,
     ) -> None:
-        """Pages, raw status and segment histograms are reported."""
+        """Pages, sanitized status and segment histograms are reported.
+
+        Feature 013 (research R2): ``status_counts`` is keyed by the
+        mapped recognized status, so ``completed`` counts as
+        ``checked_out``; no raw value is ever a key.
+        """
         _mock_token()
         two_segments = [
             make_v3_segment(
@@ -642,7 +650,7 @@ class TestV3Diagnostics:
         result = await _make_source().fetch(past_days=30, future_days=365)
 
         assert result.pages == 1
-        assert dict(result.status_counts) == {"confirmed": 2, "completed": 1}
+        assert dict(result.status_counts) == {"confirmed": 2, "checked_out": 1}
         assert dict(result.segment_histogram) == {1: 2, 2: 1}
         assert {res.status for res in result.reservations} == {
             "confirmed",
@@ -651,7 +659,12 @@ class TestV3Diagnostics:
 
     @respx.mock
     async def test_unusable_reservation_is_skipped(self) -> None:
-        """A reservation with no usable segment is skipped, not fatal."""
+        """A reservation with no usable segment is skipped, not fatal.
+
+        Audited for feature 013 (research R2, R3): the rejected record's
+        recognized status is still counted under its mapped key, and it
+        is reported in ``rejected_ids``.
+        """
         _mock_token()
         respx.get(SEARCH_URL).mock(
             return_value=Response(
@@ -669,6 +682,7 @@ class TestV3Diagnostics:
 
         assert [res.id for res in result.reservations] == ["res-0001"]
         assert dict(result.status_counts) == {"confirmed": 2}
+        assert result.rejected_ids == ("res-0002",)
 
 
 class TestV3SourceSelection:
@@ -916,22 +930,33 @@ class TestV3ReturnedAndRejectedIds:
 
         assert result.returned_ids == ("res-1", "res-2")
 
-    def test_rejected_ids_are_raw_minus_parsed(self) -> None:
-        """Records the parser cannot use are rejected, by identifier."""
+    def test_rejected_ids_are_assessment_based(self) -> None:
+        """Rejected and partially valid records are rejected, by identifier.
+
+        Renamed from ``test_rejected_ids_are_raw_minus_parsed``: feature
+        013 (research R16; 014 T010 note) computes ``rejected_ids`` from
+        the record assessment, so a partially valid record is both
+        published and rejected.
+        """
         no_status = make_v3_reservation("res-2")
         del no_status["status"]
+        partial = make_v3_reservation(
+            "res-4",
+            segments=[make_v3_segment(), make_v3_segment(listingId="")],
+        )
         result = _map_results(
             [
                 [
                     make_v3_reservation("res-1"),
                     no_status,
                     make_v3_reservation("res-3", segments=[]),
+                    partial,
                 ],
             ],
         )
 
-        assert [r.id for r in result.reservations] == ["res-1"]
-        assert result.rejected_ids == ("res-2", "res-3")
+        assert [r.id for r in result.reservations] == ["res-1", "res-4"]
+        assert result.rejected_ids == ("res-2", "res-3", "res-4")
 
     def test_ids_are_sorted_deduplicated_tuples(self) -> None:
         """Both fields are sorted tuples without duplicates."""
@@ -983,3 +1008,518 @@ class TestV3ReturnedAndRejectedIds:
             result = await source.fetch(past_days=30, future_days=365)
 
         assert result.observed_ids == ("res-1", "res-2")
+
+
+# ── Feature 013: record isolation and rejection reporting (T008) ────
+
+
+def _rejected(reservation_id: str, **overrides: Any) -> dict[str, Any]:
+    """Build a record rejected by an unrecognized status.
+
+    Args:
+        reservation_id: The ``reservationId`` value.
+        **overrides: Fields to override on the record.
+
+    Returns:
+        A v3 search result dict whose status is not recognized.
+    """
+    overrides.setdefault("status", "inquiry")
+    return make_v3_reservation(reservation_id, **overrides)
+
+
+def _partial(reservation_id: str, **overrides: Any) -> dict[str, Any]:
+    """Build a partially valid record: one verified, one bad segment.
+
+    Args:
+        reservation_id: The ``reservationId`` value.
+        **overrides: Fields to override on the record.
+
+    Returns:
+        A v3 search result dict with one rejected segment.
+    """
+    return make_v3_reservation(
+        reservation_id,
+        segments=[make_v3_segment(), make_v3_segment(listingId="")],
+        **overrides,
+    )
+
+
+class TestV3RecordIsolation:
+    """A malformed record is isolated from a verified batch."""
+
+    @respx.mock
+    async def test_rejected_record_is_isolated(self) -> None:
+        """Other records publish; the rejected one is only returned."""
+        _mock_token()
+        respx.get(SEARCH_URL).mock(
+            return_value=Response(
+                200,
+                json=make_v3_search_page(
+                    [
+                        make_v3_reservation("res-1"),
+                        _rejected("res-2"),
+                        make_v3_reservation("res-3"),
+                    ],
+                ),
+            ),
+        )
+
+        result = await _make_source().fetch(past_days=30, future_days=365)
+
+        assert [r.id for r in result.reservations] == ["res-1", "res-3"]
+        assert result.returned_ids == ("res-1", "res-2", "res-3")
+        assert result.rejected_ids == ("res-2",)
+
+    @pytest.mark.parametrize(
+        "pages",
+        [
+            pytest.param([["not-a-dict"]], id="non-dict"),
+            pytest.param([[{"status": "confirmed"}]], id="missing-id"),
+            pytest.param(
+                [[make_v3_reservation("res-1", reservationId=5)]],
+                id="non-string-id",
+            ),
+            pytest.param(
+                [[make_v3_reservation("res-1"), make_v3_reservation("res-1")]],
+                id="duplicate",
+            ),
+            pytest.param(
+                [[make_v3_reservation("res-2"), make_v3_reservation("res-1")]],
+                id="non-ascending",
+            ),
+        ],
+    )
+    @respx.mock
+    async def test_unverified_identifier_fails_the_refresh(
+        self,
+        pages: list[list[Any]],
+    ) -> None:
+        """Baseline control: an unprovable batch still fails closed."""
+        _mock_token()
+        respx.get(SEARCH_URL).mock(
+            return_value=Response(200, json=make_v3_search_page(pages[0])),
+        )
+        source = _make_source()
+
+        with (
+            patch(
+                "custom_components.guesty.api.reservations_v3._map_results",
+            ) as mapper,
+            pytest.raises(GuestyResponseError),
+        ):
+            await source.fetch(past_days=30, future_days=365)
+
+        mapper.assert_not_called()
+
+    def test_rejected_ids_contents_order_and_exclusions(self) -> None:
+        """Rejected and partial records, holds included, are listed."""
+        result = _map_results(
+            [
+                [
+                    make_v3_reservation("res-1"),
+                    _partial("res-2"),
+                    _rejected("res-3", stay=[]),
+                    _rejected("res-4", status="alteration", stay=[]),
+                    _partial("res-5", status="alteration"),
+                    make_v3_reservation("res-6", status="alteration"),
+                ],
+                [_rejected("res-0")],
+            ],
+        )
+
+        assert result.rejected_ids == ("res-0", "res-2", "res-3", "res-4", "res-5")
+        assert set(result.rejected_ids) <= set(result.returned_ids)
+        assert len(set(result.rejected_ids)) == len(result.rejected_ids)
+        assert sorted(r.id for r in result.reservations) == [
+            "res-1",
+            "res-2",
+            "res-5",
+            "res-6",
+        ]
+
+    def test_partial_record_is_published_and_rejected(self) -> None:
+        """A partial record publishes verified segments and is rejected."""
+        result = _map_results([[_partial("res-1")]])
+
+        assert [r.id for r in result.reservations] == ["res-1"]
+        published = result.reservations[0]
+        assert published.partial is True
+        assert len(published.stay) == 1
+        assert result.rejected_ids == ("res-1",)
+        assert result.observed_ids == ("res-1",)
+
+    def test_status_counts_are_sanitized(self) -> None:
+        """Only mapped statuses and ``unrecognized`` are keys."""
+        result = _map_results(
+            [
+                [
+                    make_v3_reservation("res-1", status="confirmed"),
+                    make_v3_reservation("res-2", status="Completed"),
+                    _rejected("res-3", status="SENTINEL-STATUS"),
+                    _rejected("res-4", status=["confirmed"]),
+                    make_v3_reservation("res-5", status="alteration"),
+                ],
+            ],
+        )
+
+        assert dict(result.status_counts) == {
+            "confirmed": 1,
+            "checked_out": 1,
+            "alteration": 1,
+            "unrecognized": 2,
+        }
+
+    def test_rejected_codes_pairs(self) -> None:
+        """Only non-hold coded rejected or partial records give pairs."""
+        result = _map_results(
+            [
+                [
+                    make_v3_reservation("res-1", confirmationCode="CODE-OK"),
+                    _rejected("res-2", confirmationCode="CODE-SHARED"),
+                    _partial("res-3", confirmationCode="CODE-P"),
+                    _rejected("res-4", confirmationCode="CODE-SHARED"),
+                    _rejected(
+                        "res-5",
+                        status="alteration",
+                        stay=[],
+                        confirmationCode="CODE-HOLD",
+                    ),
+                    _rejected("res-6", confirmationCode=123),
+                    _rejected("res-7", confirmationCode=""),
+                ],
+            ],
+        )
+
+        assert result.rejected_codes == (
+            RejectedCode("res-2", "CODE-SHARED"),
+            RejectedCode("res-3", "CODE-P"),
+            RejectedCode("res-4", "CODE-SHARED"),
+        )
+
+    @pytest.mark.parametrize(
+        ("record", "expected"),
+        [
+            pytest.param(
+                _rejected(
+                    "res-1",
+                    segments=[
+                        make_v3_segment(),
+                        make_v3_segment(
+                            checkInDateLocalized="2025-08-05",
+                            checkOutDateLocalized="2025-08-07",
+                        ),
+                    ],
+                    checkOut="2025-08-07T11:00:00",
+                ),
+                "2025-08-07",
+                id="segments",
+            ),
+            pytest.param(
+                _partial("res-1", checkOut="2025-08-09T23:00:00-05:00"),
+                "2025-08-11",
+                id="explicit-offset",
+            ),
+            pytest.param(
+                _partial("res-1", checkOut="2025-08-09T11:00:00Z"),
+                "2025-08-10",
+                id="zulu",
+            ),
+            pytest.param(
+                _partial("res-1", checkOut="2025-08-09T11:00:00"),
+                "2025-08-05",
+                id="naive",
+            ),
+            pytest.param(
+                _rejected("res-1", checkOut="2025-08-02T10:00:00+00:00"),
+                "2025-08-05",
+                id="segments-later",
+            ),
+            pytest.param(
+                _rejected("res-1", checkOut="2025-08-20T10:00:00+00:00"),
+                "2025-08-21",
+                id="top-level-later",
+            ),
+            pytest.param(
+                _partial("res-1", checkOut=None, stay=[make_v3_segment(), "bad"]),
+                None,
+                id="neither",
+            ),
+            pytest.param(
+                _rejected("res-1", checkOut="9999-12-31T23:00:00Z"),
+                "2025-08-05",
+                id="overflow-utc",
+            ),
+            pytest.param(
+                _partial("res-1", checkOut="9999-12-31T20:00:00-05:00"),
+                "2025-08-05",
+                id="overflow-negative-offset",
+            ),
+            pytest.param(
+                _rejected(
+                    "res-1",
+                    checkOut="0001-01-01T00:00:00+05:00",
+                    stay=[make_v3_segment(), "bad"],
+                ),
+                None,
+                id="overflow-positive-offset",
+            ),
+        ],
+    )
+    def test_rejected_check_out_bounds(
+        self,
+        record: dict[str, Any],
+        expected: str | None,
+    ) -> None:
+        """The later verified candidate bounds a coded rejected record.
+
+        Updated for the feature 013 review (research R7 decision 4):
+        the segment candidate needs every raw segment to have a valid
+        date-level interval, not full verification. The ``naive``
+        partial record's second segment only lacks a listing, so its
+        dates now give the bound; ``neither`` uses a non-dict segment
+        to keep no candidate at all. An unrepresentable top-level
+        bound is no candidate and never fails the batch.
+        """
+        result = _map_results([[record]])
+
+        assert result.rejected_codes == (RejectedCode("res-1", "CONF-ABC"),)
+        if expected is None:
+            assert dict(result.rejected_check_out_bounds) == {}
+        else:
+            assert dict(result.rejected_check_out_bounds) == {"res-1": expected}
+
+    @respx.mock
+    async def test_extreme_check_out_never_fails_the_refresh(self) -> None:
+        """An unrepresentable rejected bound leaves the batch intact."""
+        _mock_token()
+        respx.get(SEARCH_URL).mock(
+            return_value=Response(
+                200,
+                json=make_v3_search_page(
+                    [
+                        make_v3_reservation("res-1"),
+                        _rejected(
+                            "res-2",
+                            checkOut="9999-12-31T20:00:00-05:00",
+                            stay=["bad"],
+                        ),
+                        _rejected(
+                            "res-3",
+                            checkOut="9999-12-31T23:00:00Z",
+                            stay=["bad"],
+                        ),
+                    ],
+                ),
+            ),
+        )
+
+        result = await _make_source().fetch(past_days=30, future_days=365)
+
+        assert [r.id for r in result.reservations] == ["res-1"]
+        assert result.rejected_ids == ("res-2", "res-3")
+        assert dict(result.rejected_check_out_bounds) == {}
+
+    def test_validation_summary_counts(self) -> None:
+        """The summary holds counts only."""
+        no_verified = make_v3_reservation(
+            "res-4",
+            segments=[make_v3_segment(checkInDateLocalized=None)],
+        )
+        no_verified["stay"].append("bad")
+        result = _map_results(
+            [
+                [
+                    make_v3_reservation("res-1"),
+                    _partial("res-2"),
+                    _rejected("res-3"),
+                    no_verified,
+                ],
+            ],
+        )
+
+        assert result.validation == ValidationSummary(
+            rejected_records=2,
+            partial_records=1,
+            rejected_segments=3,
+            reasons=MappingProxyType(
+                {
+                    ValidationReason.PARTIAL_STAY: 1,
+                    ValidationReason.UNRECOGNIZED_STATUS: 1,
+                    ValidationReason.NO_VERIFIED_SEGMENT: 1,
+                    ValidationReason.SEGMENT_MISSING_LISTING: 1,
+                    ValidationReason.SEGMENT_UNVERIFIED_DATES: 1,
+                    ValidationReason.SEGMENT_MALFORMED: 1,
+                },
+            ),
+        )
+
+    def test_exclusion_keys(self) -> None:
+        """Exclusions are sorted unique reason and identifier pairs."""
+        sentinel = "SENTINEL-EXCL"
+        result = _map_results(
+            [
+                [
+                    make_v3_reservation("res-1"),
+                    make_v3_reservation(
+                        "res-2",
+                        confirmationCode=sentinel,
+                        segments=[
+                            make_v3_segment(),
+                            make_v3_segment(listingId=""),
+                            make_v3_segment(listingId=None),
+                        ],
+                    ),
+                    _rejected("res-3", status=sentinel),
+                ],
+            ],
+        )
+
+        assert result.exclusions == (
+            (ValidationReason.PARTIAL_STAY, "res-2"),
+            (ValidationReason.SEGMENT_MISSING_LISTING, "res-2"),
+            (ValidationReason.UNRECOGNIZED_STATUS, "res-3"),
+        )
+        assert sentinel not in repr(result.exclusions)
+        assert sentinel not in repr(result.validation)
+        assert sentinel not in repr(dict(result.status_counts))
+
+
+# ── Feature 013: fallback outcome merge (T012) ──────────────────────
+
+
+class TestV3FallbackMerge:
+    """``fetch`` hands rejections to the fallback and merges its report."""
+
+    @respx.mock
+    async def test_fetch_passes_rejected_and_merges_outcome(self) -> None:
+        """All of ``rejected_ids`` reach ``resolve``; outcome fields merge."""
+        _mock_token()
+        respx.get(SEARCH_URL).mock(
+            return_value=Response(
+                200,
+                json=make_v3_search_page(
+                    [
+                        make_v3_reservation("res-1"),
+                        _rejected("res-2", confirmationCode="CODE-V3"),
+                        _partial("res-3"),
+                    ],
+                ),
+            ),
+        )
+        source = _make_source()
+        outcome = FallbackOutcome(
+            observed=("res-9",),
+            invalid=("res-9",),
+            stale=("res-8",),
+            exclusions=((ValidationReason.UNRECOGNIZED_STATUS, "res-9"),),
+            rejected_codes=(RejectedCode("res-9", "CODE-LEGACY"),),
+            rejected_check_out_bounds=MappingProxyType({"res-9": "2025-08-10"}),
+        )
+        resolve = AsyncMock(return_value=outcome)
+
+        with patch.object(source.fallback, "resolve", resolve):
+            result = await source.fetch(past_days=30, future_days=365)
+
+        assert resolve.await_args is not None
+        assert tuple(resolve.await_args.kwargs["rejected"]) == ("res-2", "res-3")
+        assert result.rejected_ids == ("res-2", "res-3")
+        assert result.rejected_codes == (
+            RejectedCode("res-2", "CODE-V3"),
+            RejectedCode("res-3", "CONF-ABC"),
+            RejectedCode("res-9", "CODE-LEGACY"),
+        )
+        assert dict(result.rejected_check_out_bounds) == {
+            "res-2": "2025-08-06",
+            "res-3": "2025-08-06",
+            "res-9": "2025-08-10",
+        }
+        assert result.exclusions == (
+            (ValidationReason.PARTIAL_STAY, "res-3"),
+            (ValidationReason.SEGMENT_MISSING_LISTING, "res-3"),
+            (ValidationReason.UNRECOGNIZED_STATUS, "res-2"),
+            (ValidationReason.UNRECOGNIZED_STATUS, "res-9"),
+        )
+        assert result.fallback_invalid_ids == ("res-9",)
+        assert result.stale_ids == ("res-8",)
+        assert "res-9" not in result.rejected_ids
+
+    @respx.mock
+    async def test_fallback_validation_counts_merge(self) -> None:
+        """Invalid lookups count in the refresh's validation summary.
+
+        Every summary field is summed and the reasons are combined,
+        including one only the fallback reports.
+        """
+        _mock_token()
+        respx.get(SEARCH_URL).mock(
+            return_value=Response(
+                200,
+                json=make_v3_search_page(
+                    [
+                        make_v3_reservation("res-1"),
+                        _rejected("res-2"),
+                        _partial("res-3"),
+                    ],
+                ),
+            ),
+        )
+        source = _make_source()
+        outcome = FallbackOutcome(
+            invalid=("res-8", "res-9"),
+            exclusions=(
+                (ValidationReason.UNVERIFIED_INSTANT, "res-8"),
+                (ValidationReason.UNRECOGNIZED_STATUS, "res-9"),
+            ),
+            validation=ValidationSummary(
+                rejected_records=2,
+                partial_records=1,
+                rejected_segments=2,
+                reasons=MappingProxyType(
+                    {
+                        ValidationReason.UNRECOGNIZED_STATUS: 1,
+                        ValidationReason.UNVERIFIED_INSTANT: 1,
+                    }
+                ),
+            ),
+        )
+
+        with patch.object(
+            source.fallback,
+            "resolve",
+            AsyncMock(return_value=outcome),
+        ):
+            result = await source.fetch(past_days=30, future_days=365)
+
+        assert result.validation.rejected_records == 3
+        assert result.validation.partial_records == 2
+        assert result.validation.rejected_segments == 3
+        assert dict(result.validation.reasons) == {
+            ValidationReason.UNRECOGNIZED_STATUS: 2,
+            ValidationReason.UNVERIFIED_INSTANT: 1,
+            ValidationReason.PARTIAL_STAY: 1,
+            ValidationReason.SEGMENT_MISSING_LISTING: 1,
+        }
+
+    @respx.mock
+    async def test_empty_outcome_keeps_the_v3_report(self) -> None:
+        """Baseline: an empty outcome leaves the v3 report unchanged."""
+        _mock_token()
+        respx.get(SEARCH_URL).mock(
+            return_value=Response(
+                200,
+                json=make_v3_search_page([make_v3_reservation("res-1")]),
+            ),
+        )
+        source = _make_source()
+
+        with patch.object(
+            source.fallback,
+            "resolve",
+            AsyncMock(return_value=FallbackOutcome()),
+        ):
+            result = await source.fetch(past_days=30, future_days=365)
+
+        assert result.rejected_codes == ()
+        assert result.fallback_invalid_ids == ()
+        assert result.stale_ids == ()
+        assert result.exclusions == ()

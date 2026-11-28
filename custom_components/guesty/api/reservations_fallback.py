@@ -52,6 +52,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
@@ -67,6 +68,13 @@ from custom_components.guesty.api.exceptions import GuestyApiError
 from custom_components.guesty.api.models import (
     FallbackCounters,
     GuestyReservation,
+    RejectedCode,
+    ValidationSummary,
+)
+from custom_components.guesty.api.validation import (
+    ValidationTally,
+    assess_legacy_record,
+    build_legacy_reservation,
 )
 
 if TYPE_CHECKING:
@@ -74,6 +82,7 @@ if TYPE_CHECKING:
 
     from custom_components.guesty.api.client import GuestyApiClient
     from custom_components.guesty.api.models import FallbackCandidate
+    from custom_components.guesty.api.validation import ValidationReason
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -82,6 +91,7 @@ _OK: str = "ok"
 _ABSENT: str = "absent"
 _RETIRED: str = "retired"
 _FAILED: str = "failed"
+_INVALID: str = "invalid"
 
 # Substrings that make a 404 body a statement about one specific
 # reservation rather than about the resource as a whole.
@@ -189,6 +199,17 @@ class FallbackOutcome:
             during this resolution.
         observed_reservations: Records returned by successful by-ID
             responses, including records filtered from publication.
+        stale: Fallback-published identifiers whose latest due
+            lookup failed (FR-012g).
+        invalid: Identifiers whose by-ID document was returned for the
+            requested ID but failed validation this refresh.
+        exclusions: ``(reason, reservation_id)`` keys of those
+            invalid lookups.
+        rejected_codes: Conflict code pairs of invalid lookups with a
+            non-hold string code. Internal; never logged.
+        rejected_check_out_bounds: Retirement bound per coded invalid
+            lookup that has one.
+        validation: Validation counts of those invalid lookups.
     """
 
     reservations: tuple[GuestyReservation, ...] = ()
@@ -198,6 +219,14 @@ class FallbackOutcome:
     absent: tuple[str, ...] = ()
     observed: tuple[str, ...] = ()
     observed_reservations: tuple[GuestyReservation, ...] = ()
+    stale: tuple[str, ...] = ()
+    invalid: tuple[str, ...] = ()
+    exclusions: tuple[tuple[ValidationReason, str], ...] = ()
+    rejected_codes: tuple[RejectedCode, ...] = ()
+    rejected_check_out_bounds: Mapping[str, str] = field(
+        default_factory=lambda: MappingProxyType({}),
+    )
+    validation: ValidationSummary = field(default_factory=ValidationSummary)
 
 
 class ReservationFallbackSource:
@@ -225,6 +254,9 @@ class ReservationFallbackSource:
         _session_retired: Every identifier legacy retired this
             session, or None once incomplete. Never pruned and never
             persisted.
+        _stale: Published identifiers whose latest due lookup failed,
+            until a lookup succeeds, v3 returns them accepted, or they
+            are retired or purged (FR-012g).
     """
 
     def __init__(self, client: GuestyApiClient) -> None:
@@ -243,6 +275,7 @@ class ReservationFallbackSource:
         self._retirement_logged = False
         self._session_observed: set[str] | None = set()
         self._session_retired: set[str] | None = set()
+        self._stale: set[str] = set()
 
     @property
     def served_ids(self) -> frozenset[str]:
@@ -352,6 +385,7 @@ class ReservationFallbackSource:
         past_days: int,
         future_days: int,
         statuses: frozenset[str],
+        rejected: Collection[str] = (),
     ) -> FallbackOutcome:
         """Recover the previously known reservations v3 lost.
 
@@ -365,19 +399,29 @@ class ReservationFallbackSource:
             past_days: Configured days of history to publish.
             future_days: Configured days ahead to publish.
             statuses: The configured status set (FR-050a).
+            rejected: Every identifier the v3 result returned but did
+                not fully verify, partially valid records included.
+                They are present, so never eligible, and every cache
+                drops them (research R8).
 
         Returns:
             The reservations to publish and this refresh's counters.
         """
         now = datetime.now(UTC)
-        self._absorb(retrieved)
+        rejected_set = set(rejected)
+        self._absorb(retrieved, rejected_set)
+        for reservation_id in rejected_set:
+            self._purge(reservation_id)
+            self._confirmed_absent.discard(reservation_id)
+            self._unreported_absent.discard(reservation_id)
 
         if self._disabled:
             self._served.clear()
             self._retained.clear()
+            self._stale.clear()
             return FallbackOutcome(absent=self._drain_unreported_absent())
 
-        present = {reservation.id for reservation in retrieved}
+        present = {reservation.id for reservation in retrieved} | rejected_set
         eligible = [
             reservation_id
             for reservation_id, hint in candidates.items()
@@ -400,11 +444,13 @@ class ReservationFallbackSource:
         failed = 0
         observed: set[str] = set()
         observed_reservations: list[GuestyReservation] = []
-        for reservation_id in batch:
+        tally = ValidationTally()
+        for position, reservation_id in enumerate(batch):
             verdict, observation = await self._lookup(
                 reservation_id,
                 now,
                 statuses,
+                tally,
             )
             if observation is not None:
                 observed_reservations.append(observation)
@@ -412,9 +458,10 @@ class ReservationFallbackSource:
                 self._disable()
                 self._served.clear()
                 self._retained.clear()
+                self._stale.clear()
                 return FallbackOutcome(
                     counters=FallbackCounters(
-                        attempted=len(absent) + succeeded + failed + 1,
+                        attempted=position + 1,
                         deferred=deferred,
                         confirmed_absent=len(absent),
                         succeeded=succeeded,
@@ -423,11 +470,18 @@ class ReservationFallbackSource:
                     absent=tuple(absent),
                     observed=tuple(sorted(observed)),
                     observed_reservations=tuple(observed_reservations),
+                    invalid=tally.sorted_rejected_ids(),
+                    exclusions=tally.sorted_exclusions(),
+                    rejected_codes=tally.sorted_rejected_codes(),
+                    rejected_check_out_bounds=tally.check_out_bounds(),
+                    validation=tally.summary(),
                 )
             if verdict == _ABSENT:
                 absent.append(reservation_id)
             elif verdict == _OK:
                 succeeded += 1
+                observed.add(reservation_id)
+            elif verdict == _INVALID:
                 observed.add(reservation_id)
             else:
                 failed += 1
@@ -441,6 +495,7 @@ class ReservationFallbackSource:
             statuses,
         )
         self._prune(present, set(candidates))
+        sourced = {reservation.id for reservation in published}
 
         attempted = set(batch)
         return FallbackOutcome(
@@ -460,11 +515,29 @@ class ReservationFallbackSource:
             absent=tuple(absent),
             observed=tuple(sorted(observed)),
             observed_reservations=tuple(observed_reservations),
+            stale=tuple(sorted(self._stale & sourced)),
+            invalid=tally.sorted_rejected_ids(),
+            exclusions=tally.sorted_exclusions(),
+            rejected_codes=tally.sorted_rejected_codes(),
+            rejected_check_out_bounds=tally.check_out_bounds(),
+            validation=tally.summary(),
         )
+
+    def _purge(self, reservation_id: str) -> None:
+        """Drop every cached value and mark of one identifier.
+
+        Args:
+            reservation_id: The identifier to purge.
+        """
+        self._served.pop(reservation_id, None)
+        self._retained.pop(reservation_id, None)
+        self._last_attempt.pop(reservation_id, None)
+        self._stale.discard(reservation_id)
 
     def _absorb(
         self,
         retrieved: tuple[GuestyReservation, ...],
+        rejected: Collection[str] = (),
     ) -> None:
         """Take over the values this v3 result reported.
 
@@ -474,13 +547,21 @@ class ReservationFallbackSource:
         same, because they are what FR-054 republishes should the
         reservation go missing and the first lookup for it fail.
 
+        A rejected or partially valid record is skipped: nothing
+        about a record that is not fully verified is retained
+        (research R8).
+
         Args:
             retrieved: Reservations the v3 result carried.
+            rejected: Identifiers v3 returned but did not fully verify.
         """
         for reservation in retrieved:
+            if reservation.id in rejected:
+                continue
             self._retained[reservation.id] = reservation
             self._served.pop(reservation.id, None)
             self._last_attempt.pop(reservation.id, None)
+            self._stale.discard(reservation.id)
             self._confirmed_absent.discard(reservation.id)
             self._unreported_absent.discard(reservation.id)
 
@@ -541,16 +622,23 @@ class ReservationFallbackSource:
         reservation_id: str,
         now: datetime,
         statuses: frozenset[str],
+        tally: ValidationTally,
     ) -> tuple[str, GuestyReservation | None]:
         """Issue one legacy by-id lookup and read its answer.
 
         The attempt is recorded before the request so that a
-        failure still resets the re-check clock (FR-053).
+        failure still resets the re-check clock (FR-053). A failed
+        lookup of a published record marks it stale (FR-012g). A
+        document for the requested ID that fails validation is
+        ``_INVALID``: its cached values are purged, but its attempt
+        time is kept, and it is observed and reported in ``tally``,
+        never confirmed absent (research R8).
 
         Args:
             reservation_id: The reservation to retrieve.
             now: The refresh instant.
             statuses: The configured status set (FR-050a).
+            tally: Collects this refresh's invalid lookups.
 
         Returns:
             A verdict and, for every successful lookup, its source
@@ -571,6 +659,7 @@ class ReservationFallbackSource:
                 reservation_id,
                 type(exc).__name__,
             )
+            self._mark_stale(reservation_id)
             return _FAILED, None
 
         verdict = classify_legacy_response(response, reservation_id)
@@ -587,18 +676,47 @@ class ReservationFallbackSource:
                 reservation_id,
                 response.status_code,
             )
+            self._mark_stale(reservation_id)
             return _FAILED, None
 
-        reservation = _parse(response, reservation_id)
-        if reservation is None:
+        document = _document(response, reservation_id)
+        if document is None:
             _LOGGER.warning(
                 "Legacy fallback lookup for reservation %s "
                 "returned an unusable document; keeping its last "
                 "known values",
                 reservation_id,
             )
+            self._mark_stale(reservation_id)
             return _FAILED, None
+
+        assessment = assess_legacy_record(document)
+        reservation = build_legacy_reservation(document, assessment)
+        if reservation is None:
+            # Verified documents always build, so only a rejected one
+            # reaches this branch. The attempt survives the purge so
+            # a repeatedly invalid ID keeps the re-check interval
+            # (FR-053).
+            self._purge(reservation_id)
+            self._last_attempt[reservation_id] = now
+            self._note_session("observed", reservation_id)
+            tally.add(
+                reservation_id,
+                reason=assessment.reason,
+                partial=False,
+                segments=(),
+                conflict_code=assessment.conflict_code,
+                raw_check_out=document.get("checkOut"),
+            )
+            _LOGGER.debug(
+                "Legacy fallback document for reservation %s failed "
+                "validation (%s); it is not published",
+                reservation_id,
+                assessment.reason,
+            )
+            return _INVALID, None
         self._note_session("observed", reservation_id)
+        self._stale.discard(reservation_id)
 
         if reservation.status not in statuses:
             # The reservation left the configured status set, which
@@ -620,6 +738,15 @@ class ReservationFallbackSource:
         )
         self._retained[reservation_id] = reservation
         return _OK, reservation
+
+    def _mark_stale(self, reservation_id: str) -> None:
+        """Mark a record stale when a due lookup failed while published.
+
+        Args:
+            reservation_id: The reservation whose lookup failed.
+        """
+        if reservation_id in self._served or reservation_id in self._retained:
+            self._stale.add(reservation_id)
 
     def _drain_unreported_absent(self) -> tuple[str, ...]:
         """Hand write-discovered absences to this refresh.
@@ -654,6 +781,7 @@ class ReservationFallbackSource:
         self._note_session("retired", reservation_id)
         self._served.pop(reservation_id, None)
         self._retained.pop(reservation_id, None)
+        self._stale.discard(reservation_id)
         _LOGGER.debug(
             "Legacy confirms reservation %s is gone; it will not be looked up again",
             reservation_id,
@@ -760,6 +888,7 @@ class ReservationFallbackSource:
         for mapping in (self._retained, self._served, self._last_attempt):
             for reservation_id in [res_id for res_id in mapping if res_id not in keep]:
                 del mapping[reservation_id]
+        self._stale &= keep
         # An absence a write discovered is held until the refresh
         # acknowledges it, even once its hint is gone: dropping it
         # first would let the deletion go unreported (FR-052).
@@ -892,24 +1021,27 @@ def _message_parts(response: httpx.Response) -> tuple[str, ...]:
     )
 
 
-def _parse(
+def _document(
     response: httpx.Response,
     reservation_id: str,
-) -> GuestyReservation | None:
-    """Map one legacy by-id document to a reservation.
+) -> dict[str, Any] | None:
+    """Read one legacy by-id answer as the requested document.
 
     The document's own identifier is checked against the one that
     was requested: a legacy resource answering about a different
     reservation is not evidence about this one, and acting on it
     would be exactly the wrong-identity write the identity guard
-    exists to prevent (FR-031e).
+    exists to prevent (FR-031e). Field validation is left to the
+    legacy assessment, so a malformed field makes the lookup
+    ``_INVALID`` rather than failed (research R8).
 
     Args:
         response: The HTTP response to the by-id lookup.
         reservation_id: The reservation that was requested.
 
     Returns:
-        The mapped reservation, or None when unusable.
+        The document, or None when it is not JSON, not an object or
+        about another reservation.
     """
     try:
         body: Any = response.json()
@@ -924,17 +1056,4 @@ def _parse(
             reservation_id,
         )
         return None
-    for required in ("status", "listingId"):
-        if not isinstance(body.get(required), str):
-            # ``from_api_dict`` only tests these for truthiness, so a
-            # list or a dict would reach status filtering and listing
-            # attribution and raise there, aborting the whole refresh
-            # over one malformed document (FR-054).
-            _LOGGER.warning(
-                "Legacy fallback answer for reservation %s carries "
-                "a non-textual %s; ignoring it",
-                reservation_id,
-                required,
-            )
-            return None
-    return GuestyReservation.from_api_dict(body)
+    return body

@@ -5,9 +5,11 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Generator
+from collections.abc import Generator, Iterator, Mapping
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, NamedTuple
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -15,17 +17,27 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.storage import Store
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.guesty import ISSUE_FINANCIAL_DEPRECATED, HATokenStorage
+from custom_components.guesty.actions import (
+    SERVICE_ADD_NOTE,
+    ReservationIdentityAbsentError,
+    guard_reservation_write,
+)
 from custom_components.guesty.api.exceptions import (
+    GuestyActionError,
     GuestyAuthError,
     GuestyConnectionError,
 )
 from custom_components.guesty.api.models import (
     CachedToken,
+    GuestyListing,
     GuestyMoney,
     GuestyReservation,
+    RejectedCode,
+    ReservationFetchResult,
 )
 from custom_components.guesty.const import (
     CONF_CF_SCAN_INTERVAL,
@@ -46,10 +58,26 @@ from custom_components.guesty.const import (
     RESERVATIONS_API_V3,
     SERVICE_SET_CUSTOM_FIELD,
 )
+from custom_components.guesty.coordinator import ReservationsCoordinator
+from custom_components.guesty.identity import (
+    CONTINUITY_VERIFIED,
+    EVIDENCE_COMPROMISED,
+    EVIDENCE_READY,
+    EVIDENCE_REVALIDATING,
+    REFUSAL_EVIDENCE_REPAIR,
+    REFUSAL_EVIDENCE_UNAVAILABLE,
+    REFUSAL_REVALIDATING,
+    IdentityBaseline,
+    ReservationIdentityGuard,
+    _IdentityStore,
+    conflict_evidence_storage_key,
+    storage_key,
+)
 from tests.conftest import (
     device_for_listing,
     device_in_registry,
     make_fetch_result,
+    make_identity_reservation,
     stub_guesty_network,
 )
 
@@ -4944,3 +4972,535 @@ class TestReservationsApiToggleLeavesRegistryAlone:
         assert {unique for _, unique in on_legacy - on_v3} == set(
             _financial_unique_ids(entry, "listing-001"),
         )
+
+
+class TestValidationIssueRemoval:
+    """Feature 013 repairs and the evidence store on entry removal (T035)."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_cf_defs(self) -> Generator[None]:
+        """Auto-mock custom field definitions."""
+        with patch(
+            "custom_components.guesty.GuestyCustomFieldsClient.get_definitions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            yield
+
+    @staticmethod
+    async def _setup(hass: HomeAssistant) -> MockConfigEntry:
+        """Load a v3 entry with its network calls stubbed.
+
+        Args:
+            hass: Home Assistant instance.
+
+        Returns:
+            The loaded entry.
+        """
+        entry = _make_entry(options={CONF_RESERVATIONS_API: RESERVATIONS_API_V3})
+        entry.add_to_hass(hass)
+        with stub_guesty_network():
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+        assert entry.state is ConfigEntryState.LOADED
+        return entry
+
+    @staticmethod
+    def _raise(hass: HomeAssistant, issue_id: str) -> None:
+        """Raise one non-fixable integration issue.
+
+        Args:
+            hass: Home Assistant instance.
+            issue_id: The issue identifier.
+        """
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            issue_id,
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="conflict_evidence_near_capacity",
+        )
+
+    async def test_removal_deletes_issues_and_the_evidence_store(
+        self,
+        hass: HomeAssistant,
+        hass_storage: dict[str, Any],
+    ) -> None:
+        """Every issue of the removed entry goes, another entry's stays."""
+        from custom_components.guesty.identity import conflict_evidence_storage_key
+
+        entry = await self._setup(hass)
+        key = conflict_evidence_storage_key(entry.entry_id)
+        assert key in hass_storage
+        own = [
+            f"listing_timezone_unverified_{entry.entry_id}_listing-001",
+            f"listing_timezone_unverified_{entry.entry_id}_listing-002",
+            f"conflict_evidence_near_capacity_{entry.entry_id}",
+            f"conflict_evidence_unavailable_{entry.entry_id}",
+        ]
+        other = "listing_timezone_unverified_OTHERENTRY_listing-001"
+        for issue_id in (*own, other):
+            self._raise(hass, issue_id)
+
+        await hass.config_entries.async_remove(entry.entry_id)
+        await hass.async_block_till_done()
+
+        registry = ir.async_get(hass)
+        for issue_id in own:
+            assert registry.async_get_issue(DOMAIN, issue_id) is None
+        assert registry.async_get_issue(DOMAIN, other) is not None
+        assert key not in hass_storage
+
+    async def test_unload_and_reload_keep_the_evidence_store(
+        self,
+        hass: HomeAssistant,
+        hass_storage: dict[str, Any],
+    ) -> None:
+        """Only removal deletes the evidence store."""
+        from custom_components.guesty.identity import conflict_evidence_storage_key
+
+        entry = await self._setup(hass)
+        key = conflict_evidence_storage_key(entry.entry_id)
+        stored = hass_storage[key]
+
+        with stub_guesty_network():
+            await hass.config_entries.async_reload(entry.entry_id)
+            await hass.async_block_till_done()
+        assert entry.state is ConfigEntryState.LOADED
+        assert key in hass_storage
+
+        await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+        assert hass_storage[key]["data"]["generation"] >= stored["data"]["generation"]
+
+
+_UPGRADE_LISTING = "listing-001"
+_UPGRADE_ID = "res-1"
+_UPGRADE_CODE = "CONF-res-1"
+_UPGRADE_REJECTED = RejectedCode("res-9", "CONF-9")
+
+
+def _upgrade_payload() -> dict[str, Any]:
+    """Build a pre-013 identity payload with valid and malformed parts.
+
+    Returns:
+        A version 1, minor 1 identity payload.
+    """
+    return {
+        "path": RESERVATIONS_API_V3,
+        "continuity": CONTINUITY_VERIFIED,
+        "codes": {
+            _UPGRADE_CODE: _UPGRADE_ID,
+            "CONF-NUMBER": 5,
+            "CONF-EMPTY": "",
+            "": "res-blank",
+        },
+        "legacy_codes": "not-a-map",
+        "fallback_codes": {"CONF-LIST": ["res-x"]},
+        "candidates": {
+            _UPGRADE_ID: {
+                "timing_status": "known",
+                "check_in": "2026-01-01T00:00:00+00:00",
+                "check_out": "2026-01-04T00:00:00+00:00",
+                "observed_at": "2026-01-01T00:00:00+00:00",
+            },
+            "res-garbled": {"timing_status": "unknown", "observed_at": "not-a-time"},
+            "res-not-a-dict": "x",
+        },
+    }
+
+
+class _RecordedRefresh(NamedTuple):
+    """What a guard held when an accepted refresh began recording.
+
+    Attributes:
+        guard: The recording guard.
+        baseline: Its baseline before the refresh was recorded.
+        evidence_state: Its evidence state before the refresh.
+        refusals: The service-layer refusal for each probed target.
+    """
+
+    guard: ReservationIdentityGuard
+    baseline: IdentityBaseline | None
+    evidence_state: str
+    refusals: dict[str, str | None]
+
+
+class TestUpgradeVerification:
+    """The quickstart's upgrade verification, end to end (T043).
+
+    Each step loads a real config entry over ``hass_storage`` that
+    starts from a version 1, minor 1 identity payload. Setup's first
+    reservation refresh is itself an accepted refresh, so the state a
+    restart loads is captured as that refresh starts recording.
+    """
+
+    @staticmethod
+    def _entry(hass_storage: dict[str, Any]) -> MockConfigEntry:
+        """Build a v3 entry whose identity store holds the old payload.
+
+        Args:
+            hass_storage: The storage fixture.
+
+        Returns:
+            The entry, not yet set up.
+        """
+        entry = _make_entry(options={CONF_RESERVATIONS_API: RESERVATIONS_API_V3})
+        key = storage_key(entry.entry_id)
+        hass_storage[key] = {
+            "version": 1,
+            "minor_version": 1,
+            "key": key,
+            "data": _upgrade_payload(),
+        }
+        return entry
+
+    @staticmethod
+    def _fetch(*, rejected: bool = False) -> ReservationFetchResult:
+        """Build one refresh's reservations.
+
+        Args:
+            rejected: Whether the refresh also returns a rejected record.
+
+        Returns:
+            The fetch result.
+        """
+        if not rejected:
+            return make_fetch_result(
+                [make_identity_reservation(_UPGRADE_ID, _UPGRADE_CODE)]
+            )
+        return make_fetch_result(
+            [make_identity_reservation(_UPGRADE_ID, _UPGRADE_CODE)],
+            rejected_ids=(_UPGRADE_REJECTED.reservation_id,),
+            rejected_codes=(_UPGRADE_REJECTED,),
+        )
+
+    @staticmethod
+    def _refusal(entry_data: Mapping[str, Any], reservation_id: str) -> str | None:
+        """Run the service-layer write guard every reservation write uses.
+
+        Args:
+            entry_data: The entry's ``hass.data`` mapping.
+            reservation_id: The write target.
+
+        Returns:
+            The refusal message, or None when the write may proceed.
+        """
+        try:
+            guard_reservation_write(entry_data, reservation_id, SERVICE_ADD_NOTE)
+        except GuestyActionError as exc:
+            return exc.message
+        return None
+
+    @classmethod
+    @contextmanager
+    def _recording(cls, recorded: list[_RecordedRefresh]) -> Iterator[None]:
+        """Capture each guard's state as an accepted refresh records.
+
+        Args:
+            recorded: Receives one entry per accepted refresh.
+
+        Yields:
+            None, while refreshes are captured.
+        """
+        original = ReservationIdentityGuard.async_record_refresh
+
+        async def _record(
+            self: ReservationIdentityGuard, *args: Any, **kwargs: Any
+        ) -> bool:
+            """Snapshot the guard, then record the refresh.
+
+            Args:
+                self: The guard.
+                *args: Positional ``async_record_refresh`` arguments.
+                **kwargs: Keyword ``async_record_refresh`` arguments.
+
+            Returns:
+                Whether the baseline was stored.
+            """
+            entry_data = {
+                "reservations_coordinator": SimpleNamespace(identity=self, data={}),
+            }
+            recorded.append(
+                _RecordedRefresh(
+                    guard=self,
+                    baseline=self.baseline,
+                    evidence_state=self.conflict_evidence.state,
+                    refusals={
+                        target: cls._refusal(entry_data, target)
+                        for target in (_UPGRADE_ID, "res-unknown")
+                    },
+                )
+            )
+            return await original(self, *args, **kwargs)
+
+        with patch.object(ReservationIdentityGuard, "async_record_refresh", _record):
+            yield
+
+    @staticmethod
+    def _listing() -> GuestyListing:
+        """Build the tracked listing.
+
+        Returns:
+            The listing.
+        """
+        listing = GuestyListing.from_api_dict(
+            {"_id": _UPGRADE_LISTING, "title": "Upgrade", "timezone": "UTC"}
+        )
+        assert listing is not None
+        return listing
+
+    async def _setup(
+        self,
+        hass: HomeAssistant,
+        entry: MockConfigEntry,
+        recorded: list[_RecordedRefresh],
+    ) -> ReservationsCoordinator:
+        """Set up or reload the entry and capture its first refresh.
+
+        Args:
+            hass: Home Assistant instance.
+            entry: The entry.
+            recorded: Receives the first refresh's snapshot.
+
+        Returns:
+            The entry's reservations coordinator.
+        """
+        with (
+            stub_guesty_network(
+                listings=[self._listing()],
+                reservations=list(self._fetch().reservations),
+            ),
+            self._recording(recorded),
+        ):
+            if entry.state is ConfigEntryState.LOADED:
+                await hass.config_entries.async_reload(entry.entry_id)
+            else:
+                entry.add_to_hass(hass)
+                await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+        assert entry.state is ConfigEntryState.LOADED
+        coordinator: ReservationsCoordinator = hass.data[DOMAIN][entry.entry_id][
+            "reservations_coordinator"
+        ]
+        return coordinator
+
+    @staticmethod
+    async def _refresh(
+        coordinator: ReservationsCoordinator, fetch: ReservationFetchResult
+    ) -> None:
+        """Run one coordinator refresh that returns the given records.
+
+        Args:
+            coordinator: The reservations coordinator.
+            fetch: The refresh's fetch result.
+        """
+        with patch(
+            "custom_components.guesty.GuestyApiClient.get_reservations",
+            new_callable=AsyncMock,
+            return_value=fetch,
+        ):
+            await coordinator.async_refresh()
+        assert coordinator.last_update_success
+
+    async def test_step_1_setup_loads_and_revalidates(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """The payload loads, malformed parts go, and writes revalidate."""
+        recorded: list[_RecordedRefresh] = []
+        entry = self._entry(hass_storage)
+
+        await self._setup(hass, entry, recorded)
+
+        first = recorded[0]
+        baseline = first.baseline
+        assert baseline is not None
+        assert baseline.codes == {_UPGRADE_CODE: _UPGRADE_ID}
+        assert baseline.legacy_codes == {}
+        assert baseline.fallback_codes == {}
+        assert set(baseline.candidates) == {_UPGRADE_ID}
+        hint = baseline.candidates[_UPGRADE_ID]
+        assert hint.timing_status == "unknown"
+        assert hint.check_out is None
+        assert baseline.revalidation_pending is True
+        assert first.evidence_state == EVIDENCE_REVALIDATING
+        assert first.refusals == {
+            _UPGRADE_ID: REFUSAL_REVALIDATING,
+            "res-unknown": REFUSAL_REVALIDATING,
+        }
+
+    async def test_step_2_accepted_refresh_saves_minor_two(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """One accepted refresh restores the normal guards."""
+        entry = self._entry(hass_storage)
+
+        coordinator = await self._setup(hass, entry, [])
+
+        entry_data = hass.data[DOMAIN][entry.entry_id]
+        assert self._refusal(entry_data, _UPGRADE_ID) is None
+        with pytest.raises(ReservationIdentityAbsentError):
+            guard_reservation_write(entry_data, "res-unknown", SERVICE_ADD_NOTE)
+        saved = hass_storage[storage_key(entry.entry_id)]
+        evidence = hass_storage[conflict_evidence_storage_key(entry.entry_id)]
+        assert saved["minor_version"] == 2
+        assert saved["data"]["revalidation_pending"] is False
+        assert (
+            saved["data"]["conflict_evidence_generation"]
+            == evidence["data"]["generation"]
+            == coordinator.identity.conflict_evidence.generation
+        )
+        assert coordinator.identity.conflict_evidence.state == EVIDENCE_READY
+
+    async def test_step_3_minor_one_store_reads_the_saved_payload(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """A rolled-back release still loads the upgraded payload."""
+        entry = self._entry(hass_storage)
+        await self._setup(hass, entry, [])
+
+        older = Store[dict[str, Any]](hass, 1, storage_key(entry.entry_id))
+        data = await older.async_load()
+
+        assert data is not None
+        assert data["codes"] == {_UPGRADE_CODE: _UPGRADE_ID}
+        assert IdentityBaseline.from_dict(data).codes == {_UPGRADE_CODE: _UPGRADE_ID}
+
+    async def test_step_4_restart_revalidates_until_stored(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """A restart refuses until its first accepted refresh is stored."""
+        entry = self._entry(hass_storage)
+        await self._setup(hass, entry, [])
+        recorded: list[_RecordedRefresh] = []
+        during_save: list[str | None] = []
+        original_save = _IdentityStore.async_save_checked
+
+        async def _save(self: _IdentityStore, data: dict[str, Any]) -> None:
+            """Probe the restarted guard while its baseline is saved.
+
+            Args:
+                self: The identity store.
+                data: The payload.
+            """
+            if recorded:
+                during_save.append(recorded[0].guard.write_refusal(_UPGRADE_ID))
+            await original_save(self, data)
+
+        with patch.object(_IdentityStore, "async_save_checked", _save):
+            coordinator = await self._setup(hass, entry, recorded)
+
+        assert recorded[0].evidence_state == EVIDENCE_REVALIDATING
+        assert recorded[0].refusals[_UPGRADE_ID] == REFUSAL_REVALIDATING
+        assert during_save == [REFUSAL_REVALIDATING]
+        assert coordinator.identity.conflict_evidence.state == EVIDENCE_READY
+        entry_data = hass.data[DOMAIN][entry.entry_id]
+        assert self._refusal(entry_data, _UPGRADE_ID) is None
+
+    @pytest.mark.parametrize("damage", ["removed", "rolled_back"])
+    async def test_step_5_missing_or_older_evidence_compromises(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any], damage: str
+    ) -> None:
+        """Evidence older than the baseline expects refuses every write."""
+        entry = self._entry(hass_storage)
+        coordinator = await self._setup(hass, entry, [])
+        await self._refresh(coordinator, self._fetch(rejected=True))
+        await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+        key = conflict_evidence_storage_key(entry.entry_id)
+        expected = hass_storage[storage_key(entry.entry_id)]["data"][
+            "conflict_evidence_generation"
+        ]
+        assert expected >= 1
+        if damage == "removed":
+            del hass_storage[key]
+        else:
+            hass_storage[key]["data"]["generation"] = expected - 1
+        recorded: list[_RecordedRefresh] = []
+
+        coordinator = await self._setup(hass, entry, recorded)
+
+        repair = f"{REFUSAL_EVIDENCE_UNAVAILABLE} {REFUSAL_EVIDENCE_REPAIR}"
+        assert recorded[0].evidence_state == EVIDENCE_COMPROMISED
+        assert coordinator.identity.conflict_evidence.state == EVIDENCE_COMPROMISED
+        entry_data = hass.data[DOMAIN][entry.entry_id]
+        assert self._refusal(entry_data, _UPGRADE_ID) == repair
+        assert self._refusal(entry_data, "res-unknown") == repair
+
+    async def test_step_6_failed_first_evidence_save_loads_compromised(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """Only the evidence save failing leaves the baseline ahead."""
+        entry = self._entry(hass_storage)
+        coordinator = await self._setup(hass, entry, [])
+        store = coordinator.identity.conflict_evidence._store
+        original_save = store.async_save_checked
+        calls: list[int] = []
+
+        async def _fail_first(data: dict[str, Any]) -> None:
+            """Fail the first evidence save only.
+
+            Args:
+                data: The payload.
+
+            Raises:
+                OSError: On the first call.
+            """
+            calls.append(len(calls))
+            if len(calls) == 1:
+                raise OSError("Storage write failed")
+            await original_save(data)
+
+        with patch.object(store, "async_save_checked", _fail_first):
+            await self._refresh(coordinator, self._fetch(rejected=True))
+        assert calls == [0]
+        recorded: list[_RecordedRefresh] = []
+
+        coordinator = await self._setup(hass, entry, recorded)
+
+        assert recorded[0].evidence_state == EVIDENCE_COMPROMISED
+        assert coordinator.identity.conflict_evidence.state == EVIDENCE_COMPROMISED
+
+    async def test_step_7_failed_identity_save_keeps_the_pair(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """Evidence stored before a failed identity save survives."""
+        entry = self._entry(hass_storage)
+        coordinator = await self._setup(hass, entry, [])
+        key = conflict_evidence_storage_key(entry.entry_id)
+
+        with patch.object(
+            coordinator.identity._store,
+            "async_save_checked",
+            AsyncMock(side_effect=OSError),
+        ):
+            await self._refresh(coordinator, self._fetch(rejected=True))
+        await self._refresh(coordinator, self._fetch())
+
+        stored = {
+            (e["reservation_id"], e["code"])
+            for e in hass_storage[key]["data"]["entries"]
+        }
+        assert stored == {tuple(_UPGRADE_REJECTED)}
+        assert coordinator.identity.conflict_evidence.ids_for(
+            _UPGRADE_REJECTED.code
+        ) == frozenset({_UPGRADE_REJECTED.reservation_id})
+
+    async def test_step_8_unchanged_evidence_restarts_revalidating(
+        self, hass: HomeAssistant, hass_storage: dict[str, Any]
+    ) -> None:
+        """A refresh without evidence changes restarts revalidating."""
+        entry = self._entry(hass_storage)
+        coordinator = await self._setup(hass, entry, [])
+        key = conflict_evidence_storage_key(entry.entry_id)
+        entries = hass_storage[key]["data"]["entries"]
+        await self._refresh(coordinator, self._fetch())
+        assert hass_storage[key]["data"]["entries"] == entries
+        recorded: list[_RecordedRefresh] = []
+
+        coordinator = await self._setup(hass, entry, recorded)
+
+        assert recorded[0].evidence_state == EVIDENCE_REVALIDATING
+        assert recorded[0].refusals[_UPGRADE_ID] == REFUSAL_REVALIDATING
+        assert coordinator.identity.conflict_evidence.state == EVIDENCE_READY

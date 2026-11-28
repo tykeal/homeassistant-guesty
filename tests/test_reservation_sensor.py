@@ -5,12 +5,14 @@
 from __future__ import annotations
 
 from collections.abc import Generator, Mapping
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from freezegun.api import FrozenDateTimeFactory
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import STATE_UNAVAILABLE, EntityCategory
@@ -22,6 +24,7 @@ from custom_components.guesty.api.const import (
     RESERVATIONS_API_LEGACY,
     RESERVATIONS_API_V3,
 )
+from custom_components.guesty.api.exceptions import GuestyConnectionError
 from custom_components.guesty.api.guest_cache import GuestLookupResult
 from custom_components.guesty.api.models import (
     GuestyCustomFieldDefinition,
@@ -126,7 +129,12 @@ def _make_reservation(
 
 
 def test_unknown_timing_publishes_dates_and_source_lifecycle_separately() -> None:
-    """Unknown exact endpoints remain null in selected and upcoming data."""
+    """Unknown exact endpoints remain null in selected and upcoming data.
+
+    Updated for feature 013 (data-model "Publication output", FR-012g):
+    every upcoming item now carries ``stale``, False for a record of
+    an accepted refresh that was not served stale.
+    """
     reservation = GuestyReservation(
         id="res-unknown",
         listing_id="listing-001",
@@ -166,6 +174,7 @@ def test_unknown_timing_publishes_dates_and_source_lifecycle_separately() -> Non
             "timing_status": "unknown",
             "status": "unknown",
             "reservation_status": "confirmed",
+            "stale": False,
         },
     ]
 
@@ -1303,7 +1312,13 @@ class TestSensorErrorResilience:
     def test_sensor_stale_data_accessible_when_coordinator_fails(
         self,
     ) -> None:
-        """Sensor retains data access when coordinator has stale data."""
+        """Sensor retains data access when coordinator has stale data.
+
+        Updated for feature 013 (research R13): availability is now
+        ``last_update_success or stale_display_available``, so the
+        mock declares that no verified snapshot is being displayed;
+        a MagicMock attribute would otherwise be truthy.
+        """
         from unittest.mock import MagicMock
 
         from custom_components.guesty.sensor import (
@@ -1318,6 +1333,7 @@ class TestSensorErrorResilience:
         res_coordinator = MagicMock()
         res_coordinator.data = {"listing-001": [reservation]}
         res_coordinator.last_update_success = False
+        res_coordinator.stale_display_available = False
         listings_coordinator = MagicMock()
         listings_coordinator.data = {"listing-001": MagicMock()}
 
@@ -1337,7 +1353,12 @@ class TestSensorErrorResilience:
     def test_sensor_recovers_with_fresh_data(
         self,
     ) -> None:
-        """Sensors recover to fresh data when API succeeds (US5-S3)."""
+        """Sensors recover to fresh data when API succeeds (US5-S3).
+
+        Updated for feature 013 (research R13): the mock declares no
+        displayed stale snapshot, which is what keeps the failed
+        coordinator's entity unavailable.
+        """
         from unittest.mock import MagicMock
 
         from custom_components.guesty.sensor import (
@@ -1354,6 +1375,7 @@ class TestSensorErrorResilience:
         )
 
         res_coordinator = MagicMock()
+        res_coordinator.stale_display_available = False
         listings_coordinator = MagicMock()
         listings_coordinator.data = {"listing-001": MagicMock()}
 
@@ -1380,7 +1402,12 @@ class TestSensorErrorResilience:
     def test_unavailable_during_outage_prevents_misfire(
         self,
     ) -> None:
-        """Unavailable state during outage prevents automation misfire."""
+        """Unavailable state during outage prevents automation misfire.
+
+        Updated for feature 013 (research R13): this is the outage
+        with no displayable verified snapshot, so the mock sets
+        ``stale_display_available`` False explicitly.
+        """
         from unittest.mock import MagicMock
 
         from custom_components.guesty.sensor import (
@@ -1395,6 +1422,7 @@ class TestSensorErrorResilience:
         res_coordinator = MagicMock()
         res_coordinator.data = {"listing-001": [reservation]}
         res_coordinator.last_update_success = False
+        res_coordinator.stale_display_available = False
         listings_coordinator = MagicMock()
         listings_coordinator.data = {"listing-001": MagicMock()}
 
@@ -1471,7 +1499,12 @@ class TestReservationSensorEdgeCases:
     def test_available_false_when_coordinator_unhealthy(
         self,
     ) -> None:
-        """available returns False when coordinator is unhealthy."""
+        """available returns False when coordinator is unhealthy.
+
+        Updated for feature 013 (research R13): availability also
+        admits a displayed stale snapshot, so the mock states that
+        none is displayed.
+        """
         from unittest.mock import MagicMock
 
         from custom_components.guesty.sensor import (
@@ -1480,8 +1513,9 @@ class TestReservationSensorEdgeCases:
 
         res_coordinator = MagicMock()
         res_coordinator.data = {"listing-001": []}
-        # CoordinatorEntity.available checks last_update_success
+        # Availability checks last_update_success or a stale display.
         res_coordinator.last_update_success = False
+        res_coordinator.stale_display_available = False
         listings_coordinator = MagicMock()
 
         entry = _make_entry()
@@ -2154,7 +2188,12 @@ class TestFinancialDiagnosticSensors:
     def test_financial_sensor_available_false_unhealthy(
         self,
     ) -> None:
-        """Financial sensor unavailable when coordinator unhealthy."""
+        """Financial sensor unavailable when coordinator unhealthy.
+
+        Updated for feature 013 (research R13): availability also
+        admits a displayed stale snapshot, so the mock states that
+        none is displayed.
+        """
         from unittest.mock import MagicMock
 
         from custom_components.guesty.sensor import (
@@ -2165,6 +2204,7 @@ class TestFinancialDiagnosticSensors:
         res_coordinator = MagicMock()
         res_coordinator.data = {"listing-001": []}
         res_coordinator.last_update_success = False
+        res_coordinator.stale_display_available = False
         listings_coordinator = MagicMock()
 
         # The money sensors are a legacy-only surface
@@ -4298,3 +4338,567 @@ class TestFinancialSensorDeprecation:
         total = hass.states.get(self._ENTITY_IDS[0])
         assert total is not None
         assert float(total.state) == 1500.50
+
+
+_STALE_NOW = datetime(2026, 6, 15, 12, tzinfo=UTC)
+_STATUS_ENTITY = "sensor.beach_house_reservation_status"
+_TOTAL_ENTITY = "sensor.beach_house_reservation_total"
+
+
+def _at(days: int, hour: int) -> datetime:
+    """Build an instant relative to the frozen ``_STALE_NOW``.
+
+    Args:
+        days: Day offset from ``_STALE_NOW``.
+        hour: Hour of day, UTC.
+
+    Returns:
+        The instant.
+    """
+    return (_STALE_NOW + timedelta(days=days)).replace(hour=hour)
+
+
+def _timed(listing: GuestyListing) -> GuestyListing:
+    """Give a listing a verified zone and default stay times.
+
+    Args:
+        listing: The listing to adjust.
+
+    Returns:
+        The listing with verified timing metadata.
+    """
+    return replace(
+        listing,
+        timezone="UTC",
+        timezone_explicit=True,
+        check_in_time="15:00",
+        check_out_time="11:00",
+    )
+
+
+class TestStaleReservationDisplay:
+    """Last-verified data stays visible and marked stale (T028)."""
+
+    @staticmethod
+    def _bookings() -> list[GuestyReservation]:
+        """Build a current legacy stay and a future one.
+
+        Returns:
+            The two reservations, the current one carrying money.
+        """
+        return [
+            _make_reservation(
+                res_id="res-current",
+                status="checked_in",
+                check_in=_at(-1, 15),
+                check_out=_at(2, 11),
+                confirmation_code="CONF-CURRENT",
+                money=GuestyMoney(
+                    total_paid=1500.50,
+                    balance_due=200.00,
+                    currency="USD",
+                ),
+            ),
+            _make_reservation(
+                res_id="res-future",
+                status="confirmed",
+                check_in=_at(5, 15),
+                check_out=_at(7, 11),
+                confirmation_code="CONF-FUTURE",
+            ),
+        ]
+
+    @staticmethod
+    async def _setup(hass: HomeAssistant) -> tuple[MockConfigEntry, Any]:
+        """Load a legacy entry, which also has the financial sensors.
+
+        Args:
+            hass: Home Assistant instance.
+
+        Returns:
+            The loaded entry and its reservations coordinator.
+        """
+        entry = _make_entry(
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        assert entry.state is ConfigEntryState.LOADED
+        coordinator = hass.data[DOMAIN][entry.entry_id]["reservations_coordinator"]
+        return entry, coordinator
+
+    @staticmethod
+    async def _fail(hass: HomeAssistant, coordinator: Any) -> None:
+        """Run one refresh whose reservation fetch fails.
+
+        Args:
+            hass: Home Assistant instance.
+            coordinator: The reservations coordinator.
+        """
+        with patch(
+            "custom_components.guesty.GuestyApiClient.get_reservations",
+            new_callable=AsyncMock,
+            side_effect=GuestyConnectionError("down"),
+        ):
+            await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    async def test_failed_refresh_keeps_entities_available_and_stale(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """A failure marks, rather than hides, verified data (FR-012)."""
+        freezer.move_to(_STALE_NOW)
+        with stub_guesty_network(
+            listings=[_timed(sample_listing)],
+            reservations=self._bookings(),
+        ):
+            _entry, coordinator = await self._setup(hass)
+            before = hass.states.get(_STATUS_ENTITY)
+            assert before is not None
+            assert before.attributes["stale"] is False
+            assert before.attributes["last_verified_at"] is None
+            events: list[Event] = []
+
+            @callback
+            def _capture(event: Event) -> None:
+                """Capture state changes of both stale-marked entities."""
+                if event.data.get("entity_id") in (_STATUS_ENTITY, _TOTAL_ENTITY):
+                    events.append(event)
+
+            hass.bus.async_listen("state_changed", _capture)
+            await self._fail(hass, coordinator)
+
+        assert not coordinator.last_update_success
+        state = hass.states.get(_STATUS_ENTITY)
+        assert state is not None
+        assert state.state == "checked_in"
+        assert state.attributes["reservation_id"] == "res-current"
+        assert state.attributes["stale"] is True
+        assert state.attributes["last_verified_at"] == _STALE_NOW.isoformat()
+        assert [
+            item["stale"] for item in state.attributes["upcoming_reservations"]
+        ] == [True, True]
+        total = hass.states.get(_TOTAL_ENTITY)
+        assert total is not None
+        assert float(total.state) == 1500.50
+        assert total.attributes["stale"] is True
+        assert total.attributes["last_verified_at"] == _STALE_NOW.isoformat()
+        for entity_id in (_STATUS_ENTITY, _TOTAL_ENTITY):
+            seen = [
+                event.data["new_state"]
+                for event in events
+                if event.data["entity_id"] == entity_id
+            ]
+            assert seen
+            assert all(
+                new_state is not None and new_state.state != STATE_UNAVAILABLE
+                for new_state in seen
+            )
+            assert seen[-1].attributes["stale"] is True
+
+    async def test_consecutive_failures_keep_reprojecting(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """A second failure re-projects the same verified data (R10).
+
+        The future stay carries money so that the total, which follows
+        the selected stay, re-projects too instead of becoming
+        unavailable for lack of a financial field (FR-019).
+        """
+        freezer.move_to(_STALE_NOW)
+        current, future = self._bookings()
+        future = replace(
+            future,
+            money=GuestyMoney(total_paid=900.0, balance_due=0.0, currency="USD"),
+        )
+        with stub_guesty_network(
+            listings=[_timed(sample_listing)],
+            reservations=[current, future],
+        ):
+            _entry, coordinator = await self._setup(hass)
+            await self._fail(hass, coordinator)
+            first = hass.states.get(_STATUS_ENTITY)
+            assert first is not None
+            assert first.state == "checked_in"
+            assert first.attributes["reservation_id"] == "res-current"
+            events: list[Event] = []
+
+            @callback
+            def _capture(event: Event) -> None:
+                """Capture state changes of both stale-marked entities."""
+                if event.data.get("entity_id") in (_STATUS_ENTITY, _TOTAL_ENTITY):
+                    events.append(event)
+
+            hass.bus.async_listen("state_changed", _capture)
+            freezer.move_to(_at(3, 12))
+            await self._fail(hass, coordinator)
+
+        assert not coordinator.last_update_success
+        state = hass.states.get(_STATUS_ENTITY)
+        assert state is not None
+        assert state.state != STATE_UNAVAILABLE
+        assert state.attributes["reservation_id"] == "res-future"
+        assert state.attributes["stale"] is True
+        assert state.attributes["last_verified_at"] == _STALE_NOW.isoformat()
+        assert [
+            item["reservation_id"] for item in state.attributes["upcoming_reservations"]
+        ] == ["res-future"]
+        total = hass.states.get(_TOTAL_ENTITY)
+        assert total is not None
+        assert float(total.state) == 900.0
+        assert total.attributes["stale"] is True
+        assert total.attributes["last_verified_at"] == _STALE_NOW.isoformat()
+        assert any(event.data["entity_id"] == _STATUS_ENTITY for event in events)
+        assert all(
+            event.data["new_state"] is not None
+            and event.data["new_state"].state != STATE_UNAVAILABLE
+            for event in events
+        )
+
+    async def test_stale_selected_record_is_marked_on_both_entities(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """A stale selected record marks both entities (FR-012g).
+
+        The refresh itself was accepted, so there is no refresh-level
+        last-verified instant to report.
+        """
+        freezer.move_to(_STALE_NOW)
+        with (
+            stub_guesty_network(listings=[_timed(sample_listing)]),
+            patch(
+                "custom_components.guesty.GuestyApiClient.get_reservations",
+                new_callable=AsyncMock,
+                return_value=make_fetch_result(
+                    self._bookings(),
+                    stale_ids=("res-current",),
+                ),
+            ),
+        ):
+            _entry, coordinator = await self._setup(hass)
+
+        assert coordinator.last_update_success
+        state = hass.states.get(_STATUS_ENTITY)
+        assert state is not None
+        assert state.attributes["reservation_id"] == "res-current"
+        assert state.attributes["stale"] is True
+        assert state.attributes["last_verified_at"] is None
+        assert {
+            item["reservation_id"]: item["stale"]
+            for item in state.attributes["upcoming_reservations"]
+        } == {"res-current": True, "res-future": False}
+        total = hass.states.get(_TOTAL_ENTITY)
+        assert total is not None
+        assert float(total.state) == 1500.50
+        assert total.attributes["stale"] is True
+        assert total.attributes["last_verified_at"] is None
+
+    async def test_no_stale_display_without_projection(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """No verified projection means unavailable, never invented."""
+        freezer.move_to(_STALE_NOW)
+        with stub_guesty_network(
+            listings=[_timed(sample_listing)],
+            reservations=self._bookings(),
+        ):
+            _entry, coordinator = await self._setup(hass)
+            with patch(
+                "custom_components.guesty.coordinator._publish_reservations",
+                side_effect=ValueError("bad projection"),
+            ):
+                await self._fail(hass, coordinator)
+
+        for entity_id in (_STATUS_ENTITY, _TOTAL_ENTITY):
+            state = hass.states.get(entity_id)
+            assert state is not None
+            assert state.state == STATE_UNAVAILABLE
+
+    async def test_accepted_refresh_clears_stale_markers(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """Recovery republishes verified data unmarked (FR-012c)."""
+        freezer.move_to(_STALE_NOW)
+        with stub_guesty_network(
+            listings=[_timed(sample_listing)],
+            reservations=self._bookings(),
+        ):
+            _entry, coordinator = await self._setup(hass)
+            await self._fail(hass, coordinator)
+            await coordinator.async_refresh()
+            await hass.async_block_till_done()
+
+        assert coordinator.last_update_success
+        state = hass.states.get(_STATUS_ENTITY)
+        assert state is not None
+        assert state.attributes["stale"] is False
+        assert state.attributes["last_verified_at"] is None
+        assert [
+            item["stale"] for item in state.attributes["upcoming_reservations"]
+        ] == [False, False]
+        total = hass.states.get(_TOTAL_ENTITY)
+        assert total is not None
+        assert total.attributes["stale"] is False
+
+    async def test_record_level_staleness_marks_only_that_record(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """A fallback-stale record is marked; the refresh is not (FR-012g)."""
+        freezer.move_to(_STALE_NOW)
+        with (
+            stub_guesty_network(listings=[_timed(sample_listing)]),
+            patch(
+                "custom_components.guesty.GuestyApiClient.get_reservations",
+                new_callable=AsyncMock,
+                return_value=make_fetch_result(
+                    self._bookings(),
+                    stale_ids=("res-future",),
+                ),
+            ),
+        ):
+            await self._setup(hass)
+
+        state = hass.states.get(_STATUS_ENTITY)
+        assert state is not None
+        assert state.attributes["reservation_id"] == "res-current"
+        assert state.attributes["stale"] is False
+        assert state.attributes["last_verified_at"] is None
+        assert {
+            item["reservation_id"]: item["stale"]
+            for item in state.attributes["upcoming_reservations"]
+        } == {"res-current": False, "res-future": True}
+
+    def test_unhealthy_coordinator_without_stale_display_is_unavailable(
+        self,
+    ) -> None:
+        """Availability is healthy-or-stale-display, nothing else (R13)."""
+        from unittest.mock import MagicMock
+
+        from custom_components.guesty.sensor import (
+            RESERVATION_FINANCIAL_DESCRIPTIONS,
+            GuestyFinancialSensor,
+            GuestyReservationSensor,
+        )
+
+        res_coordinator = MagicMock()
+        res_coordinator.data = {
+            "listing-001": [
+                _make_reservation(
+                    status="checked_in",
+                    money=GuestyMoney(total_paid=10.0),
+                ),
+            ],
+        }
+        res_coordinator.last_update_success = False
+        listings_coordinator = MagicMock()
+        listings_coordinator.data = {"listing-001": MagicMock()}
+        entry = _make_entry(
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
+        sensors = [
+            GuestyReservationSensor(
+                coordinator=res_coordinator,
+                listings_coordinator=listings_coordinator,
+                listing_id="listing-001",
+                entry=entry,
+            ),
+            GuestyFinancialSensor(
+                coordinator=res_coordinator,
+                listings_coordinator=listings_coordinator,
+                listing_id="listing-001",
+                entry=entry,
+                description=RESERVATION_FINANCIAL_DESCRIPTIONS[0],
+            ),
+        ]
+
+        res_coordinator.stale_display_available = False
+        assert [sensor.available for sensor in sensors] == [False, False]
+        res_coordinator.stale_display_available = True
+        assert [sensor.available for sensor in sensors] == [True, True]
+
+    @pytest.mark.parametrize(
+        ("case", "expected"),
+        [
+            ("listing_missing", [False, False]),
+            ("listings_data_none", [False, False]),
+            ("reservations_data_none", [False, False]),
+            ("money_none", [True, False]),
+        ],
+    )
+    def test_stale_display_keeps_other_availability_checks(
+        self,
+        case: str,
+        expected: list[bool],
+    ) -> None:
+        """A stale display only replaces the coordinator health check (T028).
+
+        Every other availability condition still applies while the
+        last refresh failed and the verified snapshot is displayed:
+        the listing must be tracked, both coordinators must hold
+        data, and a financial sensor needs its money field.
+        """
+        from unittest.mock import MagicMock
+
+        from custom_components.guesty.sensor import (
+            RESERVATION_FINANCIAL_DESCRIPTIONS,
+            GuestyFinancialSensor,
+            GuestyReservationSensor,
+        )
+
+        money = None if case == "money_none" else GuestyMoney(total_paid=10.0)
+        res_coordinator = MagicMock()
+        res_coordinator.data = {
+            "listing-001": [_make_reservation(status="checked_in", money=money)],
+        }
+        res_coordinator.last_update_success = False
+        res_coordinator.stale_display_available = True
+        listings_coordinator = MagicMock()
+        listings_coordinator.data = {"listing-001": MagicMock()}
+        if case == "listing_missing":
+            listings_coordinator.data = {"listing-002": MagicMock()}
+        elif case == "listings_data_none":
+            listings_coordinator.data = None
+        elif case == "reservations_data_none":
+            res_coordinator.data = None
+        entry = _make_entry(
+            options={CONF_RESERVATIONS_API: RESERVATIONS_API_LEGACY},
+        )
+        sensors = [
+            GuestyReservationSensor(
+                coordinator=res_coordinator,
+                listings_coordinator=listings_coordinator,
+                listing_id="listing-001",
+                entry=entry,
+            ),
+            GuestyFinancialSensor(
+                coordinator=res_coordinator,
+                listings_coordinator=listings_coordinator,
+                listing_id="listing-001",
+                entry=entry,
+                description=RESERVATION_FINANCIAL_DESCRIPTIONS[0],
+            ),
+        ]
+
+        assert [sensor.available for sensor in sensors] == expected
+
+
+class TestExpiryBeforeUpcomingLimit:
+    """Expired stays never crowd out a future one (T029, SC-003)."""
+
+    @pytest.mark.parametrize(
+        ("shape", "expected_state"),
+        [
+            ("legacy", "awaiting_checkin"),
+            ("single_v3", "awaiting_checkin"),
+            ("multi_v3", "awaiting_checkin"),
+            ("multi_v3_date_only", "unknown"),
+        ],
+    )
+    async def test_future_stay_survives_eleven_expired(
+        self,
+        hass: HomeAssistant,
+        sample_listing: GuestyListing,
+        freezer: FrozenDateTimeFactory,
+        shape: str,
+        expected_state: str,
+    ) -> None:
+        """Expiry runs before the ten-item upcoming limit.
+
+        A date-only future stay stays an uncertain ``unknown`` with
+        its confirmed lifecycle, so it is listed but claims no
+        occupancy (FR-004a).
+        """
+        freezer.move_to(_STALE_NOW)
+        spans = [(-25 + 2 * index, -24 + 2 * index) for index in range(11)]
+        spans.append((3, 5))
+        ids = [f"res-{index:02d}" for index in range(11)] + ["res-future"]
+        reservations: list[GuestyReservation] = []
+        for res_id, (start, end) in zip(ids, spans, strict=True):
+            if shape == "legacy":
+                reservations.append(
+                    _make_reservation(
+                        res_id=res_id,
+                        status="confirmed",
+                        check_in=_at(start, 15),
+                        check_out=_at(end, 11),
+                        confirmation_code=f"CONF-{res_id}",
+                    ),
+                )
+                continue
+            segments = [
+                GuestyStaySegment(
+                    listing_id="listing-001",
+                    check_in=None,
+                    check_out=None,
+                    check_in_local=_at(start, 0).date().isoformat(),
+                    check_out_local=_at(end, 0).date().isoformat(),
+                    guests_count=2,
+                ),
+            ]
+            if shape.startswith("multi_v3"):
+                segments.append(
+                    GuestyStaySegment(
+                        listing_id="listing-002",
+                        check_in=None,
+                        check_out=None,
+                        check_in_local=_at(end, 0).date().isoformat(),
+                        check_out_local=_at(end + 1, 0).date().isoformat(),
+                        guests_count=2,
+                        raw_position=1,
+                    ),
+                )
+            reservations.append(
+                GuestyReservation(
+                    id=res_id,
+                    listing_id="listing-001",
+                    status="confirmed",
+                    check_in=None,
+                    check_out=None,
+                    confirmation_code=f"CONF-{res_id}",
+                    check_in_local=segments[0].check_in_local,
+                    check_out_local=segments[-1].check_out_local,
+                    is_v3=True,
+                    raw_stay_count=len(segments),
+                    stay=tuple(segments),
+                ),
+            )
+        path = RESERVATIONS_API_LEGACY if shape == "legacy" else RESERVATIONS_API_V3
+        listing = _timed(sample_listing)
+        if shape == "multi_v3_date_only":
+            listing = replace(listing, check_in_time=None, check_out_time=None)
+        entry = _make_entry(options={CONF_RESERVATIONS_API: path})
+        entry.add_to_hass(hass)
+        with stub_guesty_network(
+            listings=[listing],
+            reservations=reservations,
+        ):
+            await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+
+        attributes = _reservation_attributes(hass)
+        assert attributes["reservation_id"] == "res-future"
+        assert [
+            item["reservation_id"] for item in attributes["upcoming_reservations"]
+        ] == ["res-future"]
+        state = hass.states.get(_STATUS_ENTITY)
+        assert state is not None
+        assert state.state == expected_state

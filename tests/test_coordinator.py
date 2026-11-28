@@ -8,11 +8,11 @@ import asyncio
 import logging
 import traceback
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AbstractContextManager, asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
@@ -21,6 +21,7 @@ import pytest
 import respx
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.core import CoreState, HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -47,12 +48,16 @@ from custom_components.guesty.api.exceptions import (
 from custom_components.guesty.api.guest_cache import GuestLookupResult
 from custom_components.guesty.api.models import (
     FallbackCandidate,
+    FallbackCounters,
     GuestyCustomFieldDefinition,
     GuestyGuest,
     GuestyListing,
     GuestyReservation,
     GuestyStaySegment,
+    RejectedCode,
+    ReservationFetchResult,
 )
+from custom_components.guesty.api.validation import ValidationReason
 from custom_components.guesty.const import (
     CONF_CF_SCAN_INTERVAL,
     CONF_CLIENT_ID,
@@ -79,13 +84,21 @@ from custom_components.guesty.coordinator import (
 from custom_components.guesty.diagnostics import async_get_config_entry_diagnostics
 from custom_components.guesty.identity import (
     CONTINUITY_VERIFIED,
+    EVIDENCE_READY,
     MAX_BASELINE_CODES,
+    REFUSAL_AMBIGUOUS,
+    REFUSAL_REVALIDATING,
+    CandidateHint,
+    ConflictOnlyEvidence,
     IdentityBaseline,
+    ReservationIdentityGuard,
+    conflict_evidence_storage_key,
 )
 from tests.conftest import (
     FakeTokenStorage,
     make_fetch_result,
     make_listing_dict,
+    make_reservation_dict,
     make_token_response,
     make_v3_reservation,
     make_v3_search_page,
@@ -2202,6 +2215,16 @@ class TestReservationsCoordinator:
     ) -> None:
         """Fallback dates do not attribute an unknown segment to a known listing.
 
+        Updated for feature 013 (research R4 decision 8): a stay
+        without a verified zone is published only when its segment
+        dates conclusively overlap the window, and the fixture's 2025
+        segment defaults would be trimmed before attribution is ever
+        attempted. The segment's own localized dates are therefore
+        removed and in-window top-level ``checkInDateLocalized`` /
+        ``checkOutDateLocalized`` supplied, so the dates still reach
+        the segment through the feature 010 single-segment fill that
+        this test exercises.
+
         Args:
             hass: The Home Assistant test instance.
             sample_listing: The only tracked listing.
@@ -2217,15 +2240,22 @@ class TestReservationsCoordinator:
                         listingId="unknown-listing",
                         checkIn=None,
                         checkOut=None,
+                        checkInDateLocalized=None,
+                        checkOutDateLocalized=None,
                     ),
                 ],
                 checkIn=check_in.isoformat(),
                 checkOut=check_out.isoformat(),
+                checkInDateLocalized=check_in.date().isoformat(),
+                checkOutDateLocalized=check_out.date().isoformat(),
                 listingId=sample_listing.id,
             ),
         )
         assert parsed is not None
         assert parsed.listing_id == "unknown-listing"
+        assert [
+            (segment.check_in_local, segment.check_out_local) for segment in parsed.stay
+        ] == [(check_in.date().isoformat(), check_out.date().isoformat())]
 
         entry = _make_entry()
         entry.add_to_hass(hass)
@@ -4825,7 +4855,15 @@ class TestWindowTrim:
     def test_unverifiable_date_window_retains_server_bounded_v3_result(
         self,
     ) -> None:
-        """Missing date or explicit zone never guesses an instant."""
+        """Missing date or explicit zone never guesses an instant.
+
+        Updated for feature 013 (research R4 decision 8): without a
+        verified zone a date-only stay is published only when its
+        window membership is conclusive, and an invalid date never
+        is, so ``_within_window`` is now False. The record itself
+        stays valid for writes (FR-008, R11); the name is kept for
+        history.
+        """
         now = datetime(2026, 1, 10, 12, tzinfo=UTC)
         implicit_zone = GuestyListing.from_api_dict(
             make_listing_dict(
@@ -4856,13 +4894,93 @@ class TestWindowTrim:
             ),
         )
 
-        assert _within_window(
+        assert not _within_window(
             reservation,
             now=now,
             past_days=2,
             future_days=5,
             timing_listings={implicit_zone.id: implicit_zone},
             zones={"UTC": ZoneInfo("UTC")},
+        )
+
+    @pytest.mark.parametrize(
+        ("check_in_local", "check_out_local", "instants", "expected"),
+        [
+            (None, None, None, False),
+            ("invalid", "2026-03-01", None, False),
+            ("2025-12-01", None, None, False),
+            (None, "2026-03-01", None, False),
+            ("2026-01-09", None, None, True),
+            ("invalid", "2026-01-11", None, True),
+            (None, None, (-1.0, 1.0), True),
+            (None, None, (30.0, 31.0), False),
+        ],
+        ids=[
+            "no-dates",
+            "unparsable-date",
+            "one-date-before-window",
+            "one-date-after-window",
+            "one-date-in-window",
+            "unparsable-with-date-in-window",
+            "instants-in-window",
+            "instants-out-of-window",
+        ],
+    )
+    def test_verified_zone_without_local_dates_is_inconclusive(
+        self,
+        check_in_local: str | None,
+        check_out_local: str | None,
+        instants: tuple[float, float] | None,
+        expected: bool,
+    ) -> None:
+        """A verified zone never makes missing dates a member (R4 d8).
+
+        Membership must be established from verified local dates (a
+        single known endpoint date inside the window is conclusive,
+        since a stay contains its endpoints) or from verified exact
+        segment instants; anything else is inconclusive, so the stay
+        is not published (it stays writable).
+        """
+        now = datetime(2026, 1, 10, 12, tzinfo=UTC)
+        listing = GuestyListing.from_api_dict(
+            make_listing_dict(_id="listing-001", timezone="UTC"),
+        )
+        assert listing is not None
+        check_in = check_out = None
+        if instants is not None:
+            check_in = now + timedelta(days=instants[0])
+            check_out = now + timedelta(days=instants[1])
+        reservation = GuestyReservation(
+            id="res-undated",
+            listing_id=listing.id,
+            status="confirmed",
+            check_in=None,
+            check_out=None,
+            is_v3=True,
+            partial=True,
+            raw_stay_count=1,
+            stay=(
+                GuestyStaySegment(
+                    listing_id=listing.id,
+                    check_in=check_in,
+                    check_out=check_out,
+                    check_in_local=check_in_local,
+                    check_out_local=check_out_local,
+                    raw_position=0,
+                ),
+            ),
+        )
+
+        assert (
+            _within_window(
+                reservation,
+                now=now,
+                past_days=2,
+                future_days=5,
+                timing_listings={listing.id: listing},
+                zones={"UTC": ZoneInfo("UTC")},
+            )
+            is expected
         )
 
     def test_unknown_timing_order_is_deterministic_after_known_instants(self) -> None:
@@ -5772,3 +5890,2352 @@ class TestAcceptedRefreshSnapshot:
         rendered = repr(snapshot)
         assert "SECRET" not in rendered
         assert "res-1" in rendered
+
+
+# ── Feature 013: conflict-only evidence wiring (T020) ───────────────
+
+
+def _coded(res_id: str, code: str | None = None) -> GuestyReservation:
+    """Build a coded, in-window legacy-shaped reservation.
+
+    Args:
+        res_id: Reservation identifier.
+        code: Its confirmation code; ``CONF-<id>`` when None.
+
+    Returns:
+        The reservation.
+    """
+    return replace(
+        _legacy_res(res_id, "listing-001", 1, 2),
+        confirmation_code=code or f"CONF-{res_id}",
+    )
+
+
+def _evidence_coordinator(
+    hass: HomeAssistant,
+    *fetches: ReservationFetchResult,
+    path: str = RESERVATIONS_API_V3,
+    entry: MockConfigEntry | None = None,
+) -> ReservationsCoordinator:
+    """Build a coordinator over canned fetches on one path.
+
+    Args:
+        hass: Home Assistant instance.
+        *fetches: The fetch results, one per refresh; the last repeats.
+        path: The configured reservation path.
+        entry: The config entry to reuse, as a reload would.
+
+    Returns:
+        The coordinator, with synchronous client helpers stubbed.
+    """
+    if entry is None:
+        entry = _make_entry(options={CONF_RESERVATIONS_API: path})
+        entry.add_to_hass(hass)
+    api_client = AsyncMock()
+    api_client.reservations_api = path
+    queue = list(fetches)
+
+    async def _fetch(**_: object) -> ReservationFetchResult:
+        """Return the next canned fetch, repeating the last."""
+        return queue.pop(0) if len(queue) > 1 else queue[0]
+
+    api_client.get_reservations = AsyncMock(side_effect=_fetch)
+    api_client.acknowledge_absent_reservations = MagicMock()
+    api_client.legacy_write_routing_available = True
+    api_client.resolve_guests = AsyncMock(return_value=GuestLookupResult())
+    listings = AsyncMock()
+    listings.data = {"listing-001": _listing("listing-001")}
+    return ReservationsCoordinator(
+        hass=hass,
+        entry=entry,
+        api_client=api_client,
+        listings_coordinator=listings,
+    )
+
+
+def _evidence_pairs(coordinator: ReservationsCoordinator) -> set[tuple[str, str]]:
+    """Collect every conflict-only pair the coordinator would compare.
+
+    Args:
+        coordinator: The coordinator.
+
+    Returns:
+        ``(code, reservation_id)`` pairs.
+    """
+    evidence = coordinator.identity.conflict_evidence
+    return {
+        pair
+        for stored in evidence.compare_maps(coordinator.reservations_path)
+        for pair in stored.pairs
+    }
+
+
+class TestCoordinatorConflictEvidence:
+    """Coordinator wiring of conflict-only evidence (T020, R7, R8)."""
+
+    async def test_identity_reads_only_verified_records(
+        self, hass: HomeAssistant, freezer: FrozenDateTimeFactory
+    ) -> None:
+        """Partial records feed the comparison as conflict-only pairs."""
+        freezer.move_to(_NOW)
+        partial = replace(_coded("res-2"), partial=True)
+        rejected = (RejectedCode("res-2", "CONF-res-2"),)
+        coordinator = _evidence_coordinator(
+            hass,
+            make_fetch_result(
+                [_coded("res-1"), partial],
+                rejected_ids=("res-2",),
+                rejected_codes=rejected,
+            ),
+        )
+        await coordinator.identity.async_load()
+
+        with patch.object(
+            coordinator.identity, "compare", wraps=coordinator.identity.compare
+        ) as compare:
+            await coordinator.async_refresh()
+
+        assert coordinator.last_update_success
+        records, *_ = compare.call_args.args
+        assert [r.id for r in records] == ["res-1"]
+        assert compare.call_args.kwargs["conflict_only"] == rejected
+        baseline = coordinator.identity.baseline
+        assert baseline is not None
+        assert baseline.codes == {"CONF-res-1": "res-1"}
+        assert _evidence_pairs(coordinator) == {("CONF-res-2", "res-2")}
+
+    async def test_invalid_fallback_pair_is_stored_as_fallback(
+        self,
+        hass: HomeAssistant,
+        hass_storage: dict[str, object],
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """An ``_INVALID`` lookup's pair reaches the store as fallback."""
+        freezer.move_to(_NOW)
+        coordinator = _evidence_coordinator(
+            hass,
+            make_fetch_result(
+                [_coded("res-1")],
+                fallback_invalid_ids=("res-9",),
+                rejected_codes=(RejectedCode("res-9", "CONF-9"),),
+            ),
+        )
+
+        await coordinator.async_refresh()
+
+        key = conflict_evidence_storage_key(coordinator.config_entry.entry_id)
+        stored = cast(dict[str, Any], hass_storage[key])["data"]
+        assert [
+            (e["reservation_id"], e["code"], e["fallback"]) for e in stored["entries"]
+        ] == [("res-9", "CONF-9", True)]
+
+    @pytest.mark.parametrize("map_name", ["codes", "legacy_codes"])
+    async def test_invalid_pair_conflicting_with_stored_map_aborts(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+        map_name: str,
+    ) -> None:
+        """A fallback-invalid pair re-keying a stored code aborts."""
+        freezer.move_to(_NOW)
+        coordinator = _evidence_coordinator(
+            hass,
+            make_fetch_result(
+                [_coded("res-1")],
+                fallback_invalid_ids=("res-9",),
+                rejected_codes=(RejectedCode("res-9", "CONF-9"),),
+            ),
+        )
+        await coordinator.identity.async_load()
+        await coordinator.identity.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_V3,
+                continuity=CONTINUITY_VERIFIED,
+                **{map_name: {"CONF-9": "res-other"}},  # type: ignore[arg-type]
+            )
+        )
+
+        await coordinator.async_refresh()
+
+        assert not coordinator.last_update_success
+        assert coordinator.identity._ambiguous is True
+
+    async def test_stored_invalid_pair_aborts_a_later_refresh(
+        self, hass: HomeAssistant, freezer: FrozenDateTimeFactory
+    ) -> None:
+        """A stored ``_INVALID`` pair still decides the next refresh."""
+        freezer.move_to(_NOW)
+        coordinator = _evidence_coordinator(
+            hass,
+            make_fetch_result(
+                [_coded("res-1")],
+                fallback_invalid_ids=("res-9",),
+                rejected_codes=(RejectedCode("res-9", "CONF-9"),),
+            ),
+            make_fetch_result([_coded("res-1"), _coded("res-other", "CONF-9")]),
+        )
+        await coordinator.async_refresh()
+        assert coordinator.last_update_success
+
+        await coordinator.async_refresh()
+
+        assert not coordinator.last_update_success
+        assert coordinator.identity._ambiguous is True
+
+    async def test_rejected_hints_are_popped_not_retired(
+        self, hass: HomeAssistant, freezer: FrozenDateTimeFactory
+    ) -> None:
+        """Rejected or invalid IDs lose their hint but are not absent."""
+        freezer.move_to(_NOW)
+        coordinator = _evidence_coordinator(
+            hass,
+            make_fetch_result(
+                [_coded("res-x")],
+                rejected_ids=("res-1",),
+                fallback_invalid_ids=("res-9",),
+            ),
+        )
+        hint = CandidateHint(
+            timing_status="known",
+            check_in=(_NOW + timedelta(days=1)).isoformat(),
+            check_out=(_NOW + timedelta(days=2)).isoformat(),
+            observed_at=_NOW.isoformat(),
+        )
+        await coordinator.identity.async_load()
+        await coordinator.identity.async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_V3,
+                continuity=CONTINUITY_VERIFIED,
+                codes={"CONF-res-x": "res-x"},
+                candidates={"res-1": hint, "res-9": hint},
+            )
+        )
+
+        await coordinator.async_refresh()
+
+        baseline = coordinator.identity.baseline
+        assert baseline is not None
+        assert "res-1" not in baseline.candidates
+        assert "res-9" not in baseline.candidates
+        client = cast(AsyncMock, coordinator.api_client)
+        client.acknowledge_absent_reservations.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "failure",
+        ["none", "identity_abort", "after_check", "identity_save", "after_step2"],
+    )
+    async def test_routing_sets_follow_the_stored_baseline(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+        failure: str,
+    ) -> None:
+        """Fallback routing changes only once the baseline is stored.
+
+        An accepted refresh first stores a baseline that serves
+        ``res-f`` through the fallback. The next refresh serves
+        ``res-g`` instead; unless its baseline reaches storage, the
+        routing sets keep following the stored ``res-f`` baseline.
+        """
+        freezer.move_to(_NOW)
+        second = [_coded("res-1"), _coded("res-g")]
+        if failure == "identity_abort":
+            second.append(_coded("res-other", "CONF-res-1"))
+        coordinator = _evidence_coordinator(
+            hass,
+            make_fetch_result(
+                [_coded("res-1"), _coded("res-f")],
+                fallback_served=("res-f",),
+                fallback_sourced=("res-f",),
+            ),
+            make_fetch_result(
+                second,
+                fallback_served=("res-g",),
+                fallback_sourced=("res-g",),
+            ),
+        )
+        identity = coordinator.identity
+        await identity.async_load()
+        await identity.async_store(
+            IdentityBaseline(path=RESERVATIONS_API_V3, continuity=CONTINUITY_VERIFIED)
+        )
+        await coordinator.async_refresh()
+        assert coordinator.last_update_success
+        assert coordinator.fallback_served_ids == frozenset({"res-f"})
+        assert coordinator.fallback_sourced_ids == frozenset({"res-f"})
+        save = identity._store.async_save
+
+        async def _save_then_fail(data: object) -> None:
+            """Write the baseline, then fail with a non-OSError."""
+            await save(data)  # type: ignore[arg-type]
+            raise RuntimeError("after step 2")
+
+        patches: dict[str, AbstractContextManager[object]] = {
+            "after_check": patch.object(
+                coordinator, "_resolve_guests", side_effect=RuntimeError("boom")
+            ),
+            "identity_save": patch.object(
+                identity._store, "async_save", side_effect=OSError("disk full")
+            ),
+            "after_step2": patch.object(identity._store, "async_save", _save_then_fail),
+        }
+        with patches.get(failure, patch.object(coordinator, "_identity_logged_path")):
+            await coordinator.async_refresh()
+
+        if failure == "none":
+            assert coordinator.last_update_success
+            assert coordinator.fallback_served_ids == frozenset({"res-g"})
+            assert coordinator.fallback_sourced_ids == frozenset({"res-g"})
+            return
+        assert coordinator.fallback_served_ids == frozenset({"res-f"})
+        assert coordinator.fallback_sourced_ids == frozenset({"res-f"})
+        if failure == "identity_abort":
+            assert coordinator.last_update_success is False
+            assert identity.write_refusal("res-1") == REFUSAL_AMBIGUOUS
+
+    async def test_write_during_step_three_uses_new_routing(
+        self, hass: HomeAssistant, freezer: FrozenDateTimeFactory
+    ) -> None:
+        """Routing is adopted before the retirement save awaits."""
+        freezer.move_to(_NOW)
+        coordinator = _evidence_coordinator(
+            hass,
+            make_fetch_result(
+                [_coded("res-1")],
+                rejected_ids=("res-x",),
+                rejected_codes=(RejectedCode("res-x", "CONF-res-x"),),
+            ),
+            make_fetch_result(
+                [_coded("res-1"), _coded("res-x"), _coded("res-f")],
+                fallback_served=("res-f",),
+                fallback_sourced=("res-f",),
+            ),
+        )
+        await coordinator.async_refresh()
+        evidence = coordinator.identity.conflict_evidence
+        save = evidence._store.async_save
+        seen: list[frozenset[str]] = []
+
+        async def _save(data: object) -> None:
+            """Capture the routing set each evidence save sees."""
+            seen.append(coordinator.fallback_served_ids)
+            await save(data)  # type: ignore[arg-type]
+
+        with patch.object(evidence._store, "async_save", _save):
+            await coordinator.async_refresh()
+
+        assert seen == [frozenset(), frozenset({"res-f"})]
+        assert _evidence_pairs(coordinator) == set()
+
+    async def test_last_fallback_counters_stay_live(
+        self, hass: HomeAssistant, freezer: FrozenDateTimeFactory
+    ) -> None:
+        """An aborted refresh still reports its fallback counters."""
+        freezer.move_to(_NOW)
+        counters = FallbackCounters(attempted=2, failed=1)
+        coordinator = _evidence_coordinator(
+            hass,
+            make_fetch_result(
+                [_coded("res-1"), _coded("res-2", "CONF-res-1")],
+                fallback=counters,
+            ),
+        )
+
+        await coordinator.async_refresh()
+
+        assert not coordinator.last_update_success
+        assert coordinator.last_fallback_counters == counters
+
+    async def test_repeated_failures_add_no_lookups(
+        self, hass: HomeAssistant, freezer: FrozenDateTimeFactory
+    ) -> None:
+        """Aborted refreshes offer the same fallback candidates."""
+        freezer.move_to(_NOW)
+        coordinator = _evidence_coordinator(
+            hass,
+            make_fetch_result(
+                [_coded("res-1"), _coded("res-2", "CONF-res-1")],
+                fallback_served=("res-f",),
+                fallback_sourced=("res-f",),
+            ),
+        )
+
+        for _ in range(3):
+            await coordinator.async_refresh()
+
+        client = cast(AsyncMock, coordinator.api_client)
+        offered = [
+            c.kwargs["candidates"] for c in client.get_reservations.call_args_list
+        ]
+        assert len(offered) == 3
+        assert all(candidates == offered[0] for candidates in offered)
+        assert coordinator.fallback_served_ids == frozenset()
+
+    async def test_past_days_supplier_follows_options(
+        self, hass: HomeAssistant, freezer: FrozenDateTimeFactory
+    ) -> None:
+        """A wider window revalidates without a reload."""
+        freezer.move_to(_NOW)
+        coordinator = _evidence_coordinator(
+            hass,
+            make_fetch_result([_coded("res-1")]),
+            path=RESERVATIONS_API_LEGACY,
+        )
+        await coordinator.async_refresh()
+        assert coordinator.identity.write_refusal("res-1") is None
+
+        hass.config_entries.async_update_entry(
+            coordinator.config_entry,
+            options={**coordinator.config_entry.options, CONF_PAST_DAYS: 60},
+        )
+        assert coordinator.identity.write_refusal("res-1") == REFUSAL_REVALIDATING
+
+        await coordinator.async_refresh()
+        assert coordinator.identity.write_refusal("res-1") is None
+
+    async def test_conflict_evidence_is_the_014_adapter_target(
+        self, hass: HomeAssistant, freezer: FrozenDateTimeFactory
+    ) -> None:
+        """014 reads ``coordinator.identity.conflict_evidence``."""
+        freezer.move_to(_NOW)
+        coordinator = _evidence_coordinator(
+            hass,
+            make_fetch_result(
+                [_coded("res-1")],
+                rejected_ids=("res-2",),
+                rejected_codes=(RejectedCode("res-2", "CONF-res-2"),),
+            ),
+            path=RESERVATIONS_API_LEGACY,
+        )
+        evidence = coordinator.identity.conflict_evidence
+        assert isinstance(evidence, ConflictOnlyEvidence)
+        assert evidence.available() is False
+
+        await coordinator.async_refresh()
+
+        assert evidence.available() is True
+        assert evidence.codes_for("res-2") == frozenset({"CONF-res-2"})
+        assert evidence.ids_for("CONF-res-2") == frozenset({"res-2"})
+
+    async def test_source_switch_reload_fails_closed(
+        self, hass: HomeAssistant, freezer: FrozenDateTimeFactory
+    ) -> None:
+        """A reload onto the other source reuses nothing unproven."""
+        freezer.move_to(_NOW)
+        legacy = _evidence_coordinator(
+            hass,
+            make_fetch_result([_coded("res-1"), _coded("res-2")]),
+            path=RESERVATIONS_API_LEGACY,
+        )
+        await legacy.async_refresh()
+        assert legacy.identity.write_refusal("res-1") is None
+        entry = legacy.config_entry
+        hass.config_entries.async_update_entry(
+            entry, options={**entry.options, CONF_RESERVATIONS_API: RESERVATIONS_API_V3}
+        )
+
+        v3 = _evidence_coordinator(
+            hass,
+            make_fetch_result(
+                [_coded("res-1")],
+                rejected_ids=("res-3",),
+                rejected_codes=(RejectedCode("res-3", "CONF-res-3"),),
+            ),
+            entry=entry,
+        )
+        await v3.identity.async_load()
+
+        assert v3.fallback_served_ids == frozenset()
+        assert v3.fallback_sourced_ids == frozenset()
+        assert v3.identity.write_refusal("res-1") == REFUSAL_REVALIDATING
+
+        await v3.async_refresh()
+
+        client = cast(AsyncMock, v3.api_client)
+        client.acknowledge_absent_reservations.assert_not_called()
+        assert v3.identity.write_refusal("res-1") is None
+        refusal = v3.identity.classify_write_refusal("res-2")
+        assert refusal is not None
+        assert refusal.missing_current_code is True
+        rejected = v3.identity.classify_write_refusal("res-3")
+        assert rejected is not None
+        assert rejected.missing_current_code is True
+
+
+def _timed_listing(
+    listing_id: str,
+    *,
+    timezone: str = "UTC",
+    check_in_time: str | None = "15:00",
+    check_out_time: str | None = "11:00",
+) -> GuestyListing:
+    """Build a listing with explicit timing metadata.
+
+    Args:
+        listing_id: The listing identifier.
+        timezone: The listing timezone; empty for the model default.
+        check_in_time: Default local check-in time, or None.
+        check_out_time: Default local check-out time, or None.
+
+    Returns:
+        The parsed listing.
+    """
+    listing = GuestyListing.from_api_dict(
+        make_listing_dict(
+            _id=listing_id,
+            timezone=timezone,
+            defaultCheckInTime=check_in_time,
+            defaultCheckOutTime=check_out_time,
+        ),
+    )
+    assert listing is not None
+    return listing
+
+
+def _dated_seg(
+    listing_id: str,
+    check_in_local: str,
+    check_out_local: str,
+    *,
+    position: int = 0,
+    guests: int | None = 2,
+) -> GuestyStaySegment:
+    """Build a verified v3 segment carrying listing-local dates only.
+
+    Args:
+        listing_id: Listing the segment belongs to.
+        check_in_local: Listing-local check-in date.
+        check_out_local: Listing-local check-out date.
+        position: Raw position in the source ``stay`` array.
+        guests: Party size of the segment.
+
+    Returns:
+        The unresolved segment, as the v3 source builds it.
+    """
+    return GuestyStaySegment(
+        listing_id=listing_id,
+        check_in=None,
+        check_out=None,
+        check_in_local=check_in_local,
+        check_out_local=check_out_local,
+        guests_count=guests,
+        raw_position=position,
+    )
+
+
+def _dated_v3(
+    res_id: str,
+    segments: list[GuestyStaySegment],
+    *,
+    status: str = "confirmed",
+    raw_stay_count: int | None = None,
+    partial: bool = False,
+) -> GuestyReservation:
+    """Build a v3 record shaped like ``from_v3_api_dict`` output.
+
+    Args:
+        res_id: Reservation identifier.
+        segments: The verified segments, in raw order.
+        status: Mapped reservation status.
+        raw_stay_count: Entries in the raw ``stay`` array.
+        partial: Whether any raw segment was rejected.
+
+    Returns:
+        The record; a partial one has no reservation-level span.
+    """
+    return GuestyReservation(
+        id=res_id,
+        listing_id=segments[0].listing_id,
+        status=status,
+        check_in=None,
+        check_out=None,
+        confirmation_code=f"CONF-{res_id}",
+        check_in_local=None if partial else segments[0].check_in_local,
+        check_out_local=None if partial else segments[-1].check_out_local,
+        guests_count=None if partial else segments[0].guests_count,
+        is_v3=True,
+        raw_stay_count=raw_stay_count or len(segments),
+        partial=partial,
+        stay=tuple(segments),
+    )
+
+
+def _published_coordinator(
+    hass: HomeAssistant,
+    reservations: list[GuestyReservation],
+    listings: list[GuestyListing],
+    *,
+    past_days: int = 30,
+    future_days: int = 30,
+) -> ReservationsCoordinator:
+    """Build a coordinator over canned records and timing listings.
+
+    Args:
+        hass: Home Assistant instance.
+        reservations: Records each refresh returns.
+        listings: Tracked listings, which also carry the timing data.
+        past_days: Configured past window.
+        future_days: Configured future window.
+
+    Returns:
+        The coordinator, with synchronous client helpers stubbed.
+    """
+    entry = _make_entry(
+        options={CONF_PAST_DAYS: past_days, CONF_FUTURE_DAYS: future_days},
+    )
+    entry.add_to_hass(hass)
+    coordinator = _build_coordinator(
+        hass,
+        reservations,
+        [],
+        entry=entry,
+        fetch_counters={
+            "returned_ids": tuple(sorted(r.id for r in reservations)),
+        },
+    )
+    by_id = {listing.id: listing for listing in listings}
+    listings_coordinator = cast(AsyncMock, coordinator.listings_coordinator)
+    listings_coordinator.data = by_id
+    listings_coordinator.timing_listings = by_id
+    client = cast(AsyncMock, coordinator.api_client)
+    client.acknowledge_absent_reservations = MagicMock()
+    client.legacy_write_routing_available = True
+    return coordinator
+
+
+def _published(
+    data: dict[str, list[GuestyReservation]],
+    listing_id: str,
+    res_id: str,
+) -> GuestyReservation:
+    """Return the one projection of a reservation on a listing.
+
+    Args:
+        data: Published coordinator data.
+        listing_id: The listing to read.
+        res_id: The reservation identifier.
+
+    Returns:
+        The projection.
+    """
+    matches = [r for r in data.get(listing_id, []) if r.id == res_id]
+    assert len(matches) == 1, (listing_id, res_id, data)
+    return matches[0]
+
+
+class TestVerifiedPublication:
+    """Verified-timezone expiry, uncertainty and window rules (T025)."""
+
+    def test_verified_timezone_predicate(self) -> None:
+        """Only an explicit, loadable zone is verified (R4 decision 1)."""
+        from custom_components.guesty.coordinator import _verified_timezone
+
+        utc = ZoneInfo("UTC")
+        zones: dict[str, ZoneInfo | None] = {"UTC": utc, "Not/AZone": None}
+        explicit_utc = _timed_listing("listing-001", timezone="UTC")
+        model_default = _timed_listing("listing-001", timezone="")
+        invalid = _timed_listing("listing-001", timezone="Not/AZone")
+        unloaded = _timed_listing("listing-001", timezone="America/New_York")
+
+        assert model_default.timezone == "UTC"
+        assert not model_default.timezone_explicit
+        assert _verified_timezone(explicit_utc, zones) is utc
+        assert _verified_timezone(model_default, zones) is None
+        assert _verified_timezone(invalid, zones) is None
+        assert _verified_timezone(unloaded, zones) is None
+        assert _verified_timezone(None, zones) is None
+
+    @pytest.mark.parametrize(
+        "shape",
+        [
+            "single_v3_exact",
+            "single_v3_date_only",
+            "single_v3_local_day_ahead",
+            "multi_v3_exact",
+            "multi_v3_date_only",
+            "legacy",
+        ],
+    )
+    async def test_past_confirmed_stay_expires(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+        shape: str,
+    ) -> None:
+        """A conclusively past stay is history, not current (FR-004)."""
+        freezer.move_to(_NOW)
+        if shape == "legacy":
+            listings = [_timed_listing("listing-001")]
+            reservation = replace(
+                _legacy_res("res-past", "listing-001", -5, -3),
+                confirmation_code="CONF-res-past",
+            )
+        elif shape.startswith("multi"):
+            times = ("15:00", "11:00") if shape == "multi_v3_exact" else (None, None)
+            listings = [
+                _timed_listing(
+                    listing_id,
+                    check_in_time=times[0],
+                    check_out_time=times[1],
+                )
+                for listing_id in ("listing-001", "listing-002")
+            ]
+            reservation = _dated_v3(
+                "res-past",
+                [
+                    _dated_seg("listing-002", "2026-06-08", "2026-06-10"),
+                    _dated_seg(
+                        "listing-001",
+                        "2026-06-10",
+                        "2026-06-12",
+                        position=1,
+                    ),
+                ],
+            )
+        else:
+            check_out_local = "2026-06-12"
+            if shape == "single_v3_exact":
+                listing = _timed_listing("listing-001")
+            elif shape == "single_v3_date_only":
+                listing = _timed_listing(
+                    "listing-001",
+                    check_in_time=None,
+                    check_out_time=None,
+                )
+            else:
+                # Local time is already 2026-06-16 at Kiritimati (+14).
+                listing = _timed_listing(
+                    "listing-001",
+                    timezone="Pacific/Kiritimati",
+                    check_in_time=None,
+                    check_out_time=None,
+                )
+                check_out_local = "2026-06-15"
+            listings = [listing]
+            reservation = _dated_v3(
+                "res-past",
+                [_dated_seg("listing-001", "2026-06-10", check_out_local)],
+            )
+        coordinator = _published_coordinator(hass, [reservation], listings)
+
+        data = await coordinator._async_update_data()
+
+        projection = _published(data, "listing-001", "res-past")
+        assert projection.status == "checked_out"
+        assert projection.reservation_status is None
+
+    @pytest.mark.parametrize("shape", ["single", "multi", "local_day_ahead"])
+    async def test_checkout_day_is_uncertain(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+        shape: str,
+    ) -> None:
+        """A date-only checkout on the local day is uncertain (FR-004a)."""
+        freezer.move_to(_NOW)
+        timezone = "Pacific/Kiritimati" if shape == "local_day_ahead" else "UTC"
+        listings = [
+            _timed_listing(
+                listing_id,
+                timezone=timezone,
+                check_in_time=None,
+                check_out_time=None,
+            )
+            for listing_id in ("listing-001", "listing-002")
+        ]
+        if shape == "multi":
+            segments = [
+                _dated_seg("listing-002", "2026-06-10", "2026-06-12"),
+                _dated_seg("listing-001", "2026-06-12", "2026-06-15", position=1),
+            ]
+        elif shape == "single":
+            segments = [_dated_seg("listing-001", "2026-06-12", "2026-06-15")]
+        else:
+            segments = [_dated_seg("listing-001", "2026-06-13", "2026-06-16")]
+        coordinator = _published_coordinator(
+            hass,
+            [_dated_v3("res-today", segments)],
+            listings,
+        )
+
+        data = await coordinator._async_update_data()
+
+        projection = _published(data, "listing-001", "res-today")
+        assert projection.status == "unknown"
+        assert projection.reservation_status == "confirmed"
+        assert projection.timing_status == "unknown"
+
+    async def test_unverified_timezone_expiry_bound(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """Without a verified zone only a conclusive past expires (R4 d5)."""
+        freezer.move_to(_NOW)
+        listing = _timed_listing("listing-001", timezone="")
+        records = [
+            _dated_v3(
+                "res-expired",
+                [_dated_seg("listing-001", "2026-06-10", "2026-06-13")],
+            ),
+            _dated_v3(
+                "res-boundary",
+                [_dated_seg("listing-001", "2026-06-10", "2026-06-14")],
+            ),
+            _dated_v3(
+                "res-ahead",
+                [_dated_seg("listing-001", "2026-06-14", "2026-06-20")],
+            ),
+        ]
+        coordinator = _published_coordinator(hass, records, [listing])
+
+        data = await coordinator._async_update_data()
+
+        expired = _published(data, "listing-001", "res-expired")
+        assert expired.status == "checked_out"
+        assert expired.reservation_status is None
+        for res_id in ("res-boundary", "res-ahead"):
+            uncertain = _published(data, "listing-001", res_id)
+            assert uncertain.status == "unknown"
+            assert uncertain.reservation_status == "confirmed"
+            assert uncertain.timing_status == "unknown"
+
+    async def test_unverified_timezone_window_is_conclusive(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """An inconclusive stay is unpublished yet writable (R4 d8, R11)."""
+        freezer.move_to(_NOW)
+        listing = _timed_listing("listing-001", timezone="")
+        inside = {
+            "res-in-low": ("2026-06-12", "2026-06-14"),
+            "res-in-high": ("2026-06-19", "2026-06-21"),
+        }
+        inconclusive = {
+            "res-out-low": ("2026-06-11", "2026-06-13"),
+            "res-out-high": ("2026-06-20", "2026-06-22"),
+        }
+        records = [
+            _dated_v3(res_id, [_dated_seg("listing-001", *dates)])
+            for res_id, dates in {**inside, **inconclusive}.items()
+        ]
+        coordinator = _published_coordinator(
+            hass,
+            records,
+            [listing],
+            past_days=2,
+            future_days=5,
+        )
+        await coordinator.identity.async_load()
+        # A previously verified v3 entry; a fresh one stays
+        # unconfirmed until legacy evidence exists (FR-031d), which
+        # would refuse every write regardless of publication.
+        await coordinator.identity.async_store(
+            IdentityBaseline(
+                path=coordinator.reservations_path,
+                continuity=CONTINUITY_VERIFIED,
+            )
+        )
+
+        await coordinator.async_refresh()
+
+        assert coordinator.last_update_success
+        assert {r.id for r in coordinator.data["listing-001"]} == set(inside)
+        snapshot = coordinator.accepted_refresh_snapshot()
+        assert snapshot is not None
+        assert set(snapshot.records) == set(inside) | set(inconclusive)
+        assert coordinator.identity.conflict_evidence.state == EVIDENCE_READY
+        for res_id in (*inside, *inconclusive):
+            assert coordinator.identity.write_refusal(res_id) is None
+
+    async def test_partial_stay_projection(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """Only verified segments of a partial record count (FR-005b)."""
+        freezer.move_to(_NOW)
+        listings = [
+            _timed_listing("listing-001"),
+            _timed_listing("listing-002"),
+        ]
+        single = _dated_v3(
+            "res-single",
+            [
+                _dated_seg(
+                    "listing-001",
+                    "2026-06-10",
+                    "2026-06-12",
+                    position=1,
+                    guests=3,
+                ),
+            ],
+            raw_stay_count=2,
+            partial=True,
+        )
+        gap = _dated_v3(
+            "res-gap",
+            [
+                _dated_seg("listing-001", "2026-06-01", "2026-06-03"),
+                _dated_seg("listing-002", "2026-07-20", "2026-07-25", position=2),
+            ],
+            raw_stay_count=3,
+            partial=True,
+        )
+        handoff = _dated_v3(
+            "res-handoff",
+            [
+                _dated_seg("listing-002", "2026-06-14", "2026-06-16"),
+                _dated_seg("listing-001", "2026-06-16", "2026-06-18", position=2),
+            ],
+            raw_stay_count=3,
+            partial=True,
+        )
+        coordinator = _published_coordinator(
+            hass,
+            [single, gap, handoff],
+            listings,
+            past_days=5,
+            future_days=5,
+        )
+
+        resolved = await coordinator._resolve_v3_reservations((handoff,))
+        assert resolved[0].check_in is None
+        assert resolved[0].check_out is None
+        assert resolved[0].check_in_local is None
+        assert resolved[0].check_out_local is None
+        assert resolved[0].guests_count is None
+
+        data = await coordinator._async_update_data()
+
+        projection = _published(data, "listing-001", "res-single")
+        assert projection.status == "checked_out"
+        assert projection.check_in == datetime(2026, 6, 10, 15, tzinfo=UTC)
+        assert projection.check_out == datetime(2026, 6, 12, 11, tzinfo=UTC)
+        assert projection.nights_count == 2
+        assert projection.guests_count == 3
+        assert all(r.id != "res-gap" for rows in data.values() for r in rows)
+        destination = _published(data, "listing-001", "res-handoff")
+        assert destination.check_in == datetime(2026, 6, 16, 15, tzinfo=UTC)
+
+    def test_unrecognized_status_from_sources_is_never_published(self) -> None:
+        """Neither source can produce an unrecognized status (FR-005)."""
+        from custom_components.guesty.api.validation import assess_legacy_record
+
+        assert (
+            GuestyReservation.from_v3_api_dict(
+                make_v3_reservation("res-001", status="mystery"),
+            )
+            is None
+        )
+        assert not assess_legacy_record(
+            make_reservation_dict(status="mystery"),
+        ).accepted
+
+    async def test_verified_exact_instants_and_dst_handling_unchanged(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """Baseline: verified exact instants and gap or fold refusal."""
+        freezer.move_to(datetime(2026, 3, 1, 12, tzinfo=UTC))
+        new_york = ZoneInfo("America/New_York")
+        gap_listing = _timed_listing(
+            "listing-001",
+            timezone="America/New_York",
+            check_in_time="02:30",
+        )
+        fold_listing = _timed_listing(
+            "listing-002",
+            timezone="America/New_York",
+            check_in_time="01:30",
+        )
+        records = [
+            _dated_v3(
+                "res-normal",
+                [_dated_seg("listing-001", "2026-03-03", "2026-03-05")],
+            ),
+            _dated_v3(
+                "res-gap",
+                [_dated_seg("listing-001", "2026-03-08", "2026-03-10")],
+            ),
+            _dated_v3(
+                "res-fold",
+                [_dated_seg("listing-002", "2026-11-01", "2026-11-03")],
+            ),
+        ]
+        coordinator = _published_coordinator(
+            hass,
+            records,
+            [gap_listing, fold_listing],
+            future_days=365,
+        )
+
+        data = await coordinator._async_update_data()
+
+        normal = _published(data, "listing-001", "res-normal")
+        assert normal.check_in == datetime(2026, 3, 3, 2, 30, tzinfo=new_york)
+        assert normal.check_out == datetime(2026, 3, 5, 11, tzinfo=new_york)
+        assert normal.status == "confirmed"
+        gap = _published(data, "listing-001", "res-gap")
+        assert gap.check_in is None
+        assert gap.check_out == datetime(2026, 3, 10, 11, tzinfo=new_york)
+        assert gap.status == "unknown"
+        assert gap.reservation_status == "confirmed"
+        fold = _published(data, "listing-002", "res-fold")
+        assert fold.check_in is None
+        assert fold.status == "unknown"
+
+
+def _stay(res_id: str, start_days: float, end_days: float) -> GuestyReservation:
+    """Build a coded legacy-shaped stay relative to ``_NOW``.
+
+    Args:
+        res_id: Reservation identifier.
+        start_days: Days from ``_NOW`` the stay starts.
+        end_days: Days from ``_NOW`` the stay ends.
+
+    Returns:
+        The reservation, with a confirmation code.
+    """
+    return replace(
+        _legacy_res(res_id, "listing-001", start_days, end_days),
+        confirmation_code=f"CONF-{res_id}",
+    )
+
+
+async def _stale_coordinator(
+    hass: HomeAssistant,
+    reservations: list[GuestyReservation],
+    **fetch_counters: object,
+) -> ReservationsCoordinator:
+    """Build a coordinator and complete one accepted refresh.
+
+    Args:
+        hass: Home Assistant instance.
+        reservations: Records the first refresh accepts.
+        **fetch_counters: Further fields of the first fetch result.
+
+    Returns:
+        The coordinator after its first accepted refresh.
+    """
+    entry = _make_entry(options={CONF_PAST_DAYS: 30, CONF_FUTURE_DAYS: 30})
+    entry.add_to_hass(hass)
+    fetch_counters.setdefault(
+        "returned_ids",
+        tuple(sorted(r.id for r in reservations)),
+    )
+    coordinator = _build_coordinator(
+        hass,
+        reservations,
+        ["listing-001"],
+        entry=entry,
+        fetch_counters=fetch_counters,
+    )
+    client = cast(AsyncMock, coordinator.api_client)
+    client.acknowledge_absent_reservations = MagicMock()
+    client.legacy_write_routing_available = True
+    await coordinator.identity.async_load()
+    await coordinator.async_refresh()
+    assert coordinator.last_update_success
+    return coordinator
+
+
+def _ids(data: dict[str, list[GuestyReservation]] | None) -> set[str]:
+    """Return every reservation identifier in published data.
+
+    Args:
+        data: Published coordinator data.
+
+    Returns:
+        The identifiers.
+    """
+    return {r.id for rows in (data or {}).values() for r in rows}
+
+
+class TestStaleSnapshot:
+    """The memory-only verified display snapshot (T027)."""
+
+    async def test_snapshot_stored_after_every_accepted_refresh(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """Each accepted refresh replaces the snapshot wholesale."""
+        freezer.move_to(_NOW)
+        current = _stay("res-current", -1, 1)
+        future = _stay("res-future", 5, 6)
+        coordinator = await _stale_coordinator(hass, [current, future])
+
+        snapshot = coordinator._verified_snapshot
+        assert snapshot is not None
+        assert {r.id for r in snapshot.reservations} == {
+            "res-current",
+            "res-future",
+        }
+        assert snapshot.accepted_at == _NOW
+        assert snapshot.stale_ids == frozenset()
+        assert coordinator.snapshot_stale is False
+
+        client = cast(AsyncMock, coordinator.api_client)
+        client.get_reservations.return_value = make_fetch_result(
+            [future],
+            returned_ids=("res-future",),
+        )
+        freezer.tick(timedelta(minutes=15))
+        await coordinator.async_refresh()
+
+        snapshot = coordinator._verified_snapshot
+        assert snapshot is not None
+        assert {r.id for r in snapshot.reservations} == {"res-future"}
+        assert snapshot.accepted_at == _NOW + timedelta(minutes=15)
+
+    async def test_snapshot_not_gated_on_identity_storage(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """Unlike the routing evidence, display needs no stored baseline."""
+        freezer.move_to(_NOW)
+        entry = _make_entry()
+        entry.add_to_hass(hass)
+        coordinator = _snapshot_coordinator(hass, [_stay("res-current", -1, 1)])
+        await coordinator.identity.async_load()
+
+        with patch.object(
+            coordinator.identity._store,
+            "async_save",
+            side_effect=OSError("disk full"),
+        ):
+            await coordinator.async_refresh()
+
+        assert coordinator.last_update_success
+        assert coordinator._accepted_snapshot is None
+        snapshot = coordinator._verified_snapshot
+        assert snapshot is not None
+        assert {r.id for r in snapshot.reservations} == {"res-current"}
+
+    async def test_failed_identity_save_still_replaces_display_snapshot(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """A record a later refresh rejected never returns (FR-012b)."""
+        freezer.move_to(_NOW)
+        current = _stay("res-current", -1, 1)
+        future = _stay("res-future", 5, 6)
+        coordinator = await _stale_coordinator(hass, [current, future])
+        client = cast(AsyncMock, coordinator.api_client)
+        client.get_reservations.return_value = make_fetch_result(
+            [future],
+            returned_ids=("res-current", "res-future"),
+            rejected_ids=("res-current",),
+        )
+        with patch.object(
+            coordinator.identity._store,
+            "async_save",
+            side_effect=OSError("disk full"),
+        ):
+            await coordinator.async_refresh()
+        assert coordinator.last_update_success
+
+        client.get_reservations.side_effect = GuestyConnectionError("down")
+        await coordinator.async_refresh()
+
+        assert not coordinator.last_update_success
+        assert coordinator.stale_display_available
+        assert _ids(coordinator.data) == {"res-future"}
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            "update_failed",
+            "search_rejected",
+            "identity_abort",
+            "other_exception",
+            "cancelled",
+        ],
+    )
+    async def test_failed_refresh_reprojects_snapshot(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+        failure: str,
+    ) -> None:
+        """Stale state is set before Home Assistant notifies (R10)."""
+        freezer.move_to(_NOW)
+        current = _stay("res-current", -1, 1)
+        future = _stay("res-future", 5, 6)
+        coordinator = await _stale_coordinator(hass, [current, future])
+        assert _ids(coordinator.data) == {"res-current", "res-future"}
+        seen: list[tuple[bool, bool, set[str], list[str]]] = []
+
+        def _listener() -> None:
+            """Record what a listener sees when notified."""
+            rows = (coordinator.data or {}).get("listing-001", [])
+            seen.append(
+                (
+                    coordinator.last_update_success,
+                    coordinator.snapshot_stale,
+                    _ids(coordinator.data),
+                    [r.status for r in rows],
+                ),
+            )
+
+        unsubscribe = coordinator.async_add_listener(_listener)
+        # The current stay has ended, and the narrowed future window
+        # no longer reaches the future stay.
+        freezer.move_to(_NOW + timedelta(days=2))
+        hass.config_entries.async_update_entry(
+            coordinator.config_entry,
+            options={CONF_PAST_DAYS: 30, CONF_FUTURE_DAYS: 2},
+        )
+        client = cast(AsyncMock, coordinator.api_client)
+        context: AbstractContextManager[Any]
+        context = patch.object(coordinator, "_async_timezone")
+        if failure == "update_failed":
+            client.get_reservations.side_effect = GuestyConnectionError("down")
+        elif failure == "search_rejected":
+            client.get_reservations.side_effect = GuestyFilterRejectedError("no")
+        elif failure == "identity_abort":
+            await coordinator.identity.async_store(
+                IdentityBaseline(
+                    path=coordinator.reservations_path,
+                    continuity=CONTINUITY_VERIFIED,
+                    codes={"CONF-res-current": "res-other"},
+                ),
+            )
+        else:
+            error: BaseException = (
+                RuntimeError("boom")
+                if failure == "other_exception"
+                else asyncio.CancelledError()
+            )
+            context = patch.object(
+                coordinator,
+                "_resolve_v3_reservations",
+                side_effect=error,
+            )
+
+        with context:
+            await coordinator.async_refresh()
+        unsubscribe()
+
+        assert coordinator.last_update_success is False
+        assert seen
+        assert seen[0] == (False, True, {"res-current"}, ["checked_out"])
+        assert coordinator.snapshot_stale is True
+        assert coordinator.stale_display_available is True
+        assert coordinator.last_verified_at == _NOW
+        assert coordinator.accepted_refresh_snapshot() is None
+
+    @pytest.mark.parametrize("failure", ["identity_abort", "after_identity_check"])
+    async def test_failed_refresh_never_reshows_what_it_disproved(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+        failure: str,
+    ) -> None:
+        """A fetched batch's invalid records leave the stale display."""
+        freezer.move_to(_NOW)
+        current = _stay("res-current", -1, 1)
+        future = _stay("res-future", 5, 6)
+        other = _stay("res-other", 3, 4)
+        part = _stay("res-part", 2, 3)
+        coordinator = await _stale_coordinator(
+            hass, [current, future, other, part], stale_ids=("res-current",)
+        )
+        client = cast(AsyncMock, coordinator.api_client)
+        client.get_reservations.return_value = make_fetch_result(
+            [future, replace(part, partial=True)],
+            returned_ids=("res-current", "res-future", "res-part"),
+            rejected_ids=("res-current",),
+            fallback_invalid_ids=("res-other",),
+        )
+        context: AbstractContextManager[Any]
+        if failure == "identity_abort":
+            await coordinator.identity.async_store(
+                IdentityBaseline(
+                    path=coordinator.reservations_path,
+                    continuity=CONTINUITY_VERIFIED,
+                    codes={"CONF-res-future": "res-elsewhere"},
+                ),
+            )
+            context = patch.object(coordinator, "_async_timezone")
+        else:
+            context = patch.object(
+                coordinator, "_record_identity", side_effect=RuntimeError("boom")
+            )
+
+        with context:
+            await coordinator.async_refresh()
+
+        assert coordinator.last_update_success is False
+        assert coordinator.stale_display_available is True
+        assert _ids(coordinator.data) == {"res-future"}
+        snapshot = coordinator._verified_snapshot
+        assert snapshot is not None
+        assert {r.id for r in snapshot.reservations} == {"res-future"}
+        assert snapshot.accepted_at == _NOW
+        assert snapshot.stale_ids == frozenset()
+        assert coordinator.stale_reservation_ids == frozenset()
+
+    async def test_reprojection_failure_clears_stale_display(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """A failing re-projection shows nothing and keeps the cause."""
+        freezer.move_to(_NOW)
+        coordinator = await _stale_coordinator(hass, [_stay("res-current", -1, 1)])
+        client = cast(AsyncMock, coordinator.api_client)
+        client.get_reservations.side_effect = GuestyConnectionError("down")
+
+        with patch(
+            "custom_components.guesty.coordinator._publish_reservations",
+            side_effect=ValueError("bad projection"),
+        ):
+            await coordinator.async_refresh()
+
+        assert coordinator.data is None
+        assert coordinator.snapshot_stale is False
+        assert coordinator.stale_display_available is False
+        assert coordinator.last_verified_at is None
+        assert isinstance(coordinator.last_exception, UpdateFailed)
+
+    async def test_no_snapshot_invents_nothing(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """A failure before any accepted refresh publishes nothing."""
+        freezer.move_to(_NOW)
+        coordinator = _snapshot_coordinator(hass, [_stay("res-current", -1, 1)])
+        await coordinator.identity.async_load()
+        client = cast(AsyncMock, coordinator.api_client)
+        client.get_reservations.side_effect = GuestyConnectionError("down")
+
+        await coordinator.async_refresh()
+
+        assert coordinator.data is None
+        assert coordinator._verified_snapshot is None
+        assert coordinator.snapshot_stale is False
+        assert coordinator.stale_display_available is False
+        assert coordinator.last_verified_at is None
+
+    async def test_consecutive_failure_updates_listeners(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """A second failure still writes the newer re-projection."""
+        freezer.move_to(_NOW)
+        coordinator = await _stale_coordinator(hass, [_stay("res-current", -1, 1)])
+        client = cast(AsyncMock, coordinator.api_client)
+        client.get_reservations.side_effect = GuestyConnectionError("down")
+        await coordinator.async_refresh()
+        rows = coordinator.data["listing-001"]
+        assert [r.status for r in rows] == ["confirmed"]
+        seen: list[list[str]] = []
+        unsubscribe = coordinator.async_add_listener(
+            lambda: seen.append(
+                [r.status for r in coordinator.data["listing-001"]],
+            ),
+        )
+
+        freezer.move_to(_NOW + timedelta(days=2))
+        await coordinator.async_refresh()
+        unsubscribe()
+
+        assert seen == [["checked_out"]]
+        assert coordinator.snapshot_stale is True
+        assert coordinator.last_verified_at == _NOW
+
+    async def test_accepted_refresh_clears_stale_and_removes_invalid(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """Only an accepted refresh ends staleness (FR-012c)."""
+        freezer.move_to(_NOW)
+        current = _stay("res-current", -1, 1)
+        future = _stay("res-future", 5, 6)
+        coordinator = await _stale_coordinator(hass, [current, future])
+        client = cast(AsyncMock, coordinator.api_client)
+        client.get_reservations.side_effect = GuestyConnectionError("down")
+        await coordinator.async_refresh()
+        await coordinator.async_refresh()
+        assert coordinator.snapshot_stale is True
+        assert _ids(coordinator.data) == {"res-current", "res-future"}
+
+        client.get_reservations.side_effect = None
+        client.get_reservations.return_value = make_fetch_result(
+            [future],
+            returned_ids=("res-current", "res-future"),
+            rejected_ids=("res-current",),
+        )
+        await coordinator.async_refresh()
+
+        assert coordinator.last_update_success
+        assert coordinator.snapshot_stale is False
+        assert coordinator.stale_display_available is False
+        assert coordinator.last_verified_at is None
+        assert _ids(coordinator.data) == {"res-future"}
+
+    async def test_stale_reservation_ids_follow_stale_ids(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """Per-record staleness is not a stale snapshot (FR-012g)."""
+        freezer.move_to(_NOW)
+        coordinator = await _stale_coordinator(
+            hass,
+            [_stay("res-current", -1, 1), _stay("res-future", 5, 6)],
+            stale_ids=("res-current",),
+        )
+
+        assert coordinator.stale_reservation_ids == frozenset({"res-current"})
+        snapshot = coordinator._verified_snapshot
+        assert snapshot is not None
+        assert snapshot.stale_ids == frozenset({"res-current"})
+        assert coordinator.snapshot_stale is False
+        assert coordinator.stale_display_available is False
+        assert coordinator.last_verified_at is None
+
+        client = cast(AsyncMock, coordinator.api_client)
+        client.get_reservations.return_value = make_fetch_result(
+            [_stay("res-current", -1, 1)],
+            returned_ids=("res-current",),
+        )
+        await coordinator.async_refresh()
+
+        assert coordinator.stale_reservation_ids == frozenset()
+
+    async def test_stale_display_never_satisfies_write_guard(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """Stale data only picks the refusal's error type (R10)."""
+        from custom_components.guesty.actions import (
+            ReservationIdentityPresentError,
+            guard_reservation_write,
+        )
+        from custom_components.guesty.identity import IdentityWriteRefusal
+
+        freezer.move_to(_NOW)
+        coordinator = await _stale_coordinator(hass, [_stay("res-current", -1, 1)])
+        client = cast(AsyncMock, coordinator.api_client)
+        client.get_reservations.side_effect = GuestyConnectionError("down")
+        await coordinator.async_refresh()
+        assert coordinator.stale_display_available
+
+        assert coordinator.last_update_success is False
+        assert coordinator.accepted_refresh_snapshot() is None
+        with (
+            patch.object(
+                coordinator.identity,
+                "classify_write_refusal",
+                return_value=IdentityWriteRefusal(
+                    "refused",
+                    missing_current_code=True,
+                ),
+            ),
+            pytest.raises(ReservationIdentityPresentError),
+        ):
+            guard_reservation_write(
+                {"reservations_coordinator": coordinator},
+                "res-current",
+                "add_reservation_note",
+            )
+
+
+# ── Feature 013 Phase 6: reporting (T034, T035) ─────────────────────
+
+_EXCLUSION_LOGGER = "custom_components.guesty.coordinator"
+_TRACKED_BOUND = 256
+_TZ_REASON = ValidationReason.LISTING_TIMEZONE_UNVERIFIED
+
+
+def _exclusion_records(
+    caplog: pytest.LogCaptureFixture,
+) -> list[logging.LogRecord]:
+    """Return the per-key exclusion log records captured so far.
+
+    A per-key record carries exactly the reason and the identifier as
+    its arguments.
+
+    Args:
+        caplog: The log capture fixture.
+
+    Returns:
+        The records, in emission order.
+    """
+    reasons = {reason.value for reason in ValidationReason}
+    return [
+        record
+        for record in caplog.records
+        if record.name == _EXCLUSION_LOGGER
+        and isinstance(record.args, tuple)
+        and len(record.args) == 2
+        and record.args[0] in reasons
+    ]
+
+
+def _exclusion_levels(
+    caplog: pytest.LogCaptureFixture,
+) -> list[tuple[int, str, str]]:
+    """Summarize the per-key exclusion records captured so far.
+
+    Args:
+        caplog: The log capture fixture.
+
+    Returns:
+        ``(level, reason, identifier)`` per record.
+    """
+    return [
+        (record.levelno, *cast(tuple[str, str], record.args))
+        for record in _exclusion_records(caplog)
+    ]
+
+
+def _aggregate_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    """Return the overflow aggregate warnings captured so far.
+
+    Args:
+        caplog: The log capture fixture.
+
+    Returns:
+        The WARNING records announcing untracked exclusions.
+    """
+    return [
+        record
+        for record in caplog.records
+        if record.name == _EXCLUSION_LOGGER
+        and record.levelno == logging.WARNING
+        and "further" in record.getMessage()
+    ]
+
+
+def _excluded(*keys: tuple[ValidationReason, str]) -> ReservationFetchResult:
+    """Build an accepted fetch result carrying exclusion keys.
+
+    Args:
+        *keys: The ``(reason, reservation_id)`` keys.
+
+    Returns:
+        The fetch result, with one verified record.
+    """
+    return make_fetch_result(
+        [_coded("res-ok")],
+        returned_ids=("res-ok",),
+        exclusions=tuple(sorted(set(keys))),
+    )
+
+
+def _many_keys(count: int, start: int = 0) -> list[tuple[ValidationReason, str]]:
+    """Build distinct unrecognized-status exclusion keys.
+
+    Args:
+        count: How many keys.
+        start: The first numeric suffix.
+
+    Returns:
+        The keys.
+    """
+    return [
+        (ValidationReason.UNRECOGNIZED_STATUS, f"res-x{index:04d}")
+        for index in range(start, start + count)
+    ]
+
+
+def _v3_api_client() -> GuestyApiClient:
+    """Build a real v3 API client whose requests respx can serve.
+
+    Returns:
+        The client.
+    """
+    http = httpx.AsyncClient()
+    return GuestyApiClient(
+        token_manager=GuestyTokenManager(
+            client_id="test-client-id",
+            client_secret="test-client-secret",
+            http_client=http,
+            storage=FakeTokenStorage(),
+            refresh_buffer=0,
+        ),
+        http_client=http,
+        reservations_api=RESERVATIONS_API_V3,
+    )
+
+
+def _tz_coordinator(
+    hass: HomeAssistant,
+    timezone: str,
+) -> ReservationsCoordinator:
+    """Build a coordinator over one v3 stay on ``listing-001``.
+
+    Args:
+        hass: Home Assistant instance.
+        timezone: The listing timezone; empty for an unverified one.
+
+    Returns:
+        The coordinator.
+    """
+    record = _dated_v3("res-1", [_dated_seg("listing-001", "2026-06-16", "2026-06-18")])
+    return _published_coordinator(
+        hass, [record], [_timed_listing("listing-001", timezone=timezone)]
+    )
+
+
+def _set_listings(
+    coordinator: ReservationsCoordinator,
+    listings: list[GuestyListing],
+) -> None:
+    """Replace the tracked listings and their timing metadata.
+
+    Args:
+        coordinator: The coordinator.
+        listings: The listings now tracked.
+    """
+    by_id = {listing.id: listing for listing in listings}
+    listings_coordinator = cast(AsyncMock, coordinator.listings_coordinator)
+    listings_coordinator.data = by_id
+    listings_coordinator.timing_listings = by_id
+
+
+def _issue(hass: HomeAssistant, issue_id: str) -> ir.IssueEntry | None:
+    """Return one of this integration's repair issues.
+
+    Args:
+        hass: Home Assistant instance.
+        issue_id: The issue identifier.
+
+    Returns:
+        The issue, or None when it is not raised.
+    """
+    return ir.async_get(hass).async_get_issue(DOMAIN, issue_id)
+
+
+def _preset_evidence(
+    hass_storage: dict[str, Any],
+    entry_id: str,
+    count: int,
+    **overrides: Any,
+) -> None:
+    """Persist undated conflict-only pairs before the coordinator loads.
+
+    Args:
+        hass_storage: The storage fixture.
+        entry_id: The owning config entry.
+        count: The number of distinct pairs.
+        **overrides: Top-level payload fields to replace.
+    """
+    key = conflict_evidence_storage_key(entry_id)
+    payload: dict[str, Any] = {
+        "entries": [
+            {
+                "code": f"CODE-{index:05d}",
+                "reservation_id": f"res-e{index:05d}",
+                "path": RESERVATIONS_API_V3,
+                "fallback": False,
+                "observed_at": "2026-06-01T00:00:00+00:00",
+                "check_out_bound": None,
+            }
+            for index in range(count)
+        ],
+        "saturated": False,
+        "generation": 0,
+        "covered_past_days": None,
+    }
+    payload.update(overrides)
+    hass_storage[key] = {"version": 1, "minor_version": 1, "key": key, "data": payload}
+
+
+class TestExclusionReporting:
+    """Non-repeating, bounded, privacy-safe exclusion logs (T034)."""
+
+    async def test_new_key_warns_once_then_repeats_at_debug(
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """An unresolved exclusion warns once, not on every refresh."""
+        freezer.move_to(_NOW)
+        key = (ValidationReason.UNRECOGNIZED_STATUS, "res-1")
+        coordinator = _evidence_coordinator(hass, _excluded(key))
+
+        with caplog.at_level(logging.DEBUG, logger="custom_components.guesty"):
+            await coordinator.async_refresh()
+            await coordinator.async_refresh()
+
+        assert _exclusion_levels(caplog) == [
+            (logging.WARNING, "unrecognized_status", "res-1"),
+            (logging.DEBUG, "unrecognized_status", "res-1"),
+        ]
+
+    async def test_resolved_key_is_forgotten_and_warns_again(
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """A key missing from an accepted refresh can warn again."""
+        freezer.move_to(_NOW)
+        key = (ValidationReason.INVALID_LISTING, "res-1")
+        coordinator = _evidence_coordinator(
+            hass, _excluded(key), _excluded(), _excluded(key)
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="custom_components.guesty"):
+            for _ in range(3):
+                await coordinator.async_refresh()
+                assert coordinator.last_update_success
+
+        assert _exclusion_levels(caplog) == [
+            (logging.WARNING, "invalid_listing", "res-1"),
+            (logging.WARNING, "invalid_listing", "res-1"),
+        ]
+
+    async def test_failed_refresh_resolves_nothing(
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """A failed refresh neither reports nor forgets a key."""
+        freezer.move_to(_NOW)
+        key = (ValidationReason.UNRECOGNIZED_STATUS, "res-1")
+        coordinator = _evidence_coordinator(hass, _excluded(key))
+        client = cast(AsyncMock, coordinator.api_client)
+        fetch = client.get_reservations.side_effect
+
+        with caplog.at_level(logging.DEBUG, logger="custom_components.guesty"):
+            await coordinator.async_refresh()
+            client.get_reservations.side_effect = GuestyConnectionError("down")
+            await coordinator.async_refresh()
+            assert not coordinator.last_update_success
+            client.get_reservations.side_effect = fetch
+            await coordinator.async_refresh()
+
+        assert _exclusion_levels(caplog) == [
+            (logging.WARNING, "unrecognized_status", "res-1"),
+            (logging.DEBUG, "unrecognized_status", "res-1"),
+        ]
+
+    async def test_identity_aborted_refresh_resolves_nothing(
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """An identity-aborted refresh is not accepted, so not reported."""
+        freezer.move_to(_NOW)
+        key = (ValidationReason.UNRECOGNIZED_STATUS, "res-1")
+        aborted = make_fetch_result(
+            [_coded("res-a", "CONF-SAME"), _coded("res-b", "CONF-SAME")],
+            exclusions=((ValidationReason.MALFORMED_STATUS, "res-2"),),
+        )
+        coordinator = _evidence_coordinator(
+            hass, _excluded(key), aborted, _excluded(key)
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="custom_components.guesty"):
+            await coordinator.async_refresh()
+            await coordinator.async_refresh()
+            assert not coordinator.last_update_success
+            await coordinator.async_refresh()
+
+        assert _exclusion_levels(caplog) == [
+            (logging.WARNING, "unrecognized_status", "res-1"),
+            (logging.DEBUG, "unrecognized_status", "res-1"),
+        ]
+
+    async def test_messages_hold_only_the_reason_and_the_id(
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """No code, status or payload value is ever formatted in."""
+        freezer.move_to(_NOW)
+        coordinator = _evidence_coordinator(
+            hass,
+            replace(
+                _excluded((ValidationReason.UNRECOGNIZED_STATUS, "res-1")),
+                rejected_ids=("res-1",),
+                rejected_codes=(RejectedCode("res-1", "CODE-SENTINEL-77"),),
+            ),
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="custom_components.guesty"):
+            await coordinator.async_refresh()
+
+        records = _exclusion_records(caplog)
+        assert len(records) == 1
+        assert records[0].args == ("unrecognized_status", "res-1")
+        for record in caplog.records:
+            if record.name.startswith("custom_components.guesty"):
+                assert "CODE-SENTINEL-77" not in record.getMessage()
+
+    async def test_overflow_logs_one_aggregate_warning_per_episode(
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """Keys beyond the bound log at DEBUG under one aggregate warning."""
+        freezer.move_to(_NOW)
+        full = _many_keys(_TRACKED_BOUND + 4)
+        churned = full[1:] + _many_keys(1, start=_TRACKED_BOUND + 4)
+        below = full[1:201]
+        coordinator = _evidence_coordinator(
+            hass,
+            _excluded(*full),
+            _excluded(*full),
+            _excluded(*churned),
+            _excluded(*below),
+            _excluded(*full),
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="custom_components.guesty"):
+            await coordinator.async_refresh()
+            levels = _exclusion_levels(caplog)
+            assert [lvl for lvl, *_ in levels].count(logging.WARNING) == _TRACKED_BOUND
+            assert [lvl for lvl, *_ in levels].count(logging.DEBUG) == 4
+            aggregate = _aggregate_warnings(caplog)
+            assert len(aggregate) == 1
+            assert "4" in aggregate[0].getMessage()
+            caplog.clear()
+
+            await coordinator.async_refresh()
+            assert {lvl for lvl, *_ in _exclusion_levels(caplog)} == {logging.DEBUG}
+            assert _aggregate_warnings(caplog) == []
+            caplog.clear()
+
+            # Churn at the bound: one tracked key resolves, so one
+            # untracked key is tracked and warns, but the episode goes
+            # on without another aggregate warning.
+            await coordinator.async_refresh()
+            warned = [
+                key_id
+                for lvl, _, key_id in _exclusion_levels(caplog)
+                if lvl == logging.WARNING
+            ]
+            assert warned == [full[_TRACKED_BOUND][1]]
+            assert _aggregate_warnings(caplog) == []
+            caplog.clear()
+
+            await coordinator.async_refresh()
+            assert {lvl for lvl, *_ in _exclusion_levels(caplog)} == {logging.DEBUG}
+            assert _aggregate_warnings(caplog) == []
+            caplog.clear()
+
+            # Below the bound, the episode is over: a new overflow
+            # warns again, once.
+            await coordinator.async_refresh()
+            assert len(_aggregate_warnings(caplog)) == 1
+
+    @respx.mock
+    async def test_swapped_reasons_from_the_source_warn_as_new_keys(
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """Keys come from the source's exclusions, reason included."""
+        freezer.move_to(_NOW)
+        respx.post(TOKEN_URL).mock(
+            return_value=httpx.Response(200, json=make_token_response()),
+        )
+        unrecognized: dict[str, Any] = {"status": "inquiry"}
+        malformed: dict[str, Any] = {"status": 123}
+
+        def _record(res_id: str, **fields: Any) -> dict[str, Any]:
+            """Build a raw v3 record with its own confirmation code."""
+            return make_v3_reservation(res_id, confirmationCode=f"C-{res_id}", **fields)
+
+        pages = [
+            make_v3_search_page(
+                [
+                    _record("res-0"),
+                    _record("res-1", **unrecognized),
+                    _record("res-2", **malformed),
+                ]
+            ),
+            make_v3_search_page(
+                [
+                    _record("res-0"),
+                    _record("res-1", **malformed),
+                    _record("res-2", **unrecognized),
+                ]
+            ),
+        ]
+        respx.get(f"{BASE_URL}{RESERVATIONS_V3_SEARCH_ENDPOINT}").mock(
+            side_effect=[httpx.Response(200, json=page) for page in pages],
+        )
+        client = _v3_api_client()
+        coordinator = _evidence_coordinator(hass, make_fetch_result([]))
+        mock_client = cast(AsyncMock, coordinator.api_client)
+        mock_client.get_reservations = AsyncMock(side_effect=client.get_reservations)
+        mock_client.resolve_guests = AsyncMock(return_value=GuestLookupResult())
+
+        with caplog.at_level(logging.DEBUG, logger="custom_components.guesty"):
+            await coordinator.async_refresh()
+            assert coordinator.last_update_success
+            await coordinator.async_refresh()
+            assert coordinator.last_update_success
+
+        assert [
+            (lvl, reason, key_id)
+            for lvl, reason, key_id in _exclusion_levels(caplog)
+            if lvl == logging.WARNING
+        ] == [
+            (logging.WARNING, "malformed_status", "res-2"),
+            (logging.WARNING, "unrecognized_status", "res-1"),
+            (logging.WARNING, "malformed_status", "res-1"),
+            (logging.WARNING, "unrecognized_status", "res-2"),
+        ]
+
+    async def test_listing_timezone_key_reports_resolves_and_recurs(
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """An unverified listing timezone is a listing-scoped key."""
+        freezer.move_to(_NOW)
+        coordinator = _tz_coordinator(hass, "")
+        unverified = [_timed_listing("listing-001", timezone="")]
+        verified = [_timed_listing("listing-001", timezone="UTC")]
+
+        with caplog.at_level(logging.DEBUG, logger="custom_components.guesty"):
+            for listings in (unverified, unverified, verified, unverified):
+                _set_listings(coordinator, listings)
+                await coordinator.async_refresh()
+                assert coordinator.last_update_success
+
+        assert _exclusion_levels(caplog) == [
+            (logging.WARNING, _TZ_REASON.value, "listing-001"),
+            (logging.DEBUG, _TZ_REASON.value, "listing-001"),
+            (logging.WARNING, _TZ_REASON.value, "listing-001"),
+        ]
+
+    async def test_untracked_listing_has_no_timezone_key(
+        self,
+        hass: HomeAssistant,
+        caplog: pytest.LogCaptureFixture,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """Only tracked listings with reservations are reported."""
+        freezer.move_to(_NOW)
+        coordinator = _tz_coordinator(hass, "")
+        _set_listings(coordinator, [_timed_listing("listing-002", timezone="")])
+
+        with caplog.at_level(logging.DEBUG, logger="custom_components.guesty"):
+            await coordinator.async_refresh()
+
+        assert coordinator.last_update_success
+        assert _exclusion_levels(caplog) == []
+
+
+class TestValidationRepairs:
+    """Listing-timezone and conflict-evidence repair issues (T035)."""
+
+    @staticmethod
+    def _tz_issue_id(coordinator: ReservationsCoordinator, listing_id: str) -> str:
+        """Return the timezone issue ID of one listing.
+
+        Args:
+            coordinator: The coordinator.
+            listing_id: The listing identifier.
+
+        Returns:
+            The issue identifier.
+        """
+        entry_id = coordinator.config_entry.entry_id
+        return f"listing_timezone_unverified_{entry_id}_{listing_id}"
+
+    async def test_timezone_issue_raised_and_withdrawn_when_verified(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """The listing issue follows the timezone after accepted refreshes."""
+        freezer.move_to(_NOW)
+        coordinator = _tz_coordinator(hass, "")
+        issue_id = self._tz_issue_id(coordinator, "listing-001")
+
+        await coordinator.async_refresh()
+
+        issue = _issue(hass, issue_id)
+        assert issue is not None
+        assert issue.severity == ir.IssueSeverity.WARNING
+        assert issue.is_fixable is False
+        assert issue.translation_key == "listing_timezone_unverified"
+        assert issue.translation_placeholders == {
+            "listing_name": "Beach House",
+            "listing_id": "listing-001",
+        }
+
+        _set_listings(coordinator, [_timed_listing("listing-001", timezone="UTC")])
+        await coordinator.async_refresh()
+
+        assert _issue(hass, issue_id) is None
+
+    async def test_timezone_issue_withdrawn_when_listing_untracked(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """An untracked listing has no standing repair."""
+        freezer.move_to(_NOW)
+        coordinator = _tz_coordinator(hass, "")
+        issue_id = self._tz_issue_id(coordinator, "listing-001")
+        await coordinator.async_refresh()
+        assert _issue(hass, issue_id) is not None
+
+        _set_listings(coordinator, [_timed_listing("listing-002", timezone="UTC")])
+        await coordinator.async_refresh()
+
+        assert coordinator.last_update_success
+        assert _issue(hass, issue_id) is None
+
+    async def test_timezone_issue_names_the_unit_published_on_its_parent(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A unit shown on its tracked parent is reported by its own ID."""
+        freezer.move_to(_NOW)
+        segment = replace(
+            _dated_seg("listing-unit", "2026-06-16", "2026-06-18"),
+            parent_listing_id="listing-parent",
+        )
+        unit = GuestyListing.from_api_dict(
+            make_listing_dict(_id="listing-unit", timezone="", title="Garden Unit"),
+        )
+        assert unit is not None
+        parent = _timed_listing("listing-parent", timezone="UTC")
+        coordinator = _published_coordinator(
+            hass, [_dated_v3("res-1", [segment])], [parent, unit]
+        )
+        cast(AsyncMock, coordinator.listings_coordinator).data = {
+            "listing-parent": parent,
+        }
+
+        with caplog.at_level(logging.WARNING, logger="custom_components.guesty"):
+            await coordinator.async_refresh()
+
+        assert coordinator.data is not None
+        published = coordinator.data["listing-parent"][0]
+        assert published.check_in is None
+        issue = _issue(hass, self._tz_issue_id(coordinator, "listing-unit"))
+        assert issue is not None
+        assert issue.translation_placeholders == {
+            "listing_name": "Garden Unit",
+            "listing_id": "listing-unit",
+        }
+        assert _issue(hass, self._tz_issue_id(coordinator, "listing-parent")) is None
+        assert "listing_timezone_unverified" in caplog.text
+        assert "listing-unit" in caplog.text
+
+    @staticmethod
+    def _unit_on_parent(
+        hass: HomeAssistant,
+        parent_listing_id: object = "listing-parent",
+    ) -> tuple[ReservationsCoordinator, GuestyListing]:
+        """Build a coordinator over an untracked unit's stay.
+
+        The unit's timezone is unverified; only its parent is tracked.
+
+        Args:
+            hass: Home Assistant instance.
+            parent_listing_id: The segment's parent listing value.
+
+        Returns:
+            The coordinator and the tracked parent listing.
+        """
+        segment = replace(
+            _dated_seg("listing-unit", "2026-06-16", "2026-06-18"),
+            parent_listing_id=cast(Any, parent_listing_id),
+        )
+        unit = GuestyListing.from_api_dict(
+            make_listing_dict(_id="listing-unit", timezone="", title="Garden Unit"),
+        )
+        assert unit is not None
+        parent = _timed_listing("listing-parent", timezone="UTC")
+        coordinator = _published_coordinator(
+            hass, [_dated_v3("res-1", [segment])], [parent, unit]
+        )
+        cast(AsyncMock, coordinator.listings_coordinator).data = {
+            "listing-parent": parent,
+        }
+        return coordinator, parent
+
+    async def test_unit_timezone_issue_withdrawn_when_unit_verified(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """The unit's issue goes once the unit's own zone verifies."""
+        freezer.move_to(_NOW)
+        coordinator, parent = self._unit_on_parent(hass)
+        issue_id = self._tz_issue_id(coordinator, "listing-unit")
+        await coordinator.async_refresh()
+        assert _issue(hass, issue_id) is not None
+
+        cast(AsyncMock, coordinator.listings_coordinator).timing_listings = {
+            "listing-parent": parent,
+            "listing-unit": _timed_listing("listing-unit", timezone="UTC"),
+        }
+        await coordinator.async_refresh()
+
+        assert coordinator.last_update_success
+        assert _issue(hass, issue_id) is None
+
+    async def test_unit_timezone_issue_withdrawn_when_parent_untracked(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """The unit's issue goes once its parent is no longer tracked."""
+        freezer.move_to(_NOW)
+        coordinator, _parent = self._unit_on_parent(hass)
+        issue_id = self._tz_issue_id(coordinator, "listing-unit")
+        await coordinator.async_refresh()
+        assert _issue(hass, issue_id) is not None
+
+        _set_listings(coordinator, [_timed_listing("listing-002", timezone="UTC")])
+        await coordinator.async_refresh()
+
+        assert coordinator.last_update_success
+        assert _issue(hass, issue_id) is None
+
+    async def test_non_string_parent_raises_no_unit_timezone_issue(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An untracked unit without a usable parent is never reported."""
+        freezer.move_to(_NOW)
+        coordinator, _parent = self._unit_on_parent(hass, 123)
+
+        with caplog.at_level(logging.DEBUG, logger="custom_components.guesty"):
+            await coordinator.async_refresh()
+
+        assert coordinator.last_update_success
+        assert _issue(hass, self._tz_issue_id(coordinator, "listing-unit")) is None
+        assert _exclusion_levels(caplog) == []
+
+    async def test_timezone_issue_not_changed_by_a_failed_refresh(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """Only an accepted refresh raises or withdraws the issue."""
+        freezer.move_to(_NOW)
+        coordinator = _tz_coordinator(hass, "UTC")
+        issue_id = self._tz_issue_id(coordinator, "listing-001")
+        await coordinator.async_refresh()
+        assert _issue(hass, issue_id) is None
+
+        _set_listings(coordinator, [_timed_listing("listing-001", timezone="")])
+        client = cast(AsyncMock, coordinator.api_client)
+        client.get_reservations.side_effect = GuestyConnectionError("down")
+        await coordinator.async_refresh()
+
+        assert not coordinator.last_update_success
+        assert _issue(hass, issue_id) is None
+
+    async def test_near_capacity_issue_follows_the_hysteresis(
+        self,
+        hass: HomeAssistant,
+        hass_storage: dict[str, Any],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Raised at 80% on load, kept until occupancy is below 70%."""
+        coordinator = _evidence_coordinator(hass, make_fetch_result([]))
+        entry_id = coordinator.config_entry.entry_id
+        issue_id = f"conflict_evidence_near_capacity_{entry_id}"
+        _preset_evidence(hass_storage, entry_id, 4000)
+
+        with caplog.at_level(logging.WARNING, logger="custom_components.guesty"):
+            await coordinator.identity.async_load()
+
+        issue = _issue(hass, issue_id)
+        assert issue is not None
+        assert issue.severity == ir.IssueSeverity.WARNING
+        assert issue.is_fixable is False
+        assert issue.translation_key == "conflict_evidence_near_capacity"
+        assert not issue.translation_placeholders
+        assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
+        assert _issue(hass, f"conflict_evidence_unavailable_{entry_id}") is None
+
+        evidence = coordinator.identity.conflict_evidence
+        evidence.retire(
+            superseded=[f"res-e{index:05d}" for index in range(400)],
+            absent=(),
+            returned=(),
+            past_days=30,
+            now=_NOW,
+        )
+        assert evidence.count == 3600
+        assert _issue(hass, issue_id) is not None
+
+        evidence.retire(
+            superseded=[f"res-e{index:05d}" for index in range(400, 600)],
+            absent=(),
+            returned=(),
+            past_days=30,
+            now=_NOW,
+        )
+        assert evidence.count == 3400
+        assert _issue(hass, issue_id) is None
+
+    @pytest.mark.parametrize("raised", [True, False], ids=["raised", "not-raised"])
+    async def test_near_capacity_hysteresis_survives_a_restart(
+        self,
+        hass: HomeAssistant,
+        hass_storage: dict[str, Any],
+        raised: bool,
+    ) -> None:
+        """A persisted issue is kept between 70% and 80% after a restart."""
+        coordinator = _evidence_coordinator(hass, make_fetch_result([]))
+        entry_id = coordinator.config_entry.entry_id
+        issue_id = f"conflict_evidence_near_capacity_{entry_id}"
+        if raised:
+            ir.async_create_issue(
+                hass,
+                DOMAIN,
+                issue_id,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="conflict_evidence_near_capacity",
+            )
+        _preset_evidence(hass_storage, entry_id, 3600)
+
+        await coordinator.identity.async_load()
+
+        evidence = coordinator.identity.conflict_evidence
+        assert (_issue(hass, issue_id) is not None) is raised
+        assert evidence.near_capacity is raised
+
+        evidence.retire(
+            superseded=[f"res-e{index:05d}" for index in range(101)],
+            absent=(),
+            returned=(),
+            past_days=30,
+            now=_NOW,
+        )
+        assert evidence.count == 3499
+        assert _issue(hass, issue_id) is None
+        assert evidence.near_capacity is False
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            pytest.param({"saturated": True}, id="saturated"),
+            pytest.param({"entries": "corrupt"}, id="compromised"),
+        ],
+    )
+    async def test_unavailable_issue_raised_on_load(
+        self,
+        hass: HomeAssistant,
+        hass_storage: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> None:
+        """A saturated or compromised store raises the error issue."""
+        coordinator = _evidence_coordinator(hass, make_fetch_result([]))
+        entry_id = coordinator.config_entry.entry_id
+        _preset_evidence(hass_storage, entry_id, 1, **payload)
+
+        await coordinator.identity.async_load()
+
+        issue = _issue(hass, f"conflict_evidence_unavailable_{entry_id}")
+        assert issue is not None
+        assert issue.severity == ir.IssueSeverity.ERROR
+        assert issue.is_fixable is False
+        assert issue.translation_key == "conflict_evidence_unavailable"
+        assert not issue.translation_placeholders
+
+    async def test_no_evidence_issue_while_revalidating_or_ready(
+        self,
+        hass: HomeAssistant,
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """Neither conflict-evidence issue exists for a healthy store."""
+        freezer.move_to(_NOW)
+        coordinator = _evidence_coordinator(hass, _excluded())
+        entry_id = coordinator.config_entry.entry_id
+
+        await coordinator.identity.async_load()
+        assert coordinator.identity.conflict_evidence.state == "revalidating"
+        await coordinator.async_refresh()
+        assert coordinator.identity.conflict_evidence.state == "ready"
+
+        for name in ("near_capacity", "unavailable"):
+            assert _issue(hass, f"conflict_evidence_{name}_{entry_id}") is None
+
+    async def test_saturation_during_a_refresh_raises_the_issue(
+        self,
+        hass: HomeAssistant,
+        hass_storage: dict[str, Any],
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """A state change inside a refresh reconciles the issue."""
+        freezer.move_to(_NOW)
+        coordinator = _evidence_coordinator(
+            hass,
+            make_fetch_result(
+                [_coded("res-1")],
+                rejected_ids=("res-new",),
+                rejected_codes=(RejectedCode("res-new", "CONF-NEW"),),
+            ),
+        )
+        entry_id = coordinator.config_entry.entry_id
+        _preset_evidence(hass_storage, entry_id, 5000)
+        await coordinator.identity.async_load()
+        issue_id = f"conflict_evidence_unavailable_{entry_id}"
+        assert _issue(hass, issue_id) is None
+
+        await coordinator.async_refresh()
+
+        assert coordinator.identity.conflict_evidence.state == "saturated"
+        assert _issue(hass, issue_id) is not None
+
+    async def test_compromised_store_raises_issue_despite_aborted_refresh(
+        self,
+        hass: HomeAssistant,
+        hass_storage: dict[str, Any],
+        freezer: FrozenDateTimeFactory,
+    ) -> None:
+        """A lagging store whose pairs abort every refresh is still reported."""
+        freezer.move_to(_NOW)
+        coordinator = _evidence_coordinator(
+            hass,
+            make_fetch_result([_coded("res-1"), _coded("res-other", "CODE-00000")]),
+        )
+        entry_id = coordinator.config_entry.entry_id
+        _preset_evidence(hass_storage, entry_id, 1)
+        await ReservationIdentityGuard(hass, entry_id).async_store(
+            IdentityBaseline(
+                path=RESERVATIONS_API_V3,
+                continuity=CONTINUITY_VERIFIED,
+                conflict_evidence_generation=1,
+            )
+        )
+
+        await coordinator.async_refresh()
+
+        assert not coordinator.last_update_success
+        assert coordinator.identity._ambiguous is True
+        assert coordinator.identity.conflict_evidence.state == "compromised"
+        issue = _issue(hass, f"conflict_evidence_unavailable_{entry_id}")
+        assert issue is not None
+        assert issue.severity == ir.IssueSeverity.ERROR

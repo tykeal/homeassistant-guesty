@@ -45,10 +45,13 @@ from custom_components.guesty.api.models import (
     FallbackCandidate,
     GuestyListing,
     GuestyReservation,
+    RejectedCode,
 )
 from custom_components.guesty.api.reservations_fallback import (
     ReservationFallbackSource,
+    ServedRecord,
 )
+from custom_components.guesty.api.validation import ValidationReason
 from custom_components.guesty.const import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
@@ -204,6 +207,7 @@ async def _resolve(
     past_days: int = 30,
     future_days: int = 365,
     statuses: frozenset[str] = ACTIONABLE_STATUSES,
+    rejected: tuple[str, ...] = (),
 ) -> Any:
     """Run one fallback resolution with test defaults.
 
@@ -214,16 +218,20 @@ async def _resolve(
         past_days: Configured days of history.
         future_days: Configured days ahead.
         statuses: Configured status set.
+        rejected: Identifiers v3 returned but did not fully verify;
+            passed only when non-empty.
 
     Returns:
         The fallback outcome.
     """
+    extra: dict[str, Any] = {"rejected": rejected} if rejected else {}
     return await source.resolve(
         retrieved=retrieved,
         candidates=candidates or {},
         past_days=past_days,
         future_days=future_days,
         statuses=statuses,
+        **extra,
     )
 
 
@@ -446,12 +454,19 @@ class TestRepublication:
     async def test_out_of_status_result_is_not_republished(
         self,
     ) -> None:
-        """A status outside the configured set stays unpublished."""
+        """A status outside the configured set stays unpublished.
+
+        Updated for feature 013 (research R8, R2): the former
+        ``inquiry`` status is now unrecognized and makes the document
+        ``_INVALID`` (see ``TestInvalidLookup``), so a recognized
+        status outside the configured set keeps this testing the
+        out-of-selection behavior.
+        """
         _mock_token()
         respx.get(by_id_url("res-x")).mock(
             return_value=Response(
                 200,
-                json=_legacy_document("res-x", status="inquiry"),
+                json=_legacy_document("res-x", status="canceled"),
             ),
         )
         source = ReservationFallbackSource(_make_client())
@@ -459,6 +474,7 @@ class TestRepublication:
         outcome = await _resolve(
             source,
             candidates={"res-x": _candidate()},
+            statuses=frozenset({"confirmed", "checked_in"}),
         )
 
         assert outcome.reservations == ()
@@ -499,9 +515,17 @@ class TestRepublication:
         self,
         hass: HomeAssistant,
     ) -> None:
-        """Attribution follows the payload's own provenance."""
+        """Attribution follows the payload's own provenance.
+
+        Updated for feature 013 (FR-008b, research R18): the rejected
+        segmentless record now takes part in conflict detection, so
+        it carries its own confirmation code. Sharing the fixture's
+        default code with ``res-000001`` would be a genuine
+        within-refresh collision and correctly abort the refresh.
+        """
         _mock_token()
         segmentless_v3 = make_v3_reservation("res-000002", segments=[])
+        segmentless_v3["confirmationCode"] = "CONF-SEGMENTLESS"
         respx.get(SEARCH_URL).mock(
             side_effect=[
                 Response(
@@ -759,7 +783,14 @@ class TestFailureModes:
     async def test_successful_filtered_lookup_retains_observed_record(
         self,
     ) -> None:
-        """A non-published successful lookup still carries fresh evidence."""
+        """A non-published successful lookup still carries fresh evidence.
+
+        Updated for feature 013 (research R2; data-model
+        ``GuestyReservation.status`` is always the recognized mapped
+        value): ``cancelled`` now maps to ``canceled``, which is in
+        ``ACTIONABLE_STATUSES``, so the configured set excludes it to
+        keep the record filtered from publication.
+        """
         _mock_token()
         respx.get(by_id_url("res-filtered")).mock(
             return_value=Response(
@@ -772,6 +803,7 @@ class TestFailureModes:
         outcome = await _resolve(
             source,
             candidates={"res-filtered": _candidate()},
+            statuses=frozenset({"confirmed", "checked_in"}),
         )
 
         assert outcome.reservations == ()
@@ -779,7 +811,7 @@ class TestFailureModes:
         assert len(outcome.observed_reservations) == 1
         observed = outcome.observed_reservations[0]
         assert observed.id == "res-filtered"
-        assert observed.status == "cancelled"
+        assert observed.status == "canceled"
 
     @pytest.mark.parametrize(
         "malformed",
@@ -793,7 +825,14 @@ class TestFailureModes:
         self,
         malformed: dict[str, Any],
     ) -> None:
-        """A non-string required field never aborts the refresh."""
+        """A non-string required field never aborts the refresh.
+
+        Updated for feature 013 (research R8): a dict with the
+        requested ``_id`` and a malformed required field is now
+        ``_INVALID``: it is purged, neither counted as failed nor
+        retained, and the refresh still never aborts. The name is
+        kept for history.
+        """
         _mock_token()
         respx.get(by_id_url("res-1")).mock(
             return_value=Response(
@@ -811,10 +850,12 @@ class TestFailureModes:
         await _resolve(source, retrieved=(v3,), candidates=candidates)
         outcome = await _resolve(source, candidates=candidates)
 
-        assert outcome.counters.failed == 1
+        assert outcome.counters.failed == 0
         assert outcome.counters.succeeded == 0
-        assert [res.id for res in outcome.reservations] == ["res-1"]
+        assert outcome.reservations == ()
         assert outcome.served == ()
+        assert outcome.invalid == ("res-1",)
+        assert "res-1" not in source._retained
 
     @respx.mock
     async def test_timeout_degrades_only_that_reservation(
@@ -1324,16 +1365,26 @@ class TestSessionLegacyEvidence:
 
     @respx.mock
     async def test_out_of_selection_lookup_is_recorded_as_observed(self) -> None:
-        """A record legacy returned out of selection is still observed."""
+        """A record legacy returned out of selection is still observed.
+
+        Updated for feature 013 (research R8, R2): ``inquiry`` is now
+        unrecognized (an ``_INVALID`` case in ``TestInvalidLookup``),
+        so a recognized status outside the configured set keeps this
+        testing out-of-selection behavior.
+        """
         _mock_token()
         respx.get(by_id_url("res-x")).mock(
             return_value=Response(
-                200, json=_legacy_document("res-x", status="inquiry")
+                200, json=_legacy_document("res-x", status="canceled")
             ),
         )
         source = ReservationFallbackSource(_make_client())
 
-        await _resolve(source, candidates={"res-x": _candidate()})
+        await _resolve(
+            source,
+            candidates={"res-x": _candidate()},
+            statuses=frozenset({"confirmed", "checked_in"}),
+        )
 
         assert source.legacy_observed == frozenset({"res-x"})
         assert "res-x" not in source._served
@@ -1451,3 +1502,642 @@ class TestSessionLegacyEvidence:
         ):
             fallback._note_session("observed", "res-3")
         assert client.legacy_observed_reservations is None
+
+
+# ── Feature 013: rejected records and invalid lookups (T012) ────────
+
+
+def _partial_v3(reservation_id: str) -> GuestyReservation:
+    """Build a partially valid v3 reservation in the window.
+
+    Args:
+        reservation_id: The ``reservationId`` value.
+
+    Returns:
+        The published model of a record with one rejected segment.
+    """
+    raw = _v3_in_window(reservation_id)
+    raw["stay"] = [*raw["stay"], make_v3_segment(listingId="")]
+    reservation = GuestyReservation.from_v3_api_dict(raw)
+    assert reservation is not None
+    assert reservation.partial
+    return reservation
+
+
+def _accepted_v3(reservation_id: str) -> GuestyReservation:
+    """Build a fully verified v3 reservation in the window.
+
+    Args:
+        reservation_id: The ``reservationId`` value.
+
+    Returns:
+        The published model.
+    """
+    reservation = GuestyReservation.from_v3_api_dict(
+        _v3_in_window(reservation_id),
+    )
+    assert reservation is not None
+    return reservation
+
+
+class TestRejectedExclusion:
+    """IDs v3 returned but did not fully verify are excluded (R8)."""
+
+    @respx.mock
+    async def test_rejected_ids_are_never_looked_up(self) -> None:
+        """Rejected and partial IDs are present, so never eligible."""
+        _mock_token()
+        routes = [
+            respx.get(by_id_url(res_id)).mock(
+                return_value=Response(200, json=_legacy_document(res_id)),
+            )
+            for res_id in ("res-1", "res-2")
+        ]
+        source = ReservationFallbackSource(_make_client())
+
+        outcome = await _resolve(
+            source,
+            retrieved=(_partial_v3("res-2"),),
+            candidates={"res-1": _candidate(), "res-2": _candidate()},
+            rejected=("res-1", "res-2"),
+        )
+
+        assert not any(route.called for route in routes)
+        assert outcome.counters.attempted == 0
+        assert outcome.reservations == ()
+        assert outcome.absent == ()
+
+    @respx.mock
+    async def test_rejected_ids_are_purged(self) -> None:
+        """Every cache drops a rejected ID; it is never absent."""
+        _mock_token()
+        source = ReservationFallbackSource(_make_client())
+        held = _accepted_v3("res-1")
+        source._served["res-1"] = ServedRecord(held, datetime.now(UTC))
+        source._retained["res-1"] = held
+        source._last_attempt["res-1"] = datetime.now(UTC)
+        source._stale = {"res-1"}
+        source._confirmed_absent.add("res-1")
+        source._unreported_absent.add("res-1")
+
+        outcome = await _resolve(
+            source,
+            candidates={"res-1": _candidate()},
+            rejected=("res-1",),
+        )
+
+        assert "res-1" not in source._served
+        assert "res-1" not in source._retained
+        assert "res-1" not in source._last_attempt
+        assert "res-1" not in source._stale
+        assert "res-1" not in source._confirmed_absent
+        assert "res-1" not in source._unreported_absent
+        assert outcome.absent == ()
+        assert outcome.reservations == ()
+
+    @respx.mock
+    async def test_partial_record_is_not_retained(self) -> None:
+        """Nothing is retained for a partially valid record."""
+        _mock_token()
+        source = ReservationFallbackSource(_make_client())
+        source._retained["res-2"] = _accepted_v3("res-2")
+
+        await _resolve(
+            source,
+            retrieved=(_accepted_v3("res-1"), _partial_v3("res-2")),
+            rejected=("res-2",),
+        )
+
+        assert "res-1" in source._retained
+        assert "res-2" not in source._retained
+
+
+class TestInvalidLookup:
+    """A requested document that fails validation is ``_INVALID`` (R8)."""
+
+    @pytest.mark.parametrize(
+        ("overrides", "reason"),
+        [
+            pytest.param(
+                {"status": "inquiry"},
+                ValidationReason.UNRECOGNIZED_STATUS,
+                id="inquiry",
+            ),
+            pytest.param(
+                {"status": ["confirmed"]},
+                ValidationReason.MALFORMED_STATUS,
+                id="malformed-status",
+            ),
+            pytest.param(
+                {"listingId": {"_id": "listing-1"}},
+                ValidationReason.INVALID_LISTING,
+                id="object-listing",
+            ),
+            pytest.param(
+                {"checkIn": "2025-08-01T15:00:00"},
+                ValidationReason.UNVERIFIED_INSTANT,
+                id="naive-check-in",
+            ),
+            pytest.param(
+                {"checkIn": _rel(4).isoformat()},
+                ValidationReason.INVALID_INTERVAL,
+                id="reversed-interval",
+            ),
+        ],
+    )
+    @respx.mock
+    async def test_invalid_document_is_purged_and_reported(
+        self,
+        overrides: dict[str, Any],
+        reason: ValidationReason,
+    ) -> None:
+        """The ID is purged, observed and reported, never absent."""
+        _mock_token()
+        respx.get(by_id_url("res-1")).mock(
+            return_value=Response(
+                200,
+                json=_legacy_document("res-1", **overrides),
+            ),
+        )
+        source = ReservationFallbackSource(_make_client())
+        candidates = {"res-1": _candidate()}
+        await _resolve(
+            source,
+            retrieved=(_accepted_v3("res-1"),),
+            candidates=candidates,
+        )
+        source._stale = {"res-1"}
+
+        outcome = await _resolve(source, candidates=candidates)
+
+        assert outcome.reservations == ()
+        assert outcome.served == ()
+        assert outcome.absent == ()
+        assert outcome.invalid == ("res-1",)
+        assert outcome.observed == ("res-1",)
+        assert outcome.exclusions == ((reason, "res-1"),)
+        assert outcome.counters.failed == 0
+        assert source.legacy_observed == frozenset({"res-1"})
+        assert outcome.validation.rejected_records == 1
+        assert dict(outcome.validation.reasons) == {reason: 1}
+        for cache in (source._served, source._retained):
+            assert "res-1" not in cache
+        assert "res-1" in source._last_attempt
+        assert "res-1" not in source._stale
+        assert "res-1" not in source._confirmed_absent
+
+    @respx.mock
+    async def test_invalid_lookup_keeps_the_recheck_interval(
+        self,
+        freezer: Any,
+    ) -> None:
+        """An ``_INVALID`` ID is looked up again only once it is due."""
+        freezer.move_to("2026-11-13T12:00:00+00:00")
+        _mock_token()
+        route = respx.get(by_id_url("res-1")).mock(
+            return_value=Response(
+                200,
+                json=_legacy_document("res-1", status="inquiry"),
+            ),
+        )
+        source = ReservationFallbackSource(_make_client())
+        candidates = {"res-1": _candidate()}
+
+        first = await _resolve(source, candidates=candidates)
+        second = await _resolve(source, candidates=candidates)
+
+        assert route.call_count == 1
+        assert first.invalid == ("res-1",)
+        assert first.counters.attempted == 1
+        assert second.counters.attempted == 0
+        assert second.invalid == ()
+
+        freezer.tick(timedelta(seconds=LEGACY_FALLBACK_RECHECK_SECONDS + 1))
+        third = await _resolve(source, candidates=candidates)
+
+        assert route.call_count == 2
+        assert third.counters.attempted == 1
+        assert third.invalid == ("res-1",)
+
+    @respx.mock
+    async def test_coded_invalid_document_reports_code_and_bound(self) -> None:
+        """A non-hold string code gives a pair and its bound."""
+        _mock_token()
+        respx.get(by_id_url("res-1")).mock(
+            return_value=Response(
+                200,
+                json=_legacy_document(
+                    "res-1",
+                    status="inquiry",
+                    checkOut="2025-08-09T23:00:00-05:00",
+                ),
+            ),
+        )
+        source = ReservationFallbackSource(_make_client())
+
+        outcome = await _resolve(source, candidates={"res-1": _candidate()})
+
+        assert outcome.rejected_codes == (RejectedCode("res-1", "CONF-ABC"),)
+        assert dict(outcome.rejected_check_out_bounds) == {"res-1": "2025-08-11"}
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            pytest.param({"status": "alteration", "listingId": 7}, id="hold"),
+            pytest.param({"status": "inquiry", "confirmationCode": 5}, id="non-string"),
+            pytest.param(
+                {"status": "inquiry", "confirmationCode": None}, id="codeless"
+            ),
+        ],
+    )
+    @respx.mock
+    async def test_codeless_or_hold_invalid_document_is_still_observed(
+        self,
+        overrides: dict[str, Any],
+    ) -> None:
+        """No pair is reported, but the session still observes the ID."""
+        _mock_token()
+        respx.get(by_id_url("res-1")).mock(
+            return_value=Response(
+                200,
+                json=_legacy_document("res-1", **overrides),
+            ),
+        )
+        source = ReservationFallbackSource(_make_client())
+
+        outcome = await _resolve(source, candidates={"res-1": _candidate()})
+
+        assert outcome.rejected_codes == ()
+        assert dict(outcome.rejected_check_out_bounds) == {}
+        assert outcome.invalid == ("res-1",)
+        assert source.legacy_observed == frozenset({"res-1"})
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            pytest.param(Response(200, json=["not", "a", "dict"]), id="non-dict"),
+            pytest.param(
+                Response(200, json=make_legacy_reservation_by_id("res-other")),
+                id="other-id",
+            ),
+            pytest.param(Response(500, json={"error": "boom"}), id="http"),
+            pytest.param(Response(200, text="<html>not json</html>"), id="non-json"),
+            pytest.param(httpx.ConnectError("down"), id="transport"),
+        ],
+    )
+    @respx.mock
+    async def test_unproven_answers_stay_failed(
+        self,
+        failure: Response | Exception,
+    ) -> None:
+        """Baseline control: nothing proven about the record is ``_FAILED``."""
+        _mock_token()
+        route = respx.get(by_id_url("res-1"))
+        if isinstance(failure, Exception):
+            route.mock(side_effect=failure)
+        else:
+            route.mock(return_value=failure)
+        source = ReservationFallbackSource(_make_client())
+        candidates = {"res-1": _candidate()}
+        await _resolve(
+            source,
+            retrieved=(_accepted_v3("res-1"),),
+            candidates=candidates,
+        )
+
+        outcome = await _resolve(source, candidates=candidates)
+
+        assert outcome.counters.failed == 1
+        assert [res.id for res in outcome.reservations] == ["res-1"]
+        assert "res-1" in source._retained
+        assert source.legacy_observed == frozenset()
+
+    @pytest.mark.parametrize(
+        "check_out",
+        [
+            pytest.param("9999-12-31T23:00:00Z", id="utc-max-plus-one"),
+            pytest.param("9999-12-31T20:00:00-05:00", id="negative-offset-max"),
+            pytest.param("0001-01-01T00:00:00+05:00", id="positive-offset-min"),
+        ],
+    )
+    @respx.mock
+    async def test_extreme_check_out_is_invalid_without_bound(
+        self,
+        check_out: str,
+    ) -> None:
+        """An unrepresentable bound never escapes ``resolve``."""
+        _mock_token()
+        respx.get(by_id_url("res-1")).mock(
+            return_value=Response(
+                200,
+                json=_legacy_document(
+                    "res-1",
+                    status="inquiry",
+                    checkOut=check_out,
+                ),
+            ),
+        )
+        source = ReservationFallbackSource(_make_client())
+
+        outcome = await _resolve(source, candidates={"res-1": _candidate()})
+
+        assert outcome.invalid == ("res-1",)
+        assert outcome.rejected_codes == (RejectedCode("res-1", "CONF-ABC"),)
+        assert dict(outcome.rejected_check_out_bounds) == {}
+
+    @respx.mock
+    async def test_unrepresentable_instant_is_invalid(self) -> None:
+        """An instant that cannot be expressed in UTC is not verified."""
+        _mock_token()
+        respx.get(by_id_url("res-1")).mock(
+            return_value=Response(
+                200,
+                json=_legacy_document(
+                    "res-1",
+                    checkIn="9999-12-30T00:00:00Z",
+                    checkOut="9999-12-31T20:00:00-05:00",
+                ),
+            ),
+        )
+        source = ReservationFallbackSource(_make_client())
+
+        outcome = await _resolve(source, candidates={"res-1": _candidate()})
+
+        assert outcome.invalid == ("res-1",)
+        assert outcome.exclusions == ((ValidationReason.UNVERIFIED_INSTANT, "res-1"),)
+
+    @respx.mock
+    async def test_invalid_lookup_counts_as_attempted_before_retirement(
+        self,
+    ) -> None:
+        """An invalid lookup is attempted even when retirement follows."""
+        _mock_token()
+        respx.get(by_id_url("res-1")).mock(
+            return_value=Response(
+                200,
+                json=_legacy_document("res-1", status="inquiry"),
+            ),
+        )
+        respx.get(by_id_url("res-2")).mock(
+            return_value=Response(410, json=make_legacy_retired_body()),
+        )
+        source = ReservationFallbackSource(_make_client())
+
+        outcome = await _resolve(
+            source,
+            candidates={
+                "res-1": _candidate(check_out_days=2),
+                "res-2": _candidate(check_out_days=3),
+            },
+        )
+
+        assert source.disabled
+        assert outcome.invalid == ("res-1",)
+        assert outcome.counters.attempted == 2
+        assert outcome.counters.succeeded == 0
+        assert outcome.counters.failed == 0
+        assert outcome.counters.confirmed_absent == 0
+
+    @respx.mock
+    async def test_write_absence_is_not_an_attempt_before_retirement(
+        self,
+    ) -> None:
+        """A drained write-discovered absence costs no lookup."""
+        _mock_token()
+        respx.get(by_id_url("res-2")).mock(
+            return_value=Response(410, json=make_legacy_retired_body()),
+        )
+        source = ReservationFallbackSource(_make_client())
+        source.retire_candidate("res-9")
+
+        outcome = await _resolve(
+            source,
+            candidates={"res-2": _candidate(), "res-9": _candidate()},
+        )
+
+        assert outcome.absent == ("res-9",)
+        assert outcome.counters.attempted == 1
+
+
+class TestLegacyDocumentSanitizing:
+    """An accepted legacy document keeps only verified values (C6)."""
+
+    @respx.mock
+    async def test_invalid_optional_fields_are_not_served(self) -> None:
+        """Bad optional values become None instead of being published."""
+        _mock_token()
+        respx.get(by_id_url("res-1")).mock(
+            return_value=Response(
+                200,
+                json=_legacy_document(
+                    "res-1",
+                    checkInDateLocalized={"d": 1},
+                    checkOutDateLocalized="2025-8-22",
+                    nightsCount=-2,
+                    guestsCount=True,
+                    plannedArrival=1600,
+                    plannedDeparture=["10:00"],
+                    source={"x": 1},
+                    note=7,
+                    guest={"fullName": 5, "_id": ["g"]},
+                ),
+            ),
+        )
+        source = ReservationFallbackSource(_make_client())
+
+        outcome = await _resolve(source, candidates={"res-1": _candidate()})
+
+        assert outcome.invalid == ()
+        (reservation,) = outcome.reservations
+        assert reservation.check_in_local is None
+        assert reservation.check_out_local is None
+        assert reservation.nights_count is None
+        assert reservation.guests_count is None
+        assert reservation.planned_arrival is None
+        assert reservation.planned_departure is None
+        assert reservation.source is None
+        assert reservation.note is None
+        assert reservation.guest is None
+
+    @respx.mock
+    async def test_huge_money_integer_never_escapes_resolve(self) -> None:
+        """An amount too large for a float drops only that field."""
+        _mock_token()
+        respx.get(by_id_url("res-1")).mock(
+            return_value=Response(
+                200,
+                json=_legacy_document(
+                    "res-1",
+                    money={"totalPaid": 10**400, "currency": "USD"},
+                ),
+            ),
+        )
+        source = ReservationFallbackSource(_make_client())
+
+        outcome = await _resolve(source, candidates={"res-1": _candidate()})
+
+        assert outcome.invalid == ()
+        (reservation,) = outcome.reservations
+        assert reservation.money is not None
+        assert reservation.money.total_paid is None
+        assert reservation.money.currency == "USD"
+
+    @respx.mock
+    async def test_reversed_local_dates_are_not_served(self) -> None:
+        """A non-chronological local date pair is dropped as a whole."""
+        _mock_token()
+        respx.get(by_id_url("res-1")).mock(
+            return_value=Response(
+                200,
+                json=_legacy_document(
+                    "res-1",
+                    checkInDateLocalized="2025-08-22",
+                    checkOutDateLocalized="2025-08-17",
+                ),
+            ),
+        )
+        source = ReservationFallbackSource(_make_client())
+
+        outcome = await _resolve(source, candidates={"res-1": _candidate()})
+
+        (reservation,) = outcome.reservations
+        assert reservation.check_in_local is None
+        assert reservation.check_out_local is None
+
+
+class TestPerRecordStale:
+    """Per-record staleness of fallback-published records (FR-012g)."""
+
+    async def _stale_source(
+        self,
+        *,
+        served: bool,
+    ) -> tuple[ReservationFallbackSource, dict[str, FallbackCandidate], Any]:
+        """Make ``res-1`` published and stale after a failed lookup.
+
+        Args:
+            served: Whether the record was served by a lookup first,
+                rather than retained from v3 only.
+
+        Returns:
+            The source, its candidates and the failing outcome.
+        """
+        _mock_token()
+        route = respx.get(by_id_url("res-1"))
+        source = ReservationFallbackSource(_make_client())
+        candidates = {"res-1": _candidate()}
+        if served:
+            route.mock(return_value=Response(200, json=_legacy_document("res-1")))
+            await _resolve(source, candidates=candidates)
+            source._last_attempt["res-1"] = _rel(-1)
+        else:
+            await _resolve(
+                source,
+                retrieved=(_accepted_v3("res-1"),),
+                candidates=candidates,
+            )
+        route.mock(return_value=Response(500, json={"error": "boom"}))
+        outcome = await _resolve(source, candidates=candidates)
+        return source, candidates, outcome
+
+    @respx.mock
+    async def test_failed_due_lookup_of_published_id_is_stale(self) -> None:
+        """A failed lookup of a published ID marks it stale."""
+        source, _, outcome = await self._stale_source(served=False)
+
+        assert [res.id for res in outcome.reservations] == ["res-1"]
+        assert outcome.stale == ("res-1",)
+        assert source._stale == {"res-1"}
+
+    @respx.mock
+    async def test_unpublished_failure_is_not_stale(self) -> None:
+        """A cold-start failure publishes nothing and is not stale."""
+        _mock_token()
+        respx.get(by_id_url("res-1")).mock(
+            return_value=Response(500, json={"error": "boom"}),
+        )
+        source = ReservationFallbackSource(_make_client())
+
+        outcome = await _resolve(source, candidates={"res-1": _candidate()})
+
+        assert outcome.stale == ()
+        assert source._stale == set()
+
+    @respx.mock
+    async def test_deferred_lookup_changes_nothing(self) -> None:
+        """A lookup that is not due leaves the stale mark alone."""
+        source, candidates, _ = await self._stale_source(served=False)
+
+        outcome = await _resolve(source, candidates=candidates)
+
+        assert outcome.counters.attempted == 0
+        assert outcome.stale == ("res-1",)
+
+    @respx.mock
+    async def test_ok_lookup_clears_stale(self) -> None:
+        """A successful lookup reverifies the record."""
+        source, candidates, _ = await self._stale_source(served=False)
+        respx.get(by_id_url("res-1")).mock(
+            return_value=Response(200, json=_legacy_document("res-1")),
+        )
+        source._last_attempt["res-1"] = _rel(-1)
+
+        outcome = await _resolve(source, candidates=candidates)
+
+        assert outcome.stale == ()
+        assert source._stale == set()
+
+    @respx.mock
+    async def test_absorb_clears_stale(self) -> None:
+        """v3 returning the record accepted clears the stale mark."""
+        source, candidates, _ = await self._stale_source(served=False)
+
+        outcome = await _resolve(
+            source,
+            retrieved=(_accepted_v3("res-1"),),
+            candidates=candidates,
+        )
+
+        assert outcome.stale == ()
+        assert source._stale == set()
+
+    @respx.mock
+    async def test_retirement_clears_stale(self) -> None:
+        """A confirmed absence clears the stale mark."""
+        source, candidates, _ = await self._stale_source(served=False)
+        respx.get(by_id_url("res-1")).mock(
+            return_value=Response(404, json=make_legacy_not_found_body("res-1")),
+        )
+        source._last_attempt["res-1"] = _rel(-1)
+
+        outcome = await _resolve(source, candidates=candidates)
+
+        assert outcome.absent == ("res-1",)
+        assert source._stale == set()
+
+    @respx.mock
+    async def test_purge_clears_stale(self) -> None:
+        """A rejected ID is purged, stale mark included."""
+        source, candidates, _ = await self._stale_source(served=False)
+
+        await _resolve(source, candidates=candidates, rejected=("res-1",))
+
+        assert source._stale == set()
+
+    @respx.mock
+    async def test_routing_is_unchanged_by_staleness(self) -> None:
+        """A served target stays routable; retained-only stays unroutable."""
+        served_source, _, served_outcome = await self._stale_source(served=True)
+
+        assert served_outcome.stale == ("res-1",)
+        assert served_source.served_ids == frozenset({"res-1"})
+        assert served_outcome.served == ("res-1",)
+
+    @respx.mock
+    async def test_retained_only_target_stays_unroutable(self) -> None:
+        """A stale retained-only record never becomes routable."""
+        source, _, outcome = await self._stale_source(served=False)
+
+        assert outcome.stale == ("res-1",)
+        assert source.served_ids == frozenset()
+        assert outcome.served == ()

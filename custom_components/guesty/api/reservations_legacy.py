@@ -15,7 +15,7 @@ import logging
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from custom_components.guesty.api.const import (
     ACTIONABLE_STATUSES,
@@ -28,8 +28,13 @@ from custom_components.guesty.api.const import (
 from custom_components.guesty.api.exceptions import GuestyResponseError
 from custom_components.guesty.api.models import (
     GuestyReservation,
-    GuestyReservationsResponse,
     ReservationFetchResult,
+)
+from custom_components.guesty.api.validation import (
+    ValidationTally,
+    assess_legacy_record,
+    build_legacy_reservation,
+    recognize_v3_status,
 )
 
 if TYPE_CHECKING:
@@ -74,9 +79,11 @@ class LegacyReservationSource:
            to capture long-stay active reservations whose
            checkIn predates the date window.
 
-        Results are merged and de-duplicated by reservation ID.
-        Reservations missing required fields (_id, listingId,
-        status, checkIn, checkOut) are skipped with a warning.
+        Raw items are merged and de-duplicated first-wins by ``_id``
+        before assessment. An item without a non-empty string ``_id``
+        fails the refresh closed. Every other record is assessed: a
+        rejected record is isolated and reported by identifier in
+        ``rejected_ids``, never logged by value.
 
         Args:
             past_days: Days in the past for the check-in
@@ -126,31 +133,55 @@ class LegacyReservationSource:
         )
 
         merged = _merge_reservations(primary, secondary)
+        reservations: list[GuestyReservation] = []
+        status_counts: Counter[str] = Counter()
+        tally = ValidationTally()
+        for item in merged:
+            status_counts[
+                recognize_v3_status(item.get("status")) or "unrecognized"
+            ] += 1
+            assessment = assess_legacy_record(item)
+            reservation = build_legacy_reservation(item, assessment)
+            if reservation is not None:
+                reservations.append(reservation)
+                continue
+            tally.add(
+                assessment.reservation_id,
+                reason=assessment.reason,
+                partial=False,
+                segments=(),
+                conflict_code=assessment.conflict_code,
+                raw_check_out=item.get("checkOut"),
+            )
         return ReservationFetchResult(
-            reservations=tuple(merged),
+            reservations=tuple(reservations),
             pages=primary_pages + secondary_pages,
-            status_counts=MappingProxyType(
-                dict(
-                    Counter(
-                        res.status for res in merged if isinstance(res.status, str)
-                    ),
-                ),
-            ),
-            observed_ids=tuple(reservation.id for reservation in merged),
+            status_counts=MappingProxyType(dict(status_counts)),
+            observed_ids=tuple(reservation.id for reservation in reservations),
+            rejected_ids=tally.sorted_rejected_ids(),
+            rejected_codes=tally.sorted_rejected_codes(),
+            rejected_check_out_bounds=tally.check_out_bounds(),
+            validation=tally.summary(),
+            exclusions=tally.sorted_exclusions(),
         )
 
     async def _fetch_all_reservations(
         self,
         params: dict[str, str | int],
-    ) -> tuple[list[GuestyReservation], int]:
+    ) -> tuple[list[dict[str, Any]], int]:
         """Paginate through all reservation pages.
+
+        Every item must be a dict with a non-empty string ``_id``;
+        otherwise the refresh fails closed, because a record without a
+        verified identifier cannot be isolated.
 
         Args:
             params: Query parameters for the Guesty API
                 reservations endpoint.
 
         Returns:
-            Tuple of the parsed reservations and the page count.
+            Tuple of the raw identifier-verified items and the page
+            count.
 
         Raises:
             GuestyAuthError: On authentication failure.
@@ -158,7 +189,7 @@ class LegacyReservationSource:
             GuestyRateLimitError: On rate limit exhaustion.
             GuestyResponseError: On malformed API response.
         """
-        all_reservations: list[GuestyReservation] = []
+        all_reservations: list[dict[str, Any]] = []
         skip = 0
         pages = 0
         fields = " ".join(RESERVATIONS_FIELDS)
@@ -206,8 +237,17 @@ class LegacyReservationSource:
                     "Reservations results must be a list",
                 )
 
-            page = GuestyReservationsResponse.from_api_dict(data)
-            all_reservations.extend(page.results)
+            for item in results:
+                if not isinstance(item, dict):
+                    raise GuestyResponseError(
+                        "Reservations results must be objects",
+                    )
+                reservation_id = item.get("_id")
+                if not isinstance(reservation_id, str) or not reservation_id:
+                    raise GuestyResponseError(
+                        "Reservation is missing a string _id",
+                    )
+                all_reservations.append(item)
 
             if skip == 0 and results and _LOGGER.isEnabledFor(logging.DEBUG):
                 sample_item = results[0]
@@ -275,29 +315,27 @@ def _build_checked_in_params() -> dict[str, str | int]:
 
 
 def _merge_reservations(
-    primary: list[GuestyReservation],
-    secondary: list[GuestyReservation],
-) -> list[GuestyReservation]:
-    """Merge and de-duplicate two reservation lists by ID.
+    primary: list[dict[str, Any]],
+    secondary: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge and de-duplicate two raw item lists by ``_id``.
 
-    Primary results take precedence. Secondary results are
-    added only if their ID is not already present.
+    The first item per ``_id`` wins, primary before secondary. It runs
+    before assessment, so a rejected record and an accepted duplicate
+    can never both survive.
 
     Args:
-        primary: Reservations from the date-range request.
-        secondary: Reservations from the checked_in request.
+        primary: Raw items from the date-range request.
+        secondary: Raw items from the checked_in request.
 
     Returns:
-        De-duplicated list of reservations.
+        De-duplicated list of raw items.
     """
     seen: set[str] = set()
-    merged: list[GuestyReservation] = []
-    for reservation in primary:
-        if reservation.id not in seen:
-            seen.add(reservation.id)
-            merged.append(reservation)
-    for reservation in secondary:
-        if reservation.id not in seen:
-            seen.add(reservation.id)
-            merged.append(reservation)
+    merged: list[dict[str, Any]] = []
+    for item in (*primary, *secondary):
+        reservation_id = item["_id"]
+        if reservation_id not in seen:
+            seen.add(reservation_id)
+            merged.append(item)
     return merged

@@ -7,6 +7,18 @@
         "identity_continuity_unconfirmed": {
             "title": "Guesty reservation identity continuity is unconfirmed",
             "description": "Guesty could not confirm that the legacy and v3 reservation APIs identify the same booking by the same identifier for **{title}**, because the one-time legacy identity check was unavailable or found no reservation in common.\n\nReservations are still published normally. Reservation writes \u2014 adding a note, changing a status and setting a reservation custom field \u2014 are refused, so that a wrong identifier cannot act on someone else's booking.\n\nLeave the integration running: the notice clears automatically as soon as a refresh shares a confirmation code with the earlier evidence. To restore writes immediately, set the **Reservations API** option to **legacy** and reload the entry."
+        },
+        "listing_timezone_unverified": {
+            "title": "Guesty listing {listing_name} has no verified timezone",
+            "description": "The Guesty listing **{listing_name}** (`{listing_id}`) has reservations, but Guesty did not report a timezone for it that Home Assistant could verify.\n\nUntil it does, this listing's reservations are shown by date only. No exact check-in or check-out time is derived, a stay on its checkout day has an uncertain (`unknown`) status, and a stay is shown only when it is within the configured date window for every possible local date.\n\nSet the listing's timezone in Guesty. The notice clears automatically after the next successful refresh once the timezone is verified, or when the listing is no longer tracked."
+        },
+        "conflict_evidence_near_capacity": {
+            "title": "Guesty rejected-reservation evidence is nearly full",
+            "description": "The Guesty integration keeps a bounded record of the confirmation codes of reservations it could not verify, so that a reservation write can never act on the wrong booking. That record is now close to its limit.\n\nThis notice by itself does not affect reservation writes; if the record fills up, every reservation write will be refused. An entry is removed automatically once the reservation is verified again, is confirmed removed from Guesty, or, when its stay dates are known, the stay is past the configured history window, so the notice may clear on its own. If it does not, check the integration's diagnostics download for the number of rejected reservations and correct them in Guesty."
+        },
+        "conflict_evidence_unavailable": {
+            "title": "Guesty rejected-reservation evidence is unavailable",
+            "description": "The Guesty integration's bounded record of the confirmation codes of reservations it could not verify is full or could not be trusted, so it can no longer prove that a reservation write targets the right booking.\n\nReservations are still shown. Every reservation write \u2014 adding a note, changing a status and setting a reservation custom field \u2014 is refused, so that a wrong identifier cannot act on someone else's booking.\n\nCorrect or remove the reservations Guesty cannot verify (see the integration's diagnostics download), then remove and re-add the integration to rebuild the record."
         }
     },
     "config": {

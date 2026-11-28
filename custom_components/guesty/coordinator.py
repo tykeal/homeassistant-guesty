@@ -7,7 +7,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict, deque
-from collections.abc import AsyncIterator, Collection, Coroutine, Mapping
+from collections.abc import (
+    AsyncIterator,
+    Callable,
+    Collection,
+    Coroutine,
+    Iterable,
+    Mapping,
+)
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
@@ -16,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryError
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.update_coordinator import (
     REQUEST_REFRESH_DEFAULT_COOLDOWN,
@@ -34,6 +42,7 @@ from custom_components.guesty.api.const import (
     HOLD_STATUSES,
     RESERVATIONS_API_V3,
     RESERVATIONS_V3_SEARCH_ENDPOINT,
+    V3_STATUS_MAP,
 )
 from custom_components.guesty.api.exceptions import (
     GuestyApiError,
@@ -54,13 +63,16 @@ from custom_components.guesty.api.models import (
     GuestyReservation,
     GuestyStaySegment,
     LegacyWriteCounters,
+    RejectedCode,
     ReservationFetchResult,
+    ValidationSummary,
     derive_nights_count,
 )
 from custom_components.guesty.api.timing import (
     is_valid_local_wall_time,
     resolve_local_datetime,
 )
+from custom_components.guesty.api.validation import ValidationReason
 from custom_components.guesty.const import (
     CONF_CF_SCAN_INTERVAL,
     CONF_FUTURE_DAYS,
@@ -76,6 +88,9 @@ from custom_components.guesty.const import (
     DOMAIN,
 )
 from custom_components.guesty.identity import (
+    EVIDENCE_COMPROMISED,
+    EVIDENCE_SATURATED,
+    MAX_CONFLICT_ONLY_EVIDENCE,
     CandidateHint,
     IdentityComparison,
     ReservationIdentityGuard,
@@ -103,6 +118,129 @@ RESERVATION_SEARCH_REJECTED_MESSAGE = (
     f"Guesty rejected {RESERVATIONS_V3_SEARCH_ENDPOINT} with HTTP 400. "
     "Check your reservation search settings and contact support."
 )
+
+# Bound on the exclusion keys remembered between refreshes (R14).
+MAX_TRACKED_EXCLUSIONS: int = 256
+
+# Rejected identifiers shown in the diagnostics download (R15).
+MAX_DIAGNOSTIC_REJECTED_IDS: int = 100
+
+# Status histogram keys a diagnostics surface may show (FR-010).
+_REPORTABLE_STATUSES: frozenset[str] = frozenset(
+    {*V3_STATUS_MAP.values(), "unrecognized"},
+)
+
+# Repair issue identifier prefixes; each is also the translation key.
+ISSUE_LISTING_TIMEZONE_UNVERIFIED = "listing_timezone_unverified"
+ISSUE_CONFLICT_EVIDENCE_NEAR_CAPACITY = "conflict_evidence_near_capacity"
+ISSUE_CONFLICT_EVIDENCE_UNAVAILABLE = "conflict_evidence_unavailable"
+
+
+def listing_timezone_issue_prefix(entry_id: str) -> str:
+    """Return the issue-ID prefix of an entry's timezone issues.
+
+    Args:
+        entry_id: The config entry ID.
+
+    Returns:
+        The prefix every listing-timezone issue of the entry carries.
+    """
+    return f"{ISSUE_LISTING_TIMEZONE_UNVERIFIED}_{entry_id}_"
+
+
+def conflict_evidence_issue_ids(entry_id: str) -> tuple[str, str]:
+    """Return an entry's two conflict-evidence issue IDs.
+
+    Args:
+        entry_id: The config entry ID.
+
+    Returns:
+        The near-capacity and the unavailable issue IDs.
+    """
+    return (
+        f"{ISSUE_CONFLICT_EVIDENCE_NEAR_CAPACITY}_{entry_id}",
+        f"{ISSUE_CONFLICT_EVIDENCE_UNAVAILABLE}_{entry_id}",
+    )
+
+
+def sanitized_status_counts(counts: Mapping[str, int]) -> dict[str, int]:
+    """Fold any unexpected status key into the ``unrecognized`` bucket.
+
+    The sources already map every raw status through the allowlist;
+    this keeps a raw value off both diagnostics surfaces regardless.
+
+    Args:
+        counts: The status histogram of one refresh.
+
+    Returns:
+        The histogram with only reportable keys.
+    """
+    sanitized: dict[str, int] = {}
+    for status, count in counts.items():
+        key = status if status in _REPORTABLE_STATUSES else "unrecognized"
+        sanitized[key] = sanitized.get(key, 0) + count
+    return sanitized
+
+
+class ExclusionTracker:
+    """Remember reported exclusions so each warns once (R14, SC-004).
+
+    Keys are ``(reason, scope_id)`` with a fixed reason and a
+    reservation or listing ID, nothing else. A new key logs one
+    WARNING, a known key logs at DEBUG and a key an accepted refresh
+    no longer reports is forgotten, so it can warn again. Beyond
+    ``MAX_TRACKED_EXCLUSIONS`` new keys log at DEBUG under one
+    aggregate WARNING per overflow episode, which ends once the
+    tracked set falls below the bound. Memory-only.
+    """
+
+    def __init__(self) -> None:
+        """Start with nothing tracked."""
+        self._active: dict[tuple[ValidationReason, str], None] = {}
+        self._overflowed = False
+
+    def report(self, keys: Iterable[tuple[ValidationReason, str]]) -> None:
+        """Report the exclusion set of one accepted refresh.
+
+        Args:
+            keys: The refresh's ``(reason, scope_id)`` keys.
+        """
+        current = sorted(set(keys))
+        present = set(current)
+        for key in [key for key in self._active if key not in present]:
+            del self._active[key]
+        untracked = 0
+        for key in current:
+            reason, scope_id = key
+            if key in self._active:
+                _LOGGER.debug(
+                    "Reservation data still excluded: %s for %s",
+                    str(reason.value),
+                    scope_id,
+                )
+            elif len(self._active) < MAX_TRACKED_EXCLUSIONS:
+                self._active[key] = None
+                _LOGGER.warning(
+                    "Reservation data excluded: %s for %s",
+                    str(reason.value),
+                    scope_id,
+                )
+            else:
+                untracked += 1
+                _LOGGER.debug(
+                    "Reservation data excluded (untracked): %s for %s",
+                    str(reason.value),
+                    scope_id,
+                )
+        if untracked and not self._overflowed:
+            self._overflowed = True
+            _LOGGER.warning(
+                "%d further reservation data exclusions are not tracked; "
+                "they are logged at DEBUG",
+                untracked,
+            )
+        if len(self._active) < MAX_TRACKED_EXCLUSIONS:
+            self._overflowed = False
 
 
 @dataclass(frozen=True)
@@ -163,6 +301,27 @@ class AcceptedRefreshSnapshot:
     fallback_sourced: frozenset[str] = frozenset()
     fallback_absent: frozenset[str] = frozenset()
     fallback_observed: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class VerifiedSnapshot:
+    """The records of the last accepted refresh, kept for display.
+
+    It is memory-only and separate from ``AcceptedRefreshSnapshot``:
+    it only lets a failed refresh re-project the last verified data,
+    and is never write evidence (FR-012, R10).
+
+    Attributes:
+        reservations: Every accepted record before publication
+            filtering, including partially valid ones, with guest
+            records attached.
+        stale_ids: Records that refresh could only serve stale.
+        accepted_at: When that refresh was accepted.
+    """
+
+    reservations: tuple[GuestyReservation, ...] = field(repr=False)
+    stale_ids: frozenset[str]
+    accepted_at: datetime
 
 
 def _code_kind(
@@ -446,7 +605,13 @@ class ReservationsCoordinator(
         self.api_client = api_client
         self.listings_coordinator = listings_coordinator
         self._zone_cache: dict[str, ZoneInfo | None] = {}
-        self.identity = ReservationIdentityGuard(hass, entry.entry_id)
+        self.identity = ReservationIdentityGuard(
+            hass,
+            entry.entry_id,
+            past_days=lambda: int(
+                entry.options.get(CONF_PAST_DAYS, DEFAULT_PAST_DAYS),
+            ),
+        )
         self.reservations_path = resolve_reservations_api(
             entry.options.get(
                 CONF_RESERVATIONS_API,
@@ -458,6 +623,10 @@ class ReservationsCoordinator(
         self.fallback_served_ids: frozenset[str] = frozenset()
         self.fallback_sourced_ids: frozenset[str] = frozenset()
         self.last_fallback_counters = FallbackCounters()
+        self._candidate_routing: tuple[frozenset[str], frozenset[str]] = (
+            frozenset(),
+            frozenset(),
+        )
         self.legacy_write_counters = LegacyWriteCounters()
         # FR-042 requires the same counters on both surfaces, so the
         # last refresh's numbers are retained for the diagnostics
@@ -480,6 +649,13 @@ class ReservationsCoordinator(
             ]
         ] = deque(maxlen=256)
         self._accepted_snapshot: AcceptedRefreshSnapshot | None = None
+        self._verified_snapshot: VerifiedSnapshot | None = None
+        self.snapshot_stale = False
+        self.stale_reservation_ids: frozenset[str] = frozenset()
+        self._exclusions = ExclusionTracker()
+        self.last_validation = ValidationSummary()
+        self.last_rejected_ids: tuple[str, ...] = ()
+        self.last_fallback_invalid_ids: tuple[str, ...] = ()
         interval_minutes = entry.options.get(
             CONF_RESERVATION_SCAN_INTERVAL,
             DEFAULT_RESERVATION_SCAN_INTERVAL,
@@ -492,6 +668,9 @@ class ReservationsCoordinator(
             update_interval=timedelta(minutes=interval_minutes),
             request_refresh_debouncer=_ReservationDebouncer(hass),
         )
+        self._remove_evidence_listener = self.identity.conflict_evidence.add_listener(
+            self._reconcile_evidence_issues,
+        )
 
     @property
     def write_miss_generation(self) -> int:
@@ -502,6 +681,31 @@ class ReservationsCoordinator(
     def write_miss_attempt_generation(self) -> int:
         """Return the generation of the latest started coordinator attempt."""
         return self._write_miss_attempt_generation
+
+    @property
+    def stale_display_available(self) -> bool:
+        """Return whether failed-refresh entities show verified data.
+
+        True only while the last refresh failed and ``data`` holds the
+        re-projection of the verified snapshot (FR-012, R13).
+        """
+        return (
+            not self.last_update_success
+            and self.snapshot_stale
+            and self.data is not None
+            and self._verified_snapshot is not None
+        )
+
+    @property
+    def last_verified_at(self) -> datetime | None:
+        """Return when the displayed stale snapshot was accepted.
+
+        None whenever the display is not a stale snapshot.
+        """
+        snapshot = self._verified_snapshot
+        if not self.snapshot_stale or snapshot is None:
+            return None
+        return snapshot.accepted_at
 
     @asynccontextmanager
     async def async_write_miss_dispatch_lock(self) -> AsyncIterator[None]:
@@ -548,6 +752,7 @@ class ReservationsCoordinator(
     async def async_shutdown(self) -> None:
         """Stop shared recovery fetches before this entry can be unloaded."""
         self._accepted_snapshot = None
+        self._remove_evidence_listener()
         await super().async_shutdown()
         current = asyncio.current_task()
         tasks = [task for task in self._write_miss_tasks if task is not current]
@@ -592,6 +797,7 @@ class ReservationsCoordinator(
         self._write_miss_attempt_generation += 1
         attempt = self._write_miss_attempt_generation
         success = False
+        previous_success = self.last_update_success
         try:
             await super()._async_refresh(
                 log_failures=log_failures,
@@ -599,6 +805,10 @@ class ReservationsCoordinator(
                 scheduled=scheduled,
                 raise_on_entry_error=raise_on_entry_error,
             )
+            if not previous_success and not self.last_update_success:
+                # Home Assistant only notifies on the first failure; a
+                # later one still changes the re-projected display.
+                self.async_update_listeners()
             success = (
                 self.last_update_success
                 and self.config_entry is entry
@@ -708,18 +918,28 @@ class ReservationsCoordinator(
     async def _async_update_data(
         self,
     ) -> dict[str, list[GuestyReservation]]:
-        """Contain unexpected recovery errors without exposing exception contents."""
+        """Contain unexpected recovery errors without exposing exception contents.
+
+        Every failure, including a ``CancelledError`` Home Assistant
+        counts as one, first re-projects the verified snapshot, so the
+        listener update Home Assistant sends for it already sees the
+        stale display (R10).
+        """
         try:
-            with private_http_logging(True):
-                return await self._async_fetch_reservations()
-        except ConfigEntryAuthFailed, ConfigEntryError, UpdateFailed:
-            raise
-        except Exception:
-            if (
-                self._write_miss_refresh_task is not None
-                and asyncio.current_task() is self._write_miss_refresh_task
-            ):
-                raise UpdateFailed("Reservation refresh failed") from None
+            try:
+                with private_http_logging(True):
+                    return await self._async_fetch_reservations()
+            except ConfigEntryAuthFailed, ConfigEntryError, UpdateFailed:
+                raise
+            except Exception:
+                if (
+                    self._write_miss_refresh_task is not None
+                    and asyncio.current_task() is self._write_miss_refresh_task
+                ):
+                    raise UpdateFailed("Reservation refresh failed") from None
+                raise
+        except Exception, asyncio.CancelledError:
+            self._publish_stale_snapshot()
             raise
 
     async def _async_fetch_reservations(
@@ -785,8 +1005,78 @@ class ReservationsCoordinator(
                 "and retry.",
             ) from None
 
+        try:
+            return await self._async_accept_fetch(
+                fetch_result,
+                past_days,
+                future_days,
+            )
+        except BaseException:
+            self._discard_disproven(fetch_result)
+            raise
+
+    def _discard_disproven(self, fetch_result: ReservationFetchResult) -> None:
+        """Drop what a fetched but failed batch proved invalid (R10).
+
+        A refresh that fetched and validated its batch but then
+        failed, on an identity abort or any later error, does not
+        replace the verified snapshot. Records that batch rejected,
+        kept only partially or found invalid through the fallback
+        are nevertheless removed from it, so the stale display never
+        re-projects data proven invalid. The validation diagnostics
+        describe the same batch, so the download names what the
+        stale display dropped. Nothing else changes: publication,
+        routing and identity state are untouched.
+
+        Args:
+            fetch_result: The fetched batch of the failed refresh.
+        """
+        self.last_validation = fetch_result.validation
+        self.last_rejected_ids = tuple(fetch_result.rejected_ids)
+        self.last_fallback_invalid_ids = tuple(fetch_result.fallback_invalid_ids)
+        snapshot = self._verified_snapshot
+        if snapshot is None:
+            return
+        disproven = (
+            frozenset(fetch_result.rejected_ids)
+            | frozenset(fetch_result.fallback_invalid_ids)
+            | frozenset(r.id for r in fetch_result.reservations if r.partial)
+        )
+        if not disproven:
+            return
+        snapshot = replace(
+            snapshot,
+            reservations=tuple(
+                r for r in snapshot.reservations if r.id not in disproven
+            ),
+            stale_ids=snapshot.stale_ids - disproven,
+        )
+        self._verified_snapshot = snapshot
+        self.stale_reservation_ids = snapshot.stale_ids
+
+    async def _async_accept_fetch(
+        self,
+        fetch_result: ReservationFetchResult,
+        past_days: int,
+        future_days: int,
+    ) -> dict[str, list[GuestyReservation]]:
+        """Check, publish and record one fetched batch.
+
+        Args:
+            fetch_result: The fetched batch.
+            past_days: Configured days of history to publish.
+            future_days: Configured days ahead to publish.
+
+        Returns:
+            Dictionary mapping listing ID to sorted projections.
+
+        Raises:
+            UpdateFailed: When the identity is ambiguous.
+        """
+        timing_listings = self._timing_listings()
         reservations = await self._resolve_v3_reservations(
             fetch_result.reservations,
+            timing_listings,
         )
         known_fallback_ids = self.fallback_served_ids | self.fallback_sourced_ids
         retired = (
@@ -794,8 +1084,8 @@ class ReservationsCoordinator(
             and not self.api_client.legacy_write_routing_available
         )
         if not retired:
-            self.fallback_served_ids = frozenset(fetch_result.fallback_served)
-            self.fallback_sourced_ids = frozenset(fetch_result.fallback_sourced)
+            served = frozenset(fetch_result.fallback_served)
+            sourced = frozenset(fetch_result.fallback_sourced)
         else:
             # A retired legacy generation stops reporting anything,
             # so keeping the last known sets is what makes a write
@@ -803,15 +1093,27 @@ class ReservationsCoordinator(
             # message instead of silently going to v3 (FR-061). A
             # reservation that has reappeared in v3 leaves them.
             returned = {reservation.id for reservation in fetch_result.reservations}
-            self.fallback_served_ids -= returned
-            self.fallback_sourced_ids -= returned
+            served = self.fallback_served_ids - returned
+            sourced = self.fallback_sourced_ids - returned
+        # The routing sets are candidates until the baseline naming
+        # them is stored (R7 decision 8); the counters stay live.
+        self._candidate_routing = (served, sourced)
         self.last_fallback_counters = fetch_result.fallback
         counters = _RefreshCounters(received=len(reservations))
+        # Identity reads only fully verified records; rejected and
+        # partial records take part as conflict-only pairs (FR-008b).
+        rejected_ids = frozenset(fetch_result.rejected_ids)
+        verified = tuple(
+            reservation
+            for reservation in reservations
+            if not reservation.partial and reservation.id not in rejected_ids
+        )
 
         try:
             comparison = await self._check_identity(
-                reservations,
-                self.fallback_sourced_ids,
+                verified,
+                sourced | frozenset(fetch_result.fallback_invalid_ids),
+                conflict_only=fetch_result.rejected_codes,
             )
         except UpdateFailed:
             # An aborted refresh is precisely the one the download
@@ -837,7 +1139,7 @@ class ReservationsCoordinator(
                 len(reservations),
             )
             await self._record_identity(
-                reservations,
+                verified,
                 {},
                 comparison,
                 past_days,
@@ -848,161 +1150,326 @@ class ReservationsCoordinator(
                 counters,
                 GuestLookupResult(),
             )
+            self._store_verified_snapshot(fetch_result, {})
+            self._report_validation(
+                fetch_result, reservations, known_ids, timing_listings
+            )
             return {}
 
-        now = datetime.now(UTC)
-        timing_listings = self._timing_listings()
-        grouped: dict[str, list[GuestyReservation]] = defaultdict(list)
-        guest_ids: list[str] = []
-        published: dict[str, CandidateHint] = {}
-
-        for reservation in reservations:
-            if reservation.status in HOLD_STATUSES:
-                counters.alteration_drops += 1
-                _LOGGER.debug(
-                    "Dropping reservation %s held at status %s",
-                    reservation.id,
-                    reservation.status,
-                )
-                continue
-
-            if not _within_window(
-                reservation,
-                now=now,
-                past_days=past_days,
-                future_days=future_days,
-                timing_listings=timing_listings,
-                zones=self._zone_cache,
-            ):
-                counters.trim_drops += 1
-                _LOGGER.debug(
-                    "Trimming reservation %s outside the configured window",
-                    reservation.id,
-                )
-                continue
-
-            attributed, unknown_ids = _attribute_segments(
-                reservation,
-                known_ids,
-            )
-            counters.unknown_listings |= unknown_ids
-            if not attributed:
-                counters.skipped += 1
-                _LOGGER.warning(
-                    "Skipping reservation %s: no tracked listing among %s",
-                    reservation.id,
-                    ", ".join(sorted(unknown_ids)),
-                )
-                continue
-
-            counters.attributed += 1
-            if reservation.guest is not None and reservation.guest.guest_id:
-                guest_ids.append(reservation.guest.guest_id)
-            if unknown_ids:
-                counters.partially_attributed += 1
-                _LOGGER.debug(
-                    "Ignoring stay segments of reservation %s for "
-                    "untracked listing(s) %s",
-                    reservation.id,
-                    ", ".join(sorted(unknown_ids)),
-                )
-
-            for listing_id, segments in attributed.items():
-                grouped[listing_id].append(
-                    _project(reservation, listing_id, segments, now),
-                )
-
-        lookup = await self._resolve_guests(guest_ids)
-        await self._record_identity(
+        publication = _publish_reservations(
             reservations,
-            published,
+            now=datetime.now(UTC),
+            past_days=past_days,
+            future_days=future_days,
+            known_ids=known_ids,
+            timing_listings=timing_listings,
+            zones=self._zone_cache,
+            counters=counters,
+        )
+
+        lookup = await self._resolve_guests(publication.guest_ids)
+        await self._record_identity(
+            verified,
+            {},
             comparison,
             past_days,
             fetch_result,
         )
         self._publish_refresh_diagnostics(fetch_result, counters, lookup)
+        self._store_verified_snapshot(fetch_result, lookup.guests)
+        self._report_validation(fetch_result, reservations, known_ids, timing_listings)
 
-        return {
-            listing_id: sorted(
-                (_with_guest(projection, lookup.guests) for projection in projections),
-                key=_reservation_sort_key,
+        return _sorted_publication(publication.grouped, lookup.guests)
+
+    def _report_validation(
+        self,
+        fetch_result: ReservationFetchResult,
+        reservations: Iterable[GuestyReservation],
+        known_ids: Collection[str],
+        timing_listings: Mapping[str, GuestyListing],
+    ) -> None:
+        """Report an accepted refresh's exclusions and timezone repairs.
+
+        Runs after accepted refreshes only, so a failed or aborted
+        refresh neither reports nor resolves anything (R14).
+
+        A segment is timed by its own listing's zone, including an
+        untracked unit published on its tracked parent, so the key and
+        repair name the listing whose zone is unverified.
+
+        Args:
+            fetch_result: The accepted retrieval result.
+            reservations: The accepted records.
+            known_ids: The tracked listing IDs.
+            timing_listings: This refresh's listings by ID.
+        """
+        unverified: set[str] = set()
+        for reservation in reservations:
+            for segment in reservation.stay:
+                listing_id = segment.listing_id
+                parent_id = segment.parent_listing_id
+                if (
+                    (
+                        listing_id in known_ids
+                        or (isinstance(parent_id, str) and parent_id in known_ids)
+                    )
+                    and listing_id not in unverified
+                    and _verified_timezone(
+                        timing_listings.get(listing_id),
+                        self._zone_cache,
+                    )
+                    is None
+                ):
+                    unverified.add(listing_id)
+        self._exclusions.report(
+            [
+                *fetch_result.exclusions,
+                *(
+                    (ValidationReason.LISTING_TIMEZONE_UNVERIFIED, listing_id)
+                    for listing_id in unverified
+                ),
+            ]
+        )
+        self._reconcile_timezone_issues(unverified, timing_listings)
+
+    def _reconcile_timezone_issues(
+        self,
+        unverified: Collection[str],
+        timing_listings: Mapping[str, GuestyListing],
+    ) -> None:
+        """Match the listing-timezone repairs to one accepted refresh.
+
+        Args:
+            unverified: Listings with published reservations and no
+                verified timezone, tracked or shown on a tracked
+                parent.
+            timing_listings: This refresh's listings by ID, which name
+                an untracked unit.
+        """
+        prefix = listing_timezone_issue_prefix(self.config_entry.entry_id)
+        listings = self.listings_coordinator.data or {}
+        wanted: set[str] = set()
+        for listing_id in unverified:
+            issue_id = f"{prefix}{listing_id}"
+            wanted.add(issue_id)
+            listing = listings.get(listing_id) or timing_listings.get(listing_id)
+            name = (
+                (listing.title or listing.nickname)
+                if isinstance(listing, GuestyListing)
+                else None
             )
-            for listing_id, projections in grouped.items()
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                issue_id,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key=ISSUE_LISTING_TIMEZONE_UNVERIFIED,
+                translation_placeholders={
+                    "listing_name": name or listing_id,
+                    "listing_id": listing_id,
+                },
+            )
+        registry = ir.async_get(self.hass)
+        stale = [
+            issue_id
+            for domain, issue_id in registry.issues
+            if domain == DOMAIN
+            and issue_id.startswith(prefix)
+            and issue_id not in wanted
+        ]
+        for issue_id in stale:
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+
+    def _reconcile_evidence_issues(self) -> None:
+        """Match the conflict-evidence repairs to the evidence state.
+
+        Called after the evidence loads and on every state, count or
+        capacity change, whatever the refresh outcome, so a store
+        whose pairs abort every refresh is still reported (R7).
+        """
+        evidence = self.identity.conflict_evidence
+        near_id, unavailable_id = conflict_evidence_issue_ids(
+            self.config_entry.entry_id,
+        )
+        if (
+            not evidence.near_capacity
+            and ir.async_get(self.hass).async_get_issue(DOMAIN, near_id) is not None
+        ):
+            # A persisted issue means the hysteresis was entered
+            # before a restart; it holds until below 70% (R7 d6).
+            evidence.resume_near_capacity()
+        if evidence.near_capacity:
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                near_id,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key=ISSUE_CONFLICT_EVIDENCE_NEAR_CAPACITY,
+            )
+        else:
+            ir.async_delete_issue(self.hass, DOMAIN, near_id)
+        if evidence.state in (EVIDENCE_SATURATED, EVIDENCE_COMPROMISED):
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                unavailable_id,
+                is_fixable=False,
+                severity=ir.IssueSeverity.ERROR,
+                translation_key=ISSUE_CONFLICT_EVIDENCE_UNAVAILABLE,
+            )
+        else:
+            ir.async_delete_issue(self.hass, DOMAIN, unavailable_id)
+
+    def validation_diagnostics(self) -> dict[str, Any]:
+        """Return the ``reservations.validation`` diagnostics block (R15).
+
+        Counts and reservation IDs only: no code, status, guest datum
+        or payload value, and never which IDs hold stored pairs. The
+        rejected IDs include fallback-invalid records, which the
+        counts include too.
+
+        Returns:
+            A JSON-serializable mapping.
+        """
+        summary = self.last_validation
+        rejected = sorted(
+            set(self.last_rejected_ids) | set(self.last_fallback_invalid_ids)
+        )
+        evidence = self.identity.conflict_evidence
+        verified_at = self.last_verified_at
+        return {
+            "rejected_records": summary.rejected_records,
+            "partial_records": summary.partial_records,
+            "rejected_segments": summary.rejected_segments,
+            "reasons": {
+                str(reason.value): count
+                for reason, count in sorted(summary.reasons.items())
+            },
+            "rejected_ids": rejected[:MAX_DIAGNOSTIC_REJECTED_IDS],
+            "rejected_ids_truncated": len(rejected) > MAX_DIAGNOSTIC_REJECTED_IDS,
+            "conflict_evidence": {
+                "state": evidence.state,
+                "available": evidence.available(),
+                "count": evidence.count,
+                "dated": evidence.dated,
+                "undated": evidence.undated,
+                "bound": MAX_CONFLICT_ONLY_EVIDENCE,
+                "near_capacity": evidence.near_capacity,
+            },
+            "stale": {
+                "snapshot_stale": self.snapshot_stale,
+                "stale_count": len(self.stale_reservation_ids),
+                "last_verified_at": (
+                    verified_at.isoformat() if verified_at is not None else None
+                ),
+            },
         }
+
+    def _store_verified_snapshot(
+        self,
+        fetch_result: ReservationFetchResult,
+        guests: Mapping[str, GuestyGuest],
+    ) -> None:
+        """Replace the display snapshot after an accepted refresh.
+
+        The snapshot holds every record the refresh accepted, before
+        publication filtering, so a later failed refresh can re-project
+        it at a new instant. It replaces the previous one wholesale
+        whether or not the identity saves succeeded, so a record this
+        refresh no longer returned or rejected can never come back
+        from an older snapshot (FR-012b). It is memory-only and never
+        evidence for a write (R10).
+
+        Args:
+            fetch_result: The accepted retrieval result.
+            guests: Guest records resolved for this refresh.
+        """
+        snapshot = VerifiedSnapshot(
+            reservations=tuple(
+                _with_guest(reservation, guests)
+                for reservation in fetch_result.reservations
+            ),
+            stale_ids=frozenset(fetch_result.stale_ids),
+            accepted_at=datetime.now(UTC),
+        )
+        self._verified_snapshot = snapshot
+        self.snapshot_stale = False
+        self.stale_reservation_ids = snapshot.stale_ids
+
+    def _publish_stale_snapshot(self) -> None:
+        """Re-project the verified snapshot after a failed refresh (R10).
+
+        The snapshot is published through the same pure function as
+        an accepted refresh, at the current instant and options, so a
+        stay that has since ended shows as history and one outside a
+        narrowed window disappears (FR-012). A zone not already
+        loaded counts as unverified. Nothing is published without a
+        snapshot, and a failing re-projection publishes nothing. An
+        unchanged projection keeps the already-published object.
+        ``last_update_success`` is left to Home Assistant, so no write
+        guard is ever satisfied by this data.
+        """
+        snapshot = self._verified_snapshot
+        if snapshot is None:
+            return
+        try:
+            options = self.config_entry.options
+            known = self.listings_coordinator.data
+            publication = _publish_reservations(
+                snapshot.reservations,
+                now=datetime.now(UTC),
+                past_days=options.get(CONF_PAST_DAYS, DEFAULT_PAST_DAYS),
+                future_days=options.get(CONF_FUTURE_DAYS, DEFAULT_FUTURE_DAYS),
+                known_ids=set(known) if isinstance(known, Mapping) else set(),
+                timing_listings=self._timing_listings(),
+                zones=self._zone_cache,
+                log=False,
+            )
+            data = _sorted_publication(publication.grouped, {})
+        except Exception:
+            _LOGGER.debug(
+                "Could not re-project the last verified reservations",
+                exc_info=True,
+            )
+            self.data = None  # type: ignore[assignment]
+            self.snapshot_stale = False
+            return
+        if data != self.data:
+            self.data = data
+        self.snapshot_stale = True
 
     async def _resolve_v3_reservations(
         self,
         reservations: tuple[GuestyReservation, ...],
+        listings: Mapping[str, GuestyListing] | None = None,
     ) -> tuple[GuestyReservation, ...]:
         """Resolve only V3 segments from already-fetched exact-room settings.
 
+        The explicit zones the records need are loaded first, outside
+        the event loop, so the resolution itself stays pure and can be
+        repeated by the publication function (R3).
+
         Args:
             reservations: The source records returned by this refresh.
+            listings: This refresh's timing listings, or None to read
+                them from the listings coordinator.
 
         Returns:
             Records with current V3 endpoint values resolved independently.
             Legacy and fallback-sourced records remain unchanged.
         """
-        fetched = getattr(
-            self.listings_coordinator,
-            "timing_listings",
-            None,
-        )
-        if not isinstance(fetched, Mapping):
-            fetched = self.listings_coordinator.data
-        listings = fetched if isinstance(fetched, Mapping) else {}
-        resolved: list[GuestyReservation] = []
+        if listings is None:
+            listings = self._timing_listings()
         for reservation in reservations:
-            if not reservation.is_v3 or not reservation.stay:
-                resolved.append(reservation)
+            if not reservation.is_v3:
                 continue
-
-            segments: list[GuestyStaySegment] = []
             for segment in reservation.stay:
                 listing = listings.get(segment.listing_id)
-                if (
-                    not isinstance(listing, GuestyListing)
-                    or not listing.timezone_explicit
-                ):
-                    segments.append(replace(segment, check_in=None, check_out=None))
-                    continue
-                zone = await self._async_timezone(listing.timezone)
-                segments.append(
-                    replace(
-                        segment,
-                        check_in=resolve_local_datetime(
-                            segment.check_in_local,
-                            listing.check_in_time,
-                            zone,
-                        ),
-                        check_out=resolve_local_datetime(
-                            segment.check_out_local,
-                            listing.check_out_time,
-                            zone,
-                        ),
-                    ),
-                )
-
-            resolved_stay = tuple(segments)
-            resolved_stay = _apply_same_date_handoffs(
-                resolved_stay,
-                listings,
-                self._zone_cache,
-            )
-            first = resolved_stay[0]
-            last = resolved_stay[-1]
-            resolved.append(
-                replace(
-                    reservation,
-                    check_in=first.check_in,
-                    check_out=last.check_out,
-                    check_in_local=first.check_in_local,
-                    check_out_local=last.check_out_local,
-                    guests_count=first.guests_count,
-                    stay=resolved_stay,
-                ),
-            )
-        return tuple(resolved)
+                if listing is not None and listing.timezone_explicit:
+                    await self._async_timezone(listing.timezone)
+        return _resolve_v3_timing(reservations, listings, self._zone_cache)
 
     def _timing_listings(self) -> Mapping[str, GuestyListing]:
         """Return the full fetched listing map without changing selection.
@@ -1065,6 +1532,8 @@ class ReservationsCoordinator(
         self,
         reservations: tuple[GuestyReservation, ...],
         fallback_ids: Collection[str] = (),
+        *,
+        conflict_only: Iterable[RejectedCode] = (),
     ) -> IdentityComparison:
         """Compare a fetched refresh against the identity baseline.
 
@@ -1082,6 +1551,8 @@ class ReservationsCoordinator(
                 the legacy not-found fallback, which are compared
                 for conflicts but may not confirm continuity
                 (FR-055).
+            conflict_only: The refresh's rejected ``(reservation_id,
+                code)`` pairs, compared for conflicts only.
 
         Returns:
             The comparison outcome of a non-ambiguous refresh.
@@ -1096,6 +1567,7 @@ class ReservationsCoordinator(
             reservations,
             self.reservations_path,
             fallback_ids,
+            conflict_only=conflict_only,
         )
         if comparison.is_ambiguous:
             self.identity.mark_ambiguous()
@@ -1187,8 +1659,14 @@ class ReservationsCoordinator(
         write. The guard reports the failure itself and keeps
         refusing writes until the baseline is stored.
 
+        The fallback routing sets and the accepted-refresh snapshot
+        are adopted only once the baseline is stored, from the
+        guard's ``on_baseline_stored`` callback, so routing never
+        runs ahead of the identity evidence that justifies it.
+
         Args:
-            reservations: Reservations the refresh retrieved.
+            reservations: Fully verified reservations the refresh
+                retrieved.
             published: Stay hints of the reservations published.
             comparison: The comparison this refresh ran.
             past_days: The configured past-day window, which dates
@@ -1197,6 +1675,19 @@ class ReservationsCoordinator(
                 the legacy not-found fallback published and what it
                 confirmed is gone.
         """
+        served, sourced = self._candidate_routing
+
+        def _adopt() -> None:
+            """Adopt the routing and snapshot of the stored baseline."""
+            self.fallback_served_ids = served
+            self.fallback_sourced_ids = sourced
+            self._accepted_snapshot = _build_snapshot(
+                self._write_miss_attempt_generation,
+                self.reservations_path,
+                reservations,
+                fetch_result,
+            )
+
         stored = await self.identity.async_record_refresh(
             path=self.reservations_path,
             reservations=reservations,
@@ -1208,14 +1699,12 @@ class ReservationsCoordinator(
             absent_ids=fetch_result.fallback_absent,
             observed_ids=fetch_result.observed_ids,
             observed_reservations=fetch_result.observed_reservations,
+            rejected_ids=fetch_result.rejected_ids,
+            fallback_invalid_ids=fetch_result.fallback_invalid_ids,
+            rejected_codes=fetch_result.rejected_codes,
+            rejected_check_out_bounds=fetch_result.rejected_check_out_bounds,
+            on_baseline_stored=_adopt,
         )
-        if stored:
-            self._accepted_snapshot = _build_snapshot(
-                self._write_miss_attempt_generation,
-                self.reservations_path,
-                reservations,
-                fetch_result,
-            )
         if stored and fetch_result.fallback_absent:
             # Only a persisted retirement may clear the fallback's
             # queue; otherwise the candidate would survive a reload
@@ -1309,6 +1798,9 @@ class ReservationsCoordinator(
             lookup: The guest cache counters of this refresh.
         """
         ambiguous = self.identity.last_refresh_ambiguous
+        self.last_validation = fetch_result.validation
+        self.last_rejected_ids = tuple(fetch_result.rejected_ids)
+        self.last_fallback_invalid_ids = tuple(fetch_result.fallback_invalid_ids)
         self.last_refresh_diagnostics = {
             "pages": fetch_result.pages,
             "received": counters.received,
@@ -1317,7 +1809,7 @@ class ReservationsCoordinator(
             "trimmed": counters.trim_drops,
             "skipped": counters.skipped,
             "alteration_drops": counters.alteration_drops,
-            "status_counts": dict(fetch_result.status_counts),
+            "status_counts": sanitized_status_counts(fetch_result.status_counts),
             "segment_histogram": dict(fetch_result.segment_histogram),
             "unknown_listings": len(counters.unknown_listings),
             "guest_hits": lookup.hits,
@@ -1393,7 +1885,7 @@ def _log_refresh_diagnostics(
         "fallback_succeeded=%d fallback_absent=%d "
         "fallback_failed=%d fallback_deferred=%d",
         fetch_result.pages,
-        dict(fetch_result.status_counts),
+        sanitized_status_counts(fetch_result.status_counts),
         dict(fetch_result.segment_histogram),
         counters.attributed,
         counters.partially_attributed,
@@ -1460,6 +1952,231 @@ def _with_guest(
     return replace(reservation, guest=resolved)
 
 
+def _resolve_v3_timing(
+    reservations: Iterable[GuestyReservation],
+    listings: Mapping[str, GuestyListing],
+    zones: Mapping[str, ZoneInfo | None],
+) -> tuple[GuestyReservation, ...]:
+    """Resolve V3 segment instants from listing-local dates and times.
+
+    Each segment is resolved from its own listing's verified zone and
+    default times, or left date-only. Resolution starts from the
+    local dates every time, so it is idempotent. A partial record
+    keeps no reservation-level span, guest count or dates, because
+    those could bridge a rejected segment (FR-005b).
+
+    Args:
+        reservations: Source records; non-V3 records pass unchanged.
+        listings: Exact-room metadata by listing id.
+        zones: Prepared timezone cache, keyed by zone name.
+
+    Returns:
+        The records with their V3 timing resolved.
+    """
+    resolved: list[GuestyReservation] = []
+    for reservation in reservations:
+        if not reservation.is_v3 or not reservation.stay:
+            resolved.append(reservation)
+            continue
+
+        segments: list[GuestyStaySegment] = []
+        for segment in reservation.stay:
+            listing = listings.get(segment.listing_id)
+            zone = _verified_timezone(listing, zones)
+            if listing is None or zone is None:
+                segments.append(replace(segment, check_in=None, check_out=None))
+                continue
+            segments.append(
+                replace(
+                    segment,
+                    check_in=resolve_local_datetime(
+                        segment.check_in_local,
+                        listing.check_in_time,
+                        zone,
+                    ),
+                    check_out=resolve_local_datetime(
+                        segment.check_out_local,
+                        listing.check_out_time,
+                        zone,
+                    ),
+                ),
+            )
+
+        resolved_stay = _apply_same_date_handoffs(tuple(segments), listings, zones)
+        if reservation.partial:
+            resolved.append(
+                replace(
+                    reservation,
+                    check_in=None,
+                    check_out=None,
+                    check_in_local=None,
+                    check_out_local=None,
+                    guests_count=None,
+                    stay=resolved_stay,
+                ),
+            )
+            continue
+        first = resolved_stay[0]
+        last = resolved_stay[-1]
+        resolved.append(
+            replace(
+                reservation,
+                check_in=first.check_in,
+                check_out=last.check_out,
+                check_in_local=first.check_in_local,
+                check_out_local=last.check_out_local,
+                guests_count=first.guests_count,
+                stay=resolved_stay,
+            ),
+        )
+    return tuple(resolved)
+
+
+@dataclass
+class _Publication:
+    """The per-listing output of one publication pass.
+
+    Attributes:
+        grouped: Projections by tracked listing id, unsorted and
+            without resolved guest records.
+        guest_ids: Guest ids of the published reservations.
+        counters: The attribution counters of the pass.
+    """
+
+    grouped: dict[str, list[GuestyReservation]]
+    guest_ids: list[str]
+    counters: _RefreshCounters
+
+
+def _publish_reservations(
+    reservations: Iterable[GuestyReservation],
+    *,
+    now: datetime,
+    past_days: int,
+    future_days: int,
+    known_ids: Collection[str],
+    timing_listings: Mapping[str, GuestyListing],
+    zones: Mapping[str, ZoneInfo | None],
+    counters: _RefreshCounters | None = None,
+    log: bool = True,
+) -> _Publication:
+    """Publish verified records per tracked listing (FR-003, R10).
+
+    This one pure function serves both an accepted refresh and the
+    re-projection of the verified snapshot after a failed one, so
+    expiry, uncertainty, the window and attribution can never drift
+    between the two (FR-012). It resolves V3 timing, drops holds
+    (FR-024), enforces the window (FR-002a), attributes segments to
+    tracked listings (FR-009, FR-010) and projects each attribution
+    (FR-011).
+
+    Args:
+        reservations: The verified records to publish.
+        now: The publication instant.
+        past_days: Configured days of history to publish.
+        future_days: Configured days ahead to publish.
+        known_ids: Listing ids the listings coordinator tracks.
+        timing_listings: Exact-room metadata by listing id.
+        zones: Prepared timezone cache; an unloaded zone is
+            unverified rather than loaded here.
+        counters: Counters to fill, or None for fresh ones.
+        log: Whether to log per-record decisions.
+
+    Returns:
+        The projections, guest ids and counters of the pass.
+    """
+    counters = counters if counters is not None else _RefreshCounters()
+    known = set(known_ids)
+    grouped: dict[str, list[GuestyReservation]] = defaultdict(list)
+    guest_ids: list[str] = []
+    for reservation in _resolve_v3_timing(reservations, timing_listings, zones):
+        if reservation.status in HOLD_STATUSES:
+            counters.alteration_drops += 1
+            if log:
+                _LOGGER.debug(
+                    "Dropping reservation %s held at status %s",
+                    reservation.id,
+                    reservation.status,
+                )
+            continue
+
+        if not _within_window(
+            reservation,
+            now=now,
+            past_days=past_days,
+            future_days=future_days,
+            timing_listings=timing_listings,
+            zones=zones,
+        ):
+            counters.trim_drops += 1
+            if log:
+                _LOGGER.debug(
+                    "Trimming reservation %s outside the configured window",
+                    reservation.id,
+                )
+            continue
+
+        attributed, unknown_ids = _attribute_segments(reservation, known)
+        counters.unknown_listings |= unknown_ids
+        if not attributed:
+            counters.skipped += 1
+            if log:
+                _LOGGER.warning(
+                    "Skipping reservation %s: no tracked listing among %s",
+                    reservation.id,
+                    ", ".join(sorted(unknown_ids)),
+                )
+            continue
+
+        counters.attributed += 1
+        if reservation.guest is not None and reservation.guest.guest_id:
+            guest_ids.append(reservation.guest.guest_id)
+        if unknown_ids:
+            counters.partially_attributed += 1
+            if log:
+                _LOGGER.debug(
+                    "Ignoring stay segments of reservation %s for "
+                    "untracked listing(s) %s",
+                    reservation.id,
+                    ", ".join(sorted(unknown_ids)),
+                )
+
+        for listing_id, segments in attributed.items():
+            grouped[listing_id].append(
+                _project(
+                    reservation,
+                    listing_id,
+                    segments,
+                    now,
+                    timing_listings=timing_listings,
+                    zones=zones,
+                ),
+            )
+    return _Publication(dict(grouped), guest_ids, counters)
+
+
+def _sorted_publication(
+    grouped: Mapping[str, list[GuestyReservation]],
+    guests: Mapping[str, GuestyGuest],
+) -> dict[str, list[GuestyReservation]]:
+    """Attach guest records and order each listing's projections.
+
+    Args:
+        grouped: Projections by tracked listing id.
+        guests: Guest records resolved for this refresh.
+
+    Returns:
+        The published coordinator data.
+    """
+    return {
+        listing_id: sorted(
+            (_with_guest(projection, guests) for projection in projections),
+            key=_reservation_sort_key,
+        )
+        for listing_id, projections in grouped.items()
+    }
+
+
 def _within_window(
     reservation: GuestyReservation,
     *,
@@ -1476,46 +2193,164 @@ def _within_window(
     here instead (FR-002a). A stay in progress satisfies both terms
     by construction and can never be trimmed (FR-004).
 
+    A v3 stay without both exact endpoints is a member only when one
+    of its verified segments conclusively overlaps the window: in the
+    listing's local calendar when its timezone is verified, else with
+    one day of margin on each side of the UTC date, because any real
+    zone is within a day of UTC (R4 decision 8). A segment whose
+    local dates are missing or unparsable is a member only when its
+    one known date lies inside that window, or through its verified
+    exact instants; otherwise it is inconclusive and is not
+    published (it stays writable), even with a verified zone. A partial record is
+    always judged by its verified segments, never by a span that may
+    bridge a rejected one (FR-005b).
+
     Args:
         reservation: The reservation to test.
         now: The refresh instant.
         past_days: Configured days of history to publish.
         future_days: Configured days ahead to publish.
+        timing_listings: Exact-room metadata by listing id.
+        zones: Prepared timezone cache, keyed by zone name.
 
     Returns:
         True when the reservation overlaps the configured window.
     """
-    if reservation.check_in is not None and reservation.check_out is not None:
+    if (
+        not reservation.partial
+        and reservation.check_in is not None
+        and reservation.check_out is not None
+    ):
         return reservation.check_out > now - timedelta(
             days=past_days,
         ) and reservation.check_in < now + timedelta(days=future_days)
 
     if not reservation.is_v3 or not reservation.stay:
-        return reservation.is_v3
+        return False
 
     listings = timing_listings or {}
     prepared_zones = zones or {}
+    utc_today = now.astimezone(UTC).date()
     for segment in reservation.stay:
-        listing = listings.get(segment.listing_id)
-        if (
-            listing is None
-            or not listing.timezone_explicit
-            or listing.timezone not in prepared_zones
-        ):
-            return True
-        zone = prepared_zones[listing.timezone]
-        if zone is None:
-            return True
+        zone = _verified_timezone(listings.get(segment.listing_id), prepared_zones)
         check_in_date = _parse_local_date(segment.check_in_local)
         check_out_date = _parse_local_date(segment.check_out_local)
-        if check_in_date is None or check_out_date is None:
+        if zone is not None:
+            local_today = now.astimezone(zone).date()
+            earliest = local_today - timedelta(days=past_days)
+            latest = local_today + timedelta(days=future_days)
+        else:
+            earliest = utc_today + timedelta(days=1 - past_days)
+            latest = utc_today + timedelta(days=future_days - 1)
+        if check_in_date is not None and check_out_date is not None:
+            if check_out_date >= earliest and check_in_date <= latest:
+                return True
+            continue
+        # Missing or unparsable dates are never assumed, even with a
+        # verified zone. A single known endpoint date inside the
+        # window is still conclusive, because a stay contains both of
+        # its endpoints; otherwise only verified exact segment
+        # instants can establish membership.
+        known = [d for d in (check_in_date, check_out_date) if d is not None]
+        if any(earliest <= d <= latest for d in known):
             return True
-        local_today = now.astimezone(zone).date()
-        if check_out_date >= local_today - timedelta(
-            days=past_days
-        ) and check_in_date <= local_today + timedelta(days=future_days):
+        if _segment_instants_overlap(
+            segment,
+            now=now,
+            past_days=past_days,
+            future_days=future_days,
+        ):
             return True
     return False
+
+
+def _segment_instants_overlap(
+    segment: GuestyStaySegment,
+    *,
+    now: datetime,
+    past_days: int,
+    future_days: int,
+) -> bool:
+    """Test a segment's verified exact instants against the window.
+
+    Args:
+        segment: The stay segment to test.
+        now: The refresh instant.
+        past_days: Configured days of history to publish.
+        future_days: Configured days ahead to publish.
+
+    Returns:
+        True only when both instants are known, offset-aware and
+        overlap the configured window.
+    """
+    check_in = segment.check_in
+    check_out = segment.check_out
+    if (
+        check_in is None
+        or check_out is None
+        or check_in.utcoffset() is None
+        or check_out.utcoffset() is None
+    ):
+        return False
+    return check_out > now - timedelta(days=past_days) and check_in < now + timedelta(
+        days=future_days
+    )
+
+
+def _verified_timezone(
+    listing: GuestyListing | None,
+    zones: Mapping[str, ZoneInfo | None],
+) -> ZoneInfo | None:
+    """Return a listing's zone only when it is verified (R4 decision 1).
+
+    A zone is verified only when the listing named it explicitly and
+    it has been loaded; the model's UTC default, an invalid name and
+    a zone not yet loaded are all unverified.
+
+    Args:
+        listing: The listing a segment belongs to, if known.
+        zones: Prepared timezone cache, keyed by zone name.
+
+    Returns:
+        The verified zone, or None.
+    """
+    if not isinstance(listing, GuestyListing) or not listing.timezone_explicit:
+        return None
+    return zones.get(listing.timezone)
+
+
+def _checkout_expired(
+    check_out: datetime | None,
+    check_out_local: str | None,
+    zone: ZoneInfo | None,
+    now: datetime,
+) -> bool:
+    """Test whether a stay has conclusively ended (FR-004, R4).
+
+    An exact checkout instant decides on its own. A date-only
+    checkout has ended once its date is before the listing's local
+    date in a verified zone; on that date itself the exact time is
+    unknown, so the stay is not yet history (FR-004a). Without a
+    verified zone the date must be more than a day before the UTC
+    date, because some real zone may still be on it (R4 decision 5).
+
+    Args:
+        check_out: The exact checkout instant, if known.
+        check_out_local: The listing-local checkout date, if known.
+        zone: The verified listing timezone, or None.
+        now: The refresh instant.
+
+    Returns:
+        True only when the stay has conclusively ended.
+    """
+    if check_out is not None:
+        return now >= check_out
+    check_out_date = _parse_local_date(check_out_local)
+    if check_out_date is None:
+        return False
+    if zone is not None:
+        return check_out_date < now.astimezone(zone).date()
+    return check_out_date < now.astimezone(UTC).date() - timedelta(days=1)
 
 
 def _parse_local_date(value: str | None) -> date | None:
@@ -1659,32 +2494,71 @@ def _project(
     listing_id: str,
     segments: list[GuestyStaySegment],
     now: datetime,
+    *,
+    timing_listings: Mapping[str, GuestyListing] | None = None,
+    zones: Mapping[str, ZoneInfo | None] | None = None,
 ) -> GuestyReservation:
     """Project a reservation onto one tracked listing (FR-011).
 
-    A reservation with at most one segment projects to itself apart
-    from the tracked listing it is published under. With more than
-    one segment the listing's own interval supplies the dates, guest
-    count and night count, and the status becomes segment-aware.
+    A fully verified reservation with at most one segment projects to
+    itself apart from the tracked listing it is published under. With
+    more than one segment, or when a raw segment was rejected, the
+    listing's own verified interval supplies the dates, guest count
+    and night count, and the status becomes segment-aware (FR-005b).
+    Either way a temporal status whose checkout has conclusively
+    passed is published as ``checked_out`` (FR-004), and one with
+    unknown exact timing as ``unknown`` with its source lifecycle
+    kept apart, so no occupancy is claimed (FR-004a).
 
     Args:
         reservation: The reservation to project.
         listing_id: The tracked listing to project onto.
         segments: The reservation's segments for that listing.
         now: The refresh instant.
+        timing_listings: Exact-room metadata by listing id.
+        zones: Prepared timezone cache, keyed by zone name.
 
     Returns:
         The projection published for that listing.
     """
-    if len(reservation.stay) <= 1:
+    listings = timing_listings or {}
+    prepared_zones = zones or {}
+
+    def _zone_of(segment_listing_id: str) -> ZoneInfo | None:
+        """Return the verified zone of one segment's listing."""
+        return _verified_timezone(listings.get(segment_listing_id), prepared_zones)
+
+    if (
+        not reservation.partial
+        and len(reservation.stay) <= 1
+        and (reservation.raw_stay_count or 0) <= 1
+    ):
         if not reservation.stay and reservation.listing_id == listing_id:
-            return reservation
-        projected = replace(reservation, listing_id=listing_id, stay=())
-        if (
-            reservation.is_v3
-            and reservation.status in _TEMPORAL_STATUSES
-            and reservation.timing_status == "unknown"
-        ):
+            projected = reservation
+        else:
+            projected = replace(reservation, listing_id=listing_id, stay=())
+        if reservation.status not in _TEMPORAL_STATUSES:
+            return projected
+        if reservation.is_v3:
+            zone = (
+                _zone_of(reservation.stay[0].listing_id) if reservation.stay else None
+            )
+            expired = _checkout_expired(
+                reservation.check_out,
+                reservation.check_out_local,
+                zone,
+                now,
+            )
+        else:
+            # Legacy instants are exact, so only they can end a stay.
+            expired = _checkout_expired(reservation.check_out, None, None, now)
+        if expired:
+            return replace(
+                projected,
+                status="checked_out",
+                reservation_status=None,
+            )
+        if reservation.is_v3 and reservation.timing_status == "unknown":
             projected = replace(
                 projected,
                 status="unknown",
@@ -1692,8 +2566,13 @@ def _project(
             )
         return projected
 
-    segment = _select_segment(segments, now)
-    status = _segment_status(reservation.status, segment, now)
+    segment = _select_segment(segments, now, _zone_of)
+    status = _segment_status(
+        reservation.status,
+        segment,
+        now,
+        _zone_of(segment.listing_id),
+    )
     return replace(
         reservation,
         listing_id=listing_id,
@@ -1712,18 +2591,21 @@ def _project(
 def _select_segment(
     segments: list[GuestyStaySegment],
     now: datetime,
+    zone_of: Callable[[str], ZoneInfo | None] | None = None,
 ) -> GuestyStaySegment:
     """Select the interval a listing's projection represents.
 
     Segments in the same listing stay disjoint rather than being
     collapsed into one span, because an A -> B -> A stay would then
-    cover the guest's time in B. The interval containing the refresh
-    instant wins, else the earliest future one, else the latest past
-    one (data-model.md 3.1).
+    cover the guest's time in B. The timed interval containing the
+    refresh instant wins, else the earliest future timed one, else
+    the earliest date-only one that has not conclusively ended, else
+    the latest past one (data-model.md 3.1, FR-004).
 
     Args:
         segments: The listing's segments, in payload order.
         now: The refresh instant.
+        zone_of: Returns the verified zone of a segment's listing.
 
     Returns:
         The selected segment.
@@ -1752,27 +2634,35 @@ def _select_segment(
         assert segment.check_in is not None
         if segment.check_in > now:
             return segment
-    unknown = [
+    unknown = [segment for segment in segments if segment not in timed]
+    pending = [
         segment
-        for segment in segments
-        if segment.check_in is None
-        or segment.check_out is None
-        or segment.check_in >= segment.check_out
+        for segment in unknown
+        if not _checkout_expired(
+            segment.check_out,
+            segment.check_out_local,
+            zone_of(segment.listing_id) if zone_of is not None else None,
+            now,
+        )
     ]
-    if unknown:
+    if pending:
         return min(
-            unknown,
+            pending,
             key=lambda segment: (
                 _parse_local_date(segment.check_in_local) or date.max,
                 segment.raw_position,
             ),
         )
     return max(
-        ordered,
+        ordered + unknown,
         key=lambda segment: (
-            segment.check_out
-            if segment.check_out is not None
-            else datetime.min.replace(tzinfo=UTC)
+            _parse_local_date(segment.check_out_local) or date.min,
+            (
+                segment.check_out
+                if segment.check_out is not None
+                else datetime.min.replace(tzinfo=UTC)
+            ),
+            segment.raw_position,
         ),
     )
 
@@ -1781,24 +2671,31 @@ def _segment_status(
     status: str,
     segment: GuestyStaySegment,
     now: datetime,
+    zone: ZoneInfo | None = None,
 ) -> str:
     """Derive a listing's status from its segment (FR-011a).
 
     Only ``confirmed`` and ``checked_in`` are temporal: every other
     status, including ``canceled``, is carried unchanged to every
     listing the reservation touches, so a canceled stay can never
-    surface as upcoming on a later segment's listing.
+    surface as upcoming on a later segment's listing. A temporal
+    segment that has conclusively ended is ``checked_out`` even
+    without exact timing (FR-004); one that has not, without exact
+    timing, is ``unknown`` (FR-004a).
 
     Args:
         status: The reservation-level status.
         segment: The segment this listing is published from.
         now: The refresh instant.
+        zone: The verified timezone of the segment's listing.
 
     Returns:
         The status published for that listing.
     """
     if status not in _TEMPORAL_STATUSES:
         return status
+    if _checkout_expired(segment.check_out, segment.check_out_local, zone, now):
+        return "checked_out"
     if (
         segment.check_in is None
         or segment.check_out is None
@@ -1807,8 +2704,6 @@ def _segment_status(
         return "unknown"
     if now < segment.check_in:
         return "confirmed"
-    if now >= segment.check_out:
-        return "checked_out"
     return status
 
 

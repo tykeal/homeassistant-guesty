@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from types import MappingProxyType
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -2329,6 +2331,10 @@ class TestGuestyReservationFromV3ApiDict:
     ) -> None:
         """Invalid pairs do not contribute date-only Feature 010 fallback.
 
+        Feature 013 (research R3, R4): the only segment never gets a
+        verified localized date, so it is ``segment_unverified_dates``
+        and the record is rejected instead of published undated.
+
         Args:
             check_in: Reservation-level checkIn value.
             check_out: Reservation-level checkOut value.
@@ -2347,13 +2353,7 @@ class TestGuestyReservationFromV3ApiDict:
             checkOut=check_out,
         )
 
-        reservation = GuestyReservation.from_v3_api_dict(data)
-
-        assert reservation is not None
-        assert reservation.check_in is None
-        assert reservation.check_out is None
-        assert reservation.check_in_local is None
-        assert reservation.check_out_local is None
+        assert GuestyReservation.from_v3_api_dict(data) is None
 
     @pytest.mark.parametrize("listing_id", ["omitted", "", None])
     def test_missing_segment_listing_does_not_enable_fallback(
@@ -2383,7 +2383,12 @@ class TestGuestyReservationFromV3ApiDict:
         )
 
     def test_multiple_raw_segments_do_not_fallback_after_filtering(self) -> None:
-        """Raw multiplicity blocks fallback even when another entry is invalid."""
+        """Raw multiplicity blocks fallback even when another entry is invalid.
+
+        Feature 013 (research R3): the record is now partially valid,
+        so only the verified segment is kept and every record-level
+        date is None instead of being taken from that segment.
+        """
         fallback_candidate = make_v3_segment(
             listingId="listing-fallback",
             checkIn=None,
@@ -2402,8 +2407,14 @@ class TestGuestyReservationFromV3ApiDict:
 
         assert reservation is not None
         assert reservation.raw_stay_count == 2
-        assert reservation.check_in_local == "2025-08-01"
-        assert reservation.check_out_local == "2025-08-05"
+        assert reservation.partial is True
+        assert [segment.listing_id for segment in reservation.stay] == [
+            "listing-fallback",
+        ]
+        assert reservation.stay[0].check_in_local == "2025-08-01"
+        assert reservation.stay[0].check_out_local == "2025-08-05"
+        assert reservation.check_in_local is None
+        assert reservation.check_out_local is None
         assert reservation.check_in is None
         assert reservation.check_out is None
 
@@ -2461,7 +2472,12 @@ class TestGuestyReservationFromV3ApiDict:
         self,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """The skip warning remains visible but excludes sensitive values.
+        """A rejected record logs no sensitive values.
+
+        Feature 013 (data-model § ``GuestyReservation``): the parser no
+        longer logs at all, so the skip-warning text is no longer
+        asserted; the record is still skipped and nothing sensitive is
+        logged.
 
         Args:
             caplog: Log capture fixture.
@@ -2477,11 +2493,10 @@ class TestGuestyReservationFromV3ApiDict:
             ],
         )
 
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.DEBUG):
             result = GuestyReservation.from_v3_api_dict(data)
 
         assert result is None
-        assert "no usable stay segment" in caplog.text
         assert "guest-private@example.invalid" not in caplog.text
         assert "CONF-PRIVATE-4821" not in caplog.text
 
@@ -2559,7 +2574,12 @@ class TestGuestyReservationFromV3ApiDict:
         assert reservation.nights_count == 4
 
     def test_nights_count_none_when_dates_unparsable(self) -> None:
-        """nights_count is None when the localized dates are unusable."""
+        """A record without verified localized dates is rejected.
+
+        Feature 013 (research R3, R4): with no verified localized date
+        the only segment is ``segment_unverified_dates``, so the record
+        is rejected rather than published with ``nights_count`` None.
+        """
         reservation = GuestyReservation.from_v3_api_dict(
             make_v3_reservation(
                 checkInDateLocalized=None,
@@ -2573,8 +2593,7 @@ class TestGuestyReservationFromV3ApiDict:
             ),
         )
 
-        assert reservation is not None
-        assert reservation.nights_count is None
+        assert reservation is None
 
     def test_planned_times_none_when_absent(self) -> None:
         """Planned arrival/departure publish None when absent (OQ-003)."""
@@ -2650,18 +2669,21 @@ class TestGuestyReservationFromV3ApiDict:
         self,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """A payload without reservationId is skipped with a warning.
+        """A payload without reservationId is skipped.
+
+        Feature 013 (data-model § ``GuestyReservation``): the parser no
+        longer logs, so the warning text is no longer asserted.
 
         Args:
             caplog: Log capture fixture.
         """
-        data = make_v3_reservation()
+        data = make_v3_reservation(confirmationCode="CONF-PRIVATE-1")
         del data["reservationId"]
 
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.DEBUG):
             assert GuestyReservation.from_v3_api_dict(data) is None
 
-        assert "reservationId" in caplog.text
+        assert "CONF-PRIVATE-1" not in caplog.text
 
     def test_missing_status_returns_none(self) -> None:
         """A payload without a status is skipped."""
@@ -2674,7 +2696,10 @@ class TestGuestyReservationFromV3ApiDict:
         self,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """A reservation with no usable segment warns and is skipped.
+        """A reservation with no usable segment is skipped.
+
+        Feature 013 (data-model § ``GuestyReservation``): the parser no
+        longer logs, so the warning text is no longer asserted.
 
         Args:
             caplog: Log capture fixture.
@@ -2682,13 +2707,17 @@ class TestGuestyReservationFromV3ApiDict:
         bad = make_v3_segment()
         del bad["listingId"]
 
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.DEBUG):
             result = GuestyReservation.from_v3_api_dict(
-                make_v3_reservation("res-200", segments=[bad]),
+                make_v3_reservation(
+                    "res-200",
+                    segments=[bad],
+                    confirmationCode="CONF-PRIVATE-2",
+                ),
             )
 
         assert result is None
-        assert "res-200" in caplog.text
+        assert "CONF-PRIVATE-2" not in caplog.text
 
     def test_check_in_out_fall_back_to_segments(self) -> None:
         """Missing top-level instants do not inherit raw stay timestamps."""
@@ -2743,19 +2772,22 @@ class TestGuestyReservationFromV3ApiDict:
         self,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """An unrecognized status is kept verbatim with an INFO log.
+        """An unrecognized status rejects the record without a log.
+
+        Feature 013 (research R2) supersedes feature 008 FR-026: an
+        unrecognized status is ``unrecognized_status``, so the record
+        is not built, and the untrusted value is never logged.
 
         Args:
             caplog: Log capture fixture.
         """
-        with caplog.at_level(logging.INFO):
+        with caplog.at_level(logging.DEBUG):
             reservation = GuestyReservation.from_v3_api_dict(
                 make_v3_reservation(status="inquiry"),
             )
 
-        assert reservation is not None
-        assert reservation.status == "inquiry"
-        assert "inquiry" in caplog.text
+        assert reservation is None
+        assert "inquiry" not in caplog.text
 
     def test_legacy_parse_leaves_stay_empty(self) -> None:
         """The legacy parse still produces an empty stay tuple."""
@@ -2765,6 +2797,170 @@ class TestGuestyReservationFromV3ApiDict:
 
         assert reservation is not None
         assert reservation.stay == ()
+
+
+class TestV3ModelFromAssessment:
+    """The v3 model is built only from verified parts (feature 013 T004)."""
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            pytest.param({"status": "SENTINEL-STATUS-9"}, id="unrecognized"),
+            pytest.param({"status": ["confirmed"]}, id="malformed-status"),
+            pytest.param({"stay": []}, id="no-stay"),
+            pytest.param(
+                {"stay": [make_v3_segment(checkOutDateLocalized=None)]},
+                id="no-verified-segment",
+            ),
+        ],
+    )
+    def test_rejected_record_returns_none(
+        self,
+        overrides: dict[str, Any],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A rejected record is never built and its value is never logged.
+
+        Args:
+            overrides: Top-level fields that reject the record.
+            caplog: Log capture fixture.
+        """
+        with caplog.at_level(logging.DEBUG):
+            result = GuestyReservation.from_v3_api_dict(
+                make_v3_reservation(**overrides),
+            )
+
+        assert result is None
+        assert "SENTINEL-STATUS-9" not in caplog.text
+        assert not [r for r in caplog.records if r.levelno >= logging.INFO]
+
+    def test_fully_verified_record_is_unchanged(self) -> None:
+        """Baseline control: a valid record builds today's model."""
+        result = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(
+                "res-ctrl",
+                status="Completed",
+                nightsCount=4,
+                customFields=[{"fieldId": "cf-1", "value": "yes"}],
+                segments=[make_v3_segment(parentListingId="parent-1")],
+            ),
+        )
+
+        assert result == GuestyReservation(
+            id="res-ctrl",
+            listing_id="listing-001",
+            status="checked_out",
+            check_in=None,
+            check_out=None,
+            confirmation_code="CONF-ABC",
+            check_in_local="2025-08-01",
+            check_out_local="2025-08-05",
+            planned_arrival="15:00",
+            planned_departure="11:00",
+            nights_count=4,
+            guests_count=2,
+            source="airbnb",
+            note="Late arrival",
+            guest=GuestyGuest(guest_id="guest-001"),
+            money=None,
+            custom_fields=MappingProxyType({"cf-1": "yes"}),
+            stay=(
+                GuestyStaySegment(
+                    listing_id="listing-001",
+                    check_in=None,
+                    check_out=None,
+                    parent_listing_id="parent-1",
+                    check_in_local="2025-08-01",
+                    check_out_local="2025-08-05",
+                    guests_count=2,
+                    raw_position=0,
+                ),
+            ),
+            is_v3=True,
+            raw_stay_count=1,
+        )
+        assert result.partial is False
+
+    def test_partial_record_keeps_only_verified_segments(self) -> None:
+        """A partial record publishes verified segments only."""
+        result = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(
+                "res-partial",
+                nightsCount=6,
+                segments=[
+                    make_v3_segment(listingId=""),
+                    make_v3_segment(listingId="listing-b", guestsCount=3),
+                    make_v3_segment(checkInDateLocalized="2025-08-09"),
+                    make_v3_segment(
+                        listingId="listing-c",
+                        checkInDateLocalized="2025-08-05",
+                        checkOutDateLocalized="2025-08-07",
+                    ),
+                ],
+            ),
+        )
+
+        assert result is not None
+        assert result.partial is True
+        assert result.raw_stay_count == 4
+        assert [s.listing_id for s in result.stay] == ["listing-b", "listing-c"]
+        assert [s.raw_position for s in result.stay] == [1, 3]
+        assert result.listing_id == "listing-b"
+        assert result.check_in is None
+        assert result.check_out is None
+        assert result.check_in_local is None
+        assert result.check_out_local is None
+        assert result.nights_count is None
+        assert result.guests_count is None
+        assert result.status == "confirmed"
+
+    @pytest.mark.parametrize("code", [12345, {"code": "x"}, ["x"]])
+    def test_non_string_code_is_kept(self, code: object) -> None:
+        """A non-string code passes through for 014's ``code_kind``.
+
+        Args:
+            code: A non-string confirmation code.
+        """
+        result = GuestyReservation.from_v3_api_dict(
+            make_v3_reservation(confirmationCode=code),
+        )
+
+        assert result is not None
+        assert result.confirmation_code == code
+
+    def test_stay_segment_from_api_dict_is_unchanged(self) -> None:
+        """Baseline control: direct segment and model construction."""
+        segment = GuestyStaySegment.from_api_dict(
+            {
+                "listingId": "listing-001",
+                "parentListingId": ["not-validated"],
+                "checkInDateLocalized": "not-a-date",
+                "guestsCount": "2",
+            },
+            raw_position=5,
+        )
+
+        assert segment == GuestyStaySegment(
+            listing_id="listing-001",
+            check_in=None,
+            check_out=None,
+            parent_listing_id=["not-validated"],  # type: ignore[arg-type]
+            check_in_local="not-a-date",
+            check_out_local=None,
+            guests_count="2",  # type: ignore[arg-type]
+            raw_position=5,
+        )
+        assert GuestyStaySegment.from_api_dict("bad") is None
+        assert GuestyStaySegment.from_api_dict({"listingId": " "}) is None
+        direct = GuestyReservation(
+            id="res-direct",
+            listing_id="listing-001",
+            status="inquiry",
+            check_in=None,
+            check_out=None,
+        )
+        assert direct.status == "inquiry"
+        assert replace(direct, status="confirmed").status == "confirmed"
 
 
 class TestV3TimingProvenance:
@@ -2809,49 +3005,39 @@ class TestV3TimingProvenance:
         assert reservation.stay[1].check_out is None
 
     @pytest.mark.parametrize(
-        ("check_in", "check_out", "check_in_date", "check_out_date"),
+        ("check_in", "check_out"),
         [
-            (
-                "2025-08-03T23:30:00-07:00",
-                "2025-08-08T10:00:00+00:00",
-                "2025-08-03",
-                "2025-08-08",
-            ),
-            (
-                "not-a-date",
-                "2025-08-08T10:00:00+00:00",
-                None,
-                None,
-            ),
+            ("2025-08-03T23:30:00-07:00", "2025-08-08T10:00:00+00:00"),
+            ("not-a-date", "2025-08-08T10:00:00+00:00"),
         ],
     )
     def test_feature_010_uses_written_dates_without_exact_fallback(
         self,
         check_in: str,
         check_out: str,
-        check_in_date: str | None,
-        check_out_date: str | None,
     ) -> None:
-        """Eligible top-level fallback supplies dates, never exact instants."""
+        """Timestamps never supply written dates; the record is rejected.
+
+        Feature 013 (research R4 decision 3) removes the timestamp
+        written-date fallback. With no localized date anywhere, the
+        only segment is ``segment_unverified_dates`` and the record is
+        rejected, whatever the top-level instants say.
+        """
         segment = make_v3_segment(
             checkIn=None,
             checkOut=None,
             checkInDateLocalized=None,
             checkOutDateLocalized=None,
         )
-        reservation = GuestyReservation.from_v3_api_dict(
-            make_v3_reservation(
-                segments=[segment],
-                checkIn=check_in,
-                checkOut=check_out,
-            ),
+        data = make_v3_reservation(
+            segments=[segment],
+            checkIn=check_in,
+            checkOut=check_out,
         )
+        assert data["checkInDateLocalized"] is None
+        assert data["checkOutDateLocalized"] is None
 
-        assert reservation is not None
-        assert reservation.check_in is None
-        assert reservation.check_out is None
-        assert reservation.check_in_local == check_in_date
-        assert reservation.check_out_local == check_out_date
+        assert GuestyReservation.from_v3_api_dict(data) is None
 
     def test_listing_timezone_tracks_explicit_source_presence(self) -> None:
         """The compatibility UTC default is not source provenance."""

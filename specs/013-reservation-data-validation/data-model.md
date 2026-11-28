@@ -34,10 +34,10 @@ Record-level reasons, in evaluation order:
 - `no_verified_segment`: no raw segment is verified.
 - `partial_stay`: at least one raw segment is rejected. This rejects
   writes only; the verified segments are still published.
-- `unverified_instant`: legacy only; `checkIn` or `checkOut` missing,
-  unparsable or without an explicit offset.
 - `invalid_listing`: legacy only; `listingId` is not a non-empty
   string.
+- `unverified_instant`: legacy only; `checkIn` or `checkOut` missing,
+  unparsable or without an explicit offset.
 - `invalid_interval`: legacy only; check-in is not strictly before
   check-out.
 - `unsupported_action`: the `validate_record` action is not in the fact
@@ -408,8 +408,9 @@ stored baseline (research R8).
 - A new lookup verdict, `_INVALID`, applies when the legacy by-ID
   document is a dict with the requested `_id` but fails validation
   (research R8):
-  - the ID is purged from `_served`, `_retained`, `_last_attempt` and
-    `_stale`;
+  - the ID is purged from `_served`, `_retained` and `_stale`, but
+    its `_last_attempt` is kept so the re-check interval holds
+    (FR-053);
   - it is never confirmed absent;
   - a non-hold string code gives a pair in
     `FallbackOutcome.rejected_codes: tuple[RejectedCode, ...]`, with
@@ -432,6 +433,9 @@ stored baseline (research R8).
 - `FallbackOutcome.exclusions: tuple[tuple[ValidationReason, str],
   ...]`: the `(reason, reservation_id)` keys of this refresh's
   `_INVALID` lookups.
+- `FallbackOutcome.validation: ValidationSummary`: the counts of those
+  lookups, which `V3ReservationSource.fetch` adds to the fetch
+  result's `validation`.
 
 ## `VerifiedSnapshot` (new, `coordinator.py`)
 
@@ -537,7 +541,8 @@ All three issues are non-fixable.
   - severity warning;
   - placeholders `listing_name` and `listing_id`;
   - created when a tracked listing with reservations lacks a verified
-    timezone;
+    timezone, or an untracked unit whose segment is published on its
+    tracked parent does (the segment is timed by the unit's zone);
   - deleted when the timezone is verified or the listing is untracked.
 - `conflict_evidence_near_capacity_{entry_id}`:
   - severity warning;
@@ -579,5 +584,15 @@ New block `reservations.validation`:
 }
 ```
 
-`rejected_ids` is capped at 100. No codes, statuses, guest data or
-payload values ever appear.
+`rejected_ids` is the sorted union of the refresh's rejected and
+partial IDs and the IDs the legacy fallback found invalid (counted in
+`rejected_records` or `partial_records`), capped at 100. No codes,
+statuses, guest data or payload values ever appear.
+
+The counts, `reasons` and `rejected_ids` describe the last fetched
+batch. A refresh that fetched its batch but then failed (an identity
+abort or any later error) still updates them, because the stale
+display drops what that batch disproved (R10); a refresh that failed
+before fetching a batch leaves them unchanged. The `refresh` block's
+counters are replaced only by a refresh that records its identity
+outcome or aborts on an identity ambiguity.

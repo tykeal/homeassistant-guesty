@@ -71,5 +71,6 @@ async def async_get_config_entry_diagnostics(
             "legacy_writes": legacy_writes,
             "bootstrap_pages": coordinator.bootstrap_pages,
             "refresh": dict(coordinator.last_refresh_diagnostics),
+            "validation": coordinator.validation_diagnostics(),
         },
     }
