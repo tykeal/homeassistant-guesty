@@ -834,7 +834,8 @@ confirms it and needs no adapter logic.
     succeeds and `_baseline` is adopted (R7 decision 8), with no await
     in between and before the step 3 retirement save. The coordinator's
     callback assigns `fallback_served_ids`, `fallback_sourced_ids` and
-    the accepted snapshot. The routing sets therefore always match the
+    014's `AcceptedRefreshSnapshot`. 013's `VerifiedSnapshot` is not
+    storage-gated (R10). The routing sets therefore always match the
     baseline that authorizes writes, including while step 3 is
     suspended. Any failure before that save (an
     identity abort, `_resolve_guests`, projection, cancellation) and a
@@ -996,7 +997,9 @@ migrates again and revalidates again.
   `VerifiedSnapshot`: the accepted, fully or partially verified
   records before publication filtering, plus the stale IDs from the
   fallback. It replaces the previous snapshot wholesale, which removes
-  anything that refresh showed invalid (FR-012b).
+  anything that refresh showed invalid (FR-012b). It is stored once the
+  refresh publishes, even when an identity save fails, so an older
+  snapshot can never revive a record a later refresh rejected.
 - On a failed refresh (any exception leaving `_async_update_data`,
   including identity ambiguity and an `asyncio.CancelledError` that
   Home Assistant treats as a failure), if a snapshot exists, the
@@ -1157,7 +1160,10 @@ registers only `Platform.SENSOR`; there is no calendar entity.
     it can warn again (SC-004).
 - The keys come from `ReservationFetchResult.exclusions`, which the
   v3 and legacy sources and the by-ID fallback fill with fixed reasons
-  and reservation IDs only, so no rejected payload is retained.
+  and reservation IDs only, so no rejected payload is retained. The
+  coordinator adds `(listing_timezone_unverified, listing_id)` keys for
+  tracked listings with reservations and no verified timezone, which
+  the sources cannot see.
 - Failed refreshes do not resolve keys. The conflict-evidence repair
   issues are not tied to refreshes: they follow the evidence state
   after load and on every state change, including failed refreshes,

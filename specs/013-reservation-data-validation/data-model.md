@@ -263,7 +263,8 @@ Every other state refuses every reservation write.
     successful step 1. Step 1 persists `covered_past_days` equal to
     that refresh's `past_days`, but the guard adopts it, clears the
     causes and adopts `_baseline` together, synchronously, right
-    before `on_baseline_stored` assigns the routing sets and snapshot.
+    before `on_baseline_stored` assigns the routing sets and 014's
+    `AcceptedRefreshSnapshot`.
     A write during the step 2 await therefore still sees
     `revalidating` (research R7 decisions 5, 7 and 8);
   - refusal `REFUSAL_REVALIDATING`; DEBUG log only.
@@ -459,7 +460,11 @@ Coordinator attributes:
 Behavior:
 
 - An accepted refresh replaces the snapshot and clears
-  `snapshot_stale`.
+  `snapshot_stale` once it has published, whether or not its identity
+  saves succeed. Unlike the routing sets and 014's
+  `AcceptedRefreshSnapshot`, the display snapshot is not gated on
+  storage, so a record that refresh showed invalid can never return
+  from an older snapshot on a later failed fetch (FR-012b).
 - A failed refresh re-publishes the snapshot through the pure
   publication function and sets `data` and `snapshot_stale` in the
   `_async_update_data` failure path before re-raising, so Home
@@ -508,7 +513,9 @@ staleness alone), beside `listing_id`.
 - `_overflowed: bool`.
 - `report(keys: Iterable[tuple[ValidationReason, str]]) -> None` runs
   after an accepted refresh only, with the refresh's
-  `ReservationFetchResult.exclusions`:
+  `ReservationFetchResult.exclusions` combined with the
+  coordinator-derived `(listing_timezone_unverified, listing_id)` keys
+  for tracked listings with reservations and no verified timezone:
   - a new key logs one WARNING;
   - a seen key logs at DEBUG;
   - a vanished key is forgotten;
