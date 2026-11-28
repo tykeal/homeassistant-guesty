@@ -281,6 +281,7 @@ tests/
 ├── api/test_models.py
 ├── api/test_reservations_v3.py
 ├── api/test_reservations_fallback.py
+├── api/test_client.py           # legacy source record validation
 ├── api/test_timing.py
 ├── test_identity.py
 ├── test_coordinator.py
@@ -383,6 +384,13 @@ Each phase ends with all CI tests passing on its boundary commit before
 the next phase begins. Red–green unit testing is mandatory within
 phases.
 
+Phases 1–3 merge to `main` together. Phase 1 already rejects records
+whose mappings reach `observe_codes` today (for example an
+unrecognized string status), and only phase 3 restores those mappings
+to conflict detection and adds the revalidation and evidence-state
+refusals (R5, R7, R18). Merging phase 1 or 2 alone would weaken the
+existing identity guard. Phases 4–6 may merge on their own afterwards.
+
 ### Requirement traceability
 
 Each requirement maps to the research decisions that design it and the
@@ -425,7 +433,7 @@ contract rules that state it. The contract lists the required tests.
 - Run `uv run pytest tests/`,
   `uv run ruff check custom_components/ tests/ scripts/`,
   `uv run --group releasenotes mypy custom_components/ tests/ scripts/`
-  and `pre-commit run --all-files`.
+  and `uv run pre-commit run --all-files`.
 - **Compatibility**: run the `Store` minor-version migration, rollback
   payload, and stale-entity availability and attribute tests in the
   locked 2026.10.4 environment and in an isolated 2026.4.0 environment without

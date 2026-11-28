@@ -125,9 +125,12 @@ whole refresh. `_map_results` counts *raw* statuses into
   `recognize_v3_status(raw) -> str | None`.
 - `status_counts` is keyed only by mapped recognized statuses, plus one
   `unrecognized` bucket. No raw value is ever a key.
-- The legacy source applies the same allowlist to `status`: the
-  configured status set is a subset of `ACTIONABLE_STATUSES`. HOLD
-  statuses are handled as they are today.
+- The legacy source and the legacy by-ID fallback apply the same
+  allowlist to `status` through `recognize_v3_status`; any other
+  string is `unrecognized_status`. The configured status set is a
+  subset of `ACTIONABLE_STATUSES`, and a recognized status outside it
+  is valid but unpublished (contract C17). HOLD statuses are handled
+  as they are today.
 
 **Rationale**: FR-002 supersedes feature 008 FR-026 for publication.
 Rejecting a non-string status instead of crashing the refresh is the
@@ -669,7 +672,7 @@ confirms it and needs no adapter logic.
    successful save. `unloaded` and `revalidating` are expected,
    transient startup states and log at DEBUG.
 
-   **Loading**: `IdentityGuard.async_load` loads the identity baseline
+   **Loading**: `ReservationIdentityGuard.async_load` loads the identity baseline
    and then the evidence store, in the same call the coordinator
    already awaits before its first comparison (`_check_identity`). No
    comparison therefore runs in `unloaded`.
@@ -831,7 +834,8 @@ confirms it and needs no adapter logic.
     succeeds and `_baseline` is adopted (R7 decision 8), with no await
     in between and before the step 3 retirement save. The coordinator's
     callback assigns `fallback_served_ids`, `fallback_sourced_ids` and
-    the accepted snapshot. The routing sets therefore always match the
+    014's `AcceptedRefreshSnapshot`. 013's `VerifiedSnapshot` is not
+    storage-gated (R10). The routing sets therefore always match the
     baseline that authorizes writes, including while step 3 is
     suspended. Any failure before that save (an
     identity abort, `_resolve_guests`, projection, cancellation) and a
@@ -888,10 +892,10 @@ confirms it and needs no adapter logic.
     `_last_attempt` and `_stale`, and is never confirmed absent. When
     the record has a non-hold string code, the `RejectedCode` and
     its retirement bound go to `FallbackOutcome.rejected_codes` and
-    `rejected_check_out_bounds`. `V3ReservationSource.fetch` and the
-    legacy source merge them into the fetch result's `rejected_codes`
-    and `rejected_check_out_bounds`, the same way they copy the
-    fallback's other outputs, so they reach `compare` and the store
+    `rejected_check_out_bounds`. `V3ReservationSource.fetch`, the only
+    caller of the fallback, merges them into the fetch result's
+    `rejected_codes` and `rejected_check_out_bounds`, the same way it
+    copies the fallback's other outputs, so they reach `compare` and the store
     (R7), marked with fallback origin (R7 decision 4). The ID's
     candidate hint is popped. The IDs travel as
     `FallbackOutcome.invalid` and
@@ -993,7 +997,9 @@ migrates again and revalidates again.
   `VerifiedSnapshot`: the accepted, fully or partially verified
   records before publication filtering, plus the stale IDs from the
   fallback. It replaces the previous snapshot wholesale, which removes
-  anything that refresh showed invalid (FR-012b).
+  anything that refresh showed invalid (FR-012b). It is stored once the
+  refresh publishes, even when an identity save fails, so an older
+  snapshot can never revive a record a later refresh rejected.
 - On a failed refresh (any exception leaving `_async_update_data`,
   including identity ambiguity and an `asyncio.CancelledError` that
   Home Assistant treats as a failure), if a snapshot exists, the
@@ -1152,7 +1158,16 @@ registers only `Platform.SENSOR`; there is no calendar entity.
   - a known key logs at DEBUG;
   - a key missing from the accepted set is resolved and forgotten, so
     it can warn again (SC-004).
-- Failed refreshes do not resolve keys.
+- The keys come from `ReservationFetchResult.exclusions`, which the
+  v3 and legacy sources and the by-ID fallback fill with fixed reasons
+  and reservation IDs only, so no rejected payload is retained. The
+  coordinator adds `(listing_timezone_unverified, listing_id)` keys for
+  tracked listings with reservations and no verified timezone, which
+  the sources cannot see.
+- Failed refreshes do not resolve keys. The conflict-evidence repair
+  issues are not tied to refreshes: they follow the evidence state
+  after load and on every state change, including failed refreshes,
+  so a store whose pairs abort every refresh is still reported.
 - The bound is `MAX_TRACKED_EXCLUSIONS = 256`. Over the bound, new keys
   log at DEBUG and one aggregate WARNING ("N further exclusions") is
   emitted per overflow episode. The episode ends when the tracked set
