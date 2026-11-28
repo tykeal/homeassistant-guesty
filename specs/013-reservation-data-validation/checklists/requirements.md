@@ -46,8 +46,9 @@ SPDX-License-Identifier: Apache-2.0
   timezone evidence.
 - Failed refreshes show eligible last-verified data marked stale; data
   shown invalid by an accepted successful refresh cannot be restored stale.
-- During an overall refresh failure, the reservation sensor stays
-  unavailable while eligible stale details remain visible in its attributes.
+- During an overall refresh failure, reservation entities stay available
+  showing eligible last-verified data marked stale with its last-verified
+  time; with no last-verified data they are unavailable.
 - Stale publication respects current filters and expiry; an individual
   failed fallback lookup marks only its retained reservation stale without
   changing existing session-served write guards.

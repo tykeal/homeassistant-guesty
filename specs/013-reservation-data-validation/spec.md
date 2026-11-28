@@ -38,6 +38,8 @@ write-safety, migration, and recovery behavior explicitly.
 - If a refresh fails without showing the last-verified data invalid, display
   that data clearly marked stale. A failed refresh does not reverify it or
   weaken write safeguards, and stale display does not retain data shown bad.
+  Reservation entities stay available showing that stale data; the
+  alternative of showing them unavailable until reverified was rejected.
 - If an individual reservation is malformed but the remaining response is
   complete, independently verifiable, and safe, skip that record and publish
   other independently verified reservations. Skipping proves neither
@@ -223,9 +225,10 @@ resolved policy, including refresh and migration boundaries.
 6. **Given** a failed refresh and previously verified data not shown to be
    invalid, **When** reservation information is displayed, **Then** the
    last-verified data remains visible and clearly marked stale, not newly
-   verified or current. The reservation sensor remains unavailable while
-   its eligible stale details and stale indication remain visible in its
-   attributes.
+   verified or current. The reservation sensor and every other entity
+   publishing reservation data remain available, show that eligible
+   last-verified data with a stale indication and its last-verified time,
+   and do not present it as reverified or occupancy as live-proven.
 7. **Given** a previously valid reservation or segment that a successful
    refresh shows is invalid, **When** that result is accepted, **Then** the
    bad data is removed rather than presented as a stale fallback, while
@@ -239,9 +242,9 @@ resolved policy, including refresh and migration boundaries.
    refresh do not satisfy those checks or authorize the write.
 10. **Given** previously stale data and a later successful refresh, **When**
     the current result is accepted, **Then** verified data is no longer
-    labeled stale, and data now shown invalid is not restored. The
-    reservation sensor becomes available only if its existing availability
-    checks also pass.
+    labeled stale, and data now shown invalid is not restored. Reservation
+    entity availability again follows only the existing availability
+    checks.
 11. **Given** an independently verified late-created current reservation
     with a `confirmed` or `checked_in` source status, **When** its write
     safeguards are met, **Then** creation after scheduled check-in alone
@@ -577,12 +580,15 @@ synthetic sensitive values.
   observable stale indication for consumers. The failed refresh MUST NOT be
   represented as a successful verification or make stale data satisfy any
   freshness, identity, continuity, or routing guard it would otherwise
-  fail. The reservation sensor MUST remain unavailable after an overall
-  failed refresh, while exposing eligible stale details and their stale
-  indication in its attributes, so its state does not imply live occupancy.
-  It MUST NOT become available again until a later refresh succeeds and
-  the existing availability checks pass. If there is no last-verified
-  data, the system MUST NOT invent it.
+  fail. After an overall failed refresh, the reservation sensor and every
+  other entity publishing reservation data MUST remain available while
+  eligible last-verified data exists, show that data with an observable
+  stale indication and its last-verified time, and MUST NOT present it as
+  reverified or present occupancy as live-proven. Date-only and uncertain
+  markings still apply. A failed refresh alone MUST NOT make such an
+  entity unavailable; its other existing availability checks still apply.
+  Data proven invalid is never displayed. If there is no last-verified data,
+  those entities are unavailable and the system MUST NOT invent data.
   Before publication, stale data MUST still satisfy the current listing,
   status, and date-window filters using verified evidence. A stay whose
   verified checkout has conclusively passed MUST NOT remain current or
@@ -772,9 +778,10 @@ synthetic sensitive values.
   failures are treated as successful reverification or bypass a write
   guard, and zero records or segments shown invalid by a later accepted
   refresh are restored from a stale snapshot. During an overall refresh
-  failure, the reservation sensor is unavailable and its eligible stale
-  details and indication remain visible in its attributes; it becomes
-  available again only after success and its existing checks pass.
+  failure with last-verified data, 100% of reservation-publishing entities
+  stay available with a stale indication and last-verified time, and zero
+  present that data as reverified; with no last-verified data, they are
+  unavailable and zero reservation values are invented.
 - **SC-011**: In synthetic complete, safe responses containing one malformed
   record, 100% of independently verified records remain eligible and the
   malformed record is excluded. In examples with unverifiable completeness,

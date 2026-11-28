@@ -69,8 +69,13 @@ following.
 - a failed refresh re-projects the last verified snapshot at the
   current instant;
 - an expired stale stay is not current;
+- reservation and financial sensors stay available with `stale: true`
+  and `last_verified_at`, including after a second consecutive failure,
+  with no intermediate `unavailable` state on a first failure;
+- stale display never satisfies a write guard;
 - an accepted refresh clears `stale`;
-- nothing is invented with no snapshot.
+- nothing is invented with no snapshot, and the entities are
+  unavailable.
 
 **Reporting**:
 
@@ -117,13 +122,15 @@ payload, with valid and malformed code maps and candidate hints:
 There are no new services, service fields, configuration options or
 entities. Visible changes:
 
-- `stale` attributes on reservation sensors and `upcoming` items;
+- `stale` and `last_verified_at` attributes on reservation and
+  financial sensors, and `stale` on `upcoming` items;
 - uncertain (`unknown`) checkout-day status;
 - unrecognized statuses are no longer published;
 - expired stays no longer crowd `upcoming`;
 - a listing-timezone repair issue and a conflict-evidence repair issue;
 - a `validation` diagnostics block.
 
-During an overall refresh failure, the reservation sensor is
-unavailable, and the stale state is visible in diagnostics (research
-R13).
+During an overall refresh failure with a verified snapshot, the
+reservation and financial sensors stay available with the last-verified
+data marked stale; diagnostics show the same stale state (research
+R13). With no snapshot they are unavailable.

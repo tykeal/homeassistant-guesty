@@ -439,13 +439,27 @@ Coordinator attributes:
 - `_verified_snapshot: VerifiedSnapshot | None`.
 - `snapshot_stale: bool`.
 - `stale_reservation_ids: frozenset[str]`.
+- `stale_display_available: bool` (property): true only while
+  `last_update_success` is false, `snapshot_stale` is true and `data`
+  holds the re-projection of a `VerifiedSnapshot`.
+- `last_verified_at: datetime | None` (property): the snapshot's
+  `accepted_at` (the last accepted refresh) while `snapshot_stale` is
+  true, otherwise `None`. It never certifies a record that was
+  per-record stale in that snapshot.
 
 Behavior:
 
 - An accepted refresh replaces the snapshot and clears
   `snapshot_stale`.
 - A failed refresh re-publishes the snapshot through the pure
-  publication function and sets `snapshot_stale` (R10).
+  publication function and sets `data` and `snapshot_stale` in the
+  `_async_update_data` failure path before re-raising, so Home
+  Assistant's first-failure listener update already sees them. After a
+  failure that followed an already failed refresh, the `_async_refresh`
+  override calls `async_update_listeners()` itself, because Home
+  Assistant does not notify listeners then (R10).
+- `last_update_success` is never overridden, so write guards still see
+  the failure.
 
 ## Publication output (changed)
 
@@ -458,8 +472,22 @@ Reservation projection dicts gain `stale: bool`. `timing_status` and
 - An unverified-timezone stay that is not conclusively expired is
   `unknown` with `reservation_status`.
 
-Sensor attributes gain a top-level `stale` and an item-level `stale` in
-`upcoming`.
+Sensor attributes gain a top-level `stale`, a top-level
+`last_verified_at` (ISO 8601) and an item-level `stale` in `upcoming`.
+
+## Reservation entity availability (changed, `sensor.py`)
+
+`GuestyReservationSensor.available` and
+`GuestyFinancialSensor.available` replace their `super().available`
+coordinator-health check with `coordinator.last_update_success or
+coordinator.stale_display_available`. Every other existing check
+(`data` present, listing tracked, financial field present) is
+unchanged. With no snapshot after a failure they are unavailable (R13).
+
+`GuestyFinancialSensor` attributes gain `stale` (true when the snapshot
+is stale or its selected reservation is per-record stale) and
+`last_verified_at` (the coordinator property; `null` for per-record
+staleness alone), beside `listing_id`.
 
 ## `ExclusionTracker` (new, `coordinator.py`)
 
@@ -515,7 +543,11 @@ New block `reservations.validation`:
     "bound": 5000,
     "near_capacity": false
   },
-  "stale": {"snapshot_stale": false, "stale_count": 0}
+  "stale": {
+    "snapshot_stale": false,
+    "stale_count": 0,
+    "last_verified_at": null
+  }
 }
 ```
 
