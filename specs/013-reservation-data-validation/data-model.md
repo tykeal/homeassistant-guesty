@@ -248,19 +248,22 @@ Every other state refuses every reservation write.
   - refusal `REFUSAL_EVIDENCE_UNAVAILABLE`; DEBUG log only.
 - `revalidating`:
   - held while any of these holds: the identity migration is pending
-    (R9); no accepted refresh has completed its step 1 save since this
-    load; or the current `past_days` (read through a supplier the
-    coordinator passes to the guard) exceeds `covered_past_days`
-    (`null` means no window is covered yet);
-  - the restart and `past_days` causes end when an accepted refresh
-    completes its step 1 save, which also writes `covered_past_days`
-    equal to that refresh's `past_days`; the migration cause ends only
-    at a successful step 2 that follows a successful step 1 (research
-    R7 decisions 5, 7 and 8);
+    (R9); no accepted refresh has completed both its step 1 and
+    step 2 saves since this load; or the current `past_days` (read
+    through a supplier the coordinator passes to the guard) exceeds the
+    adopted `covered_past_days` (`null` means no window is covered
+    yet);
+  - every cause ends only when a successful step 2 follows a
+    successful step 1. Step 1 persists `covered_past_days` equal to
+    that refresh's `past_days`, but the guard adopts it, clears the
+    causes and adopts `_baseline` together, synchronously, right
+    before `on_baseline_stored` assigns the routing sets and snapshot.
+    A write during the step 2 await therefore still sees
+    `revalidating` (research R7 decisions 5, 7 and 8);
   - refusal `REFUSAL_REVALIDATING`; DEBUG log only.
 - `ready`:
-  - entered only when an accepted refresh has completed its step 1
-    save and no other state applies (a load alone gives `revalidating`);
+  - entered only when an accepted refresh has completed both its
+    step 1 and step 2 saves and no other state applies (a load alone gives `revalidating`);
     left for any state below.
 - `unstored`:
   - entered on a save failure, and held while unsaved pairs are

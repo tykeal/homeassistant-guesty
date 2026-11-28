@@ -584,7 +584,8 @@ adapter logic.
      `past_days` has no maximum and changes without a reload
      (`__init__.py`, `_async_options_updated`), so the store
      persists `covered_past_days`: the window of the last accepted
-     refresh whose step 1 save succeeded (decision 8). While the
+     refresh whose step 1 save succeeded (decision 8). The guard adopts
+     it only when that refresh's step 2 save also succeeds. While the
      current `past_days` exceeds it, the evidence is `revalidating`
      (decision 7). An accepted, stored refresh under the wider window
      re-observes every stay that window returns and records rejected
@@ -635,10 +636,17 @@ adapter logic.
    - `unloaded` while not loaded;
    - `revalidating` while any of these holds:
      - upgrade revalidation is pending (R9);
-     - no accepted refresh has completed its step 1 save since this
-       load (decision 8, restart);
-     - the current `past_days` exceeds the persisted
-       `covered_past_days` (decision 5, window expansion);
+     - no accepted refresh has completed both its step 1 and step 2
+       saves since this load (decision 8, restart);
+     - the current `past_days` exceeds the adopted
+       `covered_past_days` (decision 5, window expansion).
+
+     Every cause is cleared only when a successful step 2 follows a
+     successful step 1, synchronously with the adoption of
+     `_baseline` and the `on_baseline_stored` callback (R8). A write
+     issued while step 2 is awaiting storage still sees
+     `revalidating`, so it can never use the previous current-ID set
+     for an ID this refresh rejected;
    - `unstored` after a failed save;
    - `saturated`;
    - `compromised` when the store is corrupt or unreadable, or when its
@@ -736,7 +744,8 @@ adapter logic.
      match and the pending pairs are gone. A durable marker cannot help,
      because it would be written to the same failing storage. Instead,
      after **every** load the evidence is `revalidating` (decision 7)
-     until the first accepted refresh completes its step 1 save. That
+     until the first accepted refresh completes both its step 1 and
+     step 2 saves. That
      refresh re-observes and records again every rejected pair Guesty
      still returns, so no write is permitted on the reloaded evidence
      alone. A lost pair whose record Guesty no longer returns cannot be

@@ -306,7 +306,8 @@ refresh or by-ID read happens.
     refresh and a restart; a re-observed pair's bound only moves later
     or to `null`; a refresh with no evidence changes still loads
     `revalidating`, not `compromised`, after a restart, and becomes
-    `ready` after the next accepted refresh's step 1 save; pending
+    `ready` after the next accepted refresh's step 1 and step 2 saves;
+    pending
     pairs reach `compare`; an `_INVALID`
     fallback pair reaches `compare` and the store; an `_INVALID` pair
     whose code is in `legacy_codes` or `codes` with another ID aborts
@@ -322,7 +323,11 @@ refresh or by-ID read happens.
     candidate hint to unknown timing: not fallback-eligible, no
     `check_outs`, bootstrap pair retained;
   - every load is `revalidating` until an accepted refresh completes
-    its step 1 save, including after both saves failed and a restart;
+    its step 1 and step 2 saves, including after both saves failed and
+    a restart;
+  - after a restart, a write issued while step 2 is awaiting storage,
+    for a current ID this refresh newly rejected, is refused as
+    revalidating;
   - growing `past_days` beyond `covered_past_days` refuses writes as
     revalidating until a refresh under the wider window is stored,
     which records a re-entered rejected pair again;
