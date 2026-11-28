@@ -67,12 +67,17 @@ accepts that retirement evidence lost to a reload is unavailable.
 ### `ReservationFetchResult.rejected_ids` (extended model)
 
 `rejected_ids: tuple[str, ...] = ()` lists the raw v3 `reservationId`
-strings that the source returned but did not accept:
+strings that the source returned but did not fully verify:
 
 - **Before 013**: raw IDs minus parsed IDs, collected in
   `reservations_v3._map_results`.
-- **After 013**: whatever the 013 refresh rejects, including FR-008d
-  raw-segment rejections.
+- **After 013**: feature 013's definition: the sorted, de-duplicated,
+  batch-verified IDs of records 013 rejects or finds partially valid
+  (FR-008d raw-segment rejections included), including a rejected or
+  partially valid hold. It excludes accepted holds, valid records that
+  are unpublished, identifiers that fail batch validation (the refresh
+  fails instead) and legacy by-ID invalid outcomes (013's
+  `fallback_invalid_ids`).
 
 The field holds identifiers only and is used only to build the snapshot.
 
@@ -208,11 +213,17 @@ One action invocation goes through these stages, each at most once:
 ```text
 012 refresh accepted ── guard passes ──────────────────────▶ 012 write (unchanged)
         │
+        ├─ guard (after 013 merges): REFUSAL_REVALIDATING /
+        │  REFUSAL_EVIDENCE_UNAVAILABLE, before the membership check
+        │      ──▶ 013 refusal (no recovery refresh, no request)
+        │
         └─ guard: ReservationIdentityMissError
               │
               ├─ not v3 / fallback provenance / rejected / confirmed
               │  absent / conflict-only / snapshot or 013 unavailable
               │      ──▶ unchanged 012 refusal (no request)
+              │      (013 unavailable reaches here only before 013
+              │       merges, or defensively)
               │
               └─ qualifies (absent | codeless)
                     │ single GET (lock held)

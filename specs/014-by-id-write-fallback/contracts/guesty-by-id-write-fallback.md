@@ -59,7 +59,11 @@ DEBUG log containing the category and the reservation ID.
    session legacy-retired set). Otherwise: `confirmed_absent`. An
    incomplete session set gives `evidence_unavailable`.
 7. The 013 adapter is available and within its bound. Otherwise:
-   `evidence_unavailable`.
+   `evidence_unavailable`. Once feature 013 is merged, this step is
+   defensive only: 013's identity guard already refuses before the
+   membership check while its evidence is unavailable or revalidating
+   (see [Required feature 013 interface](#required-feature-013-interface)),
+   so qualification is never reached in that state.
 8. The 013 adapter holds no conflict-only evidence for the target.
    Otherwise: `rejected`.
 
@@ -241,19 +245,36 @@ Errors, logs, and diagnostics never contain any of these:
 
 ## Required feature 013 interface
 
-- **Rejected IDs**: for each accepted refresh, the identifiers that were
-  returned but rejected, including FR-008d raw-segment rejections. They
-  are delivered through `ReservationFetchResult.rejected_ids` or an
-  equivalent.
+- **Rejected IDs**: `ReservationFetchResult.rejected_ids` for each
+  accepted refresh, with feature 013's definition: the sorted,
+  de-duplicated, batch-verified v3 `reservationId` values of records
+  that 013 rejects or finds partially valid (FR-008d raw-segment
+  rejections included), including a rejected or partially valid hold.
+  It excludes accepted holds, valid records that are unpublished,
+  identifiers that fail batch validation (the refresh fails instead),
+  and legacy by-ID invalid outcomes (013's `fallback_invalid_ids`). It
+  is no longer "raw minus parsed".
 - **Conflict-only evidence**: a read-only `available()`, which is false
-  when the FR-008c bound has been exceeded, plus lookups in both
-  directions between code and ID.
+  whenever the evidence is not `ready` (including when the FR-008c
+  bound has been exceeded), plus lookups in both directions between
+  code and ID.
 - **Record validation**: `validate_record(raw, action)`, which applies
   the accepted-refresh rules to one raw v3 record.
 
 While any of these interfaces is missing, the adapter reports unavailable
 and every qualifying action keeps its unchanged 012 refusal, with no
 read. Its DEBUG category is `evidence_unavailable`.
+
+Once feature 013 is merged, its `classify_write_refusal` checks evidence
+state after the ambiguity check and **before** the membership check.
+While conflict-only evidence is `revalidating` the write is refused with
+`REFUSAL_REVALIDATING`; while it is `compromised`, `saturated` (over its
+bound), `unstored` or `unloaded` it is refused with
+`REFUSAL_EVIDENCE_UNAVAILABLE`. Either is a plain `GuestyActionError`,
+not a `ReservationIdentityMissError`, so there is no 012 recovery
+refresh, no by-ID qualification and no by-ID read, and no 014 DEBUG
+category is written. Tests for that state expect 013's refusal, not the
+unchanged 012 refusal.
 
 ## Required contract tests
 
@@ -298,7 +319,9 @@ token endpoint, and every write resource.
    - an incomplete session legacy-retired set;
    - rejected in the refresh;
    - conflict-only evidence present;
-   - the 013 adapter unavailable or over its bound;
+   - the 013 adapter unavailable or over its bound (with the test
+     double; with real 013 evidence, 013 refuses this state earlier, as
+     § Required feature 013 interface states);
    - confirmed absent, in the live pruned set and in the snapshot's
      `fallback_absent` for the same accepted refresh;
    - a missing or stale snapshot.

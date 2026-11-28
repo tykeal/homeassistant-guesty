@@ -345,17 +345,13 @@ follows these rules:
   rejection tests for a non-string `parentListingId` (v3) and
   `listingId` (legacy) in the source test modules instead.
 
-A **needed** 014 documentation fix (research R16): once 013 is
-merged, unavailable or revalidating evidence is refused before the
-membership check, with no 012 recovery refresh and no by-ID read. 014's
-contract line on "unchanged 012 refusal" and T052's conversion of
-`TestByIdFallbackInertUntil013*` should expect that refusal. 014's own
-`evidence_unavailable` step stays defensive only.
-
-A clarification to 014 T010 and T011 is **recommended, not required**:
-their text still calls the merged value "raw minus parsed". After 013
-the set also includes published partial records. This plan does not
-edit feature 014 documents; both items are reported to the 014 owner.
+Once 013 is merged, unavailable or revalidating evidence is refused
+before the membership check, with no 012 recovery refresh and no by-ID
+read, and 014's own `evidence_unavailable` step stays defensive only
+(research R16). The 014 documents now say so: its contract and T052
+expect that refusal, and T010 and T011 note that 013 replaces the
+interim "raw minus parsed" `rejected_ids`, which after 013 also
+includes published partial records.
 
 ### Implementation phase boundaries
 

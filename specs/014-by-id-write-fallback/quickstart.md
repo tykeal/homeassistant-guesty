@@ -28,8 +28,9 @@ phase:
    on 401. `add_reservation_note(prefetched_notes=...)` issues no read
    and echoes every note field.
 2. **Snapshot**:
-   - `returned_ids` is every raw v3 search ID, `rejected_ids` is raw
-     minus parsed, and `fallback_observed` carries the legacy lookups.
+   - `returned_ids` is every raw v3 search ID, `rejected_ids` follows
+     feature 013's definition (before 013, the interim raw minus
+     parsed), and `fallback_observed` carries the legacy lookups.
    - The session legacy-observed set keeps out-of-selection lookups
      across refreshes, is bounded, and marks itself incomplete on
      overflow. The session legacy-retired set does the same for
@@ -49,7 +50,9 @@ phase:
    - Retention (SC-004).
    - Privacy sentinels (SC-006).
    - The adapter-unavailable inert behavior, where the unchanged 012
-     refusal is raised without a read.
+     refusal is raised without a read before 013 merges. After 013,
+     unavailable or revalidating 013 evidence raises 013's
+     pre-membership refusal with no recovery refresh and no read.
 
 ## Compatibility verification
 

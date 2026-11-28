@@ -442,8 +442,8 @@ assessment-based set.
 
 **Rationale**: This matches feature 014 data-model "`rejected_ids`
 (extended model)" and the contract "Required feature 013 interface"
-exactly, so 014 T051 removes its interim computation and needs no
-adapter logic.
+exactly. 013 replaces 014's interim computation, so 014 T051 only
+confirms it and needs no adapter logic.
 
 ## R7 — Conflict-only evidence (feature 014 interface 2)
 
@@ -1227,17 +1227,15 @@ was written. The live code on `main` now has:
   `AcceptedRefreshSnapshot` and must not be merged into it.
 - After 013 merges, 014 T049–T051 wire the adapter to the interfaces in
   the contract's "Interfaces provided to feature 014" section.
-- One 014 documentation fix is **needed**. 013's
-  `REFUSAL_REVALIDATING` and `REFUSAL_EVIDENCE_UNAVAILABLE` fire
-  before the membership check (R18). So once 013 is merged, unavailable
-  evidence gives a plain `GuestyActionError`: no 012 recovery refresh,
-  no by-ID read, and no Present or Absent error. 014's contract
-  ("unchanged 012 refusal" while evidence is unavailable) and T052's
-  "013 evidence unavailable or over bound" conversion of
-  `TestByIdFallbackInertUntil013*` should expect that pre-membership
-  refusal. 014's own `evidence_unavailable` qualification step then
-  stays as a defensive check only. This plan does not edit 014
-  documents; the fix is reported to the 014 owner.
+- 013's `REFUSAL_REVALIDATING` and `REFUSAL_EVIDENCE_UNAVAILABLE`
+  fire before the membership check (R18). So once 013 is merged,
+  unavailable or revalidating evidence gives a plain
+  `GuestyActionError`: no 012 recovery refresh, no by-ID read, and no
+  Present or Absent error. 014's own `evidence_unavailable`
+  qualification step then stays as a defensive check only. The 014
+  contract, plan, research, data-model, quickstart and tasks (T010,
+  T011, T051, T052) now say so, and describe `rejected_ids` with this
+  feature's definition instead of "raw minus parsed".
 
 ## R17 — Agent context
 
