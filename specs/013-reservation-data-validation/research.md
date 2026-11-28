@@ -125,9 +125,12 @@ whole refresh. `_map_results` counts *raw* statuses into
   `recognize_v3_status(raw) -> str | None`.
 - `status_counts` is keyed only by mapped recognized statuses, plus one
   `unrecognized` bucket. No raw value is ever a key.
-- The legacy source applies the same allowlist to `status`: the
-  configured status set is a subset of `ACTIONABLE_STATUSES`. HOLD
-  statuses are handled as they are today.
+- The legacy source and the legacy by-ID fallback apply the same
+  allowlist to `status` through `recognize_v3_status`; any other
+  string is `unrecognized_status`. The configured status set is a
+  subset of `ACTIONABLE_STATUSES`, and a recognized status outside it
+  is valid but unpublished (contract C17). HOLD statuses are handled
+  as they are today.
 
 **Rationale**: FR-002 supersedes feature 008 FR-026 for publication.
 Rejecting a non-string status instead of crashing the refresh is the
